@@ -8,7 +8,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!container.current) return;
 
-    // Clear previous widget if any
+    // پاک کردن ویجت قبلی
     container.current.innerHTML = "";
 
     const script = document.createElement("script");
@@ -19,7 +19,7 @@ export default function DashboardPage() {
       autosize: true,
       symbol: "BINANCE:BTCUSDT",
       interval: "60",
-      timezone: "Etc/UTC",
+      timezone: "Asia/Tehran",
       theme: "dark",
       style: "1",
       locale: "en",
@@ -28,14 +28,41 @@ export default function DashboardPage() {
       gridColor: "rgba(42, 46, 57, 0.6)",
       hide_top_toolbar: false,
       hide_legend: false,
-      save_image: true,
-      calendar: false,
-      hide_volume: false,
-      support_host: "https://www.tradingview.com",
+      hide_side_toolbar: false,        // ← این خط مهمه (ابزارهای سمت چپ)
       allow_symbol_change: true,
       details: true,
       hotlist: true,
-      studies: ["STD;SMA", "STD;RSI"],
+      calendar: false,
+      save_image: true,
+      withdateranges: true,
+      hide_volume: false,
+      support_host: "https://www.tradingview.com",
+      studies: [
+        "STD;SMA",
+        "STD;RSI",
+        "STD;MACD"
+      ],
+      // فعال کردن ابزارهای رسم
+      drawings_access: {
+        type: "all",
+        tools: [
+          { name: "Regression Trend" },
+          { name: "Trend Line" },
+          { name: "Ray" },
+          { name: "Extended Line" },
+          { name: "Horizontal Line" },
+          { name: "Vertical Line" },
+          { name: "Cross Line" },
+          { name: "Parallel Channel" },
+          { name: "Fibonacci Retracement" },
+          { name: "Fibonacci Extension" },
+          { name: "Long Position" },   // Risk/Reward
+          { name: "Short Position" },  // Risk/Reward
+          { name: "Rectangle" },
+          { name: "Text" },
+          { name: "Arrow" }
+        ]
+      }
     });
 
     container.current.appendChild(script);
@@ -52,18 +79,23 @@ export default function DashboardPage() {
       <div className="mb-6">
         <h1 className="text-3xl font-bold mb-2">Live Crypto Charts</h1>
         <p className="text-gray-400">
-          Professional TradingView charts. Change the symbol using the search box inside the chart.
+          ابزارهای کامل TradingView فعال است. می‌تونی خط بکشی، Risk/Reward بزنی و از همه ابزارها استفاده کنی.
         </p>
       </div>
 
-      {/* Chart Container */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden" style={{ height: "700px" }}>
+      <div 
+        className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden" 
+        style={{ height: "800px" }}
+      >
         <div
           className="tradingview-widget-container"
           ref={container}
           style={{ height: "100%", width: "100%" }}
         >
-          <div className="tradingview-widget-container__widget" style={{ height: "calc(100% - 32px)", width: "100%" }}></div>
+          <div 
+            className="tradingview-widget-container__widget" 
+            style={{ height: "calc(100% - 32px)", width: "100%" }}
+          ></div>
         </div>
       </div>
 
