@@ -35,21 +35,23 @@ export default function RootLayout({
                   Alarm Chert
                 </span>
               </Link>
-              
               <nav className="flex items-center gap-6">
-                <Link href="/" className="text-gray-300 hover:text-white transition">
-                  Home
-                </Link>
-                <Link href="/dashboard" className="text-gray-300 hover:text-white transition">
-                  Charts
-                </Link>
-                <Link
-                  href="/dashboard"
-                  className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
-                >
-                  Open Charts
-                </Link>
-              </nav>
+  <Link href="/" className="text-gray-300 hover:text-white transition">
+    Home
+  </Link>
+  <Link href="/dashboard" className="text-gray-300 hover:text-white transition">
+    Charts
+  </Link>
+  <Link href="/alerts" className="text-gray-300 hover:text-white transition">
+    Alerts
+  </Link>
+  <Link
+    href="/dashboard"
+    className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
+  >
+    Open Charts
+  </Link>
+</nav>
             </div>
           </div>
         </header>
