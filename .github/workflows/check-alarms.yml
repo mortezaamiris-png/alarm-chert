@@ -14,4 +14,4 @@ jobs:
           curl -X POST \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
             -H "Content-Type: application/json" \
-            https://ddykxhyhjyhrrpbsdhp.supabase.co/functions/v1/check-alarms
+            https://ddykxhyhjhyhrpbsbdhp.supabase.co/functions/v1/check-alarms
