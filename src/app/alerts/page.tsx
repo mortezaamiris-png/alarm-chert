@@ -11,6 +11,9 @@ interface Alert {
   condition: "above" | "below";
   created_at: string;
   is_active: boolean;
+  triggered: boolean;
+  triggered_at: string | null;
+  repeat: boolean;
 }
 
 export default function AlertsPage() {
@@ -18,9 +21,9 @@ export default function AlertsPage() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [price, setPrice] = useState("");
   const [condition, setCondition] = useState<"above" | "below">("above");
+  const [repeat, setRepeat] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // بارگذاری آلارم‌های فعال از سوپابیس
   useEffect(() => {
     fetchAlerts();
   }, []);
@@ -29,7 +32,6 @@ export default function AlertsPage() {
     const { data, error } = await supabase
       .from("alarms")
       .select("*")
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -47,19 +49,17 @@ export default function AlertsPage() {
 
     setLoading(true);
 
-    const { data, error } = await supabase
-      .from("alarms")
-      .insert([
-        {
-          symbol: symbol.toUpperCase(),
-          price: Number(price),
-          condition,
-          is_active: true,
-          triggered: false,
-          note: "آلارم از سایت",
-        },
-      ])
-      .select();
+    const { error } = await supabase.from("alarms").insert([
+      {
+        symbol: symbol.toUpperCase(),
+        price: Number(price),
+        condition,
+        is_active: true,
+        triggered: false,
+        repeat: repeat,
+        note: "آلارم از سایت",
+      },
+    ]);
 
     setLoading(false);
 
@@ -70,7 +70,8 @@ export default function AlertsPage() {
     }
 
     setPrice("");
-    fetchAlerts(); // لیست رو دوباره بگیر
+    setRepeat(false);
+    fetchAlerts();
   };
 
   const deleteAlert = async (id: string) => {
@@ -83,9 +84,12 @@ export default function AlertsPage() {
       console.error("Error deleting alert:", error);
       return;
     }
-
     fetchAlerts();
   };
+
+  // جدا کردن آلارم‌های فعال و تریگر شده
+  const activeAlerts = alerts.filter((a) => a.is_active && !a.triggered);
+  const triggeredAlerts = alerts.filter((a) => a.triggered || !a.is_active);
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
@@ -137,6 +141,20 @@ export default function AlertsPage() {
           </div>
         </div>
 
+        {/* گزینه تکراری */}
+        <div className="mt-4 flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="repeat"
+            checked={repeat}
+            onChange={(e) => setRepeat(e.target.checked)}
+            className="w-4 h-4 accent-orange-500"
+          />
+          <label htmlFor="repeat" className="text-sm text-gray-300">
+            آلارم تکراری (هر بار که قیمت رد شد دوباره پیام بده)
+          </label>
+        </div>
+
         <button
           onClick={addAlert}
           disabled={loading}
@@ -146,22 +164,22 @@ export default function AlertsPage() {
         </button>
       </div>
 
-      {/* لیست آلارم‌ها */}
-      <div>
-        <h2 className="text-xl font-semibold mb-4">
-          آلارم‌های فعال ({alerts.length})
+      {/* آلارم‌های فعال */}
+      <div className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-green-400">
+          آلارم‌های فعال ({activeAlerts.length})
         </h2>
 
-        {alerts.length === 0 ? (
-          <div className="text-center text-gray-500 py-10 border border-dashed border-gray-700 rounded-xl">
-            هنوز آلارمی ثبت نشده
+        {activeAlerts.length === 0 ? (
+          <div className="text-center text-gray-500 py-8 border border-dashed border-gray-700 rounded-xl">
+            هنوز آلارم فعالی نیست
           </div>
         ) : (
           <div className="space-y-3">
-            {alerts.map((alert) => (
+            {activeAlerts.map((alert) => (
               <div
                 key={alert.id}
-                className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-xl px-5 py-4"
+                className="flex items-center justify-between bg-gray-900 border border-green-800/50 rounded-xl px-5 py-4"
               >
                 <div>
                   <div className="font-medium">
@@ -170,6 +188,11 @@ export default function AlertsPage() {
                       {alert.condition === "above" ? "≥" : "≤"}{" "}
                       {alert.price.toLocaleString()}
                     </span>
+                    {alert.repeat && (
+                      <span className="ml-2 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
+                        تکراری
+                      </span>
+                    )}
                   </div>
                   <div className="text-sm text-gray-500 mt-1">
                     {new Date(alert.created_at).toLocaleString("fa-IR")}
@@ -181,6 +204,44 @@ export default function AlertsPage() {
                 >
                   حذف
                 </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* آلارم‌های تریگر شده / غیرفعال */}
+      <div>
+        <h2 className="text-xl font-semibold mb-4 text-gray-400">
+          تاریخچه / تریگر شده ({triggeredAlerts.length})
+        </h2>
+
+        {triggeredAlerts.length === 0 ? (
+          <div className="text-center text-gray-600 py-6 text-sm">
+            هنوز آلارمی تریگر نشده
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {triggeredAlerts.map((alert) => (
+              <div
+                key={alert.id}
+                className="flex items-center justify-between bg-gray-900/50 border border-gray-800 rounded-xl px-5 py-4 opacity-70"
+              >
+                <div>
+                  <div className="font-medium text-gray-300">
+                    {alert.symbol}{" "}
+                    <span className="text-gray-500">
+                      {alert.condition === "above" ? "≥" : "≤"}{" "}
+                      {alert.price.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">
+                    {alert.triggered_at
+                      ? `تریگر: ${new Date(alert.triggered_at).toLocaleString("fa-IR")}`
+                      : new Date(alert.created_at).toLocaleString("fa-IR")}
+                  </div>
+                </div>
+                <span className="text-xs text-gray-500">غیرفعال</span>
               </div>
             ))}
           </div>
