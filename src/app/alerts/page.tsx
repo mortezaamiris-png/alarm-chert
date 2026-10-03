@@ -8,7 +8,7 @@ interface Alert {
   id: string;
   symbol: string;
   price: number;
-  condition: "above" | "below";
+  condition: "above" | "below" | "cross";
   created_at: string;
   is_active: boolean;
   triggered: boolean;
@@ -20,7 +20,7 @@ export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [price, setPrice] = useState("");
-  const [condition, setCondition] = useState<"above" | "below">("above");
+  const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [repeat, setRepeat] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -87,9 +87,14 @@ export default function AlertsPage() {
     fetchAlerts();
   };
 
-  // جدا کردن آلارم‌های فعال و تریگر شده
   const activeAlerts = alerts.filter((a) => a.is_active && !a.triggered);
   const triggeredAlerts = alerts.filter((a) => a.triggered || !a.is_active);
+
+  const getConditionSymbol = (cond: string) => {
+    if (cond === "above") return "≥";
+    if (cond === "below") return "≤";
+    return "≈";
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
@@ -103,7 +108,7 @@ export default function AlertsPage() {
         </p>
       </div>
 
-      {/* فرم اضافه کردن آلارم */}
+      {/* فرم */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
@@ -132,16 +137,16 @@ export default function AlertsPage() {
             <label className="block text-sm text-gray-400 mb-1">شرط</label>
             <select
               value={condition}
-              onChange={(e) => setCondition(e.target.value as "above" | "below")}
+              onChange={(e) => setCondition(e.target.value as "above" | "below" | "cross")}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
             >
-              <option value="above">بالای این قیمت</option>
-              <option value="below">پایین این قیمت</option>
+              <option value="above">بالای این قیمت (≥)</option>
+              <option value="below">پایین این قیمت (≤)</option>
+              <option value="cross">برخورد (هر طرف ≈)</option>
             </select>
           </div>
         </div>
 
-        {/* گزینه تکراری */}
         <div className="mt-4 flex items-center gap-3">
           <input
             type="checkbox"
@@ -185,8 +190,7 @@ export default function AlertsPage() {
                   <div className="font-medium">
                     {alert.symbol}{" "}
                     <span className="text-orange-400">
-                      {alert.condition === "above" ? "≥" : "≤"}{" "}
-                      {alert.price.toLocaleString()}
+                      {getConditionSymbol(alert.condition)} {alert.price.toLocaleString()}
                     </span>
                     {alert.repeat && (
                       <span className="ml-2 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
@@ -210,7 +214,7 @@ export default function AlertsPage() {
         )}
       </div>
 
-      {/* آلارم‌های تریگر شده / غیرفعال */}
+      {/* تاریخچه */}
       <div>
         <h2 className="text-xl font-semibold mb-4 text-gray-400">
           تاریخچه / تریگر شده ({triggeredAlerts.length})
@@ -231,8 +235,7 @@ export default function AlertsPage() {
                   <div className="font-medium text-gray-300">
                     {alert.symbol}{" "}
                     <span className="text-gray-500">
-                      {alert.condition === "above" ? "≥" : "≤"}{" "}
-                      {alert.price.toLocaleString()}
+                      {getConditionSymbol(alert.condition)} {alert.price.toLocaleString()}
                     </span>
                   </div>
                   <div className="text-sm text-gray-600 mt-1">
