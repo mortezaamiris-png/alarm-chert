@@ -19,9 +19,9 @@ export default function DashboardPage() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
+  const [drawMode, setDrawMode] = useState(false);
   const priceLinesRef = useRef<Map<string, any>>(new Map());
 
-  // گرفتن داده‌های شمعی از Bybit
   const fetchCandles = async (sym: string) => {
     try {
       const res = await fetch(
@@ -46,7 +46,6 @@ export default function DashboardPage() {
     }
   };
 
-  // گرفتن خط‌های ذخیره شده
   const fetchLines = async (sym: string) => {
     const { data } = await supabase
       .from("chart_lines")
@@ -56,7 +55,6 @@ export default function DashboardPage() {
     setLines(data || []);
   };
 
-  // اضافه کردن خط جدید
   const addLine = async (price: number) => {
     const { data, error } = await supabase
       .from("chart_lines")
@@ -69,14 +67,14 @@ export default function DashboardPage() {
       return;
     }
     setLines((prev) => [data, ...prev]);
+    setSelectedPrice(null);
+    setDrawMode(false);
   };
 
-  // حذف خط
   const deleteLine = async (id: string) => {
     await supabase.from("chart_lines").delete().eq("id", id);
     setLines((prev) => prev.filter((l) => l.id !== id));
 
-    // حذف از چارت
     const priceLine = priceLinesRef.current.get(id);
     if (priceLine && candleSeriesRef.current) {
       candleSeriesRef.current.removePriceLine(priceLine);
@@ -84,16 +82,13 @@ export default function DashboardPage() {
     }
   };
 
-  // ساخت آلارم از روی خط
   const createAlarmFromLine = (price: number) => {
-    // می‌ریم به صفحه آلارم با قیمت پر شده
     window.location.href = `/alerts?price=${price}&symbol=${symbol}`;
   };
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    // ساخت چارت
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { color: "#0f0f0f" },
@@ -109,6 +104,17 @@ export default function DashboardPage() {
         timeVisible: true,
         secondsVisible: false,
       },
+      handleScroll: {
+        vertTouchDrag: true,
+        horzTouchDrag: true,
+        mouseWheel: true,
+        pressedMouseMove: true,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
     });
 
     const candleSeries = chart.addCandlestickSeries({
@@ -122,7 +128,6 @@ export default function DashboardPage() {
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
 
-    // کلیک روی چارت برای اضافه کردن خط
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeries) return;
       const price = candleSeries.coordinateToPrice(param.point.y);
@@ -131,7 +136,6 @@ export default function DashboardPage() {
       }
     });
 
-    // لود داده‌ها
     const loadData = async () => {
       const candles = await fetchCandles(symbol);
       if (candles.length > 0) {
@@ -143,7 +147,6 @@ export default function DashboardPage() {
 
     loadData();
 
-    // ریسپانسیو
     const handleResize = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth });
@@ -157,17 +160,14 @@ export default function DashboardPage() {
     };
   }, [symbol]);
 
-  // وقتی خط‌ها تغییر کردن، روی چارت رسم کن
   useEffect(() => {
     if (!candleSeriesRef.current) return;
 
-    // پاک کردن خط‌های قبلی
     priceLinesRef.current.forEach((pl) => {
       candleSeriesRef.current?.removePriceLine(pl);
     });
     priceLinesRef.current.clear();
 
-    // رسم خط‌های جدید
     lines.forEach((line) => {
       const priceLine = candleSeriesRef.current!.createPriceLine({
         price: line.price,
@@ -183,11 +183,11 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
           <p className="text-gray-400 text-sm mt-1">
-            روی چارت کلیک کن تا قیمت انتخاب بشه، بعد خط بکش یا آلارم بساز
+            اول دکمه «کشیدن خط» رو بزن، بعد روی چارت کلیک کن
           </p>
         </div>
 
@@ -208,26 +208,46 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* کنترل خط */}
+      {/* نوار ابزار */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => {
+            setDrawMode(!drawMode);
+            setSelectedPrice(null);
+          }}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            drawMode
+              ? "bg-orange-500 text-white"
+              : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+          }`}
+        >
+          {drawMode ? "✕ خروج از حالت کشیدن" : "✏️ کشیدن خط"}
+        </button>
+
+        {drawMode && (
+          <span className="text-sm text-orange-400">
+            روی چارت کلیک کن تا خط کشیده بشه
+          </span>
+        )}
+      </div>
+
+      {/* باکس قیمت انتخاب شده */}
       {selectedPrice && (
-        <div className="mb-4 p-4 bg-gray-900 border border-orange-500/50 rounded-xl flex flex-wrap items-center gap-4">
+        <div className="mb-4 p-4 bg-gray-900 border border-orange-500/50 rounded-xl flex flex-wrap items-center gap-3">
           <span className="text-orange-400 font-medium">
             قیمت انتخاب شده: {selectedPrice.toLocaleString()}
           </span>
           <button
-            onClick={() => {
-              addLine(selectedPrice);
-              setSelectedPrice(null);
-            }}
+            onClick={() => addLine(selectedPrice)}
             className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm"
           >
-            کشیدن خط روی این قیمت
+            تأیید و کشیدن خط
           </button>
           <button
             onClick={() => createAlarmFromLine(selectedPrice)}
             className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm"
           >
-            ساخت آلارم روی این قیمت
+            ساخت آلارم
           </button>
           <button
             onClick={() => setSelectedPrice(null)}
@@ -242,7 +262,8 @@ export default function DashboardPage() {
       <div
         ref={chartContainerRef}
         className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden"
-        style={{ height: "600px" }}
+        style={{ height: "600px", touchAction: "none" }}
+        onWheel={(e) => e.stopPropagation()}
       />
 
       {/* لیست خط‌ها */}
@@ -256,7 +277,8 @@ export default function DashboardPage() {
                 className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
               >
                 <span>
-                  {symbol} @ <span className="text-orange-400">{line.price.toLocaleString()}</span>
+                  {symbol} @{" "}
+                  <span className="text-orange-400">{line.price.toLocaleString()}</span>
                 </span>
                 <div className="flex gap-3">
                   <button
