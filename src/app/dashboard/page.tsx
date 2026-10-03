@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createChart, IChartApi, ISeriesApi, LineStyle } from "lightweight-charts";
+import { createChart, IChartApi, ISeriesApi, LineStyle, IPriceLine } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 
@@ -16,11 +16,13 @@ export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const previewLineRef = useRef<IPriceLine | null>(null);
+
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [lines, setLines] = useState<ChartLine[]>([]);
-  const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
   const [drawMode, setDrawMode] = useState(false);
-  const priceLinesRef = useRef<Map<string, any>>(new Map());
+  const [previewPrice, setPreviewPrice] = useState<number | null>(null);
+  const priceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
 
   const fetchCandles = async (sym: string) => {
     try {
@@ -41,7 +43,7 @@ export default function DashboardPage() {
       }
       return [];
     } catch (e) {
-      console.error("Candle fetch error:", e);
+      console.error(e);
       return [];
     }
   };
@@ -63,26 +65,29 @@ export default function DashboardPage() {
       .single();
 
     if (error) {
-      alert("خطا در ذخیره خط: " + error.message);
+      alert("خطا در ذخیره خط");
       return;
     }
     setLines((prev) => [data, ...prev]);
-    setSelectedPrice(null);
     setDrawMode(false);
+    setPreviewPrice(null);
+    if (previewLineRef.current && candleSeriesRef.current) {
+      candleSeriesRef.current.removePriceLine(previewLineRef.current);
+      previewLineRef.current = null;
+    }
   };
 
   const deleteLine = async (id: string) => {
     await supabase.from("chart_lines").delete().eq("id", id);
     setLines((prev) => prev.filter((l) => l.id !== id));
-
-    const priceLine = priceLinesRef.current.get(id);
-    if (priceLine && candleSeriesRef.current) {
-      candleSeriesRef.current.removePriceLine(priceLine);
+    const pl = priceLinesRef.current.get(id);
+    if (pl && candleSeriesRef.current) {
+      candleSeriesRef.current.removePriceLine(pl);
       priceLinesRef.current.delete(id);
     }
   };
 
-  const createAlarmFromLine = (price: number) => {
+  const createAlarm = (price: number) => {
     window.location.href = `/alerts?price=${price}&symbol=${symbol}`;
   };
 
@@ -90,20 +95,11 @@ export default function DashboardPage() {
     if (!chartContainerRef.current) return;
 
     const chart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { color: "#0f0f0f" },
-        textColor: "#d1d5db",
-      },
-      grid: {
-        vertLines: { color: "#1f2937" },
-        horzLines: { color: "#1f2937" },
-      },
+      layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
+      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
       width: chartContainerRef.current.clientWidth,
       height: 600,
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-      },
+      timeScale: { timeVisible: true, secondsVisible: false },
       handleScroll: {
         vertTouchDrag: true,
         horzTouchDrag: true,
@@ -115,9 +111,26 @@ export default function DashboardPage() {
         mouseWheel: true,
         pinch: true,
       },
+      crosshair: {
+        mode: 0, // Normal
+        horzLine: {
+          visible: true,
+          labelVisible: true,
+          style: LineStyle.Dashed,
+          width: 1,
+          color: "#f97316",
+        },
+        vertLine: {
+          visible: true,
+          labelVisible: false,
+          style: LineStyle.Dashed,
+          width: 1,
+          color: "#6b7280",
+        },
+      },
     });
 
-    const candleSeries = chart.addCandlestickSeries({
+    const series = chart.addCandlestickSeries({
       upColor: "#22c55e",
       downColor: "#ef4444",
       borderVisible: false,
@@ -126,40 +139,63 @@ export default function DashboardPage() {
     });
 
     chartRef.current = chart;
-    candleSeriesRef.current = candleSeries;
+    candleSeriesRef.current = series;
 
-    chart.subscribeClick((param) => {
-      if (!param.point || !candleSeries) return;
-      const price = candleSeries.coordinateToPrice(param.point.y);
-      if (price) {
-        setSelectedPrice(Number(price.toFixed(2)));
+    // حرکت موس / لمس برای پیش‌نمایش خط
+    chart.subscribeCrosshairMove((param) => {
+      if (!drawMode || !param.point || !series) return;
+
+      const price = series.coordinateToPrice(param.point.y);
+      if (price === null) return;
+
+      const rounded = Number(price.toFixed(2));
+      setPreviewPrice(rounded);
+
+      // خط پیش‌نمایش
+      if (previewLineRef.current) {
+        series.removePriceLine(previewLineRef.current);
+      }
+      previewLineRef.current = series.createPriceLine({
+        price: rounded,
+        color: "#f97316",
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "پیش‌نمایش",
+      });
+    });
+
+    // کلیک برای تأیید خط
+    chart.subscribeClick(() => {
+      if (drawMode && previewPrice !== null) {
+        // قیمت الان در previewPrice هست
       }
     });
 
-    const loadData = async () => {
+    const load = async () => {
       const candles = await fetchCandles(symbol);
-      if (candles.length > 0) {
-        candleSeries.setData(candles);
+      if (candles.length) {
+        series.setData(candles);
         chart.timeScale().fitContent();
       }
       await fetchLines(symbol);
     };
+    load();
 
-    loadData();
-
-    const handleResize = () => {
+    const onResize = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth });
       }
     };
-    window.addEventListener("resize", handleResize);
+    window.addEventListener("resize", onResize);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("resize", onResize);
       chart.remove();
     };
-  }, [symbol]);
+  }, [symbol, drawMode]);
 
+  // رسم خط‌های ذخیره شده
   useEffect(() => {
     if (!candleSeriesRef.current) return;
 
@@ -169,15 +205,15 @@ export default function DashboardPage() {
     priceLinesRef.current.clear();
 
     lines.forEach((line) => {
-      const priceLine = candleSeriesRef.current!.createPriceLine({
+      const pl = candleSeriesRef.current!.createPriceLine({
         price: line.price,
         color: line.color || "#f97316",
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: true,
-        title: `${line.price}`,
+        title: String(line.price),
       });
-      priceLinesRef.current.set(line.id, priceLine);
+      priceLinesRef.current.set(line.id, pl);
     });
   }, [lines]);
 
@@ -187,112 +223,79 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
           <p className="text-gray-400 text-sm mt-1">
-            اول دکمه «کشیدن خط» رو بزن، بعد روی چارت کلیک کن
+            دکمه مداد رو بزن، بعد موس یا انگشت رو روی چارت حرکت بده
           </p>
         </div>
-
         <div className="flex items-center gap-3">
           <input
             type="text"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-32"
-            placeholder="BTCUSDT"
           />
-          <Link
-            href="/alerts"
-            className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm"
-          >
+          <Link href="/alerts" className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm">
             صفحه آلارم‌ها
           </Link>
         </div>
       </div>
 
-      {/* نوار ابزار */}
+      {/* ابزار */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <button
           onClick={() => {
             setDrawMode(!drawMode);
-            setSelectedPrice(null);
+            setPreviewPrice(null);
+            if (previewLineRef.current && candleSeriesRef.current) {
+              candleSeriesRef.current.removePriceLine(previewLineRef.current);
+              previewLineRef.current = null;
+            }
           }}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-            drawMode
-              ? "bg-orange-500 text-white"
-              : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${
+            drawMode ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
           }`}
         >
           {drawMode ? "✕ خروج از حالت کشیدن" : "✏️ کشیدن خط"}
         </button>
 
-        {drawMode && (
-          <span className="text-sm text-orange-400">
-            روی چارت کلیک کن تا خط کشیده بشه
-          </span>
+        {drawMode && previewPrice !== null && (
+          <>
+            <span className="text-orange-400 text-sm">
+              قیمت: {previewPrice.toLocaleString()}
+            </span>
+            <button
+              onClick={() => addLine(previewPrice)}
+              className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm"
+            >
+              تأیید خط
+            </button>
+            <button
+              onClick={() => createAlarm(previewPrice)}
+              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm"
+            >
+              ساخت آلارم
+            </button>
+          </>
         )}
       </div>
 
-      {/* باکس قیمت انتخاب شده */}
-      {selectedPrice && (
-        <div className="mb-4 p-4 bg-gray-900 border border-orange-500/50 rounded-xl flex flex-wrap items-center gap-3">
-          <span className="text-orange-400 font-medium">
-            قیمت انتخاب شده: {selectedPrice.toLocaleString()}
-          </span>
-          <button
-            onClick={() => addLine(selectedPrice)}
-            className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm"
-          >
-            تأیید و کشیدن خط
-          </button>
-          <button
-            onClick={() => createAlarmFromLine(selectedPrice)}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm"
-          >
-            ساخت آلارم
-          </button>
-          <button
-            onClick={() => setSelectedPrice(null)}
-            className="text-gray-400 hover:text-white text-sm"
-          >
-            انصراف
-          </button>
-        </div>
-      )}
-
-      {/* چارت */}
       <div
         ref={chartContainerRef}
         className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden"
         style={{ height: "600px", touchAction: "none" }}
-        onWheel={(e) => e.stopPropagation()}
       />
 
-      {/* لیست خط‌ها */}
       {lines.length > 0 && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-3">خط‌های ذخیره شده</h2>
           <div className="space-y-2">
             {lines.map((line) => (
-              <div
-                key={line.id}
-                className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
-              >
+              <div key={line.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
                 <span>
-                  {symbol} @{" "}
-                  <span className="text-orange-400">{line.price.toLocaleString()}</span>
+                  {symbol} @ <span className="text-orange-400">{line.price.toLocaleString()}</span>
                 </span>
                 <div className="flex gap-3">
-                  <button
-                    onClick={() => createAlarmFromLine(line.price)}
-                    className="text-green-400 hover:text-green-300 text-sm"
-                  >
-                    آلارم
-                  </button>
-                  <button
-                    onClick={() => deleteLine(line.id)}
-                    className="text-red-400 hover:text-red-300 text-sm"
-                  >
-                    حذف
-                  </button>
+                  <button onClick={() => createAlarm(line.price)} className="text-green-400 text-sm">آلارم</button>
+                  <button onClick={() => deleteLine(line.id)} className="text-red-400 text-sm">حذف</button>
                 </div>
               </div>
             ))}
