@@ -13,6 +13,8 @@
     "react": "^19.0.0",
     "@supabase/supabase-js": "^2.45.0",
     "react-dom": "^19.0.0"
+    "lightweight-charts": "^4.2.0",
+
   },
 "devDependencies": {
   "@types/node": "^20",
