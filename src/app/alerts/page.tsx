@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 interface Alert {
@@ -17,6 +18,7 @@ interface Alert {
 }
 
 export default function AlertsPage() {
+  const router = useRouter();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [price, setPrice] = useState("");
@@ -33,9 +35,8 @@ export default function AlertsPage() {
       .from("alarms")
       .select("*")
       .order("created_at", { ascending: false });
-
     if (error) {
-      console.error("Error fetching alerts:", error);
+      console.error(error);
       return;
     }
     setAlerts(data || []);
@@ -43,12 +44,10 @@ export default function AlertsPage() {
 
   const addAlert = async () => {
     if (!price || isNaN(Number(price))) {
-      alert("لطفاً قیمت معتبر وارد کن");
+      alert("قیمت معتبر وارد کن");
       return;
     }
-
     setLoading(true);
-
     const { error } = await supabase.from("alarms").insert([
       {
         symbol: symbol.toUpperCase(),
@@ -56,35 +55,28 @@ export default function AlertsPage() {
         condition,
         is_active: true,
         triggered: false,
-        repeat: repeat,
+        repeat,
         note: "آلارم از سایت",
       },
     ]);
-
     setLoading(false);
-
     if (error) {
-      console.error("Error adding alert:", error);
-      alert("خطا در ذخیره آلارم: " + error.message);
+      alert("خطا: " + error.message);
       return;
     }
-
     setPrice("");
     setRepeat(false);
     fetchAlerts();
   };
 
   const deleteAlert = async (id: string) => {
-    const { error } = await supabase
-      .from("alarms")
-      .update({ is_active: false })
-      .eq("id", id);
-
-    if (error) {
-      console.error("Error deleting alert:", error);
-      return;
-    }
+    await supabase.from("alarms").update({ is_active: false }).eq("id", id);
     fetchAlerts();
+  };
+
+  const goToChart = (sym: string) => {
+    localStorage.setItem("chart_symbol", sym.toUpperCase());
+    router.push("/dashboard");
   };
 
   const activeAlerts = alerts.filter((a) => a.is_active && !a.triggered);
@@ -103,12 +95,8 @@ export default function AlertsPage() {
           ← بازگشت به چارت
         </Link>
         <h1 className="text-3xl font-bold mt-2">تنظیم آلارم</h1>
-        <p className="text-gray-400 mt-1">
-          قیمت خطی که کشیدی رو اینجا وارد کن تا برات نوتیفیکیشن بیاد
-        </p>
       </div>
 
-      {/* فرم */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
@@ -118,31 +106,28 @@ export default function AlertsPage() {
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
-              placeholder="BTCUSDT"
             />
           </div>
-
           <div>
             <label className="block text-sm text-gray-400 mb-1">قیمت</label>
             <input
               type="number"
+              step="any"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
-              placeholder="65000"
             />
           </div>
-
           <div>
             <label className="block text-sm text-gray-400 mb-1">شرط</label>
             <select
               value={condition}
-              onChange={(e) => setCondition(e.target.value as "above" | "below" | "cross")}
+              onChange={(e) => setCondition(e.target.value as any)}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
             >
               <option value="above">بالای این قیمت (≥)</option>
               <option value="below">پایین این قیمت (≤)</option>
-              <option value="cross">برخورد (هر طرف ≈)</option>
+              <option value="cross">برخورد (≈)</option>
             </select>
           </div>
         </div>
@@ -163,21 +148,19 @@ export default function AlertsPage() {
         <button
           onClick={addAlert}
           disabled={loading}
-          className="mt-5 w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-lg transition disabled:opacity-50"
+          className="mt-5 w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-lg disabled:opacity-50"
         >
           {loading ? "در حال ذخیره..." : "افزودن آلارم"}
         </button>
       </div>
 
-      {/* آلارم‌های فعال */}
       <div className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-green-400">
           آلارم‌های فعال ({activeAlerts.length})
         </h2>
-
         {activeAlerts.length === 0 ? (
           <div className="text-center text-gray-500 py-8 border border-dashed border-gray-700 rounded-xl">
-            هنوز آلارم فعالی نیست
+            آلارم فعالی نیست
           </div>
         ) : (
           <div className="space-y-3">
@@ -190,10 +173,10 @@ export default function AlertsPage() {
                   <div className="font-medium">
                     {alert.symbol}{" "}
                     <span className="text-orange-400">
-                      {getConditionSymbol(alert.condition)} {alert.price.toLocaleString()}
+                      {getConditionSymbol(alert.condition)} {alert.price}
                     </span>
                     {alert.repeat && (
-                      <span className="ml-2 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
+                      <span className="mr-2 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
                         تکراری
                       </span>
                     )}
@@ -202,31 +185,35 @@ export default function AlertsPage() {
                     {new Date(alert.created_at).toLocaleString("fa-IR")}
                   </div>
                 </div>
-                <button
-                  onClick={() => deleteAlert(alert.id)}
-                  className="text-red-400 hover:text-red-300 text-sm"
-                >
-                  حذف
-                </button>
+                <div className="flex gap-3 text-sm">
+                  <button
+                    onClick={() => goToChart(alert.symbol)}
+                    className="text-yellow-400 hover:text-yellow-300"
+                  >
+                    تغییرات
+                  </button>
+                  <button
+                    onClick={() => deleteAlert(alert.id)}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    حذف
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* تاریخچه */}
       <div>
         <h2 className="text-xl font-semibold mb-4 text-gray-400">
           تاریخچه / تریگر شده ({triggeredAlerts.length})
         </h2>
-
         {triggeredAlerts.length === 0 ? (
-          <div className="text-center text-gray-600 py-6 text-sm">
-            هنوز آلارمی تریگر نشده
-          </div>
+          <div className="text-center text-gray-600 py-6 text-sm">خالی</div>
         ) : (
           <div className="space-y-3">
-            {triggeredAlerts.map((alert) => (
+            {triggeredAlerts.slice(0, 30).map((alert) => (
               <div
                 key={alert.id}
                 className="flex items-center justify-between bg-gray-900/50 border border-gray-800 rounded-xl px-5 py-4 opacity-70"
@@ -235,16 +222,16 @@ export default function AlertsPage() {
                   <div className="font-medium text-gray-300">
                     {alert.symbol}{" "}
                     <span className="text-gray-500">
-                      {getConditionSymbol(alert.condition)} {alert.price.toLocaleString()}
+                      {getConditionSymbol(alert.condition)} {alert.price}
                     </span>
                   </div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    {alert.triggered_at
-                      ? `تریگر: ${new Date(alert.triggered_at).toLocaleString("fa-IR")}`
-                      : new Date(alert.created_at).toLocaleString("fa-IR")}
-                  </div>
                 </div>
-                <span className="text-xs text-gray-500">غیرفعال</span>
+                <button
+                  onClick={() => goToChart(alert.symbol)}
+                  className="text-blue-400 text-sm"
+                >
+                  چارت
+                </button>
               </div>
             ))}
           </div>
