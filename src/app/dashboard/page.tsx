@@ -1,4 +1,4 @@
-"use client";
+ "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { createChart, IChartApi, ISeriesApi, LineStyle, IPriceLine } from "lightweight-charts";
@@ -169,7 +169,6 @@ export default function DashboardPage() {
     }
   };
 
-  // تبدیل خط به آلارم + حذف از لیست خط‌ها
   const convertLineToAlarm = async (line: ChartLine) => {
     if (savingRef.current) return;
     setSaving(true);
@@ -195,11 +194,10 @@ export default function DashboardPage() {
         alert("خطا: " + error.message);
         return;
       }
-      // حذف خط از جدول و لیست
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
       setAlarms((prev) => [data, ...prev]);
-      alert(`آلارم ساخته شد و خط حذف شد`);
+      alert("آلارم ساخته شد و خط حذف شد");
     } finally {
       setSaving(false);
     }
@@ -237,6 +235,27 @@ export default function DashboardPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // کلیک روی شرط = عوض شدن بالا → پایین → برخورد → بالا
+  const cycleCondition = async (alarm: Alarm) => {
+    const next =
+      alarm.condition === "above"
+        ? "below"
+        : alarm.condition === "below"
+        ? "cross"
+        : "above";
+    const { error } = await supabase
+      .from("alarms")
+      .update({ condition: next })
+      .eq("id", alarm.id);
+    if (error) {
+      alert("خطا در تغییر شرط");
+      return;
+    }
+    setAlarms((prev) =>
+      prev.map((a) => (a.id === alarm.id ? { ...a, condition: next } : a))
+    );
   };
 
   const deleteLine = async (id: string) => {
@@ -484,7 +503,9 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
-          <p className="text-gray-400 text-sm mt-1">یک بار روی چارت بزن تا تأیید شود</p>
+          <p className="text-gray-400 text-sm mt-1">
+            روی شرط بزن تا عوض شود • جابه‌جا = تغییر قیمت
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <input
@@ -582,7 +603,6 @@ export default function DashboardPage() {
         style={{ height: "560px", touchAction: "none" }}
       />
 
-      {/* آلارم‌ها با رنگ شرط */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-green-400">
           آلارم‌های فعال ({alarms.length})
@@ -605,9 +625,13 @@ export default function DashboardPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-3 text-sm">
-                  <span className={`font-medium ${getConditionColor(a.condition)}`}>
+                  {/* کلیک = عوض شدن شرط */}
+                  <button
+                    onClick={() => cycleCondition(a)}
+                    className={`font-medium ${getConditionColor(a.condition)} underline`}
+                  >
                     {getConditionLabel(a.condition)}
-                  </span>
+                  </button>
                   <button
                     onClick={() => startMove(a.id, "alarm", a.price)}
                     className="text-blue-400"
@@ -624,7 +648,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* خط‌ها — با تبدیل به آلارم حذف می‌شوند */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-orange-400">
           خط‌های ذخیره شده ({lines.length})
