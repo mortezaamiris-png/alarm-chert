@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createChart, IChartApi, ISeriesApi, LineStyle, IPriceLine } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
@@ -32,6 +32,19 @@ const TIMEFRAMES = [
   { label: "1D", value: "D" },
 ];
 
+// دقت قیمت بر اساس اندازه عدد
+function getPrecision(price: number) {
+  if (price >= 1000) return 2;
+  if (price >= 1) return 4;
+  if (price >= 0.01) return 5;
+  return 6;
+}
+
+function formatPrice(price: number) {
+  const p = getPrecision(price);
+  return Number(price.toFixed(p));
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -40,9 +53,20 @@ export default function DashboardPage() {
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, IPriceLine>>(new Map());
 
-  // state
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setIntervalTf] = useState("60");
+  // خواندن از localStorage
+  const [symbol, setSymbol] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("chart_symbol") || "BTCUSDT";
+    }
+    return "BTCUSDT";
+  });
+  const [interval, setIntervalTf] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("chart_interval") || "60";
+    }
+    return "60";
+  });
+
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [mode, setMode] = useState<"none" | "draw" | "alarm" | "move">("none");
@@ -52,7 +76,6 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [saving, setSaving] = useState(false);
 
-  // refs برای اینکه کلیک همیشه مقدار جدید را ببیند
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
   const movingIdRef = useRef(movingId);
@@ -68,6 +91,14 @@ export default function DashboardPage() {
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+
+  // ذخیره در localStorage
+  useEffect(() => {
+    localStorage.setItem("chart_symbol", symbol);
+  }, [symbol]);
+  useEffect(() => {
+    localStorage.setItem("chart_interval", interval);
+  }, [interval]);
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
@@ -89,9 +120,10 @@ export default function DashboardPage() {
     setSaving(true);
     try {
       const sym = symbolRef.current;
+      const p = formatPrice(price);
       const { data, error } = await supabase
         .from("chart_lines")
-        .insert([{ symbol: sym, price, color: "#f97316" }])
+        .insert([{ symbol: sym, price: p, color: "#f97316" }])
         .select()
         .single();
       if (error) {
@@ -111,12 +143,13 @@ export default function DashboardPage() {
     try {
       const sym = symbolRef.current;
       const cond = conditionRef.current;
+      const p = formatPrice(price);
       const { data, error } = await supabase
         .from("alarms")
         .insert([
           {
             symbol: sym.toUpperCase(),
-            price: Number(price),
+            price: p,
             condition: cond,
             is_active: true,
             triggered: false,
@@ -133,7 +166,7 @@ export default function DashboardPage() {
       }
       setAlarms((prev) => [data, ...prev]);
       resetMode();
-      alert(`آلارم ذخیره شد: ${sym} @ ${price.toLocaleString()}`);
+      alert(`آلارم ذخیره شد: ${sym} @ ${p}`);
     } finally {
       setSaving(false);
     }
@@ -143,12 +176,13 @@ export default function DashboardPage() {
     if (savingRef.current) return;
     setSaving(true);
     try {
-      const { error } = await supabase.from("chart_lines").update({ price }).eq("id", id);
+      const p = formatPrice(price);
+      const { error } = await supabase.from("chart_lines").update({ price: p }).eq("id", id);
       if (error) {
-        alert("خطا در جابه‌جایی");
+        alert("خطا");
         return;
       }
-      setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price } : l)));
+      setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: p } : l)));
       resetMode();
     } finally {
       setSaving(false);
@@ -159,12 +193,13 @@ export default function DashboardPage() {
     if (savingRef.current) return;
     setSaving(true);
     try {
-      const { error } = await supabase.from("alarms").update({ price }).eq("id", id);
+      const p = formatPrice(price);
+      const { error } = await supabase.from("alarms").update({ price: p }).eq("id", id);
       if (error) {
-        alert("خطا در جابه‌جایی");
+        alert("خطا");
         return;
       }
-      setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price } : a)));
+      setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: p } : a)));
       resetMode();
     } finally {
       setSaving(false);
@@ -194,7 +229,6 @@ export default function DashboardPage() {
     return "≈";
   };
 
-  // بارگذاری داده کندل
   const loadCandles = async (sym: string, tf: string) => {
     try {
       const res = await fetch(
@@ -211,6 +245,18 @@ export default function DashboardPage() {
             close: parseFloat(item[4]),
           }))
           .reverse();
+
+        // تنظیم دقت نمایش قیمت
+        const lastClose = candles[candles.length - 1]?.close || 1;
+        const precision = getPrecision(lastClose);
+        seriesRef.current.applyOptions({
+          priceFormat: {
+            type: "price",
+            precision,
+            minMove: Math.pow(10, -precision),
+          },
+        });
+
         seriesRef.current.setData(candles);
         chartRef.current?.timeScale().fitContent();
       }
@@ -239,7 +285,7 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
-  // ساخت چارت فقط یک بار
+  // ساخت چارت یک بار
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
@@ -249,6 +295,11 @@ export default function DashboardPage() {
       width: chartContainerRef.current.clientWidth,
       height: 560,
       timeScale: { timeVisible: true, secondsVisible: false },
+      rightPriceScale: {
+        autoScale: true,
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+        borderVisible: false,
+      },
       handleScroll: {
         vertTouchDrag: true,
         horzTouchDrag: true,
@@ -285,17 +336,17 @@ export default function DashboardPage() {
       borderVisible: false,
       wickUpColor: "#22c55e",
       wickDownColor: "#ef4444",
+      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
     });
 
     chartRef.current = chart;
     seriesRef.current = series;
 
-    // حرکت موس → پیش‌نمایش
     chart.subscribeCrosshairMove((param) => {
       if (modeRef.current === "none" || !param.point || !seriesRef.current) return;
       const price = seriesRef.current.coordinateToPrice(param.point.y);
       if (price === null) return;
-      const rounded = Number(price.toFixed(2));
+      const rounded = formatPrice(price);
       setPreviewPrice(rounded);
 
       if (previewLineRef.current) {
@@ -312,22 +363,16 @@ export default function DashboardPage() {
       });
     });
 
-    // کلیک = تأیید (با ref تا همیشه مقدار جدید باشد)
     chart.subscribeClick(() => {
       const m = modeRef.current;
       const price = previewPriceRef.current;
       if (!price || m === "none" || savingRef.current) return;
 
-      if (m === "draw") {
-        addLine(price);
-      } else if (m === "alarm") {
-        createAlarmDirect(price);
-      } else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
-        if (movingTypeRef.current === "line") {
-          updateLinePrice(movingIdRef.current, price);
-        } else {
-          updateAlarmPrice(movingIdRef.current, price);
-        }
+      if (m === "draw") addLine(price);
+      else if (m === "alarm") createAlarmDirect(price);
+      else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
+        if (movingTypeRef.current === "line") updateLinePrice(movingIdRef.current, price);
+        else updateAlarmPrice(movingIdRef.current, price);
       }
     });
 
@@ -338,10 +383,12 @@ export default function DashboardPage() {
     };
     window.addEventListener("resize", onResize);
 
-    // بارگذاری اولیه
-    loadCandles("BTCUSDT", "60");
-    loadLines("BTCUSDT");
-    loadAlarms("BTCUSDT");
+    // بارگذاری با مقدار ذخیره‌شده
+    const savedSym = localStorage.getItem("chart_symbol") || "BTCUSDT";
+    const savedTf = localStorage.getItem("chart_interval") || "60";
+    loadCandles(savedSym, savedTf);
+    loadLines(savedSym);
+    loadAlarms(savedSym);
 
     return () => {
       window.removeEventListener("resize", onResize);
@@ -349,7 +396,6 @@ export default function DashboardPage() {
     };
   }, []);
 
-  // وقتی نماد یا تایم‌فریم عوض شد
   useEffect(() => {
     resetMode();
     loadCandles(symbol, interval);
@@ -357,25 +403,15 @@ export default function DashboardPage() {
     loadAlarms(symbol);
   }, [symbol, interval]);
 
-  // رسم آلارم‌ها روی چارت
   useEffect(() => {
     if (!seriesRef.current) return;
-
-    alarmLinesRef.current.forEach((pl) => {
-      seriesRef.current?.removePriceLine(pl);
-    });
+    alarmLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
     alarmLinesRef.current.clear();
 
     alarms.forEach((alarm) => {
       if (mode === "move" && movingType === "alarm" && movingId === alarm.id) return;
-
       const color =
-        alarm.condition === "above"
-          ? "#22c55e"
-          : alarm.condition === "below"
-          ? "#ef4444"
-          : "#3b82f6";
-
+        alarm.condition === "above" ? "#22c55e" : alarm.condition === "below" ? "#ef4444" : "#3b82f6";
       const pl = seriesRef.current!.createPriceLine({
         price: alarm.price,
         color,
@@ -388,18 +424,13 @@ export default function DashboardPage() {
     });
   }, [alarms, mode, movingId, movingType]);
 
-  // رسم خط‌ها روی چارت
   useEffect(() => {
     if (!seriesRef.current) return;
-
-    chartLinesRef.current.forEach((pl) => {
-      seriesRef.current?.removePriceLine(pl);
-    });
+    chartLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
     chartLinesRef.current.clear();
 
     lines.forEach((line) => {
       if (mode === "move" && movingType === "line" && movingId === line.id) return;
-
       const pl = seriesRef.current!.createPriceLine({
         price: line.price,
         color: line.color || "#f97316",
@@ -417,20 +448,13 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
-          <p className="text-gray-400 text-sm mt-1">
-            یک بار روی چارت بزن تا تأیید شود
-          </p>
+          <p className="text-gray-400 text-sm mt-1">یک بار روی چارت بزن تا تأیید شود</p>
         </div>
         <div className="flex items-center gap-3">
           <input
             type="text"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            onBlur={() => {
-              loadCandles(symbol, interval);
-              loadLines(symbol);
-              loadAlarms(symbol);
-            }}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-28"
             placeholder="BTCUSDT"
           />
@@ -510,7 +534,7 @@ export default function DashboardPage() {
 
         {mode !== "none" && previewPrice !== null && (
           <span className="text-sm text-orange-400">
-            {previewPrice.toLocaleString()} — یک بار روی چارت بزن
+            {previewPrice} — یک بار روی چارت بزن
             {saving && " (در حال ذخیره...)"}
           </span>
         )}
@@ -522,7 +546,6 @@ export default function DashboardPage() {
         style={{ height: "560px", touchAction: "none" }}
       />
 
-      {/* آلارم‌ها */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-green-400">
           آلارم‌های فعال ({alarms.length})
@@ -539,14 +562,11 @@ export default function DashboardPage() {
                 <span>
                   {a.symbol}{" "}
                   <span className="text-orange-400">
-                    {getConditionSymbol(a.condition)} {a.price.toLocaleString()}
+                    {getConditionSymbol(a.condition)} {a.price}
                   </span>
                 </span>
                 <div className="flex gap-3 text-sm">
-                  <button
-                    onClick={() => startMove(a.id, "alarm", a.price)}
-                    className="text-blue-400"
-                  >
+                  <button onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">
                     جابه‌جا
                   </button>
                   <button onClick={() => deleteAlarm(a.id)} className="text-red-400">
@@ -559,7 +579,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* خط‌ها */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-orange-400">
           خط‌های ذخیره شده ({lines.length})
@@ -574,19 +593,13 @@ export default function DashboardPage() {
                 className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
               >
                 <span style={{ color: line.color }}>
-                  {symbol} @ {line.price.toLocaleString()}
+                  {symbol} @ {line.price}
                 </span>
                 <div className="flex gap-3 text-sm">
-                  <button
-                    onClick={() => startMove(line.id, "line", line.price)}
-                    className="text-blue-400"
-                  >
+                  <button onClick={() => startMove(line.id, "line", line.price)} className="text-blue-400">
                     جابه‌جا
                   </button>
-                  <button
-                    onClick={() => createAlarmDirect(line.price)}
-                    className="text-green-400"
-                  >
+                  <button onClick={() => createAlarmDirect(line.price)} className="text-green-400">
                     آلارم
                   </button>
                   <button onClick={() => deleteLine(line.id)} className="text-red-400">
