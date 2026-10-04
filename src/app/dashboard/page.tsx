@@ -62,48 +62,54 @@ function formatPrice(price: number) {
 
 function calcSMA(candles: { time: number; close: number }[], period: number) {
   const out: { time: number; value: number }[] = [];
+  const p = Math.max(1, period);
   for (let i = 0; i < candles.length; i++) {
-    if (i < period - 1) continue;
+    if (i < p - 1) continue;
     let sum = 0;
-    for (let j = 0; j < period; j++) sum += candles[i - j].close;
-    out.push({ time: candles[i].time, value: sum / period });
+    for (let j = 0; j < p; j++) sum += candles[i - j].close;
+    out.push({ time: candles[i].time, value: sum / p });
   }
   return out;
 }
 
 function calcRSI(candles: { time: number; close: number }[], period = 14) {
   const out: { time: number; value: number }[] = [];
-  if (candles.length < period + 1) return out;
+  const p = Math.max(2, period);
+  if (candles.length < p + 1) return out;
 
   let gains = 0;
   let losses = 0;
-  for (let i = 1; i <= period; i++) {
+  for (let i = 1; i <= p; i++) {
     const diff = candles[i].close - candles[i - 1].close;
     if (diff >= 0) gains += diff;
     else losses -= diff;
   }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
+  let avgGain = gains / p;
+  let avgLoss = losses / p;
   const rs0 = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  out.push({ time: candles[period].time, value: 100 - 100 / (1 + rs0) });
+  out.push({ time: candles[p].time, value: 100 - 100 / (1 + rs0) });
 
-  for (let i = period + 1; i < candles.length; i++) {
+  for (let i = p + 1; i < candles.length; i++) {
     const diff = candles[i].close - candles[i - 1].close;
     const gain = diff > 0 ? diff : 0;
     const loss = diff < 0 ? -diff : 0;
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    avgGain = (avgGain * (p - 1) + gain) / p;
+    avgLoss = (avgLoss * (p - 1) + loss) / p;
     const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
     out.push({ time: candles[i].time, value: 100 - 100 / (1 + rs) });
   }
   return out;
 }
 
-function calcDMI(candles: { time: number; high: number; low: number; close: number }[], period = 14) {
+function calcDMI(
+  candles: { time: number; high: number; low: number; close: number }[],
+  period = 14
+) {
   const plusDI: { time: number; value: number }[] = [];
   const minusDI: { time: number; value: number }[] = [];
   const adx: { time: number; value: number }[] = [];
-  if (candles.length < period + 2) return { plusDI, minusDI, adx };
+  const p = Math.max(2, period);
+  if (candles.length < p + 2) return { plusDI, minusDI, adx };
 
   const tr: number[] = [];
   const plusDM: number[] = [];
@@ -115,7 +121,6 @@ function calcDMI(candles: { time: number; high: number; low: number; close: numb
     const prevClose = candles[i - 1].close;
     const prevHigh = candles[i - 1].high;
     const prevLow = candles[i - 1].low;
-
     tr.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
     const up = high - prevHigh;
     const down = prevLow - low;
@@ -123,16 +128,16 @@ function calcDMI(candles: { time: number; high: number; low: number; close: numb
     minusDM.push(down > up && down > 0 ? down : 0);
   }
 
-  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0);
-  let pDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
-  let mDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let atr = tr.slice(0, p).reduce((a, b) => a + b, 0);
+  let pDM = plusDM.slice(0, p).reduce((a, b) => a + b, 0);
+  let mDM = minusDM.slice(0, p).reduce((a, b) => a + b, 0);
   const dxArr: number[] = [];
 
-  for (let i = period; i < tr.length; i++) {
-    if (i > period) {
-      atr = atr - atr / period + tr[i];
-      pDM = pDM - pDM / period + plusDM[i];
-      mDM = mDM - mDM / period + minusDM[i];
+  for (let i = p; i < tr.length; i++) {
+    if (i > p) {
+      atr = atr - atr / p + tr[i];
+      pDM = pDM - pDM / p + plusDM[i];
+      mDM = mDM - mDM / p + minusDM[i];
     }
     const pdi = atr === 0 ? 0 : (pDM / atr) * 100;
     const mdi = atr === 0 ? 0 : (mDM / atr) * 100;
@@ -143,14 +148,13 @@ function calcDMI(candles: { time: number; high: number; low: number; close: numb
     minusDI.push({ time: t, value: mdi });
   }
 
-  if (dxArr.length >= period) {
-    let adxVal = dxArr.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    for (let i = period; i < dxArr.length; i++) {
-      adxVal = (adxVal * (period - 1) + dxArr[i]) / period;
+  if (dxArr.length >= p) {
+    let adxVal = dxArr.slice(0, p).reduce((a, b) => a + b, 0) / p;
+    for (let i = p; i < dxArr.length; i++) {
+      adxVal = (adxVal * (p - 1) + dxArr[i]) / p;
       adx.push({ time: plusDI[i].time, value: adxVal });
     }
   }
-
   return { plusDI, minusDI, adx };
 }
 
@@ -184,13 +188,16 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
 
-  // 3SMA
+  // SMA — متن موقت برای تایپ راحت
   const [showSMA, setShowSMA] = useState(false);
   const [smaVisible, setSmaVisible] = useState(true);
   const [smaSettings, setSmaSettings] = useState(false);
   const [sma1, setSma1] = useState(50);
   const [sma2, setSma2] = useState(100);
   const [sma3, setSma3] = useState(200);
+  const [sma1Str, setSma1Str] = useState("50");
+  const [sma2Str, setSma2Str] = useState("100");
+  const [sma3Str, setSma3Str] = useState("200");
   const [smaColor1, setSmaColor1] = useState("#ef4444");
   const [smaColor2, setSmaColor2] = useState("#eab308");
   const [smaColor3, setSmaColor3] = useState("#a855f7");
@@ -200,13 +207,14 @@ export default function DashboardPage() {
   const [pivotVisible, setPivotVisible] = useState(true);
   const [pivotSettings, setPivotSettings] = useState(false);
   const [pivotTf, setPivotTf] = useState("D");
-  const [pivotFib, setPivotFib] = useState(true);
+  const [pivotFib, setPivotFib] = useState(false);
 
   // RSI
   const [showRSI, setShowRSI] = useState(false);
   const [rsiVisible, setRsiVisible] = useState(true);
   const [rsiSettings, setRsiSettings] = useState(false);
   const [rsiPeriod, setRsiPeriod] = useState(14);
+  const [rsiPeriodStr, setRsiPeriodStr] = useState("14");
   const [rsiColor, setRsiColor] = useState("#c084fc");
 
   // DMI
@@ -214,6 +222,10 @@ export default function DashboardPage() {
   const [dmiVisible, setDmiVisible] = useState(true);
   const [dmiSettings, setDmiSettings] = useState(false);
   const [dmiPeriod, setDmiPeriod] = useState(14);
+  const [dmiPeriodStr, setDmiPeriodStr] = useState("14");
+  const [dmiPlusColor, setDmiPlusColor] = useState("#22c55e");
+  const [dmiMinusColor, setDmiMinusColor] = useState("#ef4444");
+  const [dmiAdxColor, setDmiAdxColor] = useState("#3b82f6");
 
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
@@ -222,6 +234,8 @@ export default function DashboardPage() {
   const conditionRef = useRef(condition);
   const savingRef = useRef(saving);
   const symbolRef = useRef(symbol);
+  const showRSIRef = useRef(showRSI);
+  const showDMIRef = useRef(showDMI);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
@@ -230,8 +244,22 @@ export default function DashboardPage() {
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+  useEffect(() => { showRSIRef.current = showRSI; }, [showRSI]);
+  useEffect(() => { showDMIRef.current = showDMI; }, [showDMI]);
   useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
   useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
+
+  const updateMainMargins = () => {
+    if (!chartRef.current) return;
+    const rsiOn = showRSIRef.current;
+    const dmiOn = showDMIRef.current;
+    let bottom = 0.08;
+    if (rsiOn && dmiOn) bottom = 0.42;
+    else if (rsiOn || dmiOn) bottom = 0.28;
+    chartRef.current.priceScale("right").applyOptions({
+      scaleMargins: { top: 0.05, bottom },
+    });
+  };
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
@@ -329,7 +357,6 @@ export default function DashboardPage() {
   const getConditionLabel = (c: string) => (c === "above" ? "بالای قیمت" : c === "below" ? "پایین قیمت" : "برخورد");
   const getConditionColor = (c: string) => (c === "above" ? "text-green-400" : c === "below" ? "text-red-400" : "text-blue-400");
 
-  // ——— SMA ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -347,13 +374,12 @@ export default function DashboardPage() {
     const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-    s1.setData(calcSMA(candles, Math.max(1, sma1)) as any);
-    s2.setData(calcSMA(candles, Math.max(1, sma2)) as any);
-    s3.setData(calcSMA(candles, Math.max(1, sma3)) as any);
+    s1.setData(calcSMA(candles, sma1) as any);
+    s2.setData(calcSMA(candles, sma2) as any);
+    s3.setData(calcSMA(candles, sma3) as any);
     smaSeriesRef.current = { s1, s2, s3 };
   };
 
-  // ——— Pivot (Floor + Fib) ———
   const removePivot = () => {
     if (!seriesRef.current) return;
     pivotLinesRef.current.forEach((pl) => {
@@ -382,21 +408,32 @@ export default function DashboardPage() {
       const range = high - low;
       const pp = (high + low + close) / 3;
 
+      // Floor Trader کامل: R1–R4 / S1–S4
+      const r1 = 2 * pp - low;
+      const r2 = pp + range;
+      const r3 = r1 + range;
+      const r4 = r3 + (r2 - r1);
+      const s1 = 2 * pp - high;
+      const s2 = pp - range;
+      const s3 = s1 - range;
+      const s4 = s3 - (s1 - s2);
+
       const levels: { price: number; title: string; color: string }[] = [
         { price: pp, title: "PP", color: "#ffffff" },
-        { price: 2 * pp - low, title: "R1", color: "#22c55e" },
-        { price: pp + range, title: "R2", color: "#22c55e" },
-        { price: 2 * pp - high + range, title: "R3", color: "#16a34a" },
-        { price: 2 * pp - high, title: "S1", color: "#ef4444" },
-        { price: pp - range, title: "S2", color: "#ef4444" },
-        { price: 2 * pp - low - range, title: "S3", color: "#dc2626" },
+        { price: r1, title: "R1", color: "#4ade80" },
+        { price: r2, title: "R2", color: "#22c55e" },
+        { price: r3, title: "R3", color: "#16a34a" },
+        { price: r4, title: "R4", color: "#15803d" },
+        { price: s1, title: "S1", color: "#f87171" },
+        { price: s2, title: "S2", color: "#ef4444" },
+        { price: s3, title: "S3", color: "#dc2626" },
+        { price: s4, title: "S4", color: "#b91c1c" },
       ];
 
       if (pivotFib) {
-        const fibs = [0.382, 0.618, 1, 1.382, 1.618];
-        fibs.forEach((f) => {
-          levels.push({ price: pp + range * f, title: `fR${f}`, color: "#4ade80" });
-          levels.push({ price: pp - range * f, title: `fS${f}`, color: "#f87171" });
+        [0.382, 0.618, 1, 1.382, 1.618].forEach((f) => {
+          levels.push({ price: pp + range * f, title: `fR${f}`, color: "#86efac" });
+          levels.push({ price: pp - range * f, title: `fS${f}`, color: "#fca5a5" });
         });
       }
 
@@ -416,7 +453,6 @@ export default function DashboardPage() {
     }
   };
 
-  // ——— RSI ———
   const removeRSI = () => {
     if (!chartRef.current || !rsiSeriesRef.current) return;
     try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
@@ -428,6 +464,9 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || !candles.length) return;
 
+    const onlyRsi = showRSI && !showDMI;
+    const both = showRSI && showDMI;
+
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -436,19 +475,21 @@ export default function DashboardPage() {
       lastValueVisible: true,
     });
     chartRef.current.priceScale("rsi").applyOptions({
-      scaleMargins: { top: 0.8, bottom: 0 },
+      scaleMargins: both
+        ? { top: 0.62, bottom: 0.22 }
+        : { top: 0.72, bottom: 0.02 },
       borderVisible: false,
     });
-    s.setData(calcRSI(candles, Math.max(2, rsiPeriod)) as any);
-    // خطوط ۳۰ و ۷۰
+    s.setData(calcRSI(candles, rsiPeriod) as any);
     try {
-      s.createPriceLine({ price: 70, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
-      s.createPriceLine({ price: 30, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({ price: 70, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({ price: 30, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({ price: 50, color: "#6b7280", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false });
     } catch {}
     rsiSeriesRef.current = s;
+    updateMainMargins();
   };
 
-  // ——— DMI ———
   const removeDMI = () => {
     if (!chartRef.current || !dmiSeriesRef.current) return;
     try {
@@ -464,36 +505,41 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || !candles.length) return;
 
-    const { plusDI, minusDI, adx } = calcDMI(candles, Math.max(2, dmiPeriod));
+    const both = showRSI && showDMI;
+    const { plusDI, minusDI, adx } = calcDMI(candles, dmiPeriod);
+
     const plus = chartRef.current.addLineSeries({
-      color: "#22c55e",
+      color: dmiPlusColor,
       lineWidth: 1,
       priceScaleId: "dmi",
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const minus = chartRef.current.addLineSeries({
-      color: "#ef4444",
+      color: dmiMinusColor,
       lineWidth: 1,
       priceScaleId: "dmi",
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const adxS = chartRef.current.addLineSeries({
-      color: "#3b82f6",
+      color: dmiAdxColor,
       lineWidth: 2,
       priceScaleId: "dmi",
       priceLineVisible: false,
       lastValueVisible: true,
     });
     chartRef.current.priceScale("dmi").applyOptions({
-      scaleMargins: { top: 0.75, bottom: 0 },
+      scaleMargins: both
+        ? { top: 0.82, bottom: 0.02 }
+        : { top: 0.72, bottom: 0.02 },
       borderVisible: false,
     });
     plus.setData(plusDI as any);
     minus.setData(minusDI as any);
     adxS.setData(adx as any);
     dmiSeriesRef.current = { plus, minus, adx: adxS };
+    updateMainMargins();
   };
 
   const loadCandles = async (sym: string, tf: string) => {
@@ -519,8 +565,8 @@ export default function DashboardPage() {
         const { precision, minMove } = getPrecision(lastClose);
         seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove } });
         seriesRef.current.setData(candles);
-        chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
         chartRef.current?.timeScale().fitContent();
+        updateMainMargins();
 
         applySMA(candles);
         applyRSI(candles);
@@ -555,9 +601,9 @@ export default function DashboardPage() {
       layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
       width: chartContainerRef.current.clientWidth,
-      height: 620,
+      height: 680,
       timeScale: { timeVisible: true, secondsVisible: false },
-      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.05, bottom: 0.25 }, borderVisible: false },
+      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.05, bottom: 0.08 }, borderVisible: false },
       crosshair: {
         mode: 0,
         horzLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#f97316" },
@@ -633,11 +679,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (candlesRef.current.length) applyRSI(candlesRef.current);
-  }, [showRSI, rsiVisible, rsiPeriod, rsiColor]);
+    else updateMainMargins();
+  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, showDMI]);
 
   useEffect(() => {
     if (candlesRef.current.length) applyDMI(candlesRef.current);
-  }, [showDMI, dmiVisible, dmiPeriod]);
+    else updateMainMargins();
+  }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, showRSI]);
 
   useEffect(() => {
     applyPivot(symbol);
@@ -681,31 +729,15 @@ export default function DashboardPage() {
   }, [lines, mode, movingId, movingType]);
 
   const IndChip = ({
-    label,
-    visible,
-    onToggleVisible,
-    onSettings,
-    onRemove,
+    label, visible, onToggleVisible, onSettings, onRemove,
   }: {
-    label: string;
-    visible: boolean;
-    onToggleVisible: () => void;
-    onSettings?: () => void;
-    onRemove: () => void;
+    label: string; visible: boolean; onToggleVisible: () => void; onSettings?: () => void; onRemove: () => void;
   }) => (
     <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
       <span className="text-gray-200">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400 hover:text-white" title="نمایش">
-        {visible ? "👁" : "🚫"}
-      </button>
-      {onSettings && (
-        <button type="button" onClick={onSettings} className="p-1 text-gray-400 hover:text-white" title="تنظیمات">
-          ⚙
-        </button>
-      )}
-      <button type="button" onClick={onRemove} className="p-1 text-gray-400 hover:text-red-400" title="حذف">
-        🗑
-      </button>
+      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400 hover:text-white">{visible ? "👁" : "🚫"}</button>
+      {onSettings && <button type="button" onClick={onSettings} className="p-1 text-gray-400 hover:text-white">⚙</button>}
+      <button type="button" onClick={onRemove} className="p-1 text-gray-400 hover:text-red-400">🗑</button>
     </div>
   );
 
@@ -714,57 +746,25 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <h1 className="text-2xl font-bold">چارت زنده</h1>
         <div className="flex items-center gap-3">
-          <input
-            type="text"
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-28"
-          />
-          <button
-            onClick={() => { loadCandles(symbol, interval); loadLines(symbol); loadAlarms(symbol); }}
-            className="bg-gray-700 text-white px-3 py-2 rounded-lg text-sm"
-          >
-            برو
-          </button>
-          <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">
-            آلارم‌ها
-          </Link>
+          <input type="text" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-28" />
+          <button onClick={() => { loadCandles(symbol, interval); loadLines(symbol); loadAlarms(symbol); }} className="bg-gray-700 text-white px-3 py-2 rounded-lg text-sm">برو</button>
+          <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">آلارم‌ها</Link>
         </div>
       </div>
 
       <div className="mb-3 flex flex-wrap gap-2">
         {TIMEFRAMES.map((tf) => (
-          <button
-            key={tf.value}
-            onClick={() => setIntervalTf(tf.value)}
-            className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}
-          >
+          <button key={tf.value} onClick={() => setIntervalTf(tf.value)} className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}>
             {tf.label}
           </button>
         ))}
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500" : "bg-gray-800"}`}
-        >
-          ✏️ خط
-        </button>
-        <button
-          onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "alarm" ? "bg-green-600" : "bg-gray-800"}`}
-        >
-          🔔 آلارم
-        </button>
-
+        <button onClick={() => setMode(mode === "draw" ? "none" : "draw")} className={`px-3 py-2 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500" : "bg-gray-800"}`}>✏️ خط</button>
+        <button onClick={() => setMode(mode === "alarm" ? "none" : "alarm")} className={`px-3 py-2 rounded-lg text-sm ${mode === "alarm" ? "bg-green-600" : "bg-gray-800"}`}>🔔 آلارم</button>
         <div className="relative">
-          <button
-            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
-          >
-            📊 اندیکاتور
-          </button>
+          <button onClick={() => setShowIndicatorMenu(!showIndicatorMenu)} className="px-3 py-2 rounded-lg text-sm bg-gray-800">📊 اندیکاتور</button>
           {showIndicatorMenu && (
             <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[160px] py-2 shadow-xl">
               <button onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">3SMA</button>
@@ -774,7 +774,6 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
-
         {mode === "alarm" && (
           <select value={condition} onChange={(e) => setCondition(e.target.value as any)} className="bg-gray-800 rounded-lg px-2 py-2 text-sm">
             <option value="above">بالا</option>
@@ -784,64 +783,51 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* چیپ‌های اندیکاتور */}
       <div className="mb-2 flex flex-wrap gap-2">
         {showSMA && (
-          <IndChip
-            label="3SMA"
-            visible={smaVisible}
-            onToggleVisible={() => setSmaVisible(!smaVisible)}
-            onSettings={() => setSmaSettings(!smaSettings)}
-            onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }}
-          />
+          <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible(!smaVisible)} onSettings={() => setSmaSettings(!smaSettings)}
+            onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }} />
         )}
         {showPivot && (
-          <IndChip
-            label="Pivot"
-            visible={pivotVisible}
-            onToggleVisible={() => setPivotVisible(!pivotVisible)}
-            onSettings={() => setPivotSettings(!pivotSettings)}
-            onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }}
-          />
+          <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible(!pivotVisible)} onSettings={() => setPivotSettings(!pivotSettings)}
+            onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }} />
         )}
         {showRSI && (
-          <IndChip
-            label="RSI"
-            visible={rsiVisible}
-            onToggleVisible={() => setRsiVisible(!rsiVisible)}
-            onSettings={() => setRsiSettings(!rsiSettings)}
-            onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }}
-          />
+          <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible(!rsiVisible)} onSettings={() => setRsiSettings(!rsiSettings)}
+            onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }} />
         )}
         {showDMI && (
-          <IndChip
-            label="DMI"
-            visible={dmiVisible}
-            onToggleVisible={() => setDmiVisible(!dmiVisible)}
-            onSettings={() => setDmiSettings(!dmiSettings)}
-            onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }}
-          />
+          <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible(!dmiVisible)} onSettings={() => setDmiSettings(!dmiSettings)}
+            onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }} />
         )}
       </div>
 
-      {/* تنظیمات SMA */}
+      {/* SMA settings — تایپ آزاد */}
       {smaSettings && showSMA && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           {[
-            { label: "SMA1", val: sma1, setVal: setSma1, col: smaColor1, setCol: setSmaColor1 },
-            { label: "SMA2", val: sma2, setVal: setSma2, col: smaColor2, setCol: setSmaColor2 },
-            { label: "SMA3", val: sma3, setVal: setSma3, col: smaColor3, setCol: setSmaColor3 },
+            { label: "SMA1", str: sma1Str, setStr: setSma1Str, setVal: setSma1, col: smaColor1, setCol: setSmaColor1 },
+            { label: "SMA2", str: sma2Str, setStr: setSma2Str, setVal: setSma2, col: smaColor2, setCol: setSmaColor2 },
+            { label: "SMA3", str: sma3Str, setStr: setSma3Str, setVal: setSma3, col: smaColor3, setCol: setSmaColor3 },
           ].map((row) => (
             <div key={row.label} className="flex flex-wrap items-center gap-3">
               <span className="w-12">{row.label}</span>
               <input
                 type="text"
                 inputMode="numeric"
-                value={String(row.val)}
+                value={row.str}
                 onChange={(e) => {
-                  const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
-                  if (!isNaN(n) && n > 0) row.setVal(n);
-                  else if (e.target.value === "") row.setVal(1);
+                  const v = e.target.value.replace(/[^\d]/g, "");
+                  row.setStr(v);
+                }}
+                onBlur={() => {
+                  const n = parseInt(row.str, 10);
+                  if (!isNaN(n) && n >= 1) {
+                    row.setVal(n);
+                    row.setStr(String(n));
+                  } else {
+                    row.setStr(String(row.label === "SMA1" ? sma1 : row.label === "SMA2" ? sma2 : sma3));
+                  }
                 }}
                 className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
               />
@@ -852,41 +838,35 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* تنظیمات Pivot */}
       {pivotSettings && showPivot && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-2 items-center">
             <span>تایم‌فریم:</span>
             {PIVOT_TFS.map((tf) => (
-              <button
-                key={tf.value}
-                type="button"
-                onClick={() => setPivotTf(tf.value)}
-                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}
-              >
-                {tf.label}
-              </button>
+              <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)}
+                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
             ))}
           </div>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-            سطوح فیبوناچی
+            سطوح فیبوناچی اضافه
           </label>
           <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
 
-      {/* تنظیمات RSI */}
       {rsiSettings && showRSI && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-wrap gap-3 items-center text-sm">
           <span>دوره</span>
           <input
             type="text"
             inputMode="numeric"
-            value={String(rsiPeriod)}
-            onChange={(e) => {
-              const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
-              if (!isNaN(n) && n > 1) setRsiPeriod(n);
+            value={rsiPeriodStr}
+            onChange={(e) => setRsiPeriodStr(e.target.value.replace(/[^\d]/g, ""))}
+            onBlur={() => {
+              const n = parseInt(rsiPeriodStr, 10);
+              if (!isNaN(n) && n >= 2) { setRsiPeriod(n); setRsiPeriodStr(String(n)); }
+              else setRsiPeriodStr(String(rsiPeriod));
             }}
             className="w-16 bg-gray-800 rounded px-2 py-1.5"
           />
@@ -895,26 +875,33 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* تنظیمات DMI */}
       {dmiSettings && showDMI && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-wrap gap-3 items-center text-sm">
-          <span>دوره</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={String(dmiPeriod)}
-            onChange={(e) => {
-              const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
-              if (!isNaN(n) && n > 1) setDmiPeriod(n);
-            }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5"
-          />
-          <span className="text-gray-400 text-xs">+DI سبز · −DI قرمز · ADX آبی</span>
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
+          <div className="flex flex-wrap gap-3 items-center">
+            <span>دوره</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={dmiPeriodStr}
+              onChange={(e) => setDmiPeriodStr(e.target.value.replace(/[^\d]/g, ""))}
+              onBlur={() => {
+                const n = parseInt(dmiPeriodStr, 10);
+                if (!isNaN(n) && n >= 2) { setDmiPeriod(n); setDmiPeriodStr(String(n)); }
+                else setDmiPeriodStr(String(dmiPeriod));
+              }}
+              className="w-16 bg-gray-800 rounded px-2 py-1.5"
+            />
+          </div>
+          <div className="flex flex-wrap gap-4 items-center">
+            <label className="flex items-center gap-2">+DI <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-2">−DI <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-2">ADX <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+          </div>
           <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
 
-      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "620px", touchAction: "none" }} />
+      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "680px", touchAction: "none" }} />
 
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
