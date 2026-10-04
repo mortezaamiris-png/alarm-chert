@@ -31,14 +31,15 @@ export default function DashboardPage() {
   const previewLineRef = useRef<IPriceLine | null>(null);
 
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setInterval] = useState("60");
+  const [interval, setIntervalTf] = useState("60");
   const [lines, setLines] = useState<ChartLine[]>([]);
-  const [drawMode, setDrawMode] = useState(false);
-  const [alarmMode, setAlarmMode] = useState(false);
+  const [mode, setMode] = useState<"none" | "draw" | "alarm" | "move">("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
+  const [movingLineId, setMovingLineId] = useState<string | null>(null);
   const [editingLine, setEditingLine] = useState<ChartLine | null>(null);
   const [editNote, setEditNote] = useState("");
   const [editColor, setEditColor] = useState("#f97316");
+  const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const priceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
 
   const fetchCandles = async (sym: string, tf: string) => {
@@ -59,8 +60,7 @@ export default function DashboardPage() {
           .reverse();
       }
       return [];
-    } catch (e) {
-      console.error(e);
+    } catch {
       return [];
     }
   };
@@ -74,6 +74,21 @@ export default function DashboardPage() {
     setLines(data || []);
   };
 
+  const clearPreview = () => {
+    if (previewLineRef.current && candleSeriesRef.current) {
+      candleSeriesRef.current.removePriceLine(previewLineRef.current);
+      previewLineRef.current = null;
+    }
+    setPreviewPrice(null);
+  };
+
+  const resetMode = () => {
+    setMode("none");
+    setMovingLineId(null);
+    clearPreview();
+  };
+
+  // ذخیره خط روی چارت
   const addLine = async (price: number) => {
     const { data, error } = await supabase
       .from("chart_lines")
@@ -82,11 +97,37 @@ export default function DashboardPage() {
       .single();
     if (error) return alert("خطا در ذخیره خط");
     setLines((prev) => [data, ...prev]);
-    resetModes();
+    resetMode();
   };
 
-  const createAlarm = (price: number) => {
-    window.location.href = `/alerts?price=${price}&symbol=${symbol}`;
+  // ساخت آلارم مستقیم از چارت (مهم)
+  const createAlarmDirect = async (price: number) => {
+    const { error } = await supabase.from("alarms").insert([
+      {
+        symbol: symbol.toUpperCase(),
+        price: Number(price),
+        condition,
+        is_active: true,
+        triggered: false,
+        repeat: false,
+        note: "آلارم از چارت",
+      },
+    ]);
+
+    if (error) {
+      alert("خطا در ساخت آلارم: " + error.message);
+      return;
+    }
+
+    alert(`آلارم ${symbol} روی ${price.toLocaleString()} ذخیره شد`);
+    resetMode();
+  };
+
+  const updateLinePrice = async (id: string, price: number) => {
+    const { error } = await supabase.from("chart_lines").update({ price }).eq("id", id);
+    if (error) return alert("خطا در جابه‌جایی");
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price } : l)));
+    resetMode();
   };
 
   const deleteLine = async (id: string) => {
@@ -99,13 +140,13 @@ export default function DashboardPage() {
     }
   };
 
-  const updateLine = async () => {
+  const saveEdit = async () => {
     if (!editingLine) return;
     const { error } = await supabase
       .from("chart_lines")
       .update({ note: editNote, color: editColor, price: editingLine.price })
       .eq("id", editingLine.id);
-    if (error) return alert("خطا در ویرایش");
+    if (error) return alert("خطا");
     setLines((prev) =>
       prev.map((l) =>
         l.id === editingLine.id
@@ -116,14 +157,10 @@ export default function DashboardPage() {
     setEditingLine(null);
   };
 
-  const resetModes = () => {
-    setDrawMode(false);
-    setAlarmMode(false);
-    setPreviewPrice(null);
-    if (previewLineRef.current && candleSeriesRef.current) {
-      candleSeriesRef.current.removePriceLine(previewLineRef.current);
-      previewLineRef.current = null;
-    }
+  const startMoveLine = (line: ChartLine) => {
+    setMode("move");
+    setMovingLineId(line.id);
+    setPreviewPrice(line.price);
   };
 
   useEffect(() => {
@@ -156,7 +193,7 @@ export default function DashboardPage() {
     candleSeriesRef.current = series;
 
     chart.subscribeCrosshairMove((param) => {
-      if ((!drawMode && !alarmMode) || !param.point || !series) return;
+      if (mode === "none" || !param.point || !series) return;
       const price = series.coordinateToPrice(param.point.y);
       if (price === null) return;
       const rounded = Number(price.toFixed(2));
@@ -165,20 +202,24 @@ export default function DashboardPage() {
       if (previewLineRef.current) series.removePriceLine(previewLineRef.current);
       previewLineRef.current = series.createPriceLine({
         price: rounded,
-        color: alarmMode ? "#22c55e" : "#f97316",
+        color: mode === "alarm" ? "#22c55e" : mode === "move" ? "#3b82f6" : "#f97316",
         lineWidth: 2,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: alarmMode ? "آلارم" : "خط",
+        title: mode === "alarm" ? "آلارم" : mode === "move" ? "جابه‌جایی" : "خط جدید",
       });
     });
 
+    // یک کلیک = تأیید
     chart.subscribeClick(() => {
-      if (!previewPrice) return;
-      if (drawMode) {
+      if (!previewPrice || mode === "none") return;
+
+      if (mode === "draw") {
         addLine(previewPrice);
-      } else if (alarmMode) {
-        createAlarm(previewPrice);
+      } else if (mode === "alarm") {
+        createAlarmDirect(previewPrice);
+      } else if (mode === "move" && movingLineId) {
+        updateLinePrice(movingLineId, previewPrice);
       }
     });
 
@@ -203,7 +244,7 @@ export default function DashboardPage() {
       window.removeEventListener("resize", onResize);
       chart.remove();
     };
-  }, [symbol, interval, drawMode, alarmMode]);
+  }, [symbol, interval, mode, movingLineId, condition]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -211,6 +252,8 @@ export default function DashboardPage() {
     priceLinesRef.current.clear();
 
     lines.forEach((line) => {
+      if (mode === "move" && movingLineId === line.id) return;
+
       const pl = candleSeriesRef.current!.createPriceLine({
         price: line.price,
         color: line.color || "#f97316",
@@ -221,15 +264,16 @@ export default function DashboardPage() {
       });
       priceLinesRef.current.set(line.id, pl);
     });
-  }, [lines]);
+  }, [lines, mode, movingLineId]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* هدر */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
-          <p className="text-gray-400 text-sm mt-1">مداد = کشیدن خط | آلارم = ساخت آلارم مستقیم</p>
+          <p className="text-gray-400 text-sm mt-1">
+            مداد = خط | آلارم = ساخت آلارم مستقیم | جابه‌جا = حرکت خط
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <input
@@ -249,7 +293,7 @@ export default function DashboardPage() {
         {TIMEFRAMES.map((tf) => (
           <button
             key={tf.value}
-            onClick={() => setInterval(tf.value)}
+            onClick={() => setIntervalTf(tf.value)}
             className={`px-3 py-1.5 rounded text-sm ${
               interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
             }`}
@@ -263,34 +307,45 @@ export default function DashboardPage() {
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <button
           onClick={() => {
-            setDrawMode(!drawMode);
-            setAlarmMode(false);
-            setPreviewPrice(null);
+            setMode(mode === "draw" ? "none" : "draw");
+            setMovingLineId(null);
+            clearPreview();
           }}
-          className={`px-4 py-2 rounded-lg text-sm font-medium ${drawMode ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${mode === "draw" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}
         >
-          {drawMode ? "✕ خروج" : "✏️ کشیدن خط"}
+          {mode === "draw" ? "✕ خروج" : "✏️ خط جدید"}
         </button>
 
         <button
           onClick={() => {
-            setAlarmMode(!alarmMode);
-            setDrawMode(false);
-            setPreviewPrice(null);
+            setMode(mode === "alarm" ? "none" : "alarm");
+            setMovingLineId(null);
+            clearPreview();
           }}
-          className={`px-4 py-2 rounded-lg text-sm font-medium ${alarmMode ? "bg-green-600 text-white" : "bg-gray-800 text-gray-300"}`}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${mode === "alarm" ? "bg-green-600 text-white" : "bg-gray-800 text-gray-300"}`}
         >
-          {alarmMode ? "✕ خروج" : "🔔 ساخت آلارم"}
+          {mode === "alarm" ? "✕ خروج" : "🔔 آلارم"}
         </button>
 
-        {(drawMode || alarmMode) && previewPrice && (
+        {mode === "alarm" && (
+          <select
+            value={condition}
+            onChange={(e) => setCondition(e.target.value as "above" | "below" | "cross")}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white"
+          >
+            <option value="above">بالای این قیمت</option>
+            <option value="below">پایین این قیمت</option>
+            <option value="cross">برخورد</option>
+          </select>
+        )}
+
+        {mode !== "none" && previewPrice && (
           <span className="text-sm text-orange-400">
-            قیمت: {previewPrice.toLocaleString()} — روی چارت کلیک کن تا تأیید بشه
+            {previewPrice.toLocaleString()} — یک بار روی چارت بزن تا تأیید شود
           </span>
         )}
       </div>
 
-      {/* چارت */}
       <div
         ref={chartContainerRef}
         className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden"
@@ -304,25 +359,31 @@ export default function DashboardPage() {
           <div className="space-y-2">
             {lines.map((line) => (
               <div key={line.id} className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div>
                     <span className="font-medium" style={{ color: line.color }}>
                       {symbol} @ {line.price.toLocaleString()}
                     </span>
                     {line.note && <p className="text-sm text-gray-400 mt-1">{line.note}</p>}
                   </div>
-                  <div className="flex gap-3 text-sm">
+                  <div className="flex flex-wrap gap-2 text-sm">
+                    <button onClick={() => startMoveLine(line)} className="text-blue-400">
+                      جابه‌جا
+                    </button>
                     <button
                       onClick={() => {
                         setEditingLine(line);
                         setEditNote(line.note || "");
                         setEditColor(line.color || "#f97316");
                       }}
-                      className="text-blue-400"
+                      className="text-yellow-400"
                     >
                       ویرایش
                     </button>
-                    <button onClick={() => createAlarm(line.price)} className="text-green-400">
+                    <button
+                      onClick={() => createAlarmDirect(line.price)}
+                      className="text-green-400"
+                    >
                       آلارم
                     </button>
                     <button onClick={() => deleteLine(line.id)} className="text-red-400">
@@ -336,7 +397,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* مودال ویرایش */}
       {editingLine && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md">
@@ -347,9 +407,7 @@ export default function DashboardPage() {
                 <input
                   type="number"
                   value={editingLine.price}
-                  onChange={(e) =>
-                    setEditingLine({ ...editingLine, price: Number(e.target.value) })
-                  }
+                  onChange={(e) => setEditingLine({ ...editingLine, price: Number(e.target.value) })}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 mt-1"
                 />
               </div>
@@ -360,7 +418,6 @@ export default function DashboardPage() {
                   value={editNote}
                   onChange={(e) => setEditNote(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 mt-1"
-                  placeholder="مثلاً مقاومت مهم"
                 />
               </div>
               <div>
@@ -378,12 +435,8 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="flex gap-3 mt-6">
-              <button onClick={updateLine} className="flex-1 bg-orange-500 hover:bg-orange-600 py-2 rounded-lg">
-                ذخیره
-              </button>
-              <button onClick={() => setEditingLine(null)} className="flex-1 bg-gray-700 py-2 rounded-lg">
-                انصراف
-              </button>
+              <button onClick={saveEdit} className="flex-1 bg-orange-500 py-2 rounded-lg">ذخیره</button>
+              <button onClick={() => setEditingLine(null)} className="flex-1 bg-gray-700 py-2 rounded-lg">انصراف</button>
             </div>
           </div>
         </div>
