@@ -1,7 +1,14 @@
- "use client";
+"use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createChart, IChartApi, ISeriesApi, LineStyle, IPriceLine } from "lightweight-charts";
+import {
+  createChart,
+  IChartApi,
+  ISeriesApi,
+  LineStyle,
+  IPriceLine,
+  ISeriesApi as SeriesApi,
+} from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 
@@ -23,6 +30,17 @@ interface Alarm {
   note?: string | null;
 }
 
+type ToolMode =
+  | "none"
+  | "draw"
+  | "alarm"
+  | "move"
+  | "fib"
+  | "trend"
+  | "vertical"
+  | "long"
+  | "short";
+
 const TIMEFRAMES = [
   { label: "1m", value: "1" },
   { label: "5m", value: "5" },
@@ -31,6 +49,9 @@ const TIMEFRAMES = [
   { label: "4h", value: "240" },
   { label: "1D", value: "D" },
 ];
+
+const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const FIB_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#a855f7", "#ef4444"];
 
 function getPrecision(price: number) {
   if (price < 0.01) return { precision: 6, minMove: 0.000001 };
@@ -52,6 +73,8 @@ export default function DashboardPage() {
   const previewLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, IPriceLine>>(new Map());
+  const toolLinesRef = useRef<IPriceLine[]>([]);
+  const toolSeriesRef = useRef<any[]>([]);
 
   const [symbol, setSymbol] = useState(() => {
     if (typeof window !== "undefined") {
@@ -68,28 +91,41 @@ export default function DashboardPage() {
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
-  const [mode, setMode] = useState<"none" | "draw" | "alarm" | "move">("none");
+  const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
+  const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [movingType, setMovingType] = useState<"line" | "alarm" | null>(null);
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [saving, setSaving] = useState(false);
+  const [showTools, setShowTools] = useState(false);
+  const [toolStep, setToolStep] = useState(0);
+  const [toolPoint1, setToolPoint1] = useState<{ price: number; time: number } | null>(null);
+  const [rrRatio, setRrRatio] = useState(2);
 
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
+  const previewTimeRef = useRef(previewTime);
   const movingIdRef = useRef(movingId);
   const movingTypeRef = useRef(movingType);
   const conditionRef = useRef(condition);
   const savingRef = useRef(saving);
   const symbolRef = useRef(symbol);
+  const toolStepRef = useRef(toolStep);
+  const toolPoint1Ref = useRef(toolPoint1);
+  const rrRatioRef = useRef(rrRatio);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
+  useEffect(() => { previewTimeRef.current = previewTime; }, [previewTime]);
   useEffect(() => { movingIdRef.current = movingId; }, [movingId]);
   useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+  useEffect(() => { toolStepRef.current = toolStep; }, [toolStep]);
+  useEffect(() => { toolPoint1Ref.current = toolPoint1; }, [toolPoint1]);
+  useEffect(() => { rrRatioRef.current = rrRatio; }, [rrRatio]);
 
   useEffect(() => {
     localStorage.setItem("chart_symbol", symbol);
@@ -104,13 +140,30 @@ export default function DashboardPage() {
       previewLineRef.current = null;
     }
     setPreviewPrice(null);
+    setPreviewTime(null);
   };
 
   const resetMode = () => {
     setMode("none");
     setMovingId(null);
     setMovingType(null);
+    setToolStep(0);
+    setToolPoint1(null);
     clearPreview();
+    setShowTools(false);
+  };
+
+  const clearToolDrawings = () => {
+    if (seriesRef.current) {
+      toolLinesRef.current.forEach((pl) => {
+        try { seriesRef.current?.removePriceLine(pl); } catch {}
+      });
+    }
+    toolLinesRef.current = [];
+    toolSeriesRef.current.forEach((s) => {
+      try { chartRef.current?.removeSeries(s); } catch {}
+    });
+    toolSeriesRef.current = [];
   };
 
   const addLine = async (price: number) => {
@@ -125,7 +178,7 @@ export default function DashboardPage() {
         .select()
         .single();
       if (error) {
-        alert("خطا در ذخیره خط: " + error.message);
+        alert("خطا: " + error.message);
         return;
       }
       setLines((prev) => [data, ...prev]);
@@ -158,7 +211,7 @@ export default function DashboardPage() {
         .select()
         .single();
       if (error) {
-        alert("خطا در ساخت آلارم: " + error.message);
+        alert("خطا: " + error.message);
         return;
       }
       setAlarms((prev) => [data, ...prev]);
@@ -185,7 +238,7 @@ export default function DashboardPage() {
             is_active: true,
             triggered: false,
             repeat: false,
-            note: "آلارم از خط چارت",
+            note: "آلارم از خط",
           },
         ])
         .select()
@@ -197,7 +250,6 @@ export default function DashboardPage() {
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
       setAlarms((prev) => [data, ...prev]);
-      alert("آلارم ساخته شد و خط حذف شد");
     } finally {
       setSaving(false);
     }
@@ -208,11 +260,7 @@ export default function DashboardPage() {
     setSaving(true);
     try {
       const p = formatPrice(price);
-      const { error } = await supabase.from("chart_lines").update({ price: p }).eq("id", id);
-      if (error) {
-        alert("خطا");
-        return;
-      }
+      await supabase.from("chart_lines").update({ price: p }).eq("id", id);
       setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: p } : l)));
       resetMode();
     } finally {
@@ -225,11 +273,7 @@ export default function DashboardPage() {
     setSaving(true);
     try {
       const p = formatPrice(price);
-      const { error } = await supabase.from("alarms").update({ price: p }).eq("id", id);
-      if (error) {
-        alert("خطا");
-        return;
-      }
+      await supabase.from("alarms").update({ price: p }).eq("id", id);
       setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: p } : a)));
       resetMode();
     } finally {
@@ -237,22 +281,10 @@ export default function DashboardPage() {
     }
   };
 
-  // کلیک روی شرط = عوض شدن بالا → پایین → برخورد → بالا
   const cycleCondition = async (alarm: Alarm) => {
     const next =
-      alarm.condition === "above"
-        ? "below"
-        : alarm.condition === "below"
-        ? "cross"
-        : "above";
-    const { error } = await supabase
-      .from("alarms")
-      .update({ condition: next })
-      .eq("id", alarm.id);
-    if (error) {
-      alert("خطا در تغییر شرط");
-      return;
-    }
+      alarm.condition === "above" ? "below" : alarm.condition === "below" ? "cross" : "above";
+    await supabase.from("alarms").update({ condition: next }).eq("id", alarm.id);
     setAlarms((prev) =>
       prev.map((a) => (a.id === alarm.id ? { ...a, condition: next } : a))
     );
@@ -293,6 +325,141 @@ export default function DashboardPage() {
     return "text-blue-400";
   };
 
+  // ——— ابزارها ———
+  const applyFib = (high: number, low: number) => {
+    if (!seriesRef.current) return;
+    const diff = high - low;
+    FIB_LEVELS.forEach((level, i) => {
+      const price = formatPrice(high - diff * level);
+      const pl = seriesRef.current!.createPriceLine({
+        price,
+        color: FIB_COLORS[i],
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `Fib ${level}`,
+      });
+      toolLinesRef.current.push(pl);
+    });
+  };
+
+  const applyTrendline = (p1: { price: number; time: number }, p2: { price: number; time: number }) => {
+    if (!chartRef.current) return;
+    const lineSeries = chartRef.current.addLineSeries({
+      color: "#a855f7",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const t1 = Math.min(p1.time, p2.time);
+    const t2 = Math.max(p1.time, p2.time);
+    const price1 = p1.time <= p2.time ? p1.price : p2.price;
+    const price2 = p1.time <= p2.time ? p2.price : p1.price;
+    lineSeries.setData([
+      { time: t1 as any, value: price1 },
+      { time: t2 as any, value: price2 },
+    ]);
+    toolSeriesRef.current.push(lineSeries);
+  };
+
+  const applyVertical = (time: number) => {
+    if (!chartRef.current || !seriesRef.current) return;
+    // خط عمودی با دو نقطه در همان زمان
+    const data = (seriesRef.current as any).data?.() || [];
+    let minP = 0;
+    let maxP = 0;
+    // از قیمت‌های موجود استفاده می‌کنیم
+    const lineSeries = chartRef.current.addLineSeries({
+      color: "#6b7280",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    // approximate range
+    const price = previewPriceRef.current || 0;
+    lineSeries.setData([
+      { time: time as any, value: price * 0.5 },
+      { time: time as any, value: price * 1.5 },
+    ]);
+    toolSeriesRef.current.push(lineSeries);
+  };
+
+  const applyLongShort = (
+    entry: number,
+    sl: number,
+    isLong: boolean
+  ) => {
+    if (!seriesRef.current) return;
+    const risk = Math.abs(entry - sl);
+    const tp = isLong
+      ? formatPrice(entry + risk * rrRatioRef.current)
+      : formatPrice(entry - risk * rrRatioRef.current);
+
+    const entryLine = seriesRef.current.createPriceLine({
+      price: formatPrice(entry),
+      color: "#3b82f6",
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      title: "ورود",
+    });
+    const slLine = seriesRef.current.createPriceLine({
+      price: formatPrice(sl),
+      color: "#ef4444",
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      title: "حد ضرر",
+    });
+    const tpLine = seriesRef.current.createPriceLine({
+      price: tp,
+      color: "#22c55e",
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      title: `حد سود 1:${rrRatioRef.current}`,
+    });
+    toolLinesRef.current.push(entryLine, slLine, tpLine);
+  };
+
+  const handleToolClick = (price: number, time: number) => {
+    const m = modeRef.current;
+    const step = toolStepRef.current;
+    const p1 = toolPoint1Ref.current;
+
+    if (m === "fib") {
+      if (step === 0) {
+        setToolPoint1({ price, time });
+        setToolStep(1);
+        alert("نقطه اول ثبت شد. حالا نقطه دوم (پایین یا بالا) را بزن");
+      } else {
+        const high = Math.max(p1!.price, price);
+        const low = Math.min(p1!.price, price);
+        applyFib(high, low);
+        resetMode();
+      }
+    } else if (m === "trend") {
+      if (step === 0) {
+        setToolPoint1({ price, time });
+        setToolStep(1);
+        alert("نقطه اول ثبت شد. نقطه دوم را بزن");
+      } else {
+        applyTrendline(p1!, { price, time });
+        resetMode();
+      }
+    } else if (m === "vertical") {
+      applyVertical(time);
+      resetMode();
+    } else if (m === "long" || m === "short") {
+      if (step === 0) {
+        setToolPoint1({ price, time });
+        setToolStep(1);
+        alert("نقطه ورود ثبت شد. حالا حد ضرر را بزن");
+      } else {
+        applyLongShort(p1!.price, price, m === "long");
+        resetMode();
+      }
+    }
+  };
+
   const loadCandles = async (sym: string, tf: string) => {
     try {
       const res = await fetch(
@@ -313,7 +480,6 @@ export default function DashboardPage() {
 
         const lastClose = candles[candles.length - 1].close;
         const { precision, minMove } = getPrecision(lastClose);
-
         seriesRef.current.applyOptions({
           priceFormat: { type: "price", precision, minMove },
         });
@@ -408,29 +574,36 @@ export default function DashboardPage() {
       if (price === null) return;
       const rounded = formatPrice(price);
       setPreviewPrice(rounded);
+      if (param.time) setPreviewTime(param.time as number);
+
       if (previewLineRef.current) {
         seriesRef.current.removePriceLine(previewLineRef.current);
       }
       const m = modeRef.current;
+      const isTool = ["fib", "trend", "vertical", "long", "short"].includes(m);
       previewLineRef.current = seriesRef.current.createPriceLine({
         price: rounded,
-        color: m === "alarm" ? "#22c55e" : m === "move" ? "#3b82f6" : "#f97316",
+        color: isTool ? "#a855f7" : m === "alarm" ? "#22c55e" : m === "move" ? "#3b82f6" : "#f97316",
         lineWidth: 2,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: m === "alarm" ? "آلارم" : m === "move" ? "جابه‌جایی" : "خط جدید",
+        title: isTool ? "ابزار" : m === "alarm" ? "آلارم" : m === "move" ? "جابه‌جایی" : "خط",
       });
     });
 
-    chart.subscribeClick(() => {
+    chart.subscribeClick((param) => {
       const m = modeRef.current;
       const price = previewPriceRef.current;
+      const time = previewTimeRef.current || (param.time as number);
       if (!price || m === "none" || savingRef.current) return;
+
       if (m === "draw") addLine(price);
       else if (m === "alarm") createAlarmDirect(price);
       else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
         if (movingTypeRef.current === "line") updateLinePrice(movingIdRef.current, price);
         else updateAlarmPrice(movingIdRef.current, price);
+      } else if (["fib", "trend", "vertical", "long", "short"].includes(m)) {
+        handleToolClick(price, time || Date.now() / 1000);
       }
     });
 
@@ -455,6 +628,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     resetMode();
+    clearToolDrawings();
     loadCandles(symbol, interval);
     loadLines(symbol);
     loadAlarms(symbol);
@@ -498,13 +672,23 @@ export default function DashboardPage() {
     });
   }, [lines, mode, movingId, movingType]);
 
+  const selectTool = (tool: ToolMode) => {
+    setMode(tool);
+    setToolStep(0);
+    setToolPoint1(null);
+    setMovingId(null);
+    setMovingType(null);
+    clearPreview();
+    setShowTools(false);
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">چارت زنده</h1>
           <p className="text-gray-400 text-sm mt-1">
-            روی شرط بزن تا عوض شود • جابه‌جا = تغییر قیمت
+            ابزارها • خط • آلارم
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -529,11 +713,12 @@ export default function DashboardPage() {
             href="/alerts"
             className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm"
           >
-            صفحه آلارم‌ها
+            آلارم‌ها
           </Link>
         </div>
       </div>
 
+      {/* تایم‌فریم */}
       <div className="mb-3 flex flex-wrap gap-2">
         {TIMEFRAMES.map((tf) => (
           <button
@@ -548,28 +733,19 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* دکمه‌های اصلی + ابزار */}
+      <div className="mb-4 flex flex-wrap items-center gap-2 relative">
         <button
-          onClick={() => {
-            setMode(mode === "draw" ? "none" : "draw");
-            setMovingId(null);
-            setMovingType(null);
-            clearPreview();
-          }}
+          onClick={() => selectTool(mode === "draw" ? "none" : "draw")}
           className={`px-4 py-2 rounded-lg text-sm font-medium ${
             mode === "draw" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
           }`}
         >
-          {mode === "draw" ? "✕ خروج" : "✏️ خط جدید"}
+          {mode === "draw" ? "✕ خروج" : "✏️ خط"}
         </button>
 
         <button
-          onClick={() => {
-            setMode(mode === "alarm" ? "none" : "alarm");
-            setMovingId(null);
-            setMovingType(null);
-            clearPreview();
-          }}
+          onClick={() => selectTool(mode === "alarm" ? "none" : "alarm")}
           className={`px-4 py-2 rounded-lg text-sm font-medium ${
             mode === "alarm" ? "bg-green-600 text-white" : "bg-gray-800 text-gray-300"
           }`}
@@ -577,22 +753,101 @@ export default function DashboardPage() {
           {mode === "alarm" ? "✕ خروج" : "🔔 آلارم"}
         </button>
 
+        {/* دکمه ابزارها */}
+        <div className="relative">
+          <button
+            onClick={() => setShowTools(!showTools)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              ["fib", "trend", "vertical", "long", "short"].includes(mode)
+                ? "bg-purple-600 text-white"
+                : "bg-gray-800 text-gray-300"
+            }`}
+          >
+            🛠 ابزارها
+          </button>
+
+          {showTools && (
+            <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl shadow-xl z-50 min-w-[220px] py-2">
+              <button
+                onClick={() => selectTool("fib")}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm"
+              >
+                📐 فیبوناچی
+              </button>
+              <button
+                onClick={() => selectTool("trend")}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm"
+              >
+                📈 ترندلاین
+              </button>
+              <button
+                onClick={() => selectTool("vertical")}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm"
+              >
+                📏 خط عمودی
+              </button>
+              <button
+                onClick={() => selectTool("long")}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm text-green-400"
+              >
+                🟢 Long (ریسک به ریوارد)
+              </button>
+              <button
+                onClick={() => selectTool("short")}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm text-red-400"
+              >
+                🔴 Short (ریسک به ریوارد)
+              </button>
+              <hr className="border-gray-700 my-1" />
+              <button
+                onClick={() => {
+                  clearToolDrawings();
+                  setShowTools(false);
+                }}
+                className="w-full text-right px-4 py-2.5 hover:bg-gray-800 text-sm text-gray-400"
+              >
+                پاک کردن ابزارها
+              </button>
+            </div>
+          )}
+        </div>
+
         {mode === "alarm" && (
           <select
             value={condition}
             onChange={(e) => setCondition(e.target.value as any)}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white"
           >
-            <option value="above">بالای این قیمت (≥)</option>
-            <option value="below">پایین این قیمت (≤)</option>
+            <option value="above">بالای قیمت (≥)</option>
+            <option value="below">پایین قیمت (≤)</option>
             <option value="cross">برخورد (≈)</option>
           </select>
         )}
 
-        {mode !== "none" && previewPrice !== null && (
-          <span className="text-sm text-orange-400">
-            {previewPrice} — یک بار روی چارت بزن
-            {saving && " (در حال ذخیره...)"}
+        {(mode === "long" || mode === "short") && (
+          <select
+            value={rrRatio}
+            onChange={(e) => setRrRatio(Number(e.target.value))}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white"
+          >
+            <option value={1}>R:R 1:1</option>
+            <option value={1.5}>R:R 1:1.5</option>
+            <option value={2}>R:R 1:2</option>
+            <option value={3}>R:R 1:3</option>
+          </select>
+        )}
+
+        {mode !== "none" && (
+          <span className="text-sm text-purple-400">
+            {mode === "fib" && (toolStep === 0 ? "نقطه اول (بالا/پایین) را بزن" : "نقطه دوم را بزن")}
+            {mode === "trend" && (toolStep === 0 ? "نقطه اول ترند را بزن" : "نقطه دوم را بزن")}
+            {mode === "vertical" && "روی چارت بزن برای خط عمودی"}
+            {mode === "long" && (toolStep === 0 ? "نقطه ورود Long را بزن" : "حد ضرر را بزن")}
+            {mode === "short" && (toolStep === 0 ? "نقطه ورود Short را بزن" : "حد ضرر را بزن")}
+            {mode === "draw" && previewPrice && `${previewPrice} — بزن برای ذخیره`}
+            {mode === "alarm" && previewPrice && `${previewPrice} — بزن برای آلارم`}
+            {mode === "move" && "قیمت جدید را انتخاب کن"}
+            {saving && " (ذخیره...)"}
           </span>
         )}
       </div>
@@ -603,6 +858,7 @@ export default function DashboardPage() {
         style={{ height: "560px", touchAction: "none" }}
       />
 
+      {/* آلارم‌ها */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-green-400">
           آلارم‌های فعال ({alarms.length})
@@ -625,7 +881,6 @@ export default function DashboardPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-3 text-sm">
-                  {/* کلیک = عوض شدن شرط */}
                   <button
                     onClick={() => cycleCondition(a)}
                     className={`font-medium ${getConditionColor(a.condition)} underline`}
@@ -648,6 +903,7 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {/* خط‌ها */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-orange-400">
           خط‌های ذخیره شده ({lines.length})
