@@ -40,6 +40,13 @@ const TIMEFRAMES = [
   { label: "1D", value: "D" },
 ];
 
+const PIVOT_TFS = [
+  { label: "1H", value: "60" },
+  { label: "4H", value: "240" },
+  { label: "1D", value: "D" },
+  { label: "1W", value: "W" },
+];
+
 function getPrecision(price: number) {
   if (price < 0.01) return { precision: 6, minMove: 0.000001 };
   if (price < 1) return { precision: 5, minMove: 0.00001 };
@@ -64,6 +71,89 @@ function calcSMA(candles: { time: number; close: number }[], period: number) {
   return out;
 }
 
+function calcRSI(candles: { time: number; close: number }[], period = 14) {
+  const out: { time: number; value: number }[] = [];
+  if (candles.length < period + 1) return out;
+
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  const rs0 = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  out.push({ time: candles[period].time, value: 100 - 100 / (1 + rs0) });
+
+  for (let i = period + 1; i < candles.length; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    out.push({ time: candles[i].time, value: 100 - 100 / (1 + rs) });
+  }
+  return out;
+}
+
+function calcDMI(candles: { time: number; high: number; low: number; close: number }[], period = 14) {
+  const plusDI: { time: number; value: number }[] = [];
+  const minusDI: { time: number; value: number }[] = [];
+  const adx: { time: number; value: number }[] = [];
+  if (candles.length < period + 2) return { plusDI, minusDI, adx };
+
+  const tr: number[] = [];
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const high = candles[i].high;
+    const low = candles[i].low;
+    const prevClose = candles[i - 1].close;
+    const prevHigh = candles[i - 1].high;
+    const prevLow = candles[i - 1].low;
+
+    tr.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+    const up = high - prevHigh;
+    const down = prevLow - low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+
+  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0);
+  let pDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let mDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  const dxArr: number[] = [];
+
+  for (let i = period; i < tr.length; i++) {
+    if (i > period) {
+      atr = atr - atr / period + tr[i];
+      pDM = pDM - pDM / period + plusDM[i];
+      mDM = mDM - mDM / period + minusDM[i];
+    }
+    const pdi = atr === 0 ? 0 : (pDM / atr) * 100;
+    const mdi = atr === 0 ? 0 : (mDM / atr) * 100;
+    const dx = pdi + mdi === 0 ? 0 : (Math.abs(pdi - mdi) / (pdi + mdi)) * 100;
+    dxArr.push(dx);
+    const t = candles[i + 1].time;
+    plusDI.push({ time: t, value: pdi });
+    minusDI.push({ time: t, value: mdi });
+  }
+
+  if (dxArr.length >= period) {
+    let adxVal = dxArr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < dxArr.length; i++) {
+      adxVal = (adxVal * (period - 1) + dxArr[i]) / period;
+      adx.push({ time: plusDI[i].time, value: adxVal });
+    }
+  }
+
+  return { plusDI, minusDI, adx };
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -72,6 +162,8 @@ export default function DashboardPage() {
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
+  const rsiSeriesRef = useRef<any>(null);
+  const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const candlesRef = useRef<any[]>([]);
 
@@ -90,18 +182,38 @@ export default function DashboardPage() {
   const [movingType, setMovingType] = useState<"line" | "alarm" | null>(null);
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [saving, setSaving] = useState(false);
+  const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
 
-  // اندیکاتورها
+  // 3SMA
   const [showSMA, setShowSMA] = useState(false);
   const [smaVisible, setSmaVisible] = useState(true);
   const [smaSettings, setSmaSettings] = useState(false);
   const [sma1, setSma1] = useState(50);
   const [sma2, setSma2] = useState(100);
   const [sma3, setSma3] = useState(200);
+  const [smaColor1, setSmaColor1] = useState("#ef4444");
+  const [smaColor2, setSmaColor2] = useState("#eab308");
+  const [smaColor3, setSmaColor3] = useState("#a855f7");
 
+  // Pivot
   const [showPivot, setShowPivot] = useState(false);
   const [pivotVisible, setPivotVisible] = useState(true);
-  const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
+  const [pivotSettings, setPivotSettings] = useState(false);
+  const [pivotTf, setPivotTf] = useState("D");
+  const [pivotFib, setPivotFib] = useState(true);
+
+  // RSI
+  const [showRSI, setShowRSI] = useState(false);
+  const [rsiVisible, setRsiVisible] = useState(true);
+  const [rsiSettings, setRsiSettings] = useState(false);
+  const [rsiPeriod, setRsiPeriod] = useState(14);
+  const [rsiColor, setRsiColor] = useState("#c084fc");
+
+  // DMI
+  const [showDMI, setShowDMI] = useState(false);
+  const [dmiVisible, setDmiVisible] = useState(true);
+  const [dmiSettings, setDmiSettings] = useState(false);
+  const [dmiPeriod, setDmiPeriod] = useState(14);
 
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
@@ -118,7 +230,6 @@ export default function DashboardPage() {
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
-
   useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
   useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
 
@@ -218,22 +329,7 @@ export default function DashboardPage() {
   const getConditionLabel = (c: string) => (c === "above" ? "بالای قیمت" : c === "below" ? "پایین قیمت" : "برخورد");
   const getConditionColor = (c: string) => (c === "above" ? "text-green-400" : c === "below" ? "text-red-400" : "text-blue-400");
 
-  // ——— 3SMA ———
-  const applySMA = (candles: any[]) => {
-    if (!chartRef.current) return;
-    removeSMA();
-    if (!showSMA || !smaVisible) return;
-
-    const s1 = chartRef.current.addLineSeries({ color: "#ef4444", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: `SMA${sma1}` });
-    const s2 = chartRef.current.addLineSeries({ color: "#eab308", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: `SMA${sma2}` });
-    const s3 = chartRef.current.addLineSeries({ color: "#a855f7", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: `SMA${sma3}` });
-
-    s1.setData(calcSMA(candles, sma1) as any);
-    s2.setData(calcSMA(candles, sma2) as any);
-    s3.setData(calcSMA(candles, sma3) as any);
-    smaSeriesRef.current = { s1, s2, s3 };
-  };
-
+  // ——— SMA ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -244,7 +340,28 @@ export default function DashboardPage() {
     smaSeriesRef.current = null;
   };
 
-  // ——— Pivot (کلاسیک از آخرین روز) ———
+  const applySMA = (candles: any[]) => {
+    if (!chartRef.current) return;
+    removeSMA();
+    if (!showSMA || !smaVisible || !candles.length) return;
+    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    s1.setData(calcSMA(candles, Math.max(1, sma1)) as any);
+    s2.setData(calcSMA(candles, Math.max(1, sma2)) as any);
+    s3.setData(calcSMA(candles, Math.max(1, sma3)) as any);
+    smaSeriesRef.current = { s1, s2, s3 };
+  };
+
+  // ——— Pivot (Floor + Fib) ———
+  const removePivot = () => {
+    if (!seriesRef.current) return;
+    pivotLinesRef.current.forEach((pl) => {
+      try { seriesRef.current?.removePriceLine(pl); } catch {}
+    });
+    pivotLinesRef.current = [];
+  };
+
   const applyPivot = async (sym: string) => {
     if (!seriesRef.current) return;
     removePivot();
@@ -252,13 +369,12 @@ export default function DashboardPage() {
 
     try {
       const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=D&limit=3`
+        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${pivotTf}&limit=5`
       );
       const data = await res.json();
       const list = data.result?.list;
       if (!list || list.length < 2) return;
 
-      // کندل قبلی کامل (دیروز)
       const prev = list[1];
       const high = parseFloat(prev[2]);
       const low = parseFloat(prev[3]);
@@ -266,15 +382,23 @@ export default function DashboardPage() {
       const range = high - low;
       const pp = (high + low + close) / 3;
 
-      const levels = [
+      const levels: { price: number; title: string; color: string }[] = [
         { price: pp, title: "PP", color: "#ffffff" },
         { price: 2 * pp - low, title: "R1", color: "#22c55e" },
         { price: pp + range, title: "R2", color: "#22c55e" },
-        { price: 2 * pp - high + range, title: "R3", color: "#22c55e" },
+        { price: 2 * pp - high + range, title: "R3", color: "#16a34a" },
         { price: 2 * pp - high, title: "S1", color: "#ef4444" },
         { price: pp - range, title: "S2", color: "#ef4444" },
-        { price: 2 * pp - low - range, title: "S3", color: "#ef4444" },
+        { price: 2 * pp - low - range, title: "S3", color: "#dc2626" },
       ];
+
+      if (pivotFib) {
+        const fibs = [0.382, 0.618, 1, 1.382, 1.618];
+        fibs.forEach((f) => {
+          levels.push({ price: pp + range * f, title: `fR${f}`, color: "#4ade80" });
+          levels.push({ price: pp - range * f, title: `fS${f}`, color: "#f87171" });
+        });
+      }
 
       levels.forEach((lv) => {
         const pl = seriesRef.current!.createPriceLine({
@@ -292,12 +416,84 @@ export default function DashboardPage() {
     }
   };
 
-  const removePivot = () => {
-    if (!seriesRef.current) return;
-    pivotLinesRef.current.forEach((pl) => {
-      try { seriesRef.current?.removePriceLine(pl); } catch {}
+  // ——— RSI ———
+  const removeRSI = () => {
+    if (!chartRef.current || !rsiSeriesRef.current) return;
+    try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+    rsiSeriesRef.current = null;
+  };
+
+  const applyRSI = (candles: any[]) => {
+    if (!chartRef.current) return;
+    removeRSI();
+    if (!showRSI || !rsiVisible || !candles.length) return;
+
+    const s = chartRef.current.addLineSeries({
+      color: rsiColor,
+      lineWidth: 2,
+      priceScaleId: "rsi",
+      priceLineVisible: false,
+      lastValueVisible: true,
     });
-    pivotLinesRef.current = [];
+    chartRef.current.priceScale("rsi").applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      borderVisible: false,
+    });
+    s.setData(calcRSI(candles, Math.max(2, rsiPeriod)) as any);
+    // خطوط ۳۰ و ۷۰
+    try {
+      s.createPriceLine({ price: 70, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({ price: 30, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+    } catch {}
+    rsiSeriesRef.current = s;
+  };
+
+  // ——— DMI ———
+  const removeDMI = () => {
+    if (!chartRef.current || !dmiSeriesRef.current) return;
+    try {
+      chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+      chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+      chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+    } catch {}
+    dmiSeriesRef.current = null;
+  };
+
+  const applyDMI = (candles: any[]) => {
+    if (!chartRef.current) return;
+    removeDMI();
+    if (!showDMI || !dmiVisible || !candles.length) return;
+
+    const { plusDI, minusDI, adx } = calcDMI(candles, Math.max(2, dmiPeriod));
+    const plus = chartRef.current.addLineSeries({
+      color: "#22c55e",
+      lineWidth: 1,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const minus = chartRef.current.addLineSeries({
+      color: "#ef4444",
+      lineWidth: 1,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const adxS = chartRef.current.addLineSeries({
+      color: "#3b82f6",
+      lineWidth: 2,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    chartRef.current.priceScale("dmi").applyOptions({
+      scaleMargins: { top: 0.75, bottom: 0 },
+      borderVisible: false,
+    });
+    plus.setData(plusDI as any);
+    minus.setData(minusDI as any);
+    adxS.setData(adx as any);
+    dmiSeriesRef.current = { plus, minus, adx: adxS };
   };
 
   const loadCandles = async (sym: string, tf: string) => {
@@ -327,9 +523,13 @@ export default function DashboardPage() {
         chartRef.current?.timeScale().fitContent();
 
         applySMA(candles);
+        applyRSI(candles);
+        applyDMI(candles);
         applyPivot(sym);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const loadLines = async (sym: string) => {
@@ -355,9 +555,9 @@ export default function DashboardPage() {
       layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
       width: chartContainerRef.current.clientWidth,
-      height: 560,
+      height: 620,
       timeScale: { timeVisible: true, secondsVisible: false },
-      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.1, bottom: 0.1 }, borderVisible: false },
+      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.05, bottom: 0.25 }, borderVisible: false },
       crosshair: {
         mode: 0,
         horzLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#f97316" },
@@ -429,12 +629,19 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (candlesRef.current.length) applySMA(candlesRef.current);
-    else removeSMA();
-  }, [showSMA, smaVisible, sma1, sma2, sma3]);
+  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
+
+  useEffect(() => {
+    if (candlesRef.current.length) applyRSI(candlesRef.current);
+  }, [showRSI, rsiVisible, rsiPeriod, rsiColor]);
+
+  useEffect(() => {
+    if (candlesRef.current.length) applyDMI(candlesRef.current);
+  }, [showDMI, dmiVisible, dmiPeriod]);
 
   useEffect(() => {
     applyPivot(symbol);
-  }, [showPivot, pivotVisible, symbol]);
+  }, [showPivot, pivotVisible, pivotTf, pivotFib, symbol]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -473,12 +680,39 @@ export default function DashboardPage() {
     });
   }, [lines, mode, movingId, movingType]);
 
+  const IndChip = ({
+    label,
+    visible,
+    onToggleVisible,
+    onSettings,
+    onRemove,
+  }: {
+    label: string;
+    visible: boolean;
+    onToggleVisible: () => void;
+    onSettings?: () => void;
+    onRemove: () => void;
+  }) => (
+    <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
+      <span className="text-gray-200">{label}</span>
+      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400 hover:text-white" title="نمایش">
+        {visible ? "👁" : "🚫"}
+      </button>
+      {onSettings && (
+        <button type="button" onClick={onSettings} className="p-1 text-gray-400 hover:text-white" title="تنظیمات">
+          ⚙
+        </button>
+      )}
+      <button type="button" onClick={onRemove} className="p-1 text-gray-400 hover:text-red-400" title="حذف">
+        🗑
+      </button>
+    </div>
+  );
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-        <div>
-          <h1 className="text-2xl font-bold">چارت زنده</h1>
-        </div>
+        <h1 className="text-2xl font-bold">چارت زنده</h1>
         <div className="flex items-center gap-3">
           <input
             type="text"
@@ -510,7 +744,6 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* دکمه‌ها */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button
           onClick={() => setMode(mode === "draw" ? "none" : "draw")}
@@ -525,28 +758,19 @@ export default function DashboardPage() {
           🔔 آلارم
         </button>
 
-        {/* منوی اندیکاتور */}
         <div className="relative">
           <button
             onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-            className="px-3 py-2 rounded-lg text-sm bg-gray-800 hover:bg-gray-700"
+            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
           >
             📊 اندیکاتور
           </button>
           {showIndicatorMenu && (
-            <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
-              <button
-                onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }}
-                className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                3SMA
-              </button>
-              <button
-                onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }}
-                className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Pivot Points
-              </button>
+            <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[160px] py-2 shadow-xl">
+              <button onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">3SMA</button>
+              <button onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Pivot</button>
+              <button onClick={() => { setShowRSI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">RSI</button>
+              <button onClick={() => { setShowDMI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">DMI</button>
             </div>
           )}
         </div>
@@ -560,57 +784,138 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* نوار اندیکاتورهای فعال (مثل عکس) */}
-      <div className="mb-3 flex flex-wrap gap-2">
+      {/* چیپ‌های اندیکاتور */}
+      <div className="mb-2 flex flex-wrap gap-2">
         {showSMA && (
-          <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
-            <span className="text-gray-200">3SMA</span>
-            <button onClick={() => setSmaVisible(!smaVisible)} className="p-1 text-gray-400 hover:text-white" title="نمایش/مخفی">
-              {smaVisible ? "👁" : "👁‍🗨"}
-            </button>
-            <button onClick={() => setSmaSettings(!smaSettings)} className="p-1 text-gray-400 hover:text-white" title="تنظیمات">
-              ⚙
-            </button>
-            <button onClick={() => { setShowSMA(false); removeSMA(); }} className="p-1 text-gray-400 hover:text-red-400" title="حذف">
-              🗑
-            </button>
-          </div>
+          <IndChip
+            label="3SMA"
+            visible={smaVisible}
+            onToggleVisible={() => setSmaVisible(!smaVisible)}
+            onSettings={() => setSmaSettings(!smaSettings)}
+            onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }}
+          />
         )}
         {showPivot && (
-          <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
-            <span className="text-gray-200">Pivot</span>
-            <button onClick={() => setPivotVisible(!pivotVisible)} className="p-1 text-gray-400 hover:text-white">
-              {pivotVisible ? "👁" : "👁‍🗨"}
-            </button>
-            <button onClick={() => { setShowPivot(false); removePivot(); }} className="p-1 text-gray-400 hover:text-red-400">
-              🗑
-            </button>
-          </div>
+          <IndChip
+            label="Pivot"
+            visible={pivotVisible}
+            onToggleVisible={() => setPivotVisible(!pivotVisible)}
+            onSettings={() => setPivotSettings(!pivotSettings)}
+            onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }}
+          />
+        )}
+        {showRSI && (
+          <IndChip
+            label="RSI"
+            visible={rsiVisible}
+            onToggleVisible={() => setRsiVisible(!rsiVisible)}
+            onSettings={() => setRsiSettings(!rsiSettings)}
+            onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }}
+          />
+        )}
+        {showDMI && (
+          <IndChip
+            label="DMI"
+            visible={dmiVisible}
+            onToggleVisible={() => setDmiVisible(!dmiVisible)}
+            onSettings={() => setDmiSettings(!dmiSettings)}
+            onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }}
+          />
         )}
       </div>
 
       {/* تنظیمات SMA */}
       {smaSettings && showSMA && (
-        <div className="mb-3 flex flex-wrap gap-3 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm">
-          <label className="flex items-center gap-2">
-            SMA1
-            <input type="number" value={sma1} onChange={(e) => setSma1(Number(e.target.value) || 50)} className="w-16 bg-gray-800 rounded px-2 py-1" />
-          </label>
-          <label className="flex items-center gap-2">
-            SMA2
-            <input type="number" value={sma2} onChange={(e) => setSma2(Number(e.target.value) || 100)} className="w-16 bg-gray-800 rounded px-2 py-1" />
-          </label>
-          <label className="flex items-center gap-2">
-            SMA3
-            <input type="number" value={sma3} onChange={(e) => setSma3(Number(e.target.value) || 200)} className="w-16 bg-gray-800 rounded px-2 py-1" />
-          </label>
-          <button onClick={() => setSmaSettings(false)} className="text-orange-400">بستن</button>
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
+          {[
+            { label: "SMA1", val: sma1, setVal: setSma1, col: smaColor1, setCol: setSmaColor1 },
+            { label: "SMA2", val: sma2, setVal: setSma2, col: smaColor2, setCol: setSmaColor2 },
+            { label: "SMA3", val: sma3, setVal: setSma3, col: smaColor3, setCol: setSmaColor3 },
+          ].map((row) => (
+            <div key={row.label} className="flex flex-wrap items-center gap-3">
+              <span className="w-12">{row.label}</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={String(row.val)}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
+                  if (!isNaN(n) && n > 0) row.setVal(n);
+                  else if (e.target.value === "") row.setVal(1);
+                }}
+                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
+              />
+              <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded cursor-pointer" />
+            </div>
+          ))}
+          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
 
-      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "560px", touchAction: "none" }} />
+      {/* تنظیمات Pivot */}
+      {pivotSettings && showPivot && (
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
+          <div className="flex flex-wrap gap-2 items-center">
+            <span>تایم‌فریم:</span>
+            {PIVOT_TFS.map((tf) => (
+              <button
+                key={tf.value}
+                type="button"
+                onClick={() => setPivotTf(tf.value)}
+                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}
+              >
+                {tf.label}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
+            سطوح فیبوناچی
+          </label>
+          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">بستن</button>
+        </div>
+      )}
 
-      {/* آلارم‌ها و خط‌ها (خلاصه) */}
+      {/* تنظیمات RSI */}
+      {rsiSettings && showRSI && (
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-wrap gap-3 items-center text-sm">
+          <span>دوره</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={String(rsiPeriod)}
+            onChange={(e) => {
+              const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
+              if (!isNaN(n) && n > 1) setRsiPeriod(n);
+            }}
+            className="w-16 bg-gray-800 rounded px-2 py-1.5"
+          />
+          <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
+          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">بستن</button>
+        </div>
+      )}
+
+      {/* تنظیمات DMI */}
+      {dmiSettings && showDMI && (
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-wrap gap-3 items-center text-sm">
+          <span>دوره</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={String(dmiPeriod)}
+            onChange={(e) => {
+              const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
+              if (!isNaN(n) && n > 1) setDmiPeriod(n);
+            }}
+            className="w-16 bg-gray-800 rounded px-2 py-1.5"
+          />
+          <span className="text-gray-400 text-xs">+DI سبز · −DI قرمز · ADX آبی</span>
+          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">بستن</button>
+        </div>
+      )}
+
+      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "620px", touchAction: "none" }} />
+
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
           <h2 className="text-green-400 font-semibold mb-2">آلارم‌ها ({alarms.length})</h2>
