@@ -188,9 +188,9 @@ export default function AlertsPage() {
                 <div className="flex gap-3 text-sm">
                   <button
                     onClick={() => goToChart(alert.symbol)}
-                    className="text-yellow-400 hover:text-yellow-300"
+                    className="text-blue-400 hover:text-blue-300"
                   >
-                    تغییرات
+                    چارت
                   </button>
                   <button
                     onClick={() => deleteAlert(alert.id)}
