@@ -169,6 +169,42 @@ export default function DashboardPage() {
     }
   };
 
+  // تبدیل خط به آلارم + حذف از لیست خط‌ها
+  const convertLineToAlarm = async (line: ChartLine) => {
+    if (savingRef.current) return;
+    setSaving(true);
+    try {
+      const sym = symbolRef.current;
+      const cond = conditionRef.current;
+      const { data, error } = await supabase
+        .from("alarms")
+        .insert([
+          {
+            symbol: sym.toUpperCase(),
+            price: line.price,
+            condition: cond,
+            is_active: true,
+            triggered: false,
+            repeat: false,
+            note: "آلارم از خط چارت",
+          },
+        ])
+        .select()
+        .single();
+      if (error) {
+        alert("خطا: " + error.message);
+        return;
+      }
+      // حذف خط از جدول و لیست
+      await supabase.from("chart_lines").delete().eq("id", line.id);
+      setLines((prev) => prev.filter((l) => l.id !== line.id));
+      setAlarms((prev) => [data, ...prev]);
+      alert(`آلارم ساخته شد و خط حذف شد`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const updateLinePrice = async (id: string, price: number) => {
     if (savingRef.current) return;
     setSaving(true);
@@ -232,6 +268,12 @@ export default function DashboardPage() {
     return "برخورد";
   };
 
+  const getConditionColor = (c: string) => {
+    if (c === "above") return "text-green-400";
+    if (c === "below") return "text-red-400";
+    return "text-blue-400";
+  };
+
   const loadCandles = async (sym: string, tf: string) => {
     try {
       const res = await fetch(
@@ -248,20 +290,14 @@ export default function DashboardPage() {
             close: parseFloat(item[4]),
           }))
           .reverse();
-
         if (candles.length === 0) return;
 
         const lastClose = candles[candles.length - 1].close;
         const { precision, minMove } = getPrecision(lastClose);
 
         seriesRef.current.applyOptions({
-          priceFormat: {
-            type: "price",
-            precision,
-            minMove,
-          },
+          priceFormat: { type: "price", precision, minMove },
         });
-
         seriesRef.current.setData(candles);
         chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
         chartRef.current?.timeScale().fitContent();
@@ -353,7 +389,6 @@ export default function DashboardPage() {
       if (price === null) return;
       const rounded = formatPrice(price);
       setPreviewPrice(rounded);
-
       if (previewLineRef.current) {
         seriesRef.current.removePriceLine(previewLineRef.current);
       }
@@ -372,7 +407,6 @@ export default function DashboardPage() {
       const m = modeRef.current;
       const price = previewPriceRef.current;
       if (!price || m === "none" || savingRef.current) return;
-
       if (m === "draw") addLine(price);
       else if (m === "alarm") createAlarmDirect(price);
       else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
@@ -411,7 +445,6 @@ export default function DashboardPage() {
     if (!seriesRef.current) return;
     alarmLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
     alarmLinesRef.current.clear();
-
     alarms.forEach((alarm) => {
       if (mode === "move" && movingType === "alarm" && movingId === alarm.id) return;
       const color =
@@ -432,7 +465,6 @@ export default function DashboardPage() {
     if (!seriesRef.current) return;
     chartLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
     chartLinesRef.current.clear();
-
     lines.forEach((line) => {
       if (mode === "move" && movingType === "line" && movingId === line.id) return;
       const pl = seriesRef.current!.createPriceLine({
@@ -550,6 +582,7 @@ export default function DashboardPage() {
         style={{ height: "560px", touchAction: "none" }}
       />
 
+      {/* آلارم‌ها با رنگ شرط */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-green-400">
           آلارم‌های فعال ({alarms.length})
@@ -570,11 +603,11 @@ export default function DashboardPage() {
                       {getConditionSymbol(a.condition)} {a.price}
                     </span>
                   </span>
-                  <span className="text-xs text-gray-500 block mt-1">
+                </div>
+                <div className="flex items-center gap-3 text-sm">
+                  <span className={`font-medium ${getConditionColor(a.condition)}`}>
                     {getConditionLabel(a.condition)}
                   </span>
-                </div>
-                <div className="flex gap-3 text-sm">
                   <button
                     onClick={() => startMove(a.id, "alarm", a.price)}
                     className="text-blue-400"
@@ -591,6 +624,7 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {/* خط‌ها — با تبدیل به آلارم حذف می‌شوند */}
       <div className="mt-6">
         <h2 className="text-lg font-semibold mb-3 text-orange-400">
           خط‌های ذخیره شده ({lines.length})
@@ -615,7 +649,7 @@ export default function DashboardPage() {
                     جابه‌جا
                   </button>
                   <button
-                    onClick={() => createAlarmDirect(line.price)}
+                    onClick={() => convertLineToAlarm(line)}
                     className="text-green-400"
                   >
                     آلارم
