@@ -230,7 +230,6 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
 
-  // SMA
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
   const [smaVisible, setSmaVisible] = useState(true);
   const [smaSettings, setSmaSettings] = useState(false);
@@ -244,7 +243,6 @@ export default function DashboardPage() {
   const [smaColor2, setSmaColor2] = useState(() => loadLS("smaC2", "#eab308"));
   const [smaColor3, setSmaColor3] = useState(() => loadLS("smaC3", "#a855f7"));
 
-  // Pivot
   const [showPivot, setShowPivot] = useState(() => loadLS("ind_pivot", false));
   const [pivotVisible, setPivotVisible] = useState(true);
   const [pivotSettings, setPivotSettings] = useState(false);
@@ -253,7 +251,6 @@ export default function DashboardPage() {
   const [pivotHistory, setPivotHistory] = useState(() => loadLS("pivot_hist", false));
   const [pivotHistCount, setPivotHistCount] = useState(() => loadLS("pivot_hist_n", 2));
 
-  // RSI
   const [showRSI, setShowRSI] = useState(() => loadLS("ind_rsi", false));
   const [rsiVisible, setRsiVisible] = useState(true);
   const [rsiSettings, setRsiSettings] = useState(false);
@@ -262,7 +259,6 @@ export default function DashboardPage() {
   const [rsiColor, setRsiColor] = useState(() => loadLS("rsi_c", "#c084fc"));
   const [rsiHeight, setRsiHeight] = useState(() => loadLS("rsi_h", 18));
 
-  // DMI
   const [showDMI, setShowDMI] = useState(() => loadLS("ind_dmi", false));
   const [dmiVisible, setDmiVisible] = useState(true);
   const [dmiSettings, setDmiSettings] = useState(false);
@@ -273,11 +269,9 @@ export default function DashboardPage() {
   const [dmiAdxColor, setDmiAdxColor] = useState(() => loadLS("dmi_ac", "#3b82f6"));
   const [dmiHeight, setDmiHeight] = useState(() => loadLS("dmi_h", 16));
 
-  // Volume
   const [showVol, setShowVol] = useState(() => loadLS("ind_vol", true));
   const [volVisible, setVolVisible] = useState(true);
 
-  // Trend Line (AdamMoradi style)
   const [showTrend, setShowTrend] = useState(() => loadLS("ind_trend", false));
   const [trendVisible, setTrendVisible] = useState(true);
   const [trendSettings, setTrendSettings] = useState(false);
@@ -287,7 +281,6 @@ export default function DashboardPage() {
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
   const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
 
-  // persist
   useEffect(() => { saveLS("ind_sma", showSMA); }, [showSMA]);
   useEffect(() => { saveLS("sma1", sma1); saveLS("sma2", sma2); saveLS("sma3", sma3); }, [sma1, sma2, sma3]);
   useEffect(() => { saveLS("smaC1", smaColor1); saveLS("smaC2", smaColor2); saveLS("smaC3", smaColor3); }, [smaColor1, smaColor2, smaColor3]);
@@ -422,6 +415,37 @@ export default function DashboardPage() {
     } finally { setSaving(false); }
   };
 
+  /** خط → آلارم: آلارم می‌سازد و خط را پاک می‌کند */
+  const convertLineToAlarm = async (line: ChartLine) => {
+    if (savingRef.current) return;
+    setSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from("alarms")
+        .insert([{
+          symbol: (line.symbol || symbolRef.current).toUpperCase(),
+          price: line.price,
+          condition: "cross",
+          is_active: true,
+          triggered: false,
+          repeat: false,
+          note: line.note || "از خط",
+        }])
+        .select()
+        .single();
+      if (error) { alert(error.message); return; }
+
+      await supabase.from("chart_lines").delete().eq("id", line.id);
+      setLines((prev) => prev.filter((l) => l.id !== line.id));
+      // اگر نماد خط همان نماد فعلی است، آلارم را در لیست نشان بده
+      if ((line.symbol || symbolRef.current).toUpperCase() === symbolRef.current.toUpperCase()) {
+        setAlarms((prev) => [data, ...prev]);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const updateLinePrice = async (id: string, price: number) => {
     const p = formatPrice(price);
     await supabase.from("chart_lines").update({ price: p }).eq("id", id);
@@ -460,13 +484,17 @@ export default function DashboardPage() {
     setPreviewPrice(price);
   };
 
+  /** کلیک روی نماد آلارم → رفتن به چارت همان نماد */
+  const goToSymbol = (sym: string) => {
+    setSymbol(sym.toUpperCase());
+  };
+
   const getConditionSymbol = (c: string) => (c === "above" ? "≥" : c === "below" ? "≤" : "≈");
   const getConditionLabel = (c: string) =>
     c === "above" ? "بالای قیمت" : c === "below" ? "پایین قیمت" : "برخورد";
   const getConditionColor = (c: string) =>
     c === "above" ? "text-green-400" : c === "below" ? "text-red-400" : "text-blue-400";
 
-  // ——— SMA ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -490,7 +518,6 @@ export default function DashboardPage() {
     smaSeriesRef.current = { s1, s2, s3 };
   };
 
-  // ——— Pivot (کوتاه + تاریخچه) ———
   const removePivot = () => {
     if (!chartRef.current) return;
     pivotSeriesRef.current.forEach((s) => {
@@ -503,7 +530,6 @@ export default function DashboardPage() {
     if (!chartRef.current || !candles.length) return;
     removePivot();
     if (!showPivot || !pivotVisible) return;
-
     try {
       const res = await fetch(
         `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${pivotTf}&limit=10`
@@ -537,7 +563,6 @@ export default function DashboardPage() {
         const isCurrent = i === 1;
         const alpha = isCurrent ? 1 : 0.45;
         const half = barSec * (isCurrent ? 5 : 3);
-        // جابه‌جایی کمی برای دوره‌های قبلی
         const offset = (i - 1) * barSec * 8;
         const t0 = lastT - half - offset;
         const t1 = lastT + half - offset;
@@ -578,7 +603,6 @@ export default function DashboardPage() {
     }
   };
 
-  // ——— Trend Line (AdamMoradi style) ———
   const removeTrend = () => {
     if (!chartRef.current) return;
     trendSeriesRef.current.forEach((s) => {
@@ -595,7 +619,6 @@ export default function DashboardPage() {
     const { highs, lows } = findPivots(candles, Math.max(5, trendPeriod));
     const maxL = Math.max(1, trendMax);
 
-    // خطوط صعودی از lows
     let upCount = 0;
     for (let a = lows.length - 1; a >= 0 && upCount < maxL; a--) {
       for (let b = a - 1; b >= 0 && upCount < maxL; b--) {
@@ -606,20 +629,13 @@ export default function DashboardPage() {
         let valid = true;
         for (let k = p1.i + 1; k < candles.length; k++) {
           const lineVal = p1.price + slope * (k - p1.i);
-          if (candles[k].close < lineVal * 0.998) {
-            valid = false;
-            break;
-          }
+          if (candles[k].close < lineVal * 0.998) { valid = false; break; }
         }
         if (valid) {
           const endI = candles.length - 1;
           const endPrice = p1.price + slope * (endI - p1.i);
           const s = chartRef.current!.addLineSeries({
-            color: trendUpColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
+            color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
           });
           s.setData([
             { time: p1.time as any, value: p1.price },
@@ -632,7 +648,6 @@ export default function DashboardPage() {
       }
     }
 
-    // خطوط نزولی از highs
     let dnCount = 0;
     for (let a = highs.length - 1; a >= 0 && dnCount < maxL; a--) {
       for (let b = a - 1; b >= 0 && dnCount < maxL; b--) {
@@ -643,20 +658,13 @@ export default function DashboardPage() {
         let valid = true;
         for (let k = p1.i + 1; k < candles.length; k++) {
           const lineVal = p1.price + slope * (k - p1.i);
-          if (candles[k].close > lineVal * 1.002) {
-            valid = false;
-            break;
-          }
+          if (candles[k].close > lineVal * 1.002) { valid = false; break; }
         }
         if (valid) {
           const endI = candles.length - 1;
           const endPrice = p1.price + slope * (endI - p1.i);
           const s = chartRef.current!.addLineSeries({
-            color: trendDownColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
+            color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
           });
           s.setData([
             { time: p1.time as any, value: p1.price },
@@ -670,7 +678,6 @@ export default function DashboardPage() {
     }
   };
 
-  // ——— RSI ———
   const removeRSI = () => {
     if (!chartRef.current || !rsiSeriesRef.current) return;
     try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
@@ -685,11 +692,7 @@ export default function DashboardPage() {
     const rh = rsiHeight / 100;
     const dh = dmiHeight / 100;
     const s = chartRef.current.addLineSeries({
-      color: rsiColor,
-      lineWidth: 2,
-      priceScaleId: "rsi",
-      priceLineVisible: false,
-      lastValueVisible: true,
+      color: rsiColor, lineWidth: 2, priceScaleId: "rsi", priceLineVisible: false, lastValueVisible: true,
     });
     chartRef.current.priceScale("rsi").applyOptions({
       scaleMargins: both
@@ -706,7 +709,6 @@ export default function DashboardPage() {
     updateMargins();
   };
 
-  // ——— DMI ———
   const removeDMI = () => {
     if (!chartRef.current || !dmiSeriesRef.current) return;
     try {
@@ -738,7 +740,6 @@ export default function DashboardPage() {
     updateMargins();
   };
 
-  // ——— Volume ———
   const removeVol = () => {
     if (!chartRef.current || !volumeSeriesRef.current) return;
     try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
@@ -791,11 +792,8 @@ export default function DashboardPage() {
       candlesRef.current = candles;
       const lastClose = candles[candles.length - 1].close;
       const { precision, minMove } = getPrecision(lastClose);
-      seriesRef.current.applyOptions({
-        priceFormat: { type: "price", precision, minMove },
-      });
+      seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove } });
       seriesRef.current.setData(candles);
-      // ریست مقیاس برای نماد جدید
       chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
       chartRef.current?.timeScale().fitContent();
       updateMargins();
@@ -831,7 +829,6 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
-  // ساخت چارت یک‌بار
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
@@ -923,13 +920,11 @@ export default function DashboardPage() {
     });
   }, [timeZone]);
 
-  // تایم‌فریم
   useEffect(() => {
     resetMode();
     loadCandles(symbol, interval);
   }, [interval]);
 
-  // نماد — بدون دکمه برو (با تأخیر)
   useEffect(() => {
     if (symbol.length < 5) return;
     const t = setTimeout(() => {
@@ -1146,7 +1141,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* SMA settings */}
       {smaSettings && showSMA && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           {[
@@ -1156,18 +1150,14 @@ export default function DashboardPage() {
           ].map((row) => (
             <div key={row.label} className="flex flex-wrap items-center gap-3">
               <span className="w-12">{row.label}</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={row.str}
+              <input type="text" inputMode="numeric" value={row.str}
                 onChange={(e) => row.setStr(e.target.value.replace(/[^\d]/g, ""))}
                 onBlur={() => {
                   const n = parseInt(row.str, 10);
                   if (!isNaN(n) && n >= 1) { row.setVal(n); row.setStr(String(n)); }
                   else row.setStr(String(row.cur));
                 }}
-                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
-              />
+                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white" />
               <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded" />
             </div>
           ))}
@@ -1175,38 +1165,25 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Pivot settings */}
       {pivotSettings && showPivot && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-2 items-center">
             <span>تایم‌فریم:</span>
             {PIVOT_TFS.map((tf) => (
-              <button
-                key={tf.value}
-                type="button"
-                onClick={() => setPivotTf(tf.value)}
-                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}
-              >
-                {tf.label}
-              </button>
+              <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)}
+                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
             ))}
           </div>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-            R4 / S4
+            <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} /> R4 / S4
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={pivotHistory} onChange={(e) => setPivotHistory(e.target.checked)} />
-            دوره‌های قبلی
+            <input type="checkbox" checked={pivotHistory} onChange={(e) => setPivotHistory(e.target.checked)} /> دوره‌های قبلی
           </label>
           {pivotHistory && (
             <label className="flex items-center gap-2">
               تعداد:
-              <select
-                value={pivotHistCount}
-                onChange={(e) => setPivotHistCount(Number(e.target.value))}
-                className="bg-gray-800 rounded px-2 py-1"
-              >
+              <select value={pivotHistCount} onChange={(e) => setPivotHistCount(Number(e.target.value))} className="bg-gray-800 rounded px-2 py-1">
                 <option value={1}>1</option>
                 <option value={2}>2</option>
                 <option value={3}>3</option>
@@ -1217,41 +1194,26 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Trend settings */}
       {trendSettings && showTrend && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-3 items-center">
             <span>دوره پیوت</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={trendPeriodStr}
+            <input type="text" inputMode="numeric" value={trendPeriodStr}
               onChange={(e) => {
                 const v = e.target.value.replace(/[^\d]/g, "");
                 setTrendPeriodStr(v);
                 const n = parseInt(v, 10);
                 if (!isNaN(n) && n >= 5) setTrendPeriod(n);
               }}
-              className="w-16 bg-gray-800 rounded px-2 py-1.5"
-            />
+              className="w-16 bg-gray-800 rounded px-2 py-1.5" />
           </div>
           <div className="flex flex-wrap gap-4 items-center">
-            <label className="flex items-center gap-2">
-              صعودی
-              <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-8 h-7 rounded" />
-            </label>
-            <label className="flex items-center gap-2">
-              نزولی
-              <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-8 h-7 rounded" />
-            </label>
+            <label className="flex items-center gap-2">صعودی <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-2">نزولی <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-8 h-7 rounded" /></label>
           </div>
           <label className="flex items-center gap-2">
             حداکثر خط:
-            <select
-              value={trendMax}
-              onChange={(e) => setTrendMax(Number(e.target.value))}
-              className="bg-gray-800 rounded px-2 py-1"
-            >
+            <select value={trendMax} onChange={(e) => setTrendMax(Number(e.target.value))} className="bg-gray-800 rounded px-2 py-1">
               <option value={1}>1</option>
               <option value={2}>2</option>
               <option value={3}>3</option>
@@ -1261,23 +1223,18 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* RSI settings */}
       {rsiSettings && showRSI && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-3 items-center">
             <span>دوره</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={rsiPeriodStr}
+            <input type="text" inputMode="numeric" value={rsiPeriodStr}
               onChange={(e) => {
                 const v = e.target.value.replace(/[^\d]/g, "");
                 setRsiPeriodStr(v);
                 const n = parseInt(v, 10);
                 if (!isNaN(n) && n >= 2) setRsiPeriod(n);
               }}
-              className="w-16 bg-gray-800 rounded px-2 py-1.5"
-            />
+              className="w-16 bg-gray-800 rounded px-2 py-1.5" />
             <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
           </div>
           <label className="flex items-center gap-2">
@@ -1289,37 +1246,23 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* DMI settings */}
       {dmiSettings && showDMI && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-3 items-center">
             <span>دوره</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={dmiPeriodStr}
+            <input type="text" inputMode="numeric" value={dmiPeriodStr}
               onChange={(e) => {
                 const v = e.target.value.replace(/[^\d]/g, "");
                 setDmiPeriodStr(v);
                 const n = parseInt(v, 10);
                 if (!isNaN(n) && n >= 2) setDmiPeriod(n);
               }}
-              className="w-16 bg-gray-800 rounded px-2 py-1.5"
-            />
+              className="w-16 bg-gray-800 rounded px-2 py-1.5" />
           </div>
           <div className="flex flex-wrap gap-4 items-center">
-            <label className="flex items-center gap-2">
-              +DI
-              <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-8 h-7 rounded" />
-            </label>
-            <label className="flex items-center gap-2">
-              −DI
-              <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" />
-            </label>
-            <label className="flex items-center gap-2">
-              ADX
-              <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" />
-            </label>
+            <label className="flex items-center gap-2">+DI <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-2">−DI <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-2">ADX <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" /></label>
           </div>
           <label className="flex items-center gap-2">
             ارتفاع پنل
@@ -1336,15 +1279,21 @@ export default function DashboardPage() {
         style={{ height: "700px", touchAction: "none" }}
       />
 
+      {/* ——— لیست آلارم و خط ——— */}
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
           <h2 className="text-green-400 font-semibold mb-2">آلارم‌ها ({alarms.length})</h2>
           {alarms.map((a) => (
-            <div key={a.id} className="flex justify-between bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
-              <span>
+            <div key={a.id} className="flex justify-between items-center bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm gap-2">
+              <button
+                type="button"
+                onClick={() => goToSymbol(a.symbol)}
+                className="text-left hover:text-orange-400 underline-offset-2 hover:underline shrink-0"
+                title="رفتن به چارت این نماد"
+              >
                 {a.symbol} {getConditionSymbol(a.condition)} {a.price}
-              </span>
-              <div className="flex gap-2">
+              </button>
+              <div className="flex gap-2 shrink-0">
                 <button onClick={() => cycleCondition(a)} className={getConditionColor(a.condition)}>
                   {getConditionLabel(a.condition)}
                 </button>
@@ -1357,9 +1306,16 @@ export default function DashboardPage() {
         <div>
           <h2 className="text-orange-400 font-semibold mb-2">خط‌ها ({lines.length})</h2>
           {lines.map((l) => (
-            <div key={l.id} className="flex justify-between bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
+            <div key={l.id} className="flex justify-between items-center bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm gap-2">
               <span>{l.price}</span>
-              <div className="flex gap-2">
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => convertLineToAlarm(l)}
+                  className="text-green-400"
+                  title="تبدیل به آلارم"
+                >
+                  آلارم
+                </button>
                 <button onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">جابه‌جا</button>
                 <button onClick={() => deleteLine(l.id)} className="text-red-400">حذف</button>
               </div>
