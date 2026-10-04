@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   createChart,
   IChartApi,
@@ -47,6 +47,28 @@ const PIVOT_TFS = [
   { label: "1W", value: "W" },
 ];
 
+const TIMEZONES = [
+  { label: "تهران", value: "Asia/Tehran" },
+  { label: "UTC", value: "UTC" },
+  { label: "لندن", value: "Europe/London" },
+  { label: "نیویورک", value: "America/New_York" },
+];
+
+function loadLS<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const v = localStorage.getItem(key);
+    return v != null ? (JSON.parse(v) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveLS(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
 function getPrecision(price: number) {
   if (price < 0.01) return { precision: 6, minMove: 0.000001 };
   if (price < 1) return { precision: 5, minMove: 0.00001 };
@@ -76,54 +98,35 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
   const out: { time: number; value: number }[] = [];
   const p = Math.max(2, period);
   if (candles.length < p + 1) return out;
-
-  let gains = 0;
-  let losses = 0;
+  let gains = 0, losses = 0;
   for (let i = 1; i <= p; i++) {
-    const diff = candles[i].close - candles[i - 1].close;
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+    const d = candles[i].close - candles[i - 1].close;
+    if (d >= 0) gains += d; else losses -= d;
   }
-  let avgGain = gains / p;
-  let avgLoss = losses / p;
-  const rs0 = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  out.push({ time: candles[p].time, value: 100 - 100 / (1 + rs0) });
-
+  let avgGain = gains / p, avgLoss = losses / p;
+  out.push({ time: candles[p].time, value: 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) });
   for (let i = p + 1; i < candles.length; i++) {
-    const diff = candles[i].close - candles[i - 1].close;
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? -diff : 0;
-    avgGain = (avgGain * (p - 1) + gain) / p;
-    avgLoss = (avgLoss * (p - 1) + loss) / p;
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    out.push({ time: candles[i].time, value: 100 - 100 / (1 + rs) });
+    const d = candles[i].close - candles[i - 1].close;
+    avgGain = (avgGain * (p - 1) + (d > 0 ? d : 0)) / p;
+    avgLoss = (avgLoss * (p - 1) + (d < 0 ? -d : 0)) / p;
+    out.push({ time: candles[i].time, value: 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) });
   }
   return out;
 }
 
-function calcDMI(
-  candles: { time: number; high: number; low: number; close: number }[],
-  period = 14
-) {
+function calcDMI(candles: { time: number; high: number; low: number; close: number }[], period = 14) {
   const plusDI: { time: number; value: number }[] = [];
   const minusDI: { time: number; value: number }[] = [];
   const adx: { time: number; value: number }[] = [];
   const p = Math.max(2, period);
   if (candles.length < p + 2) return { plusDI, minusDI, adx };
 
-  const tr: number[] = [];
-  const plusDM: number[] = [];
-  const minusDM: number[] = [];
-
+  const tr: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
   for (let i = 1; i < candles.length; i++) {
-    const high = candles[i].high;
-    const low = candles[i].low;
-    const prevClose = candles[i - 1].close;
-    const prevHigh = candles[i - 1].high;
-    const prevLow = candles[i - 1].low;
-    tr.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
-    const up = high - prevHigh;
-    const down = prevLow - low;
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    const ph = candles[i - 1].high, pl = candles[i - 1].low;
+    tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    const up = h - ph, down = pl - l;
     plusDM.push(up > down && up > 0 ? up : 0);
     minusDM.push(down > up && down > 0 ? down : 0);
   }
@@ -141,13 +144,11 @@ function calcDMI(
     }
     const pdi = atr === 0 ? 0 : (pDM / atr) * 100;
     const mdi = atr === 0 ? 0 : (mDM / atr) * 100;
-    const dx = pdi + mdi === 0 ? 0 : (Math.abs(pdi - mdi) / (pdi + mdi)) * 100;
-    dxArr.push(dx);
+    dxArr.push(pdi + mdi === 0 ? 0 : (Math.abs(pdi - mdi) / (pdi + mdi)) * 100);
     const t = candles[i + 1].time;
     plusDI.push({ time: t, value: pdi });
     minusDI.push({ time: t, value: mdi });
   }
-
   if (dxArr.length >= p) {
     let adxVal = dxArr.slice(0, p).reduce((a, b) => a + b, 0) / p;
     for (let i = p; i < dxArr.length; i++) {
@@ -158,17 +159,30 @@ function calcDMI(
   return { plusDI, minusDI, adx };
 }
 
+function formatTimeTZ(time: number, timeZone: string) {
+  return new Date(time * 1000).toLocaleString("en-GB", {
+    timeZone,
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
-  const pivotLinesRef = useRef<IPriceLine[]>([]);
+  const pivotSeriesRef = useRef<any[]>([]);
   const candlesRef = useRef<any[]>([]);
 
   const [symbol, setSymbol] = useState(() =>
@@ -177,6 +191,7 @@ export default function DashboardPage() {
   const [interval, setIntervalTf] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("chart_interval") || "60" : "60"
   );
+  const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
@@ -188,44 +203,58 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
 
-  // SMA — متن موقت برای تایپ راحت
-  const [showSMA, setShowSMA] = useState(false);
+  // indicators — با localStorage
+  const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
   const [smaVisible, setSmaVisible] = useState(true);
   const [smaSettings, setSmaSettings] = useState(false);
-  const [sma1, setSma1] = useState(50);
-  const [sma2, setSma2] = useState(100);
-  const [sma3, setSma3] = useState(200);
-  const [sma1Str, setSma1Str] = useState("50");
-  const [sma2Str, setSma2Str] = useState("100");
-  const [sma3Str, setSma3Str] = useState("200");
-  const [smaColor1, setSmaColor1] = useState("#ef4444");
-  const [smaColor2, setSmaColor2] = useState("#eab308");
-  const [smaColor3, setSmaColor3] = useState("#a855f7");
+  const [sma1, setSma1] = useState(() => loadLS("sma1", 50));
+  const [sma2, setSma2] = useState(() => loadLS("sma2", 100));
+  const [sma3, setSma3] = useState(() => loadLS("sma3", 200));
+  const [sma1Str, setSma1Str] = useState(() => String(loadLS("sma1", 50)));
+  const [sma2Str, setSma2Str] = useState(() => String(loadLS("sma2", 100)));
+  const [sma3Str, setSma3Str] = useState(() => String(loadLS("sma3", 200)));
+  const [smaColor1, setSmaColor1] = useState(() => loadLS("smaC1", "#ef4444"));
+  const [smaColor2, setSmaColor2] = useState(() => loadLS("smaC2", "#eab308"));
+  const [smaColor3, setSmaColor3] = useState(() => loadLS("smaC3", "#a855f7"));
 
-  // Pivot
-  const [showPivot, setShowPivot] = useState(false);
+  const [showPivot, setShowPivot] = useState(() => loadLS("ind_pivot", false));
   const [pivotVisible, setPivotVisible] = useState(true);
   const [pivotSettings, setPivotSettings] = useState(false);
-  const [pivotTf, setPivotTf] = useState("D");
-  const [pivotFib, setPivotFib] = useState(false);
+  const [pivotTf, setPivotTf] = useState(() => loadLS("pivot_tf", "D"));
+  const [pivotFib, setPivotFib] = useState(() => loadLS("pivot_fib", false));
 
-  // RSI
-  const [showRSI, setShowRSI] = useState(false);
+  const [showRSI, setShowRSI] = useState(() => loadLS("ind_rsi", false));
   const [rsiVisible, setRsiVisible] = useState(true);
   const [rsiSettings, setRsiSettings] = useState(false);
-  const [rsiPeriod, setRsiPeriod] = useState(14);
-  const [rsiPeriodStr, setRsiPeriodStr] = useState("14");
-  const [rsiColor, setRsiColor] = useState("#c084fc");
+  const [rsiPeriod, setRsiPeriod] = useState(() => loadLS("rsi_p", 14));
+  const [rsiPeriodStr, setRsiPeriodStr] = useState(() => String(loadLS("rsi_p", 14)));
+  const [rsiColor, setRsiColor] = useState(() => loadLS("rsi_c", "#c084fc"));
+  const [rsiHeight, setRsiHeight] = useState(() => loadLS("rsi_h", 18)); // درصد از پایین
 
-  // DMI
-  const [showDMI, setShowDMI] = useState(false);
+  const [showDMI, setShowDMI] = useState(() => loadLS("ind_dmi", false));
   const [dmiVisible, setDmiVisible] = useState(true);
   const [dmiSettings, setDmiSettings] = useState(false);
-  const [dmiPeriod, setDmiPeriod] = useState(14);
-  const [dmiPeriodStr, setDmiPeriodStr] = useState("14");
-  const [dmiPlusColor, setDmiPlusColor] = useState("#22c55e");
-  const [dmiMinusColor, setDmiMinusColor] = useState("#ef4444");
-  const [dmiAdxColor, setDmiAdxColor] = useState("#3b82f6");
+  const [dmiPeriod, setDmiPeriod] = useState(() => loadLS("dmi_p", 14));
+  const [dmiPeriodStr, setDmiPeriodStr] = useState(() => String(loadLS("dmi_p", 14)));
+  const [dmiPlusColor, setDmiPlusColor] = useState(() => loadLS("dmi_pc", "#22c55e"));
+  const [dmiMinusColor, setDmiMinusColor] = useState(() => loadLS("dmi_mc", "#ef4444"));
+  const [dmiAdxColor, setDmiAdxColor] = useState(() => loadLS("dmi_ac", "#3b82f6"));
+  const [dmiHeight, setDmiHeight] = useState(() => loadLS("dmi_h", 16));
+
+  const [showVol, setShowVol] = useState(() => loadLS("ind_vol", true));
+  const [volVisible, setVolVisible] = useState(true);
+
+  // persist
+  useEffect(() => { saveLS("ind_sma", showSMA); }, [showSMA]);
+  useEffect(() => { saveLS("sma1", sma1); saveLS("sma2", sma2); saveLS("sma3", sma3); }, [sma1, sma2, sma3]);
+  useEffect(() => { saveLS("smaC1", smaColor1); saveLS("smaC2", smaColor2); saveLS("smaC3", smaColor3); }, [smaColor1, smaColor2, smaColor3]);
+  useEffect(() => { saveLS("ind_pivot", showPivot); saveLS("pivot_tf", pivotTf); saveLS("pivot_fib", pivotFib); }, [showPivot, pivotTf, pivotFib]);
+  useEffect(() => { saveLS("ind_rsi", showRSI); saveLS("rsi_p", rsiPeriod); saveLS("rsi_c", rsiColor); saveLS("rsi_h", rsiHeight); }, [showRSI, rsiPeriod, rsiColor, rsiHeight]);
+  useEffect(() => { saveLS("ind_dmi", showDMI); saveLS("dmi_p", dmiPeriod); saveLS("dmi_pc", dmiPlusColor); saveLS("dmi_mc", dmiMinusColor); saveLS("dmi_ac", dmiAdxColor); saveLS("dmi_h", dmiHeight); }, [showDMI, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, dmiHeight]);
+  useEffect(() => { saveLS("ind_vol", showVol); }, [showVol]);
+  useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
+  useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
+  useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
 
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
@@ -234,8 +263,12 @@ export default function DashboardPage() {
   const conditionRef = useRef(condition);
   const savingRef = useRef(saving);
   const symbolRef = useRef(symbol);
+  const timeZoneRef = useRef(timeZone);
   const showRSIRef = useRef(showRSI);
   const showDMIRef = useRef(showDMI);
+  const showVolRef = useRef(showVol);
+  const rsiHeightRef = useRef(rsiHeight);
+  const dmiHeightRef = useRef(dmiHeight);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
@@ -244,22 +277,27 @@ export default function DashboardPage() {
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+  useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
   useEffect(() => { showRSIRef.current = showRSI; }, [showRSI]);
   useEffect(() => { showDMIRef.current = showDMI; }, [showDMI]);
-  useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
-  useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
+  useEffect(() => { showVolRef.current = showVol; }, [showVol]);
+  useEffect(() => { rsiHeightRef.current = rsiHeight; }, [rsiHeight]);
+  useEffect(() => { dmiHeightRef.current = dmiHeight; }, [dmiHeight]);
 
-  const updateMainMargins = () => {
+  const updateMargins = useCallback(() => {
     if (!chartRef.current) return;
     const rsiOn = showRSIRef.current;
     const dmiOn = showDMIRef.current;
-    let bottom = 0.08;
-    if (rsiOn && dmiOn) bottom = 0.42;
-    else if (rsiOn || dmiOn) bottom = 0.28;
-    chartRef.current.priceScale("right").applyOptions({
-      scaleMargins: { top: 0.05, bottom },
-    });
-  };
+    const volOn = showVolRef.current;
+    const rh = rsiHeightRef.current / 100;
+    const dh = dmiHeightRef.current / 100;
+    let bottom = volOn ? 0.12 : 0.06;
+    if (rsiOn && dmiOn) bottom = rh + dh + 0.04;
+    else if (rsiOn) bottom = rh + 0.04;
+    else if (dmiOn) bottom = dh + 0.04;
+    if (volOn && (rsiOn || dmiOn)) bottom += 0.06;
+    chartRef.current.priceScale("right").applyOptions({ scaleMargins: { top: 0.04, bottom } });
+  }, []);
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
@@ -276,16 +314,13 @@ export default function DashboardPage() {
     clearPreview();
   };
 
+  // … alarms/lines helpers (same as before) …
   const addLine = async (price: number) => {
     if (savingRef.current) return;
     setSaving(true);
     try {
       const p = formatPrice(price);
-      const { data, error } = await supabase
-        .from("chart_lines")
-        .insert([{ symbol: symbolRef.current, price: p, color: "#f97316" }])
-        .select()
-        .single();
+      const { data, error } = await supabase.from("chart_lines").insert([{ symbol: symbolRef.current, price: p, color: "#f97316" }]).select().single();
       if (error) { alert(error.message); return; }
       setLines((prev) => [data, ...prev]);
       resetMode();
@@ -297,19 +332,10 @@ export default function DashboardPage() {
     setSaving(true);
     try {
       const p = formatPrice(price);
-      const { data, error } = await supabase
-        .from("alarms")
-        .insert([{
-          symbol: symbolRef.current.toUpperCase(),
-          price: p,
-          condition: conditionRef.current,
-          is_active: true,
-          triggered: false,
-          repeat: false,
-          note: "آلارم از چارت",
-        }])
-        .select()
-        .single();
+      const { data, error } = await supabase.from("alarms").insert([{
+        symbol: symbolRef.current.toUpperCase(), price: p, condition: conditionRef.current,
+        is_active: true, triggered: false, repeat: false, note: "آلارم از چارت",
+      }]).select().single();
       if (error) { alert(error.message); return; }
       setAlarms((prev) => [data, ...prev]);
       resetMode();
@@ -347,16 +373,14 @@ export default function DashboardPage() {
   };
 
   const startMove = (id: string, type: "line" | "alarm", price: number) => {
-    setMode("move");
-    setMovingId(id);
-    setMovingType(type);
-    setPreviewPrice(price);
+    setMode("move"); setMovingId(id); setMovingType(type); setPreviewPrice(price);
   };
 
   const getConditionSymbol = (c: string) => (c === "above" ? "≥" : c === "below" ? "≤" : "≈");
   const getConditionLabel = (c: string) => (c === "above" ? "بالای قیمت" : c === "below" ? "پایین قیمت" : "برخورد");
   const getConditionColor = (c: string) => (c === "above" ? "text-green-400" : c === "below" ? "text-red-400" : "text-blue-400");
 
+  // ——— SMA ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -380,16 +404,17 @@ export default function DashboardPage() {
     smaSeriesRef.current = { s1, s2, s3 };
   };
 
+  // ——— Pivot کوتاه (مثل TV) ———
   const removePivot = () => {
-    if (!seriesRef.current) return;
-    pivotLinesRef.current.forEach((pl) => {
-      try { seriesRef.current?.removePriceLine(pl); } catch {}
+    if (!chartRef.current) return;
+    pivotSeriesRef.current.forEach((s) => {
+      try { chartRef.current?.removeSeries(s); } catch {}
     });
-    pivotLinesRef.current = [];
+    pivotSeriesRef.current = [];
   };
 
-  const applyPivot = async (sym: string) => {
-    if (!seriesRef.current) return;
+  const applyPivot = async (sym: string, candles: any[]) => {
+    if (!chartRef.current || !candles.length) return;
     removePivot();
     if (!showPivot || !pivotVisible) return;
 
@@ -408,7 +433,6 @@ export default function DashboardPage() {
       const range = high - low;
       const pp = (high + low + close) / 3;
 
-      // Floor Trader کامل: R1–R4 / S1–S4
       const r1 = 2 * pp - low;
       const r2 = pp + range;
       const r3 = r1 + range;
@@ -418,41 +442,50 @@ export default function DashboardPage() {
       const s3 = s1 - range;
       const s4 = s3 - (s1 - s2);
 
-      const levels: { price: number; title: string; color: string }[] = [
-        { price: pp, title: "PP", color: "#ffffff" },
-        { price: r1, title: "R1", color: "#4ade80" },
-        { price: r2, title: "R2", color: "#22c55e" },
-        { price: r3, title: "R3", color: "#16a34a" },
-        { price: r4, title: "R4", color: "#15803d" },
-        { price: s1, title: "S1", color: "#f87171" },
-        { price: s2, title: "S2", color: "#ef4444" },
-        { price: s3, title: "S3", color: "#dc2626" },
-        { price: s4, title: "S4", color: "#b91c1c" },
+      // فقط PP + R1-R3 + S1-S3 مثل عکس TV (نه خیلی زیاد)
+      let levels = [
+        { price: r3, color: "#67e8f9" },
+        { price: r2, color: "#67e8f9" },
+        { price: r1, color: "#67e8f9" },
+        { price: pp, color: "#ffffff" },
+        { price: s1, color: "#c084fc" },
+        { price: s2, color: "#c084fc" },
+        { price: s3, color: "#c084fc" },
       ];
-
       if (pivotFib) {
-        [0.382, 0.618, 1, 1.382, 1.618].forEach((f) => {
-          levels.push({ price: pp + range * f, title: `fR${f}`, color: "#86efac" });
-          levels.push({ price: pp - range * f, title: `fS${f}`, color: "#fca5a5" });
-        });
+        levels = levels.concat([
+          { price: r4, color: "#22d3ee" },
+          { price: s4, color: "#e879f9" },
+        ]);
       }
 
+      const lastT = candles[candles.length - 1].time as number;
+      // بازه کوتاه ~ چند کندل سمت راست
+      const barSec =
+        interval === "1" ? 60 : interval === "5" ? 300 : interval === "15" ? 900 :
+        interval === "60" ? 3600 : interval === "240" ? 14400 : 86400;
+      const half = barSec * 4;
+
       levels.forEach((lv) => {
-        const pl = seriesRef.current!.createPriceLine({
-          price: formatPrice(lv.price),
+        const s = chartRef.current!.addLineSeries({
           color: lv.color,
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: lv.title,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
         });
-        pivotLinesRef.current.push(pl);
+        s.setData([
+          { time: (lastT - half) as any, value: formatPrice(lv.price) },
+          { time: (lastT + half) as any, value: formatPrice(lv.price) },
+        ]);
+        pivotSeriesRef.current.push(s);
       });
     } catch (e) {
       console.error(e);
     }
   };
 
+  // ——— RSI ———
   const removeRSI = () => {
     if (!chartRef.current || !rsiSeriesRef.current) return;
     try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
@@ -463,10 +496,9 @@ export default function DashboardPage() {
     if (!chartRef.current) return;
     removeRSI();
     if (!showRSI || !rsiVisible || !candles.length) return;
-
-    const onlyRsi = showRSI && !showDMI;
     const both = showRSI && showDMI;
-
+    const rh = rsiHeight / 100;
+    const dh = dmiHeight / 100;
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -476,20 +508,20 @@ export default function DashboardPage() {
     });
     chartRef.current.priceScale("rsi").applyOptions({
       scaleMargins: both
-        ? { top: 0.62, bottom: 0.22 }
-        : { top: 0.72, bottom: 0.02 },
+        ? { top: 1 - rh - dh - 0.02, bottom: dh + 0.02 }
+        : { top: 1 - rh - 0.02, bottom: 0.02 },
       borderVisible: false,
     });
     s.setData(calcRSI(candles, rsiPeriod) as any);
     try {
       s.createPriceLine({ price: 70, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
       s.createPriceLine({ price: 30, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
-      s.createPriceLine({ price: 50, color: "#6b7280", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false });
     } catch {}
     rsiSeriesRef.current = s;
-    updateMainMargins();
+    updateMargins();
   };
 
+  // ——— DMI ———
   const removeDMI = () => {
     if (!chartRef.current || !dmiSeriesRef.current) return;
     try {
@@ -504,42 +536,51 @@ export default function DashboardPage() {
     if (!chartRef.current) return;
     removeDMI();
     if (!showDMI || !dmiVisible || !candles.length) return;
-
     const both = showRSI && showDMI;
+    const dh = dmiHeight / 100;
     const { plusDI, minusDI, adx } = calcDMI(candles, dmiPeriod);
-
-    const plus = chartRef.current.addLineSeries({
-      color: dmiPlusColor,
-      lineWidth: 1,
-      priceScaleId: "dmi",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    const minus = chartRef.current.addLineSeries({
-      color: dmiMinusColor,
-      lineWidth: 1,
-      priceScaleId: "dmi",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    const adxS = chartRef.current.addLineSeries({
-      color: dmiAdxColor,
-      lineWidth: 2,
-      priceScaleId: "dmi",
-      priceLineVisible: false,
-      lastValueVisible: true,
-    });
+    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 2, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: true });
     chartRef.current.priceScale("dmi").applyOptions({
-      scaleMargins: both
-        ? { top: 0.82, bottom: 0.02 }
-        : { top: 0.72, bottom: 0.02 },
+      scaleMargins: both ? { top: 1 - dh - 0.01, bottom: 0.01 } : { top: 1 - dh - 0.02, bottom: 0.02 },
       borderVisible: false,
     });
     plus.setData(plusDI as any);
     minus.setData(minusDI as any);
     adxS.setData(adx as any);
     dmiSeriesRef.current = { plus, minus, adx: adxS };
-    updateMainMargins();
+    updateMargins();
+  };
+
+  // ——— Volume ———
+  const removeVol = () => {
+    if (!chartRef.current || !volumeSeriesRef.current) return;
+    try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
+    volumeSeriesRef.current = null;
+  };
+
+  const applyVol = (candles: any[]) => {
+    if (!chartRef.current) return;
+    removeVol();
+    if (!showVol || !volVisible || !candles.length) return;
+    const vol = chartRef.current.addHistogramSeries({
+      priceFormat: { type: "volume" },
+      priceScaleId: "vol",
+    });
+    chartRef.current.priceScale("vol").applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+      borderVisible: false,
+    });
+    vol.setData(
+      candles.map((c: any) => ({
+        time: c.time,
+        value: c.volume || 0,
+        color: c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
+      })) as any
+    );
+    volumeSeriesRef.current = vol;
+    updateMargins();
   };
 
   const loadCandles = async (sym: string, tf: string) => {
@@ -556,22 +597,22 @@ export default function DashboardPage() {
             high: parseFloat(item[2]),
             low: parseFloat(item[3]),
             close: parseFloat(item[4]),
+            volume: parseFloat(item[5]),
           }))
           .reverse();
         if (!candles.length) return;
-
         candlesRef.current = candles;
         const lastClose = candles[candles.length - 1].close;
         const { precision, minMove } = getPrecision(lastClose);
         seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove } });
         seriesRef.current.setData(candles);
         chartRef.current?.timeScale().fitContent();
-        updateMainMargins();
-
+        updateMargins();
         applySMA(candles);
         applyRSI(candles);
         applyDMI(candles);
-        applyPivot(sym);
+        applyVol(candles);
+        applyPivot(sym, candles);
       }
     } catch (e) {
       console.error(e);
@@ -585,11 +626,7 @@ export default function DashboardPage() {
 
   const loadAlarms = async (sym: string) => {
     const { data } = await supabase
-      .from("alarms")
-      .select("*")
-      .eq("symbol", sym)
-      .eq("is_active", true)
-      .eq("triggered", false)
+      .from("alarms").select("*").eq("symbol", sym).eq("is_active", true).eq("triggered", false)
       .order("created_at", { ascending: false });
     setAlarms(data || []);
   };
@@ -601,13 +638,21 @@ export default function DashboardPage() {
       layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
       width: chartContainerRef.current.clientWidth,
-      height: 680,
-      timeScale: { timeVisible: true, secondsVisible: false },
-      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.05, bottom: 0.08 }, borderVisible: false },
+      height: 700,
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderVisible: true,
+      },
+      localization: {
+        locale: "en-GB",
+        timeFormatter: (t: number) => formatTimeTZ(t, timeZoneRef.current),
+      },
+      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.04, bottom: 0.12 }, borderVisible: false },
       crosshair: {
         mode: 0,
         horzLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#f97316" },
-        vertLine: { visible: true, labelVisible: false, style: LineStyle.Dashed, width: 1, color: "#6b7280" },
+        vertLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#6b7280" },
       },
     });
 
@@ -666,6 +711,17 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // به‌روز کردن فرمت زمان با تغییر timezone
+  useEffect(() => {
+    if (!chartRef.current) return;
+    chartRef.current.applyOptions({
+      localization: {
+        locale: "en-GB",
+        timeFormatter: (t: number) => formatTimeTZ(t, timeZone),
+      },
+    });
+  }, [timeZone]);
+
   useEffect(() => {
     resetMode();
     loadCandles(symbol, interval);
@@ -673,23 +729,11 @@ export default function DashboardPage() {
     loadAlarms(symbol);
   }, [symbol, interval]);
 
-  useEffect(() => {
-    if (candlesRef.current.length) applySMA(candlesRef.current);
-  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
-
-  useEffect(() => {
-    if (candlesRef.current.length) applyRSI(candlesRef.current);
-    else updateMainMargins();
-  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, showDMI]);
-
-  useEffect(() => {
-    if (candlesRef.current.length) applyDMI(candlesRef.current);
-    else updateMainMargins();
-  }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, showRSI]);
-
-  useEffect(() => {
-    applyPivot(symbol);
-  }, [showPivot, pivotVisible, pivotTf, pivotFib, symbol]);
+  useEffect(() => { if (candlesRef.current.length) applySMA(candlesRef.current); }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
+  useEffect(() => { if (candlesRef.current.length) applyRSI(candlesRef.current); else updateMargins(); }, [showRSI, rsiVisible, rsiPeriod, rsiColor, rsiHeight, showDMI, dmiHeight]);
+  useEffect(() => { if (candlesRef.current.length) applyDMI(candlesRef.current); else updateMargins(); }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, dmiHeight, showRSI, rsiHeight]);
+  useEffect(() => { if (candlesRef.current.length) applyVol(candlesRef.current); else updateMargins(); }, [showVol, volVisible]);
+  useEffect(() => { if (candlesRef.current.length) applyPivot(symbol, candlesRef.current); }, [showPivot, pivotVisible, pivotTf, pivotFib, symbol, interval]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -699,11 +743,7 @@ export default function DashboardPage() {
       if (mode === "move" && movingType === "alarm" && movingId === alarm.id) return;
       const color = alarm.condition === "above" ? "#22c55e" : alarm.condition === "below" ? "#ef4444" : "#3b82f6";
       const pl = seriesRef.current!.createPriceLine({
-        price: alarm.price,
-        color,
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
+        price: alarm.price, color, lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true,
         title: `آلارم ${getConditionSymbol(alarm.condition)}`,
       });
       alarmLinesRef.current.set(alarm.id, pl);
@@ -717,26 +757,18 @@ export default function DashboardPage() {
     lines.forEach((line) => {
       if (mode === "move" && movingType === "line" && movingId === line.id) return;
       const pl = seriesRef.current!.createPriceLine({
-        price: line.price,
-        color: line.color || "#f97316",
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
+        price: line.price, color: line.color || "#f97316", lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true,
         title: line.note || "خط",
       });
       chartLinesRef.current.set(line.id, pl);
     });
   }, [lines, mode, movingId, movingType]);
 
-  const IndChip = ({
-    label, visible, onToggleVisible, onSettings, onRemove,
-  }: {
-    label: string; visible: boolean; onToggleVisible: () => void; onSettings?: () => void; onRemove: () => void;
-  }) => (
+  const IndChip = ({ label, visible, onToggleVisible, onSettings, onRemove }: any) => (
     <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
       <span className="text-gray-200">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400 hover:text-white">{visible ? "👁" : "🚫"}</button>
-      {onSettings && <button type="button" onClick={onSettings} className="p-1 text-gray-400 hover:text-white">⚙</button>}
+      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400">{visible ? "👁" : "🚫"}</button>
+      {onSettings && <button type="button" onClick={onSettings} className="p-1 text-gray-400">⚙</button>}
       <button type="button" onClick={onRemove} className="p-1 text-gray-400 hover:text-red-400">🗑</button>
     </div>
   );
@@ -745,7 +777,10 @@ export default function DashboardPage() {
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
         <h1 className="text-2xl font-bold">چارت زنده</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={timeZone} onChange={(e) => setTimeZone(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white">
+            {TIMEZONES.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
+          </select>
           <input type="text" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-28" />
           <button onClick={() => { loadCandles(symbol, interval); loadLines(symbol); loadAlarms(symbol); }} className="bg-gray-700 text-white px-3 py-2 rounded-lg text-sm">برو</button>
           <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">آلارم‌ها</Link>
@@ -754,9 +789,7 @@ export default function DashboardPage() {
 
       <div className="mb-3 flex flex-wrap gap-2">
         {TIMEFRAMES.map((tf) => (
-          <button key={tf.value} onClick={() => setIntervalTf(tf.value)} className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}>
-            {tf.label}
-          </button>
+          <button key={tf.value} onClick={() => setIntervalTf(tf.value)} className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}>{tf.label}</button>
         ))}
       </div>
 
@@ -771,6 +804,7 @@ export default function DashboardPage() {
               <button onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Pivot</button>
               <button onClick={() => { setShowRSI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">RSI</button>
               <button onClick={() => { setShowDMI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">DMI</button>
+              <button onClick={() => { setShowVol(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Volume</button>
             </div>
           )}
         </div>
@@ -784,54 +818,28 @@ export default function DashboardPage() {
       </div>
 
       <div className="mb-2 flex flex-wrap gap-2">
-        {showSMA && (
-          <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible(!smaVisible)} onSettings={() => setSmaSettings(!smaSettings)}
-            onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }} />
-        )}
-        {showPivot && (
-          <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible(!pivotVisible)} onSettings={() => setPivotSettings(!pivotSettings)}
-            onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }} />
-        )}
-        {showRSI && (
-          <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible(!rsiVisible)} onSettings={() => setRsiSettings(!rsiSettings)}
-            onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }} />
-        )}
-        {showDMI && (
-          <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible(!dmiVisible)} onSettings={() => setDmiSettings(!dmiSettings)}
-            onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }} />
-        )}
+        {showSMA && <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible(!smaVisible)} onSettings={() => setSmaSettings(!smaSettings)} onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }} />}
+        {showPivot && <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible(!pivotVisible)} onSettings={() => setPivotSettings(!pivotSettings)} onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }} />}
+        {showRSI && <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible(!rsiVisible)} onSettings={() => setRsiSettings(!rsiSettings)} onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }} />}
+        {showDMI && <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible(!dmiVisible)} onSettings={() => setDmiSettings(!dmiSettings)} onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }} />}
+        {showVol && <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible(!volVisible)} onRemove={() => { setShowVol(false); removeVol(); }} />}
       </div>
 
-      {/* SMA settings — تایپ آزاد */}
+      {/* تنظیمات — همان الگوی قبلی + ارتفاع RSI/DMI + اعمال فوری دوره DMI */}
       {smaSettings && showSMA && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           {[
-            { label: "SMA1", str: sma1Str, setStr: setSma1Str, setVal: setSma1, col: smaColor1, setCol: setSmaColor1 },
-            { label: "SMA2", str: sma2Str, setStr: setSma2Str, setVal: setSma2, col: smaColor2, setCol: setSmaColor2 },
-            { label: "SMA3", str: sma3Str, setStr: setSma3Str, setVal: setSma3, col: smaColor3, setCol: setSmaColor3 },
+            { label: "SMA1", str: sma1Str, setStr: setSma1Str, setVal: setSma1, col: smaColor1, setCol: setSmaColor1, cur: sma1 },
+            { label: "SMA2", str: sma2Str, setStr: setSma2Str, setVal: setSma2, col: smaColor2, setCol: setSmaColor2, cur: sma2 },
+            { label: "SMA3", str: sma3Str, setStr: setSma3Str, setVal: setSma3, col: smaColor3, setCol: setSmaColor3, cur: sma3 },
           ].map((row) => (
             <div key={row.label} className="flex flex-wrap items-center gap-3">
               <span className="w-12">{row.label}</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={row.str}
-                onChange={(e) => {
-                  const v = e.target.value.replace(/[^\d]/g, "");
-                  row.setStr(v);
-                }}
-                onBlur={() => {
-                  const n = parseInt(row.str, 10);
-                  if (!isNaN(n) && n >= 1) {
-                    row.setVal(n);
-                    row.setStr(String(n));
-                  } else {
-                    row.setStr(String(row.label === "SMA1" ? sma1 : row.label === "SMA2" ? sma2 : sma3));
-                  }
-                }}
-                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
-              />
-              <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded cursor-pointer" />
+              <input type="text" inputMode="numeric" value={row.str}
+                onChange={(e) => row.setStr(e.target.value.replace(/[^\d]/g, ""))}
+                onBlur={() => { const n = parseInt(row.str, 10); if (!isNaN(n) && n >= 1) { row.setVal(n); row.setStr(String(n)); } else row.setStr(String(row.cur)); }}
+                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white" />
+              <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded" />
             </div>
           ))}
           <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">بستن</button>
@@ -843,34 +851,32 @@ export default function DashboardPage() {
           <div className="flex flex-wrap gap-2 items-center">
             <span>تایم‌فریم:</span>
             {PIVOT_TFS.map((tf) => (
-              <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)}
-                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
+              <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)} className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
             ))}
           </div>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-            سطوح فیبوناچی اضافه
-          </label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} /> R4/S4 اضافه</label>
           <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
 
       {rsiSettings && showRSI && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-wrap gap-3 items-center text-sm">
-          <span>دوره</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={rsiPeriodStr}
-            onChange={(e) => setRsiPeriodStr(e.target.value.replace(/[^\d]/g, ""))}
-            onBlur={() => {
-              const n = parseInt(rsiPeriodStr, 10);
-              if (!isNaN(n) && n >= 2) { setRsiPeriod(n); setRsiPeriodStr(String(n)); }
-              else setRsiPeriodStr(String(rsiPeriod));
-            }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5"
-          />
-          <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
+        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
+          <div className="flex flex-wrap gap-3 items-center">
+            <span>دوره</span>
+            <input type="text" inputMode="numeric" value={rsiPeriodStr}
+              onChange={(e) => {
+                const v = e.target.value.replace(/[^\d]/g, "");
+                setRsiPeriodStr(v);
+                const n = parseInt(v, 10);
+                if (!isNaN(n) && n >= 2) setRsiPeriod(n);
+              }}
+              className="w-16 bg-gray-800 rounded px-2 py-1.5" />
+            <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
+          </div>
+          <label className="flex items-center gap-2">ارتفاع پنل
+            <input type="range" min={10} max={35} value={rsiHeight} onChange={(e) => setRsiHeight(Number(e.target.value))} className="w-32" />
+            <span>{rsiHeight}%</span>
+          </label>
           <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
@@ -879,29 +885,29 @@ export default function DashboardPage() {
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-3 items-center">
             <span>دوره</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={dmiPeriodStr}
-              onChange={(e) => setDmiPeriodStr(e.target.value.replace(/[^\d]/g, ""))}
-              onBlur={() => {
-                const n = parseInt(dmiPeriodStr, 10);
-                if (!isNaN(n) && n >= 2) { setDmiPeriod(n); setDmiPeriodStr(String(n)); }
-                else setDmiPeriodStr(String(dmiPeriod));
+            <input type="text" inputMode="numeric" value={dmiPeriodStr}
+              onChange={(e) => {
+                const v = e.target.value.replace(/[^\d]/g, "");
+                setDmiPeriodStr(v);
+                const n = parseInt(v, 10);
+                if (!isNaN(n) && n >= 2) setDmiPeriod(n); // فوری
               }}
-              className="w-16 bg-gray-800 rounded px-2 py-1.5"
-            />
+              className="w-16 bg-gray-800 rounded px-2 py-1.5" />
           </div>
           <div className="flex flex-wrap gap-4 items-center">
             <label className="flex items-center gap-2">+DI <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
             <label className="flex items-center gap-2">−DI <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
             <label className="flex items-center gap-2">ADX <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" /></label>
           </div>
+          <label className="flex items-center gap-2">ارتفاع پنل
+            <input type="range" min={10} max={35} value={dmiHeight} onChange={(e) => setDmiHeight(Number(e.target.value))} className="w-32" />
+            <span>{dmiHeight}%</span>
+          </label>
           <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">بستن</button>
         </div>
       )}
 
-      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "680px", touchAction: "none" }} />
+      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "700px", touchAction: "none" }} />
 
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
