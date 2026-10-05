@@ -73,7 +73,6 @@ function formatPct(pct: number) {
   return `${sign}${(pct * 100).toFixed(2)}%`;
 }
 
-/** BTCUSDT → btc */
 function baseFromSymbol(symbol: string) {
   const s = symbol.toUpperCase();
   const quotes = ["USDT", "USDC", "USD", "BTC", "ETH", "BUSD", "DAI"];
@@ -153,17 +152,15 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
     (async () => {
       try {
         const res = await fetch(
-          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=60`
+          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=60`
         );
-        const data = await res.json();
-        const list = data.result?.list;
+        const json = await res.json();
+        const list = json?.data;
         if (!list?.length) return;
-        const rows = list
-          .map((item: any) => ({
-            time: Number(item[0]) / 1000,
-            value: parseFloat(item[4]),
-          }))
-          .reverse();
+        const rows = list.map((item: any) => ({
+          time: item.time,
+          value: item.value ?? item.close,
+        }));
         series.setData(rows as any);
         chart.timeScale().fitContent();
       } catch {}
@@ -234,19 +231,17 @@ function DetailChart({
     (async () => {
       try {
         const res = await fetch(
-          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=200`
+          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=200`
         );
-        const data = await res.json();
-        const list = data.result?.list;
+        const json = await res.json();
+        const list = json?.data;
         if (!list?.length) return;
 
         if (lineMode && lineSeries) {
-          const rows = list
-            .map((item: any) => ({
-              time: Number(item[0]) / 1000,
-              value: parseFloat(item[4]),
-            }))
-            .reverse();
+          const rows = list.map((item: any) => ({
+            time: item.time,
+            value: item.value ?? item.close,
+          }));
           const last = rows[rows.length - 1]?.value || 0;
           const { precision, minMove } = getPrecision(last);
           lineSeries.applyOptions({
@@ -254,15 +249,13 @@ function DetailChart({
           });
           lineSeries.setData(rows as any);
         } else if (candleSeries) {
-          const candles = list
-            .map((item: any) => ({
-              time: Number(item[0]) / 1000,
-              open: parseFloat(item[1]),
-              high: parseFloat(item[2]),
-              low: parseFloat(item[3]),
-              close: parseFloat(item[4]),
-            }))
-            .reverse();
+          const candles = list.map((item: any) => ({
+            time: item.time,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+          }));
           const last = candles[candles.length - 1].close;
           const { precision, minMove } = getPrecision(last);
           candleSeries.applyOptions({
@@ -333,26 +326,27 @@ export default function WatchlistPage() {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
 
+  // symbols list for search (try bybit via instruments; fail silently)
   useEffect(() => {
     (async () => {
       try {
         const [spotRes, futRes] = await Promise.all([
           fetch(
             "https://api.bybit.com/v5/market/instruments-info?category=spot&status=Trading&limit=1000"
-          ),
+          ).catch(() => null),
           fetch(
             "https://api.bybit.com/v5/market/instruments-info?category=linear&status=Trading&limit=1000"
-          ),
+          ).catch(() => null),
         ]);
-        const spotData = await spotRes.json();
-        const futData = await futRes.json();
-        const spot = (spotData.result?.list || []).map((x: any) => ({
+        const spotData = spotRes ? await spotRes.json() : null;
+        const futData = futRes ? await futRes.json() : null;
+        const spot = (spotData?.result?.list || []).map((x: any) => ({
           symbol: x.symbol as string,
           baseCoin: x.baseCoin as string,
           quoteCoin: x.quoteCoin as string,
           market: "Spot" as const,
         }));
-        const fut = (futData.result?.list || []).map((x: any) => ({
+        const fut = (futData?.result?.list || []).map((x: any) => ({
           symbol: x.symbol as string,
           baseCoin: x.baseCoin as string,
           quoteCoin: x.quoteCoin as string,
@@ -365,14 +359,57 @@ export default function WatchlistPage() {
           seen.add(s.symbol);
           merged.push(s);
         }
-        setAllSymbols(merged);
-      } catch {}
+        if (merged.length) setAllSymbols(merged);
+        else {
+          // fallback common list if bybit blocked in browser
+          setAllSymbols(
+            [
+              "BTCUSDT",
+              "ETHUSDT",
+              "BNBUSDT",
+              "SOLUSDT",
+              "XRPUSDT",
+              "ADAUSDT",
+              "DOGEUSDT",
+              "AVAXUSDT",
+              "DOTUSDT",
+              "LINKUSDT",
+              "MATICUSDT",
+              "LTCUSDT",
+              "ATOMUSDT",
+              "UNIUSDT",
+              "NEARUSDT",
+              "APTUSDT",
+              "ARBUSDT",
+              "OPUSDT",
+              "SUIUSDT",
+              "INJUSDT",
+            ].map((s) => ({
+              symbol: s,
+              baseCoin: s.replace("USDT", ""),
+              quoteCoin: "USDT",
+              market: "Spot" as const,
+            }))
+          );
+        }
+      } catch {
+        setAllSymbols(
+          ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].map((s) => ({
+            symbol: s,
+            baseCoin: s.replace("USDT", ""),
+            quoteCoin: "USDT",
+            market: "Spot" as const,
+          }))
+        );
+      }
     })();
   }, []);
 
+  // prices via our multi-exchange API
   useEffect(() => {
     if (!items.length && !searchHits.length) return;
     let cancelled = false;
+
     const fetchPrices = async () => {
       const symbols = Array.from(
         new Set([
@@ -381,37 +418,29 @@ export default function WatchlistPage() {
         ])
       );
       if (!symbols.length) return;
-      const nextP: Record<string, number> = {};
-      const nextPct: Record<string, number> = {};
-      await Promise.all(
-        symbols.map(async (sym) => {
-          try {
-            let res = await fetch(
-              `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
-            );
-            let data = await res.json();
-            let row = data.result?.list?.[0];
-            if (!row) {
-              res = await fetch(
-                `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${sym}`
-              );
-              data = await res.json();
-              row = data.result?.list?.[0];
-            }
-            if (row) {
-              const p = parseFloat(row.lastPrice);
-              const pct = parseFloat(row.price24hPcnt);
-              if (p && !Number.isNaN(p)) nextP[sym] = p;
-              if (!Number.isNaN(pct)) nextPct[sym] = pct;
-            }
-          } catch {}
-        })
-      );
-      if (!cancelled) {
-        setPrices((prev) => ({ ...prev, ...nextP }));
-        setPcts((prev) => ({ ...prev, ...nextPct }));
-      }
+
+      try {
+        const res = await fetch(
+          `/api/ticker?symbols=${encodeURIComponent(symbols.join(","))}`
+        );
+        const json = await res.json();
+        if (!json?.ok || !json.data) return;
+
+        const nextP: Record<string, number> = {};
+        const nextPct: Record<string, number> = {};
+        for (const [sym, row] of Object.entries(json.data) as any) {
+          if (row?.lastPrice) nextP[sym] = row.lastPrice;
+          if (row?.price24hPcnt != null && !Number.isNaN(row.price24hPcnt)) {
+            nextPct[sym] = row.price24hPcnt;
+          }
+        }
+        if (!cancelled) {
+          setPrices((prev) => ({ ...prev, ...nextP }));
+          setPcts((prev) => ({ ...prev, ...nextPct }));
+        }
+      } catch {}
     };
+
     fetchPrices();
     const id = setInterval(fetchPrices, 15000);
     return () => {
@@ -535,7 +564,6 @@ export default function WatchlistPage() {
     await persistOrder(ordered);
   };
 
-  /** auto-scroll list while dragging near edges */
   const autoScroll = (clientY: number) => {
     const containers = [listScrollRef.current, gridScrollRef.current].filter(
       Boolean
@@ -544,11 +572,8 @@ export default function WatchlistPage() {
       const rect = el.getBoundingClientRect();
       if (clientY < rect.top || clientY > rect.bottom) continue;
       const edge = 56;
-      if (clientY < rect.top + edge) {
-        el.scrollTop -= 18;
-      } else if (clientY > rect.bottom - edge) {
-        el.scrollTop += 18;
-      }
+      if (clientY < rect.top + edge) el.scrollTop -= 18;
+      else if (clientY > rect.bottom - edge) el.scrollTop += 18;
     }
   };
 
@@ -560,7 +585,6 @@ export default function WatchlistPage() {
         y: clientY - offsetRef.current.y,
       });
       autoScroll(clientY);
-
       const el = document.elementFromPoint(clientX, clientY);
       if (!el) return;
       const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
@@ -704,11 +728,8 @@ export default function WatchlistPage() {
 
   const toggleSymbol = async (sym: string) => {
     const symbol = sym.toUpperCase();
-    if (items.some((i) => i.symbol === symbol)) {
-      await removeSymbol(symbol);
-    } else {
-      await addSymbol(symbol);
-    }
+    if (items.some((i) => i.symbol === symbol)) await removeSymbol(symbol);
+    else await addSymbol(symbol);
   };
 
   const deleteItem = async (id: string) => {
@@ -747,7 +768,6 @@ export default function WatchlistPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* Floating drag card */}
       {draggingId && floatPos && draggingItem && (
         <div
           className="fixed z-[9999] pointer-events-none rounded-xl border-2 border-orange-500 bg-gray-900 shadow-2xl shadow-orange-500/40"
@@ -798,7 +818,6 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
           <div key={l.id} className="relative flex items-center" data-menu-root>
@@ -895,7 +914,6 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Search */}
       <div className="mb-6 relative">
         {!showSearch ? (
           <button
@@ -961,9 +979,6 @@ export default function WatchlistPage() {
                         >
                           {hit.market}
                         </span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
-                          Bybit
-                        </span>
                       </div>
                       <div className="text-xs text-gray-500">
                         {hit.baseCoin}/{hit.quoteCoin}
@@ -1014,7 +1029,6 @@ export default function WatchlistPage() {
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
       )}
 
-      {/* GRID */}
       {viewMode === "grid" && activeListId && (
         <div
           ref={gridScrollRef}
@@ -1022,7 +1036,6 @@ export default function WatchlistPage() {
         >
           {items.map((item) => (
             <div key={item.id}>
-              {/* gap indicator above drop target */}
               {draggingId && dropTargetId === item.id && draggingId !== item.id && (
                 <div className="h-3 mb-1 rounded-full bg-orange-500/40 border border-dashed border-orange-500" />
               )}
@@ -1118,14 +1131,12 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* LIST */}
       {viewMode === "list" && activeListId && (
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
           <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
             <div ref={listScrollRef} className="overflow-y-auto flex-1 overscroll-contain">
               {items.map((item) => (
                 <div key={item.id}>
-                  {/* gap opens above the target row */}
                   {draggingId &&
                     dropTargetId === item.id &&
                     draggingId !== item.id && (
@@ -1140,11 +1151,7 @@ export default function WatchlistPage() {
                       selectedSymbol === item.symbol && draggingId !== item.id
                         ? "bg-gray-800 border-l-2 border-l-orange-500"
                         : ""
-                    } ${
-                      draggingId === item.id
-                        ? "opacity-20 scale-[0.98]"
-                        : ""
-                    }`}
+                    } ${draggingId === item.id ? "opacity-20 scale-[0.98]" : ""}`}
                     style={{
                       WebkitUserSelect: "none",
                       userSelect: "none",
