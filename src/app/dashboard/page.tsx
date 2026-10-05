@@ -18,7 +18,8 @@ interface ChartLine {
   color: string;
   note?: string | null;
   width?: number | null;
-  style?: string | null; // "full" | "ray"
+  style?: string | null;
+  start_time?: number | null;
 }
 
 interface Alarm {
@@ -30,6 +31,7 @@ interface Alarm {
   triggered: boolean;
   note?: string | null;
   color?: string | null;
+  last_price?: number | null;
 }
 
 type ToolMode = "none" | "draw" | "ray" | "alarm" | "move";
@@ -133,12 +135,15 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
   const out: { time: number; value: number }[] = [];
   const p = Math.max(2, period);
   if (candles.length < p + 1) return out;
-  let gains = 0, losses = 0;
+  let gains = 0,
+    losses = 0;
   for (let i = 1; i <= p; i++) {
     const d = candles[i].close - candles[i - 1].close;
-    if (d >= 0) gains += d; else losses -= d;
+    if (d >= 0) gains += d;
+    else losses -= d;
   }
-  let avgGain = gains / p, avgLoss = losses / p;
+  let avgGain = gains / p,
+    avgLoss = losses / p;
   out.push({
     time: candles[p].time,
     value: 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)),
@@ -169,10 +174,14 @@ function calcDMI(
   const plusDM: number[] = [];
   const minusDM: number[] = [];
   for (let i = 1; i < candles.length; i++) {
-    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
-    const ph = candles[i - 1].high, pl = candles[i - 1].low;
+    const h = candles[i].high,
+      l = candles[i].low,
+      pc = candles[i - 1].close;
+    const ph = candles[i - 1].high,
+      pl = candles[i - 1].low;
     tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
-    const up = h - ph, down = pl - l;
+    const up = h - ph,
+      down = pl - l;
     plusDM.push(up > down && up > 0 ? up : 0);
     minusDM.push(down > up && down > 0 ? down : 0);
   }
@@ -209,10 +218,13 @@ function findPivots(candles: any[], period: number) {
   const highs: { i: number; price: number; time: number }[] = [];
   const lows: { i: number; price: number; time: number }[] = [];
   for (let i = period; i < candles.length - period; i++) {
-    let isH = true, isL = true;
+    let isH = true,
+      isL = true;
     for (let j = 1; j <= period; j++) {
-      if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high) isH = false;
-      if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low) isL = false;
+      if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high)
+        isH = false;
+      if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low)
+        isL = false;
     }
     if (isH) highs.push({ i, price: candles[i].high, time: candles[i].time });
     if (isL) lows.push({ i, price: candles[i].low, time: candles[i].time });
@@ -220,7 +232,9 @@ function findPivots(candles: any[], period: number) {
   return { highs, lows };
 }
 
-function groupBySymbol<T extends { symbol: string }>(items: T[]): { symbol: string; items: T[] }[] {
+function groupBySymbol<T extends { symbol: string }>(
+  items: T[]
+): { symbol: string; items: T[] }[] {
   const map = new Map<string, T[]>();
   items.forEach((it) => {
     const s = (it.symbol || "").toUpperCase();
@@ -269,6 +283,28 @@ function showLocalNotification(title: string, body: string) {
   playAlarmBeep();
 }
 
+function getConditionSymbol(c: string) {
+  return c === "above" ? "≥" : c === "below" ? "≤" : "≈";
+}
+
+function getConditionLabel(c: string) {
+  return c === "above" ? "Above" : c === "below" ? "Below" : "Cross";
+}
+
+function didCross(
+  condition: string,
+  target: number,
+  prev: number | null | undefined,
+  price: number
+) {
+  if (prev == null || Number.isNaN(prev)) return false;
+  if (condition === "above") return prev < target && price >= target;
+  if (condition === "below") return prev > target && price <= target;
+  return (
+    (prev < target && price >= target) || (prev > target && price <= target)
+  );
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -284,14 +320,18 @@ export default function DashboardPage() {
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const candlesRef = useRef<any[]>([]);
-  const lastPriceRef = useRef<number | null>(null);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
+  const prevPricesRef = useRef<Record<string, number>>({});
 
   const [symbol, setSymbol] = useState(() =>
-    typeof window !== "undefined" ? localStorage.getItem("chart_symbol") || "BTCUSDT" : "BTCUSDT"
+    typeof window !== "undefined"
+      ? localStorage.getItem("chart_symbol") || "BTCUSDT"
+      : "BTCUSDT"
   );
   const [interval, setIntervalTf] = useState(() =>
-    typeof window !== "undefined" ? localStorage.getItem("chart_interval") || "60" : "60"
+    typeof window !== "undefined"
+      ? localStorage.getItem("chart_interval") || "60"
+      : "60"
   );
   const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
   const [tfMenuOpen, setTfMenuOpen] = useState(false);
@@ -310,7 +350,9 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(false);
 
-  const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
+  const [drawColor, setDrawColor] = useState(() =>
+    loadLS("draw_color", DEFAULT_LINE_COLOR)
+  );
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
@@ -368,10 +410,22 @@ export default function DashboardPage() {
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
 
-  useEffect(() => { saveLS("ind_sma", showSMA); }, [showSMA]);
-  useEffect(() => { saveLS("vis_sma", smaVisible); }, [smaVisible]);
-  useEffect(() => { saveLS("sma1", sma1); saveLS("sma2", sma2); saveLS("sma3", sma3); }, [sma1, sma2, sma3]);
-  useEffect(() => { saveLS("smaC1", smaColor1); saveLS("smaC2", smaColor2); saveLS("smaC3", smaColor3); }, [smaColor1, smaColor2, smaColor3]);
+  useEffect(() => {
+    saveLS("ind_sma", showSMA);
+  }, [showSMA]);
+  useEffect(() => {
+    saveLS("vis_sma", smaVisible);
+  }, [smaVisible]);
+  useEffect(() => {
+    saveLS("sma1", sma1);
+    saveLS("sma2", sma2);
+    saveLS("sma3", sma3);
+  }, [sma1, sma2, sma3]);
+  useEffect(() => {
+    saveLS("smaC1", smaColor1);
+    saveLS("smaC2", smaColor2);
+    saveLS("smaC3", smaColor3);
+  }, [smaColor1, smaColor2, smaColor3]);
   useEffect(() => {
     saveLS("ind_pivot", showPivot);
     saveLS("vis_pivot", pivotVisible);
@@ -396,7 +450,10 @@ export default function DashboardPage() {
     saveLS("dmi_ac", dmiAdxColor);
     saveLS("dmi_h", dmiHeight);
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, dmiHeight]);
-  useEffect(() => { saveLS("ind_vol", showVol); saveLS("vis_vol", volVisible); }, [showVol, volVisible]);
+  useEffect(() => {
+    saveLS("ind_vol", showVol);
+    saveLS("vis_vol", volVisible);
+  }, [showVol, volVisible]);
   useEffect(() => {
     saveLS("ind_trend", showTrend);
     saveLS("vis_trend", trendVisible);
@@ -405,12 +462,24 @@ export default function DashboardPage() {
     saveLS("trend_dn", trendDownColor);
     saveLS("trend_max", trendMax);
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
-  useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
-  useEffect(() => { saveLS("draw_color", drawColor); }, [drawColor]);
-  useEffect(() => { saveLS("draw_width", drawWidth); }, [drawWidth]);
-  useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
-  useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
-  useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
+  useEffect(() => {
+    saveLS("chart_tz", timeZone);
+  }, [timeZone]);
+  useEffect(() => {
+    saveLS("draw_color", drawColor);
+  }, [drawColor]);
+  useEffect(() => {
+    saveLS("draw_width", drawWidth);
+  }, [drawWidth]);
+  useEffect(() => {
+    saveLS("fav_tfs", favTfs);
+  }, [favTfs]);
+  useEffect(() => {
+    localStorage.setItem("chart_symbol", symbol);
+  }, [symbol]);
+  useEffect(() => {
+    localStorage.setItem("chart_interval", interval);
+  }, [interval]);
 
   const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
@@ -430,23 +499,57 @@ export default function DashboardPage() {
   const dmiHeightRef = useRef(dmiHeight);
   const alarmsRef = useRef(alarms);
 
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
-  useEffect(() => { movingIdRef.current = movingId; }, [movingId]);
-  useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
-  useEffect(() => { conditionRef.current = condition; }, [condition]);
-  useEffect(() => { savingRef.current = saving; }, [saving]);
-  useEffect(() => { symbolRef.current = symbol; }, [symbol]);
-  useEffect(() => { intervalRef.current = interval; }, [interval]);
-  useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
-  useEffect(() => { drawColorRef.current = drawColor; }, [drawColor]);
-  useEffect(() => { drawWidthRef.current = drawWidth; }, [drawWidth]);
-  useEffect(() => { showRSIRef.current = showRSI; }, [showRSI]);
-  useEffect(() => { showDMIRef.current = showDMI; }, [showDMI]);
-  useEffect(() => { showVolRef.current = showVol; }, [showVol]);
-  useEffect(() => { rsiHeightRef.current = rsiHeight; }, [rsiHeight]);
-  useEffect(() => { dmiHeightRef.current = dmiHeight; }, [dmiHeight]);
-  useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    previewPriceRef.current = previewPrice;
+  }, [previewPrice]);
+  useEffect(() => {
+    movingIdRef.current = movingId;
+  }, [movingId]);
+  useEffect(() => {
+    movingTypeRef.current = movingType;
+  }, [movingType]);
+  useEffect(() => {
+    conditionRef.current = condition;
+  }, [condition]);
+  useEffect(() => {
+    savingRef.current = saving;
+  }, [saving]);
+  useEffect(() => {
+    symbolRef.current = symbol;
+  }, [symbol]);
+  useEffect(() => {
+    intervalRef.current = interval;
+  }, [interval]);
+  useEffect(() => {
+    timeZoneRef.current = timeZone;
+  }, [timeZone]);
+  useEffect(() => {
+    drawColorRef.current = drawColor;
+  }, [drawColor]);
+  useEffect(() => {
+    drawWidthRef.current = drawWidth;
+  }, [drawWidth]);
+  useEffect(() => {
+    showRSIRef.current = showRSI;
+  }, [showRSI]);
+  useEffect(() => {
+    showDMIRef.current = showDMI;
+  }, [showDMI]);
+  useEffect(() => {
+    showVolRef.current = showVol;
+  }, [showVol]);
+  useEffect(() => {
+    rsiHeightRef.current = rsiHeight;
+  }, [rsiHeight]);
+  useEffect(() => {
+    dmiHeightRef.current = dmiHeight;
+  }, [dmiHeight]);
+  useEffect(() => {
+    alarmsRef.current = alarms;
+  }, [alarms]);
 
   const updateMargins = useCallback(() => {
     if (!chartRef.current) return;
@@ -460,16 +563,22 @@ export default function DashboardPage() {
     else if (rsiOn) bottom = rh + 0.04;
     else if (dmiOn) bottom = dh + 0.04;
     if (volOn && (rsiOn || dmiOn)) bottom += 0.06;
-    chartRef.current.priceScale("right").applyOptions({ scaleMargins: { top: 0.04, bottom } });
+    chartRef.current.priceScale("right").applyOptions({
+      scaleMargins: { top: 0.04, bottom },
+    });
   }, []);
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
-      try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
+      try {
+        seriesRef.current.removePriceLine(previewLineRef.current);
+      } catch {}
       previewLineRef.current = null;
     }
     if (previewRayRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(previewRayRef.current); } catch {}
+      try {
+        chartRef.current.removeSeries(previewRayRef.current);
+      } catch {}
       previewRayRef.current = null;
     }
     setPreviewPrice(null);
@@ -483,7 +592,9 @@ export default function DashboardPage() {
   };
 
   const toggleFavTf = (v: string) => {
-    setFavTfs((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]));
+    setFavTfs((prev) =>
+      prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]
+    );
   };
 
   const requestNotifPermission = async () => {
@@ -502,7 +613,11 @@ export default function DashboardPage() {
     }
   };
 
-  const addLine = async (price: number, style: "full" | "ray" = "full") => {
+  const addLine = async (
+    price: number,
+    style: "full" | "ray" = "full",
+    startTime: number | null = null
+  ) => {
     if (savingRef.current) return;
     setSaving(true);
     try {
@@ -514,23 +629,35 @@ export default function DashboardPage() {
         note: null,
         width: drawWidthRef.current,
         style,
+        start_time: style === "ray" ? startTime : null,
       };
-      let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-      if (error && (String(error.message).includes("width") || String(error.message).includes("style"))) {
+      let { data, error } = await supabase
+        .from("chart_lines")
+        .insert([payload])
+        .select()
+        .single();
+      if (error) {
         delete payload.width;
         delete payload.style;
+        delete payload.start_time;
         const r = await supabase.from("chart_lines").insert([payload]).select().single();
         data = r.data;
         error = r.error;
         if (data) {
           (data as any).width = drawWidthRef.current;
           (data as any).style = style;
+          (data as any).start_time = startTime;
         }
       }
-      if (error) { alert(error.message); return; }
+      if (error) {
+        alert(error.message);
+        return;
+      }
       setLines((prev) => [data, ...prev]);
       resetMode();
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const createAlarmDirect = async (price: number) => {
@@ -547,18 +674,25 @@ export default function DashboardPage() {
         repeat: false,
         note: null,
         color: DEFAULT_ALARM_COLOR,
+        last_price: null,
       };
       let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-      if (error && String(error.message).toLowerCase().includes("color")) {
+      if (error) {
         delete payload.color;
+        delete payload.last_price;
         const r = await supabase.from("alarms").insert([payload]).select().single();
         data = r.data;
         error = r.error;
       }
-      if (error) { alert(error.message); return; }
+      if (error) {
+        alert(error.message);
+        return;
+      }
       setAlarms((prev) => [data, ...prev]);
       resetMode();
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const convertLineToAlarm = async (line: ChartLine) => {
@@ -576,17 +710,22 @@ export default function DashboardPage() {
         color: line.color || DEFAULT_ALARM_COLOR,
       };
       let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-      if (error && String(error.message).toLowerCase().includes("color")) {
+      if (error) {
         delete payload.color;
         const r = await supabase.from("alarms").insert([payload]).select().single();
         data = r.data;
         error = r.error;
       }
-      if (error) { alert(error.message); return; }
+      if (error) {
+        alert(error.message);
+        return;
+      }
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
       setAlarms((prev) => [data, ...prev]);
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateLinePrice = async (id: string, price: number) => {
@@ -610,14 +749,15 @@ export default function DashboardPage() {
 
   const updateLineWidth = async (id: string, width: number) => {
     const { error } = await supabase.from("chart_lines").update({ width }).eq("id", id);
-    if (!error) setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
-    else setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+    if (error) {
+      /* column may not exist — still update UI */
+    }
   };
 
   const updateAlarmColor = async (id: string, color: string) => {
-    const { error } = await supabase.from("alarms").update({ color }).eq("id", id);
+    await supabase.from("alarms").update({ color }).eq("id", id);
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
-    if (error) { /* column may not exist */ }
   };
 
   const saveNote = async () => {
@@ -625,10 +765,14 @@ export default function DashboardPage() {
     const note = noteDraft.trim() || null;
     if (editingNoteType === "line") {
       await supabase.from("chart_lines").update({ note }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note } : l)));
+      setLines((prev) =>
+        prev.map((l) => (l.id === editingNoteId ? { ...l, note } : l))
+      );
     } else {
       await supabase.from("alarms").update({ note }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note } : a)));
+      setAlarms((prev) =>
+        prev.map((a) => (a.id === editingNoteId ? { ...a, note } : a))
+      );
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
@@ -653,9 +797,15 @@ export default function DashboardPage() {
 
   const cycleCondition = async (alarm: Alarm) => {
     const next =
-      alarm.condition === "above" ? "below" : alarm.condition === "below" ? "cross" : "above";
+      alarm.condition === "above"
+        ? "below"
+        : alarm.condition === "below"
+        ? "cross"
+        : "above";
     await supabase.from("alarms").update({ condition: next }).eq("id", alarm.id);
-    setAlarms((prev) => prev.map((a) => (a.id === alarm.id ? { ...a, condition: next } : a)));
+    setAlarms((prev) =>
+      prev.map((a) => (a.id === alarm.id ? { ...a, condition: next } : a))
+    );
   };
 
   const startMove = (id: string, type: "line" | "alarm", price: number) => {
@@ -666,10 +816,6 @@ export default function DashboardPage() {
   };
 
   const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());
-
-  const getConditionSymbol = (c: string) => (c === "above" ? "≥" : c === "below" ? "≤" : "≈");
-  const getConditionLabel = (c: string) =>
-    c === "above" ? "Above" : c === "below" ? "Below" : "Cross";
 
   // ——— indicators ———
   const removeSMA = () => {
@@ -686,9 +832,24 @@ export default function DashboardPage() {
     if (!chartRef.current) return;
     removeSMA();
     if (!showSMA || !smaVisible || !candles.length) return;
-    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const s1 = chartRef.current.addLineSeries({
+      color: smaColor1,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const s2 = chartRef.current.addLineSeries({
+      color: smaColor2,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const s3 = chartRef.current.addLineSeries({
+      color: smaColor3,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
     s1.setData(calcSMA(candles, sma1) as any);
     s2.setData(calcSMA(candles, sma2) as any);
     s3.setData(calcSMA(candles, sma3) as any);
@@ -697,7 +858,11 @@ export default function DashboardPage() {
 
   const removePivot = () => {
     if (!chartRef.current) return;
-    pivotSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
+    pivotSeriesRef.current.forEach((s) => {
+      try {
+        chartRef.current?.removeSeries(s);
+      } catch {}
+    });
     pivotSeriesRef.current = [];
   };
 
@@ -718,18 +883,26 @@ export default function DashboardPage() {
 
       for (let i = 1; i <= periods && i < list.length; i++) {
         const bar = list[i];
-        const high = parseFloat(bar[2]), low = parseFloat(bar[3]), close = parseFloat(bar[4]);
+        const high = parseFloat(bar[2]),
+          low = parseFloat(bar[3]),
+          close = parseFloat(bar[4]);
         const range = high - low;
         const pp = (high + low + close) / 3;
-        const r1 = 2 * pp - low, r2 = pp + range, r3 = r1 + range, r4 = r3 + (r2 - r1);
-        const s1 = 2 * pp - high, s2 = pp - range, s3 = s1 - range, s4 = s3 - (s1 - s2);
+        const r1 = 2 * pp - low,
+          r2 = pp + range,
+          r3 = r1 + range,
+          r4 = r3 + (r2 - r1);
+        const s1 = 2 * pp - high,
+          s2 = pp - range,
+          s3 = s1 - range,
+          s4 = s3 - (s1 - s2);
         const isCurrent = i === 1;
         const alpha = isCurrent ? 1 : 0.45;
         const half = bs * (isCurrent ? 5 : 3);
         const offset = (i - 1) * bs * 8;
         const t0 = lastT - half - offset;
         const t1 = lastT + half - offset;
-        let levels = [
+        const levels = [
           { price: r3, color: isCurrent ? "#67e8f9" : `rgba(103,232,249,${alpha})` },
           { price: r2, color: isCurrent ? "#22d3ee" : `rgba(34,211,238,${alpha})` },
           { price: r1, color: isCurrent ? "#06b6d4" : `rgba(6,182,212,${alpha})` },
@@ -746,8 +919,11 @@ export default function DashboardPage() {
         }
         levels.forEach((lv) => {
           const s = chartRef.current!.addLineSeries({
-            color: lv.color, lineWidth: isCurrent ? 2 : 1,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            color: lv.color,
+            lineWidth: isCurrent ? 2 : 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
           });
           s.setData([
             { time: t0 as any, value: formatPrice(lv.price) },
@@ -756,12 +932,18 @@ export default function DashboardPage() {
           pivotSeriesRef.current.push(s);
         });
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const removeTrend = () => {
     if (!chartRef.current) return;
-    trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
+    trendSeriesRef.current.forEach((s) => {
+      try {
+        chartRef.current?.removeSeries(s);
+      } catch {}
+    });
     trendSeriesRef.current = [];
   };
 
@@ -774,21 +956,32 @@ export default function DashboardPage() {
     let upCount = 0;
     for (let a = lows.length - 1; a >= 0 && upCount < maxL; a--) {
       for (let b = a - 1; b >= 0 && upCount < maxL; b--) {
-        const p1 = lows[b], p2 = lows[a];
+        const p1 = lows[b],
+          p2 = lows[a];
         if (p2.price <= p1.price) continue;
         const slope = (p2.price - p1.price) / (p2.i - p1.i);
         let valid = true;
         for (let k = p1.i + 1; k < candles.length; k++) {
-          if (candles[k].close < (p1.price + slope * (k - p1.i)) * 0.998) { valid = false; break; }
+          if (candles[k].close < (p1.price + slope * (k - p1.i)) * 0.998) {
+            valid = false;
+            break;
+          }
         }
         if (valid) {
           const endI = candles.length - 1;
           const s = chartRef.current!.addLineSeries({
-            color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            color: trendUpColor,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
           });
           s.setData([
             { time: p1.time as any, value: p1.price },
-            { time: candles[endI].time as any, value: p1.price + slope * (endI - p1.i) },
+            {
+              time: candles[endI].time as any,
+              value: p1.price + slope * (endI - p1.i),
+            },
           ]);
           trendSeriesRef.current.push(s);
           upCount++;
@@ -799,21 +992,32 @@ export default function DashboardPage() {
     let dnCount = 0;
     for (let a = highs.length - 1; a >= 0 && dnCount < maxL; a--) {
       for (let b = a - 1; b >= 0 && dnCount < maxL; b--) {
-        const p1 = highs[b], p2 = highs[a];
+        const p1 = highs[b],
+          p2 = highs[a];
         if (p2.price >= p1.price) continue;
         const slope = (p2.price - p1.price) / (p2.i - p1.i);
         let valid = true;
         for (let k = p1.i + 1; k < candles.length; k++) {
-          if (candles[k].close > (p1.price + slope * (k - p1.i)) * 1.002) { valid = false; break; }
+          if (candles[k].close > (p1.price + slope * (k - p1.i)) * 1.002) {
+            valid = false;
+            break;
+          }
         }
         if (valid) {
           const endI = candles.length - 1;
           const s = chartRef.current!.addLineSeries({
-            color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            color: trendDownColor,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
           });
           s.setData([
             { time: p1.time as any, value: p1.price },
-            { time: candles[endI].time as any, value: p1.price + slope * (endI - p1.i) },
+            {
+              time: candles[endI].time as any,
+              value: p1.price + slope * (endI - p1.i),
+            },
           ]);
           trendSeriesRef.current.push(s);
           dnCount++;
@@ -825,7 +1029,9 @@ export default function DashboardPage() {
 
   const removeRSI = () => {
     if (!chartRef.current || !rsiSeriesRef.current) return;
-    try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+    try {
+      chartRef.current.removeSeries(rsiSeriesRef.current);
+    } catch {}
     rsiSeriesRef.current = null;
   };
 
@@ -834,9 +1040,14 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || !candles.length) return;
     const both = showRSI && showDMI;
-    const rh = rsiHeight / 100, dh = dmiHeight / 100;
+    const rh = rsiHeight / 100,
+      dh = dmiHeight / 100;
     const s = chartRef.current.addLineSeries({
-      color: rsiColor, lineWidth: 2, priceScaleId: "rsi", priceLineVisible: false, lastValueVisible: true,
+      color: rsiColor,
+      lineWidth: 2,
+      priceScaleId: "rsi",
+      priceLineVisible: false,
+      lastValueVisible: true,
     });
     chartRef.current.priceScale("rsi").applyOptions({
       scaleMargins: both
@@ -846,8 +1057,20 @@ export default function DashboardPage() {
     });
     s.setData(calcRSI(candles, rsiPeriod) as any);
     try {
-      s.createPriceLine({ price: 70, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
-      s.createPriceLine({ price: 30, color: "#ffffff", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({
+        price: 70,
+        color: "#ffffff",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: false,
+      });
+      s.createPriceLine({
+        price: 30,
+        color: "#ffffff",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: false,
+      });
     } catch {}
     rsiSeriesRef.current = s;
     updateMargins();
@@ -870,11 +1093,31 @@ export default function DashboardPage() {
     const both = showRSI && showDMI;
     const dh = dmiHeight / 100;
     const { plusDI, minusDI, adx } = calcDMI(candles, dmiPeriod);
-    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 2, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: true });
+    const plus = chartRef.current.addLineSeries({
+      color: dmiPlusColor,
+      lineWidth: 1,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const minus = chartRef.current.addLineSeries({
+      color: dmiMinusColor,
+      lineWidth: 1,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const adxS = chartRef.current.addLineSeries({
+      color: dmiAdxColor,
+      lineWidth: 2,
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
     chartRef.current.priceScale("dmi").applyOptions({
-      scaleMargins: both ? { top: 1 - dh - 0.01, bottom: 0.01 } : { top: 1 - dh - 0.02, bottom: 0.02 },
+      scaleMargins: both
+        ? { top: 1 - dh - 0.01, bottom: 0.01 }
+        : { top: 1 - dh - 0.02, bottom: 0.02 },
       borderVisible: false,
     });
     plus.setData(plusDI as any);
@@ -886,7 +1129,9 @@ export default function DashboardPage() {
 
   const removeVol = () => {
     if (!chartRef.current || !volumeSeriesRef.current) return;
-    try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
+    try {
+      chartRef.current.removeSeries(volumeSeriesRef.current);
+    } catch {}
     volumeSeriesRef.current = null;
   };
 
@@ -894,13 +1139,20 @@ export default function DashboardPage() {
     if (!chartRef.current) return;
     removeVol();
     if (!showVol || !volVisible || !candles.length) return;
-    const vol = chartRef.current.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol" });
-    chartRef.current.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 }, borderVisible: false });
+    const vol = chartRef.current.addHistogramSeries({
+      priceFormat: { type: "volume" },
+      priceScaleId: "vol",
+    });
+    chartRef.current.priceScale("vol").applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+      borderVisible: false,
+    });
     vol.setData(
       candles.map((c: any) => ({
         time: c.time,
         value: c.volume || 0,
-        color: c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
+        color:
+          c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
       })) as any
     );
     volumeSeriesRef.current = vol;
@@ -926,13 +1178,13 @@ export default function DashboardPage() {
         .reverse();
       if (!candles.length) return;
       candlesRef.current = candles;
-      lastPriceRef.current = candles[candles.length - 1].close;
       const lastClose = candles[candles.length - 1].close;
       const { precision, minMove } = getPrecision(lastClose);
-      seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove } });
+      seriesRef.current.applyOptions({
+        priceFormat: { type: "price", precision, minMove },
+      });
       seriesRef.current.setData(candles);
       chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
-      // future space on the right
       chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
       chartRef.current?.timeScale().fitContent();
       chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
@@ -943,11 +1195,16 @@ export default function DashboardPage() {
       applyVol(candles);
       applyPivot(sym, candles);
       applyTrend(candles);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const loadAllLines = async () => {
-    const { data } = await supabase.from("chart_lines").select("*").order("created_at", { ascending: false });
+    const { data } = await supabase
+      .from("chart_lines")
+      .select("*")
+      .order("created_at", { ascending: false });
     setLines(data || []);
   };
 
@@ -961,15 +1218,17 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
-  // Client-side alarm check (sound + notification) while page open
+  // Client alarm check — ONLY on real cross
   useEffect(() => {
     if (typeof Notification !== "undefined") {
       setNotifEnabled(Notification.permission === "granted");
     }
+
     const check = async () => {
-      const list = alarmsRef.current;
+      const list = alarmsRef.current.filter((a) => a.is_active && !a.triggered);
       if (!list.length) return;
       const symbols = Array.from(new Set(list.map((a) => a.symbol.toUpperCase())));
+
       for (const sym of symbols) {
         try {
           const res = await fetch(
@@ -977,30 +1236,32 @@ export default function DashboardPage() {
           );
           const data = await res.json();
           const price = parseFloat(data.result?.list?.[0]?.lastPrice);
-          if (!price) continue;
-          list
-            .filter((a) => a.symbol.toUpperCase() === sym)
-            .forEach((a) => {
-              if (notifiedAlarmsRef.current.has(a.id)) return;
-              let hit = false;
-              if (a.condition === "above" && price >= a.price) hit = true;
-              if (a.condition === "below" && price <= a.price) hit = true;
-              if (a.condition === "cross") {
-                // simple: within 0.05%
-                if (Math.abs(price - a.price) / a.price < 0.0005) hit = true;
-              }
-              if (hit) {
-                notifiedAlarmsRef.current.add(a.id);
-                showLocalNotification(
-                  `Alarm: ${a.symbol}`,
-                  `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
-                );
-              }
-            });
+          if (!price || Number.isNaN(price)) continue;
+
+          const prev = prevPricesRef.current[sym];
+
+          for (const a of list.filter((x) => x.symbol.toUpperCase() === sym)) {
+            if (notifiedAlarmsRef.current.has(a.id)) continue;
+            if (didCross(a.condition, a.price, prev, price)) {
+              notifiedAlarmsRef.current.add(a.id);
+              showLocalNotification(
+                `Alarm: ${a.symbol}`,
+                `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
+              );
+              await supabase
+                .from("alarms")
+                .update({ triggered: true, is_active: false })
+                .eq("id", a.id);
+              setAlarms((prevA) => prevA.filter((x) => x.id !== a.id));
+            }
+          }
+
+          prevPricesRef.current[sym] = price;
         } catch {}
       }
     };
-    const id = setInterval(check, 20000);
+
+    const id = setInterval(check, 15000);
     check();
     return () => clearInterval(id);
   }, []);
@@ -1009,7 +1270,10 @@ export default function DashboardPage() {
     if (!chartContainerRef.current) return;
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
-      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+      grid: {
+        vertLines: { color: "#1f2937" },
+        horzLines: { color: "#1f2937" },
+      },
       width: chartContainerRef.current.clientWidth,
       height: 700,
       timeScale: {
@@ -1022,16 +1286,35 @@ export default function DashboardPage() {
         locale: "en-GB",
         timeFormatter: (t: number) => formatTimeTZ(t, timeZoneRef.current),
       },
-      rightPriceScale: { autoScale: true, scaleMargins: { top: 0.04, bottom: 0.12 }, borderVisible: false },
+      rightPriceScale: {
+        autoScale: true,
+        scaleMargins: { top: 0.04, bottom: 0.12 },
+        borderVisible: false,
+      },
       crosshair: {
         mode: 0,
-        horzLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#f97316" },
-        vertLine: { visible: true, labelVisible: true, style: LineStyle.Dashed, width: 1, color: "#6b7280" },
+        horzLine: {
+          visible: true,
+          labelVisible: true,
+          style: LineStyle.Dashed,
+          width: 1,
+          color: "#f97316",
+        },
+        vertLine: {
+          visible: true,
+          labelVisible: true,
+          style: LineStyle.Dashed,
+          width: 1,
+          color: "#6b7280",
+        },
       },
     });
     const series = chart.addCandlestickSeries({
-      upColor: "#22c55e", downColor: "#ef4444", borderVisible: false,
-      wickUpColor: "#22c55e", wickDownColor: "#ef4444",
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderVisible: false,
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
     });
     chartRef.current = chart;
     seriesRef.current = series;
@@ -1044,11 +1327,15 @@ export default function DashboardPage() {
       setPreviewPrice(rounded);
 
       if (previewLineRef.current) {
-        try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
+        try {
+          seriesRef.current.removePriceLine(previewLineRef.current);
+        } catch {}
         previewLineRef.current = null;
       }
       if (previewRayRef.current && chartRef.current) {
-        try { chartRef.current.removeSeries(previewRayRef.current); } catch {}
+        try {
+          chartRef.current.removeSeries(previewRayRef.current);
+        } catch {}
         previewRayRef.current = null;
       }
 
@@ -1058,7 +1345,7 @@ export default function DashboardPage() {
           ? (candlesRef.current[candlesRef.current.length - 1].time as number)
           : Math.floor(Date.now() / 1000);
         const t0 = param.time ? (param.time as number) : lastT;
-        const t1 = lastT + barSeconds(intervalRef.current) * 40;
+        const t1 = lastT + barSeconds(intervalRef.current) * 80;
         const s = chartRef.current!.addLineSeries({
           color: drawColorRef.current,
           lineWidth: drawWidthRef.current,
@@ -1087,11 +1374,21 @@ export default function DashboardPage() {
       const m = modeRef.current;
       const price = previewPriceRef.current;
       if (!price || m === "none" || savingRef.current) return;
-      if (m === "draw") addLine(price, "full");
-      else if (m === "ray") addLine(price, "ray");
-      else if (m === "alarm") createAlarmDirect(price);
-      else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
-        if (movingTypeRef.current === "line") updateLinePrice(movingIdRef.current, price);
+
+      if (m === "draw") {
+        addLine(price, "full", null);
+      } else if (m === "ray") {
+        const clickTime = param.time
+          ? (param.time as number)
+          : candlesRef.current.length
+          ? (candlesRef.current[candlesRef.current.length - 1].time as number)
+          : Math.floor(Date.now() / 1000);
+        addLine(price, "ray", clickTime);
+      } else if (m === "alarm") {
+        createAlarmDirect(price);
+      } else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
+        if (movingTypeRef.current === "line")
+          updateLinePrice(movingIdRef.current, price);
         else updateAlarmPrice(movingIdRef.current, price);
       }
     });
@@ -1134,12 +1431,37 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [symbol]);
 
-  useEffect(() => { if (candlesRef.current.length) applySMA(candlesRef.current); }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
-  useEffect(() => { if (candlesRef.current.length) applyRSI(candlesRef.current); else updateMargins(); }, [showRSI, rsiVisible, rsiPeriod, rsiColor, rsiHeight, showDMI, dmiHeight]);
-  useEffect(() => { if (candlesRef.current.length) applyDMI(candlesRef.current); else updateMargins(); }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, dmiHeight, showRSI, rsiHeight]);
-  useEffect(() => { if (candlesRef.current.length) applyVol(candlesRef.current); else updateMargins(); }, [showVol, volVisible]);
-  useEffect(() => { if (candlesRef.current.length) applyPivot(symbol, candlesRef.current); }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotHistory, pivotHistCount, symbol, interval]);
-  useEffect(() => { if (candlesRef.current.length) applyTrend(candlesRef.current); }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
+  useEffect(() => {
+    if (candlesRef.current.length) applySMA(candlesRef.current);
+  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
+  useEffect(() => {
+    if (candlesRef.current.length) applyRSI(candlesRef.current);
+    else updateMargins();
+  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, rsiHeight, showDMI, dmiHeight]);
+  useEffect(() => {
+    if (candlesRef.current.length) applyDMI(candlesRef.current);
+    else updateMargins();
+  }, [
+    showDMI,
+    dmiVisible,
+    dmiPeriod,
+    dmiPlusColor,
+    dmiMinusColor,
+    dmiAdxColor,
+    dmiHeight,
+    showRSI,
+    rsiHeight,
+  ]);
+  useEffect(() => {
+    if (candlesRef.current.length) applyVol(candlesRef.current);
+    else updateMargins();
+  }, [showVol, volVisible]);
+  useEffect(() => {
+    if (candlesRef.current.length) applyPivot(symbol, candlesRef.current);
+  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotHistory, pivotHistCount, symbol, interval]);
+  useEffect(() => {
+    if (candlesRef.current.length) applyTrend(candlesRef.current);
+  }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -1173,8 +1495,10 @@ export default function DashboardPage() {
     chartLinesRef.current.clear();
 
     const candles = candlesRef.current;
-    const lastT = candles.length ? (candles[candles.length - 1].time as number) : Math.floor(Date.now() / 1000);
-    const futureT = lastT + barSeconds(interval) * 50;
+    const lastT = candles.length
+      ? (candles[candles.length - 1].time as number)
+      : Math.floor(Date.now() / 1000);
+    const futureT = lastT + barSeconds(interval) * 80;
 
     lines
       .filter((l) => l.symbol.toUpperCase() === symbol.toUpperCase())
@@ -1182,16 +1506,19 @@ export default function DashboardPage() {
         if (mode === "move" && movingType === "line" && movingId === line.id) return;
         const w = (line.width as 1 | 2 | 3) || 2;
         const style = line.style || "full";
+
         if (style === "ray") {
+          const start =
+            line.start_time != null ? Number(line.start_time) : lastT;
           const s = chartRef.current!.addLineSeries({
             color: line.color || DEFAULT_LINE_COLOR,
             lineWidth: w,
             priceLineVisible: false,
-            lastValueVisible: false,
+            lastValueVisible: true,
             crosshairMarkerVisible: false,
           });
           s.setData([
-            { time: lastT as any, value: line.price },
+            { time: start as any, value: line.price },
             { time: futureT as any, value: line.price },
           ]);
           chartLinesRef.current.set(line.id, { type: "ray", ref: s });
@@ -1211,19 +1538,38 @@ export default function DashboardPage() {
 
   const alarmGroups = useMemo(() => groupBySymbol(alarms), [alarms]);
   const lineGroups = useMemo(() => groupBySymbol(lines), [lines]);
-
   const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
 
   const IndChip = ({
-    label, visible, onToggleVisible, onSettings, onRemove,
+    label,
+    visible,
+    onToggleVisible,
+    onSettings,
+    onRemove,
   }: {
-    label: string; visible: boolean; onToggleVisible: () => void; onSettings?: () => void; onRemove: () => void;
+    label: string;
+    visible: boolean;
+    onToggleVisible: () => void;
+    onSettings?: () => void;
+    onRemove: () => void;
   }) => (
     <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
       <span className="text-gray-200">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400">{visible ? "👁" : "🚫"}</button>
-      {onSettings && <button type="button" onClick={onSettings} className="p-1 text-gray-400">⚙</button>}
-      <button type="button" onClick={onRemove} className="p-1 text-gray-400 hover:text-red-400">🗑</button>
+      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400">
+        {visible ? "👁" : "🚫"}
+      </button>
+      {onSettings && (
+        <button type="button" onClick={onSettings} className="p-1 text-gray-400">
+          ⚙
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="p-1 text-gray-400 hover:text-red-400"
+      >
+        🗑
+      </button>
     </div>
   );
 
@@ -1235,29 +1581,51 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={requestNotifPermission}
-            className={`px-3 py-2 rounded-lg text-sm ${notifEnabled ? "bg-green-700" : "bg-gray-800"}`}
-            title="Enable sound + notification on this device"
+            className={`px-3 py-2 rounded-lg text-sm ${
+              notifEnabled ? "bg-green-700" : "bg-gray-800"
+            }`}
           >
             {notifEnabled ? "🔔 On" : "🔔 Notify"}
           </button>
-          <select value={timeZone} onChange={(e) => setTimeZone(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white">
-            {TIMEZONES.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
+          <select
+            value={timeZone}
+            onChange={(e) => setTimeZone(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white"
+          >
+            {TIMEZONES.map((z) => (
+              <option key={z.value} value={z.value}>
+                {z.label}
+              </option>
+            ))}
           </select>
-          <input type="text" value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-32" placeholder="BTCUSDT" />
-          <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">Alerts</Link>
+          <input
+            type="text"
+            value={symbol}
+            onChange={(e) =>
+              setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))
+            }
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-32"
+            placeholder="BTCUSDT"
+          />
+          <Link
+            href="/alerts"
+            className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm"
+          >
+            Alerts
+          </Link>
         </div>
       </div>
 
-      {/* Favorites + TF menu */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {favTfButtons.map((tf) => (
           <button
             key={tf.value}
             onClick={() => setIntervalTf(tf.value)}
-            className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}
+            className={`px-3 py-1.5 rounded text-sm ${
+              interval === tf.value
+                ? "bg-orange-500 text-white"
+                : "bg-gray-800 text-gray-300"
+            }`}
           >
             {tf.label}
           </button>
@@ -1272,7 +1640,7 @@ export default function DashboardPage() {
           </button>
           {tfMenuOpen && (
             <div className="absolute top-full left-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[220px] p-3 shadow-xl">
-              <p className="text-xs text-gray-400 mb-2">Star = show as quick button</p>
+              <p className="text-xs text-gray-400 mb-2">Star = quick button</p>
               <div className="grid grid-cols-3 gap-2">
                 {ALL_TIMEFRAMES.map((tf) => (
                   <div key={tf.value} className="flex items-center gap-1">
@@ -1285,8 +1653,13 @@ export default function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setIntervalTf(tf.value); setTfMenuOpen(false); }}
-                      className={`flex-1 px-2 py-1 rounded text-sm ${interval === tf.value ? "bg-orange-500" : "bg-gray-800"}`}
+                      onClick={() => {
+                        setIntervalTf(tf.value);
+                        setTfMenuOpen(false);
+                      }}
+                      className={`flex-1 px-2 py-1 rounded text-sm ${
+                        interval === tf.value ? "bg-orange-500" : "bg-gray-800"
+                      }`}
                     >
                       {tf.label}
                     </button>
@@ -1301,32 +1674,47 @@ export default function DashboardPage() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button
           onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500" : "bg-gray-800"}`}
-          title="Full horizontal line"
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "draw" ? "bg-orange-500" : "bg-gray-800"
+          }`}
         >
           ✏️ Line
         </button>
         <button
           onClick={() => setMode(mode === "ray" ? "none" : "ray")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "ray" ? "bg-orange-500" : "bg-gray-800"}`}
-          title="Ray to the right"
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "ray" ? "bg-orange-500" : "bg-gray-800"
+          }`}
         >
           → Ray
         </button>
         {(mode === "draw" || mode === "ray") && (
           <>
-            <input type="color" value={drawColor} onChange={(e) => setDrawColor(e.target.value)}
-              className="w-9 h-9 rounded cursor-pointer" title="Color" />
+            <input
+              type="color"
+              value={drawColor}
+              onChange={(e) => setDrawColor(e.target.value)}
+              className="w-9 h-9 rounded cursor-pointer"
+            />
             <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
               {LINE_WIDTHS.map((w) => (
                 <button
                   key={w}
                   type="button"
                   onClick={() => setDrawWidth(w)}
-                  className={`px-2 py-1 rounded text-xs ${drawWidth === w ? "bg-orange-500" : "bg-gray-700"}`}
-                  title={`Width ${w}`}
+                  className={`px-2 py-1 rounded text-xs ${
+                    drawWidth === w ? "bg-orange-500" : "bg-gray-700"
+                  }`}
                 >
-                  <span style={{ display: "inline-block", width: 16, height: w * 2, background: "#fff", borderRadius: 1 }} />
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 16,
+                      height: w * 2,
+                      background: "#fff",
+                      borderRadius: 1,
+                    }}
+                  />
                 </button>
               ))}
             </div>
@@ -1334,28 +1722,84 @@ export default function DashboardPage() {
         )}
         <button
           onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "alarm" ? "bg-blue-600" : "bg-gray-800"}`}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
+          }`}
         >
           🔔 Alarm
         </button>
         <div className="relative">
-          <button onClick={() => setShowIndicatorMenu(!showIndicatorMenu)} className="px-3 py-2 rounded-lg text-sm bg-gray-800">
+          <button
+            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
+            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
+          >
             📊 Indicators
           </button>
           {showIndicatorMenu && (
             <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
-              <button onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">3SMA</button>
-              <button onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Pivot</button>
-              <button onClick={() => { setShowTrend(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Trend Line</button>
-              <button onClick={() => { setShowRSI(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">RSI</button>
-              <button onClick={() => { setShowDMI(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">DMI</button>
-              <button onClick={() => { setShowVol(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Volume</button>
+              <button
+                onClick={() => {
+                  setShowSMA(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                3SMA
+              </button>
+              <button
+                onClick={() => {
+                  setShowPivot(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Pivot
+              </button>
+              <button
+                onClick={() => {
+                  setShowTrend(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Trend Line
+              </button>
+              <button
+                onClick={() => {
+                  setShowRSI(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                RSI
+              </button>
+              <button
+                onClick={() => {
+                  setShowDMI(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                DMI
+              </button>
+              <button
+                onClick={() => {
+                  setShowVol(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Volume
+              </button>
             </div>
           )}
         </div>
         {mode === "alarm" && (
-          <select value={condition} onChange={(e) => setCondition(e.target.value as any)}
-            className="bg-gray-800 rounded-lg px-2 py-2 text-sm">
+          <select
+            value={condition}
+            onChange={(e) => setCondition(e.target.value as any)}
+            className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
+          >
             <option value="above">Above</option>
             <option value="below">Below</option>
             <option value="cross">Cross</option>
@@ -1364,31 +1808,146 @@ export default function DashboardPage() {
       </div>
 
       <div className="mb-2 flex flex-wrap gap-2">
-        {showSMA && <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible(!smaVisible)} onSettings={() => setSmaSettings(!smaSettings)} onRemove={() => { setShowSMA(false); removeSMA(); setSmaSettings(false); }} />}
-        {showPivot && <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible(!pivotVisible)} onSettings={() => setPivotSettings(!pivotSettings)} onRemove={() => { setShowPivot(false); removePivot(); setPivotSettings(false); }} />}
-        {showTrend && <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible(!trendVisible)} onSettings={() => setTrendSettings(!trendSettings)} onRemove={() => { setShowTrend(false); removeTrend(); setTrendSettings(false); }} />}
-        {showRSI && <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible(!rsiVisible)} onSettings={() => setRsiSettings(!rsiSettings)} onRemove={() => { setShowRSI(false); removeRSI(); setRsiSettings(false); }} />}
-        {showDMI && <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible(!dmiVisible)} onSettings={() => setDmiSettings(!dmiSettings)} onRemove={() => { setShowDMI(false); removeDMI(); setDmiSettings(false); }} />}
-        {showVol && <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible(!volVisible)} onRemove={() => { setShowVol(false); removeVol(); }} />}
+        {showSMA && (
+          <IndChip
+            label="3SMA"
+            visible={smaVisible}
+            onToggleVisible={() => setSmaVisible(!smaVisible)}
+            onSettings={() => setSmaSettings(!smaSettings)}
+            onRemove={() => {
+              setShowSMA(false);
+              removeSMA();
+              setSmaSettings(false);
+            }}
+          />
+        )}
+        {showPivot && (
+          <IndChip
+            label="Pivot"
+            visible={pivotVisible}
+            onToggleVisible={() => setPivotVisible(!pivotVisible)}
+            onSettings={() => setPivotSettings(!pivotSettings)}
+            onRemove={() => {
+              setShowPivot(false);
+              removePivot();
+              setPivotSettings(false);
+            }}
+          />
+        )}
+        {showTrend && (
+          <IndChip
+            label="Trend"
+            visible={trendVisible}
+            onToggleVisible={() => setTrendVisible(!trendVisible)}
+            onSettings={() => setTrendSettings(!trendSettings)}
+            onRemove={() => {
+              setShowTrend(false);
+              removeTrend();
+              setTrendSettings(false);
+            }}
+          />
+        )}
+        {showRSI && (
+          <IndChip
+            label="RSI"
+            visible={rsiVisible}
+            onToggleVisible={() => setRsiVisible(!rsiVisible)}
+            onSettings={() => setRsiSettings(!rsiSettings)}
+            onRemove={() => {
+              setShowRSI(false);
+              removeRSI();
+              setRsiSettings(false);
+            }}
+          />
+        )}
+        {showDMI && (
+          <IndChip
+            label="DMI"
+            visible={dmiVisible}
+            onToggleVisible={() => setDmiVisible(!dmiVisible)}
+            onSettings={() => setDmiSettings(!dmiSettings)}
+            onRemove={() => {
+              setShowDMI(false);
+              removeDMI();
+              setDmiSettings(false);
+            }}
+          />
+        )}
+        {showVol && (
+          <IndChip
+            label="Vol"
+            visible={volVisible}
+            onToggleVisible={() => setVolVisible(!volVisible)}
+            onRemove={() => {
+              setShowVol(false);
+              removeVol();
+            }}
+          />
+        )}
       </div>
 
       {smaSettings && showSMA && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           {[
-            { label: "SMA1", str: sma1Str, setStr: setSma1Str, setVal: setSma1, col: smaColor1, setCol: setSmaColor1, cur: sma1 },
-            { label: "SMA2", str: sma2Str, setStr: setSma2Str, setVal: setSma2, col: smaColor2, setCol: setSmaColor2, cur: sma2 },
-            { label: "SMA3", str: sma3Str, setStr: setSma3Str, setVal: setSma3, col: smaColor3, setCol: setSmaColor3, cur: sma3 },
+            {
+              label: "SMA1",
+              str: sma1Str,
+              setStr: setSma1Str,
+              setVal: setSma1,
+              col: smaColor1,
+              setCol: setSmaColor1,
+              cur: sma1,
+            },
+            {
+              label: "SMA2",
+              str: sma2Str,
+              setStr: setSma2Str,
+              setVal: setSma2,
+              col: smaColor2,
+              setCol: setSmaColor2,
+              cur: sma2,
+            },
+            {
+              label: "SMA3",
+              str: sma3Str,
+              setStr: setSma3Str,
+              setVal: setSma3,
+              col: smaColor3,
+              setCol: setSmaColor3,
+              cur: sma3,
+            },
           ].map((row) => (
             <div key={row.label} className="flex flex-wrap items-center gap-3">
               <span className="w-12">{row.label}</span>
-              <input type="text" inputMode="numeric" value={row.str}
+              <input
+                type="text"
+                inputMode="numeric"
+                value={row.str}
                 onChange={(e) => row.setStr(e.target.value.replace(/[^\d]/g, ""))}
-                onBlur={() => { const n = parseInt(row.str, 10); if (!isNaN(n) && n >= 1) { row.setVal(n); row.setStr(String(n)); } else row.setStr(String(row.cur)); }}
-                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white" />
-              <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded" />
+                onBlur={() => {
+                  const n = parseInt(row.str, 10);
+                  if (!isNaN(n) && n >= 1) {
+                    row.setVal(n);
+                    row.setStr(String(n));
+                  } else row.setStr(String(row.cur));
+                }}
+                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
+              />
+              <input
+                type="color"
+                value={row.col}
+                onChange={(e) => row.setCol(e.target.value)}
+                className="w-10 h-8 rounded"
+              />
             </div>
           ))}
-          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">Close</button>
+          <button
+            type="button"
+            onClick={() => setSmaSettings(false)}
+            className="text-orange-400"
+          >
+            Close
+          </button>
         </div>
       )}
 
@@ -1397,140 +1956,416 @@ export default function DashboardPage() {
           <div className="flex flex-wrap gap-2 items-center">
             <span>TF:</span>
             {PIVOT_TFS.map((tf) => (
-              <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)}
-                className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
+              <button
+                key={tf.value}
+                type="button"
+                onClick={() => setPivotTf(tf.value)}
+                className={`px-2 py-1 rounded ${
+                  pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"
+                }`}
+              >
+                {tf.label}
+              </button>
             ))}
           </div>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} /> R4/S4</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={pivotHistory} onChange={(e) => setPivotHistory(e.target.checked)} /> Previous periods</label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={pivotFib}
+              onChange={(e) => setPivotFib(e.target.checked)}
+            />{" "}
+            R4/S4
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={pivotHistory}
+              onChange={(e) => setPivotHistory(e.target.checked)}
+            />{" "}
+            Previous periods
+          </label>
           {pivotHistory && (
-            <select value={pivotHistCount} onChange={(e) => setPivotHistCount(Number(e.target.value))} className="bg-gray-800 rounded px-2 py-1">
-              <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+            <select
+              value={pivotHistCount}
+              onChange={(e) => setPivotHistCount(Number(e.target.value))}
+              className="bg-gray-800 rounded px-2 py-1"
+            >
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+              <option value={3}>3</option>
             </select>
           )}
-          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">Close</button>
+          <button
+            type="button"
+            onClick={() => setPivotSettings(false)}
+            className="text-orange-400"
+          >
+            Close
+          </button>
         </div>
       )}
 
       {trendSettings && showTrend && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input type="text" inputMode="numeric" value={trendPeriodStr}
-            onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, ""); setTrendPeriodStr(v); const n = parseInt(v, 10); if (!isNaN(n) && n >= 5) setTrendPeriod(n); }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5" />
+          <input
+            type="text"
+            inputMode="numeric"
+            value={trendPeriodStr}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^\d]/g, "");
+              setTrendPeriodStr(v);
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 5) setTrendPeriod(n);
+            }}
+            className="w-16 bg-gray-800 rounded px-2 py-1.5"
+          />
           <div className="flex gap-3">
-            <label className="flex items-center gap-1">Up <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-8 h-7 rounded" /></label>
-            <label className="flex items-center gap-1">Down <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-1">
+              Up{" "}
+              <input
+                type="color"
+                value={trendUpColor}
+                onChange={(e) => setTrendUpColor(e.target.value)}
+                className="w-8 h-7 rounded"
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              Down{" "}
+              <input
+                type="color"
+                value={trendDownColor}
+                onChange={(e) => setTrendDownColor(e.target.value)}
+                className="w-8 h-7 rounded"
+              />
+            </label>
           </div>
-          <button type="button" onClick={() => setTrendSettings(false)} className="text-orange-400">Close</button>
+          <button
+            type="button"
+            onClick={() => setTrendSettings(false)}
+            className="text-orange-400"
+          >
+            Close
+          </button>
         </div>
       )}
 
       {rsiSettings && showRSI && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input type="text" inputMode="numeric" value={rsiPeriodStr}
-            onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, ""); setRsiPeriodStr(v); const n = parseInt(v, 10); if (!isNaN(n) && n >= 2) setRsiPeriod(n); }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5" />
-          <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
-          <label className="flex items-center gap-2">Height <input type="range" min={10} max={35} value={rsiHeight} onChange={(e) => setRsiHeight(Number(e.target.value))} className="w-28" />{rsiHeight}%</label>
-          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">Close</button>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={rsiPeriodStr}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^\d]/g, "");
+              setRsiPeriodStr(v);
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 2) setRsiPeriod(n);
+            }}
+            className="w-16 bg-gray-800 rounded px-2 py-1.5"
+          />
+          <input
+            type="color"
+            value={rsiColor}
+            onChange={(e) => setRsiColor(e.target.value)}
+            className="w-10 h-8 rounded"
+          />
+          <label className="flex items-center gap-2">
+            Height{" "}
+            <input
+              type="range"
+              min={10}
+              max={35}
+              value={rsiHeight}
+              onChange={(e) => setRsiHeight(Number(e.target.value))}
+              className="w-28"
+            />
+            {rsiHeight}%
+          </label>
+          <button
+            type="button"
+            onClick={() => setRsiSettings(false)}
+            className="text-orange-400"
+          >
+            Close
+          </button>
         </div>
       )}
 
       {dmiSettings && showDMI && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input type="text" inputMode="numeric" value={dmiPeriodStr}
-            onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, ""); setDmiPeriodStr(v); const n = parseInt(v, 10); if (!isNaN(n) && n >= 2) setDmiPeriod(n); }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5" />
+          <input
+            type="text"
+            inputMode="numeric"
+            value={dmiPeriodStr}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^\d]/g, "");
+              setDmiPeriodStr(v);
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 2) setDmiPeriod(n);
+            }}
+            className="w-16 bg-gray-800 rounded px-2 py-1.5"
+          />
           <div className="flex gap-3">
-            <label className="flex items-center gap-1">+DI <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
-            <label className="flex items-center gap-1">−DI <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
-            <label className="flex items-center gap-1">ADX <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-1">
+              +DI{" "}
+              <input
+                type="color"
+                value={dmiPlusColor}
+                onChange={(e) => setDmiPlusColor(e.target.value)}
+                className="w-8 h-7 rounded"
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              −DI{" "}
+              <input
+                type="color"
+                value={dmiMinusColor}
+                onChange={(e) => setDmiMinusColor(e.target.value)}
+                className="w-8 h-7 rounded"
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              ADX{" "}
+              <input
+                type="color"
+                value={dmiAdxColor}
+                onChange={(e) => setDmiAdxColor(e.target.value)}
+                className="w-8 h-7 rounded"
+              />
+            </label>
           </div>
-          <label className="flex items-center gap-2">Height <input type="range" min={10} max={35} value={dmiHeight} onChange={(e) => setDmiHeight(Number(e.target.value))} className="w-28" />{dmiHeight}%</label>
-          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">Close</button>
+          <label className="flex items-center gap-2">
+            Height{" "}
+            <input
+              type="range"
+              min={10}
+              max={35}
+              value={dmiHeight}
+              onChange={(e) => setDmiHeight(Number(e.target.value))}
+              className="w-28"
+            />
+            {dmiHeight}%
+          </label>
+          <button
+            type="button"
+            onClick={() => setDmiSettings(false)}
+            className="text-orange-400"
+          >
+            Close
+          </button>
         </div>
       )}
 
-      <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "700px", touchAction: "none" }} />
+      <div
+        ref={chartContainerRef}
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+        style={{ height: "700px", touchAction: "none" }}
+      />
 
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
-          <h2 className="text-green-400 font-semibold mb-3">Alarms ({alarms.length})</h2>
+          <h2 className="text-green-400 font-semibold mb-3">
+            Alarms ({alarms.length})
+          </h2>
           {alarmGroups.map((g) => (
             <div key={g.symbol} className="mb-4">
-              <button type="button" onClick={() => goToSymbol(g.symbol)} className="text-sm font-bold text-orange-400 mb-2 hover:underline">
+              <button
+                type="button"
+                onClick={() => goToSymbol(g.symbol)}
+                className="text-sm font-bold text-orange-400 mb-2 hover:underline"
+              >
                 {g.symbol}
               </button>
               {g.items.map((a) => (
-                <div key={a.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
+                <div
+                  key={a.id}
+                  className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <button type="button" onClick={() => goToSymbol(a.symbol)} className="text-left hover:text-orange-300">
+                    <button
+                      type="button"
+                      onClick={() => goToSymbol(a.symbol)}
+                      className="text-left hover:text-orange-300"
+                    >
                       {getConditionSymbol(a.condition)} {a.price}
-                      {a.note ? <span className="text-gray-500 ml-2"> · {a.note}</span> : null}
+                      {a.note ? (
+                        <span className="text-gray-500 ml-2"> · {a.note}</span>
+                      ) : null}
                     </button>
                     <div className="flex flex-wrap items-center gap-2">
-                      <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => updateAlarmColor(a.id, e.target.value)} className="w-7 h-7 rounded cursor-pointer" />
-                      <button type="button" onClick={() => startEditNote(a.id, "alarm", a.note)} className="text-gray-400">📝</button>
-                      <button type="button" onClick={() => cycleCondition(a)} className="text-gray-300">{getConditionLabel(a.condition)}</button>
-                      <button type="button" onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">Move</button>
-                      <button type="button" onClick={() => deleteAlarm(a.id)} className="text-red-400">Delete</button>
+                      <input
+                        type="color"
+                        value={a.color || DEFAULT_ALARM_COLOR}
+                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                        className="w-7 h-7 rounded cursor-pointer"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => startEditNote(a.id, "alarm", a.note)}
+                        className="text-gray-400"
+                      >
+                        📝
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => cycleCondition(a)}
+                        className="text-gray-300"
+                      >
+                        {getConditionLabel(a.condition)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startMove(a.id, "alarm", a.price)}
+                        className="text-blue-400"
+                      >
+                        Move
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteAlarm(a.id)}
+                        className="text-red-400"
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                   {editingNoteId === a.id && editingNoteType === "alarm" && (
                     <div className="mt-2 flex gap-2">
-                      <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">Cancel</button>
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                        placeholder="Note..."
+                      />
+                      <button
+                        type="button"
+                        onClick={saveNote}
+                        className="text-green-400 text-sm"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNoteId(null);
+                          setEditingNoteType(null);
+                        }}
+                        className="text-gray-500 text-sm"
+                      >
+                        Cancel
+                      </button>
                     </div>
                   )}
                 </div>
               ))}
             </div>
           ))}
-          {!alarms.length && <p className="text-gray-500 text-sm">No alarms</p>}
+          {!alarms.length && (
+            <p className="text-gray-500 text-sm">No alarms</p>
+          )}
         </div>
 
         <div>
-          <h2 className="text-orange-400 font-semibold mb-3">Lines ({lines.length})</h2>
+          <h2 className="text-orange-400 font-semibold mb-3">
+            Lines ({lines.length})
+          </h2>
           {lineGroups.map((g) => (
             <div key={g.symbol} className="mb-4">
-              <button type="button" onClick={() => goToSymbol(g.symbol)} className="text-sm font-bold text-orange-400 mb-2 hover:underline">
+              <button
+                type="button"
+                onClick={() => goToSymbol(g.symbol)}
+                className="text-sm font-bold text-orange-400 mb-2 hover:underline"
+              >
                 {g.symbol}
               </button>
               {g.items.map((l) => (
-                <div key={l.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
+                <div
+                  key={l.id}
+                  className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span>
-                      {l.price} {l.style === "ray" ? <span className="text-gray-500">(ray)</span> : null}
-                      {l.note ? <span className="text-gray-500 ml-2"> · {l.note}</span> : null}
+                      {l.price}{" "}
+                      {l.style === "ray" ? (
+                        <span className="text-gray-500">(ray)</span>
+                      ) : null}
+                      {l.note ? (
+                        <span className="text-gray-500 ml-2"> · {l.note}</span>
+                      ) : null}
                     </span>
                     <div className="flex flex-wrap items-center gap-2">
-                      <input type="color" value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => updateLineColor(l.id, e.target.value)} className="w-7 h-7 rounded cursor-pointer" />
+                      <input
+                        type="color"
+                        value={l.color || DEFAULT_LINE_COLOR}
+                        onChange={(e) => updateLineColor(l.id, e.target.value)}
+                        className="w-7 h-7 rounded cursor-pointer"
+                      />
                       <select
                         value={l.width || 2}
-                        onChange={(e) => updateLineWidth(l.id, Number(e.target.value))}
+                        onChange={(e) =>
+                          updateLineWidth(l.id, Number(e.target.value))
+                        }
                         className="bg-gray-800 rounded px-1 py-0.5 text-xs"
-                        title="Width"
                       >
                         <option value={1}>W1</option>
                         <option value={2}>W2</option>
                         <option value={3}>W3</option>
                       </select>
-                      <button type="button" onClick={() => startEditNote(l.id, "line", l.note)} className="text-gray-400">📝</button>
-                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-green-400">Alarm</button>
-                      <button type="button" onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">Move</button>
-                      <button type="button" onClick={() => deleteLine(l.id)} className="text-red-400">Delete</button>
+                      <button
+                        type="button"
+                        onClick={() => startEditNote(l.id, "line", l.note)}
+                        className="text-gray-400"
+                      >
+                        📝
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => convertLineToAlarm(l)}
+                        className="text-green-400"
+                      >
+                        Alarm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startMove(l.id, "line", l.price)}
+                        className="text-blue-400"
+                      >
+                        Move
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteLine(l.id)}
+                        className="text-red-400"
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                   {editingNoteId === l.id && editingNoteType === "line" && (
                     <div className="mt-2 flex gap-2">
-                      <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">Cancel</button>
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                        placeholder="Note..."
+                      />
+                      <button
+                        type="button"
+                        onClick={saveNote}
+                        className="text-green-400 text-sm"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNoteId(null);
+                          setEditingNoteType(null);
+                        }}
+                        className="text-gray-500 text-sm"
+                      >
+                        Cancel
+                      </button>
                     </div>
                   )}
                 </div>
