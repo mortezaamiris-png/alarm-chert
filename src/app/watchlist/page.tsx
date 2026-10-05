@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { createChart, IChartApi, ISeriesApi, LineStyle } from "lightweight-charts";
+import { createChart, IChartApi, ISeriesApi } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 
@@ -68,6 +68,11 @@ function formatPrice(p: number) {
   return p.toFixed(6);
 }
 
+function formatPct(pct: number) {
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${(pct * 100).toFixed(2)}%`;
+}
+
 function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -122,7 +127,6 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
   return <div ref={ref} className="w-full h-20 pointer-events-none" />;
 }
 
-/** lineMode = true → line chart ; false → candles */
 function DetailChart({
   symbol,
   interval,
@@ -133,7 +137,6 @@ function DetailChart({
   lineMode: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -150,7 +153,6 @@ function DetailChart({
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false, timeVisible: true },
     });
-    chartRef.current = chart;
 
     let candleSeries: ISeriesApi<"Candlestick"> | null = null;
     let lineSeries: ISeriesApi<"Area"> | null = null;
@@ -225,7 +227,6 @@ function DetailChart({
     return () => {
       window.removeEventListener("resize", onResize);
       chart.remove();
-      chartRef.current = null;
     };
   }, [symbol, interval, lineMode]);
 
@@ -248,7 +249,7 @@ export default function WatchlistPage() {
   const [interval, setIntervalTf] = useState(() => loadLS("wl_tf", "60"));
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadLS("wl_view", "grid"));
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const [lineMode, setLineMode] = useState(false); // Price line toggle = line chart
+  const [lineMode, setLineMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -256,7 +257,7 @@ export default function WatchlistPage() {
   const [searching, setSearching] = useState(false);
   const [allSymbols, setAllSymbols] = useState<SearchHit[]>([]);
   const [prices, setPrices] = useState<Record<string, number>>({});
-  const [priceTimes, setPriceTimes] = useState<Record<string, string>>({});
+  const [pcts, setPcts] = useState<Record<string, number>>({});
   const [menuItemId, setMenuItemId] = useState<string | null>(null);
   const [listMenuId, setListMenuId] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<string | null>(null);
@@ -279,7 +280,6 @@ export default function WatchlistPage() {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
 
-  // load Spot + Futures symbols
   useEffect(() => {
     (async () => {
       try {
@@ -305,7 +305,6 @@ export default function WatchlistPage() {
           quoteCoin: x.quoteCoin as string,
           market: "Futures" as const,
         }));
-        // prefer Spot first; avoid duplicate symbols (keep Spot)
         const seen = new Set<string>();
         const merged: SearchHit[] = [];
         for (const s of [...spot, ...fut]) {
@@ -318,7 +317,7 @@ export default function WatchlistPage() {
     })();
   }, []);
 
-  // live prices + time
+  // live price + 24h %
   useEffect(() => {
     if (!items.length && !searchHits.length) return;
     let cancelled = false;
@@ -331,29 +330,35 @@ export default function WatchlistPage() {
       );
       if (!symbols.length) return;
       const nextP: Record<string, number> = {};
-      const nextT: Record<string, string> = {};
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-        now.getMinutes()
-      ).padStart(2, "0")}`;
+      const nextPct: Record<string, number> = {};
       await Promise.all(
         symbols.map(async (sym) => {
           try {
-            const res = await fetch(
+            // try spot first, then linear
+            let res = await fetch(
               `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
             );
-            const data = await res.json();
-            const p = parseFloat(data.result?.list?.[0]?.lastPrice);
-            if (p && !Number.isNaN(p)) {
-              nextP[sym] = p;
-              nextT[sym] = timeStr;
+            let data = await res.json();
+            let row = data.result?.list?.[0];
+            if (!row) {
+              res = await fetch(
+                `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${sym}`
+              );
+              data = await res.json();
+              row = data.result?.list?.[0];
+            }
+            if (row) {
+              const p = parseFloat(row.lastPrice);
+              const pct = parseFloat(row.price24hPcnt);
+              if (p && !Number.isNaN(p)) nextP[sym] = p;
+              if (!Number.isNaN(pct)) nextPct[sym] = pct;
             }
           } catch {}
         })
       );
       if (!cancelled) {
         setPrices((prev) => ({ ...prev, ...nextP }));
-        setPriceTimes((prev) => ({ ...prev, ...nextT }));
+        setPcts((prev) => ({ ...prev, ...nextPct }));
       }
     };
     fetchPrices();
@@ -626,6 +631,26 @@ export default function WatchlistPage() {
   const draggingItem = items.find((i) => i.id === draggingId);
   const inList = (sym: string) => items.some((i) => i.symbol === sym);
 
+  const PriceBlock = ({ sym }: { sym: string }) => {
+    const p = prices[sym];
+    const pct = pcts[sym];
+    if (p == null) return <span className="text-xs text-gray-600">—</span>;
+    return (
+      <div className="text-right">
+        <div className="text-sm text-gray-100 font-medium">{formatPrice(p)}</div>
+        {pct != null && !Number.isNaN(pct) && (
+          <div
+            className={`text-[11px] font-medium ${
+              pct >= 0 ? "text-green-400" : "text-red-400"
+            }`}
+          >
+            {formatPct(pct)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       {draggingId && floatPos && draggingItem && (
@@ -677,7 +702,7 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs + working ⋮ menu */}
+      {/* List tabs — ⋮⋮ like coins */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
           <div key={l.id} className="relative flex items-center">
@@ -702,9 +727,10 @@ export default function WatchlistPage() {
                 setMenuItemId(null);
                 setListMenuId((prev) => (prev === l.id ? null : l.id));
               }}
-              className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-400 hover:text-white hover:bg-gray-800 text-base"
+              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none"
+              title="List menu"
             >
-              ⋮
+              ⋮⋮
             </button>
             {listMenuId === l.id && (
               <div
@@ -815,15 +841,15 @@ export default function WatchlistPage() {
               {searchHits.map((hit) => {
                 const added = inList(hit.symbol);
                 const flash = justAdded === hit.symbol;
-                const price = prices[hit.symbol];
-                const time = priceTimes[hit.symbol];
+                const p = prices[hit.symbol];
+                const pct = pcts[hit.symbol];
                 return (
                   <div
                     key={`${hit.market}-${hit.symbol}`}
                     className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-sm">{hit.symbol}</span>
                         <span
                           className={`text-[10px] px-1.5 py-0.5 rounded ${
@@ -834,20 +860,28 @@ export default function WatchlistPage() {
                         >
                           {hit.market}
                         </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
+                          Bybit
+                        </span>
                       </div>
                       <div className="text-xs text-gray-500">
                         {hit.baseCoin}/{hit.quoteCoin}
                       </div>
                     </div>
-                    {/* price + time */}
-                    <div className="text-right shrink-0 min-w-[90px]">
-                      {price != null ? (
+                    <div className="text-right shrink-0 min-w-[88px]">
+                      {p != null ? (
                         <>
                           <div className="text-sm text-gray-100 font-medium">
-                            {formatPrice(price)}
+                            {formatPrice(p)}
                           </div>
-                          {time && (
-                            <div className="text-[10px] text-gray-500">{time}</div>
+                          {pct != null && !Number.isNaN(pct) && (
+                            <div
+                              className={`text-[11px] font-medium ${
+                                pct >= 0 ? "text-green-400" : "text-red-400"
+                              }`}
+                            >
+                              {formatPct(pct)}
+                            </div>
                           )}
                         </>
                       ) : (
@@ -895,16 +929,7 @@ export default function WatchlistPage() {
               <div className="flex items-center justify-between mb-1">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm truncate">{item.symbol}</div>
-                  {prices[item.symbol] != null && (
-                    <div className="text-orange-400 text-xs">
-                      {formatPrice(prices[item.symbol])}
-                      {priceTimes[item.symbol] && (
-                        <span className="text-gray-500 ml-1">
-                          {priceTimes[item.symbol]}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  <PriceBlock sym={item.symbol} />
                 </div>
                 <div className="relative">
                   <div
@@ -982,7 +1007,6 @@ export default function WatchlistPage() {
       {viewMode === "list" && activeListId && (
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
           <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
-            {/* help text removed */}
             <div className="overflow-y-auto flex-1">
               {items.map((item) => (
                 <div
@@ -1070,21 +1094,8 @@ export default function WatchlistPage() {
                     )}
                   </button>
 
-                  <div className="text-right shrink-0 pr-1 min-w-[80px]">
-                    {prices[item.symbol] != null ? (
-                      <>
-                        <div className="text-sm text-gray-200 font-medium">
-                          {formatPrice(prices[item.symbol])}
-                        </div>
-                        {priceTimes[item.symbol] && (
-                          <div className="text-[10px] text-gray-500">
-                            {priceTimes[item.symbol]}
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-xs text-gray-600">—</span>
-                    )}
+                  <div className="shrink-0 pr-1 min-w-[88px]">
+                    <PriceBlock sym={item.symbol} />
                   </div>
                 </div>
               ))}
