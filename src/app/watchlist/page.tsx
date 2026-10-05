@@ -73,6 +73,56 @@ function formatPct(pct: number) {
   return `${sign}${(pct * 100).toFixed(2)}%`;
 }
 
+/** BTCUSDT → btc */
+function baseFromSymbol(symbol: string) {
+  const s = symbol.toUpperCase();
+  const quotes = ["USDT", "USDC", "USD", "BTC", "ETH", "BUSD", "DAI"];
+  for (const q of quotes) {
+    if (s.endsWith(q) && s.length > q.length) return s.slice(0, -q.length).toLowerCase();
+  }
+  return s.toLowerCase();
+}
+
+function CoinIcon({ symbol, size = 28 }: { symbol: string; size?: number }) {
+  const base = baseFromSymbol(symbol);
+  const [err, setErr] = useState(false);
+  const letter = (base[0] || "?").toUpperCase();
+  const colors = [
+    "bg-orange-600",
+    "bg-blue-600",
+    "bg-green-600",
+    "bg-purple-600",
+    "bg-pink-600",
+    "bg-cyan-600",
+    "bg-amber-600",
+    "bg-indigo-600",
+  ];
+  const color = colors[letter.charCodeAt(0) % colors.length];
+
+  if (err) {
+    return (
+      <div
+        className={`${color} rounded-full flex items-center justify-center text-white font-bold shrink-0`}
+        style={{ width: size, height: size, fontSize: size * 0.4 }}
+      >
+        {letter}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={`https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/${base}.svg`}
+      alt={base}
+      width={size}
+      height={size}
+      className="rounded-full shrink-0 bg-gray-800 object-contain"
+      onError={() => setErr(true)}
+      draggable={false}
+    />
+  );
+}
+
 function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -264,11 +314,14 @@ export default function WatchlistPage() {
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(null);
-  const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 52 });
+  const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 56 });
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const dragIdRef = useRef<string | null>(null);
   const itemsRef = useRef<WatchItem[]>([]);
   const offsetRef = useRef({ x: 0, y: 0 });
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const gridScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -407,7 +460,6 @@ export default function WatchlistPage() {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
 
-  // close menus on outside click
   useEffect(() => {
     const close = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
@@ -474,12 +526,30 @@ export default function WatchlistPage() {
     dragIdRef.current = null;
     setDraggingId(null);
     setFloatPos(null);
+    setDropTargetId(null);
     if (!id) return;
     const ordered = itemsRef.current.map((item, i) => ({
       ...item,
       sort_order: i + 1,
     }));
     await persistOrder(ordered);
+  };
+
+  /** auto-scroll list while dragging near edges */
+  const autoScroll = (clientY: number) => {
+    const containers = [listScrollRef.current, gridScrollRef.current].filter(
+      Boolean
+    ) as HTMLDivElement[];
+    for (const el of containers) {
+      const rect = el.getBoundingClientRect();
+      if (clientY < rect.top || clientY > rect.bottom) continue;
+      const edge = 56;
+      if (clientY < rect.top + edge) {
+        el.scrollTop -= 18;
+      } else if (clientY > rect.bottom - edge) {
+        el.scrollTop += 18;
+      }
+    }
   };
 
   useEffect(() => {
@@ -489,12 +559,15 @@ export default function WatchlistPage() {
         x: clientX - offsetRef.current.x,
         y: clientY - offsetRef.current.y,
       });
+      autoScroll(clientY);
+
       const el = document.elementFromPoint(clientX, clientY);
       if (!el) return;
       const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
       if (!row) return;
       const targetId = row.getAttribute("data-item-id");
       if (targetId && targetId !== dragIdRef.current) {
+        setDropTargetId(targetId);
         reorderById(dragIdRef.current, targetId);
       }
     };
@@ -537,10 +610,11 @@ export default function WatchlistPage() {
     setListMenuId(null);
     const rect = rowEl.getBoundingClientRect();
     offsetRef.current = { x: clientX - rect.left, y: clientY - rect.top };
-    setFloatSize({ w: rect.width, h: Math.max(rect.height, 52) });
+    setFloatSize({ w: rect.width, h: Math.max(rect.height, 56) });
     setFloatPos({ x: rect.left, y: rect.top });
     dragIdRef.current = id;
     setDraggingId(id);
+    setDropTargetId(null);
   };
 
   const createList = async () => {
@@ -580,7 +654,6 @@ export default function WatchlistPage() {
   const addSymbol = async (sym: string) => {
     if (!activeListId) return;
     const symbol = sym.toUpperCase();
-    // already in list → do nothing here (toggle handles remove)
     if (items.some((i) => i.symbol === symbol)) return;
     setSaving(true);
     try {
@@ -615,7 +688,6 @@ export default function WatchlistPage() {
     }
   };
 
-  /** remove by symbol (used from search green check) */
   const removeSymbol = async (sym: string) => {
     const symbol = sym.toUpperCase();
     const found = items.find((i) => i.symbol === symbol);
@@ -624,15 +696,12 @@ export default function WatchlistPage() {
     try {
       await supabase.from("watchlist_items").delete().eq("id", found.id);
       setItems((prev) => prev.filter((i) => i.id !== found.id));
-      if (selectedSymbol === symbol) {
-        setSelectedSymbol(null);
-      }
+      if (selectedSymbol === symbol) setSelectedSymbol(null);
     } finally {
       setSaving(false);
     }
   };
 
-  /** toggle: if in list → remove ; else → add */
   const toggleSymbol = async (sym: string) => {
     const symbol = sym.toUpperCase();
     if (items.some((i) => i.symbol === symbol)) {
@@ -678,19 +747,21 @@ export default function WatchlistPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
+      {/* Floating drag card */}
       {draggingId && floatPos && draggingItem && (
         <div
-          className="fixed z-[9999] pointer-events-none rounded-xl border-2 border-orange-500 bg-gray-900 shadow-2xl shadow-orange-500/30"
+          className="fixed z-[9999] pointer-events-none rounded-xl border-2 border-orange-500 bg-gray-900 shadow-2xl shadow-orange-500/40"
           style={{
             left: floatPos.x,
             top: floatPos.y,
             width: floatSize.w,
             minHeight: floatSize.h,
-            transform: "scale(1.04) rotate(1deg)",
+            transform: "scale(1.05) rotate(1.5deg)",
+            boxShadow: "0 12px 40px rgba(249,115,22,0.35)",
           }}
         >
-          <div className="flex items-center gap-2 px-3 py-3">
-            <span className="text-gray-500">⋮⋮</span>
+          <div className="flex items-center gap-2.5 px-3 py-3">
+            <CoinIcon symbol={draggingItem.symbol} size={28} />
             <div className="min-w-0 flex-1 font-semibold text-sm text-white truncate">
               {draggingItem.symbol}
             </div>
@@ -727,7 +798,7 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs — ⋮⋮ opens Delete */}
+      {/* List tabs */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
           <div key={l.id} className="relative flex items-center" data-menu-root>
@@ -824,7 +895,7 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Search — green ✓ removes */}
+      {/* Search */}
       <div className="mb-6 relative">
         {!showSearch ? (
           <button
@@ -877,6 +948,7 @@ export default function WatchlistPage() {
                     key={`${hit.market}-${hit.symbol}`}
                     className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
                   >
+                    <CoinIcon symbol={hit.symbol} size={28} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-sm">{hit.symbol}</span>
@@ -944,120 +1016,36 @@ export default function WatchlistPage() {
 
       {/* GRID */}
       {viewMode === "grid" && activeListId && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+        <div
+          ref={gridScrollRef}
+          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[70vh] overflow-y-auto"
+        >
           {items.map((item) => (
-            <div
-              key={item.id}
-              data-item-id={item.id}
-              className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-200 ${
-                draggingId === item.id
-                  ? "opacity-20 border-dashed border-orange-500/60"
-                  : "border-gray-800"
-              }`}
-              style={{ WebkitUserSelect: "none", userSelect: "none" }}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <div className="min-w-0">
-                  <div className="font-semibold text-sm truncate">{item.symbol}</div>
-                  <PriceBlock sym={item.symbol} />
-                </div>
-                <div className="relative" data-menu-root>
-                  <div
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const row = (e.currentTarget as HTMLElement).closest(
-                        "[data-item-id]"
-                      ) as HTMLElement;
-                      let dragged = false;
-                      const timer = setTimeout(() => {
-                        dragged = true;
-                        if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                      }, 160);
-                      const onUp = () => {
-                        clearTimeout(timer);
-                        if (!dragged) {
-                          setListMenuId(null);
-                          setMenuItemId((prev) => (prev === item.id ? null : item.id));
-                        }
-                        window.removeEventListener("pointerup", onUp);
-                      };
-                      window.addEventListener("pointerup", onUp);
-                    }}
-                    className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab touch-none"
-                    style={{ touchAction: "none" }}
-                  >
-                    ⋮⋮
-                  </div>
-                  {menuItemId === item.id && (
-                    <div
-                      className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => deleteItem(item.id)}
-                        className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
-                      >
-                        Delete
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          goChart(item.symbol);
-                          setMenuItemId(null);
-                        }}
-                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
-                      >
-                        Open chart
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              {draggingId !== item.id && (
-                <MiniChart symbol={item.symbol} interval={interval} />
+            <div key={item.id}>
+              {/* gap indicator above drop target */}
+              {draggingId && dropTargetId === item.id && draggingId !== item.id && (
+                <div className="h-3 mb-1 rounded-full bg-orange-500/40 border border-dashed border-orange-500" />
               )}
-              <button
-                type="button"
-                onClick={() => goChart(item.symbol)}
-                className="text-orange-400 text-xs hover:underline mt-2"
+              <div
+                data-item-id={item.id}
+                className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-200 ${
+                  draggingId === item.id
+                    ? "opacity-15 border-dashed border-orange-500/50 scale-95"
+                    : dropTargetId === item.id && draggingId
+                    ? "border-orange-500/60"
+                    : "border-gray-800"
+                }`}
+                style={{ WebkitUserSelect: "none", userSelect: "none" }}
               >
-                Chart
-              </button>
-            </div>
-          ))}
-          {!items.length && (
-            <p className="text-gray-500 text-sm col-span-full">No symbols yet. Tap 🔍 to add.</p>
-          )}
-        </div>
-      )}
-
-      {/* LIST */}
-      {viewMode === "list" && activeListId && (
-        <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
-          <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
-            <div className="overflow-y-auto flex-1">
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  data-item-id={item.id}
-                  className={`flex items-center gap-1 px-2 border-b border-gray-800/80 select-none transition-all duration-150 ${
-                    selectedSymbol === item.symbol && draggingId !== item.id
-                      ? "bg-gray-800 border-l-2 border-l-orange-500"
-                      : ""
-                  } ${
-                    draggingId === item.id
-                      ? "opacity-25 border border-dashed border-orange-500/50"
-                      : ""
-                  }`}
-                  style={{
-                    WebkitUserSelect: "none",
-                    userSelect: "none",
-                    minHeight: 52,
-                  }}
-                >
-                  <div className="relative shrink-0" data-menu-root>
+                <div className="flex items-center justify-between mb-1 gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CoinIcon symbol={item.symbol} size={26} />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm truncate">{item.symbol}</div>
+                      <PriceBlock sym={item.symbol} />
+                    </div>
+                  </div>
+                  <div className="relative" data-menu-root>
                     <div
                       onPointerDown={(e) => {
                         e.preventDefault();
@@ -1069,7 +1057,7 @@ export default function WatchlistPage() {
                         const timer = setTimeout(() => {
                           dragged = true;
                           if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                        }, 150);
+                        }, 140);
                         const onUp = () => {
                           clearTimeout(timer);
                           if (!dragged) {
@@ -1080,14 +1068,14 @@ export default function WatchlistPage() {
                         };
                         window.addEventListener("pointerup", onUp);
                       }}
-                      className="w-8 h-12 flex items-center justify-center text-gray-500 cursor-grab touch-none"
+                      className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab touch-none"
                       style={{ touchAction: "none" }}
                     >
                       ⋮⋮
                     </div>
                     {menuItemId === item.id && (
                       <div
-                        className="absolute left-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
+                        className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
@@ -1110,22 +1098,133 @@ export default function WatchlistPage() {
                       </div>
                     )}
                   </div>
+                </div>
+                {draggingId !== item.id && (
+                  <MiniChart symbol={item.symbol} interval={interval} />
+                )}
+                <button
+                  type="button"
+                  onClick={() => goChart(item.symbol)}
+                  className="text-orange-400 text-xs hover:underline mt-2"
+                >
+                  Chart
+                </button>
+              </div>
+            </div>
+          ))}
+          {!items.length && (
+            <p className="text-gray-500 text-sm col-span-full">No symbols yet. Tap 🔍 to add.</p>
+          )}
+        </div>
+      )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!draggingId) setSelectedSymbol(item.symbol);
-                    }}
-                    className="flex-1 min-w-0 text-left py-3"
-                  >
-                    <div className="font-medium text-sm truncate">{item.symbol}</div>
-                    {item.note && (
-                      <div className="text-gray-500 text-xs truncate">{item.note}</div>
+      {/* LIST */}
+      {viewMode === "list" && activeListId && (
+        <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
+          <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
+            <div ref={listScrollRef} className="overflow-y-auto flex-1 overscroll-contain">
+              {items.map((item) => (
+                <div key={item.id}>
+                  {/* gap opens above the target row */}
+                  {draggingId &&
+                    dropTargetId === item.id &&
+                    draggingId !== item.id && (
+                      <div
+                        className="mx-2 my-1 rounded-lg border-2 border-dashed border-orange-500/70 bg-orange-500/10"
+                        style={{ height: floatSize.h }}
+                      />
                     )}
-                  </button>
+                  <div
+                    data-item-id={item.id}
+                    className={`flex items-center gap-1.5 px-2 border-b border-gray-800/80 select-none transition-all duration-150 ${
+                      selectedSymbol === item.symbol && draggingId !== item.id
+                        ? "bg-gray-800 border-l-2 border-l-orange-500"
+                        : ""
+                    } ${
+                      draggingId === item.id
+                        ? "opacity-20 scale-[0.98]"
+                        : ""
+                    }`}
+                    style={{
+                      WebkitUserSelect: "none",
+                      userSelect: "none",
+                      minHeight: 56,
+                    }}
+                  >
+                    <div className="relative shrink-0" data-menu-root>
+                      <div
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const row = (e.currentTarget as HTMLElement).closest(
+                            "[data-item-id]"
+                          ) as HTMLElement;
+                          let dragged = false;
+                          const timer = setTimeout(() => {
+                            dragged = true;
+                            if (row) startDrag(item.id, e.clientX, e.clientY, row);
+                          }, 140);
+                          const onUp = () => {
+                            clearTimeout(timer);
+                            if (!dragged) {
+                              setListMenuId(null);
+                              setMenuItemId((prev) =>
+                                prev === item.id ? null : item.id
+                              );
+                            }
+                            window.removeEventListener("pointerup", onUp);
+                          };
+                          window.addEventListener("pointerup", onUp);
+                        }}
+                        className="w-8 h-12 flex items-center justify-center text-gray-500 cursor-grab touch-none"
+                        style={{ touchAction: "none" }}
+                      >
+                        ⋮⋮
+                      </div>
+                      {menuItemId === item.id && (
+                        <div
+                          className="absolute left-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => deleteItem(item.id)}
+                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              goChart(item.symbol);
+                              setMenuItemId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                          >
+                            Open chart
+                          </button>
+                        </div>
+                      )}
+                    </div>
 
-                  <div className="shrink-0 pr-1 min-w-[88px]">
-                    <PriceBlock sym={item.symbol} />
+                    <CoinIcon symbol={item.symbol} size={28} />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!draggingId) setSelectedSymbol(item.symbol);
+                      }}
+                      className="flex-1 min-w-0 text-left py-3"
+                    >
+                      <div className="font-medium text-sm truncate">{item.symbol}</div>
+                      {item.note && (
+                        <div className="text-gray-500 text-xs truncate">{item.note}</div>
+                      )}
+                    </button>
+
+                    <div className="shrink-0 pr-1 min-w-[88px]">
+                      <PriceBlock sym={item.symbol} />
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1140,6 +1239,7 @@ export default function WatchlistPage() {
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div className="flex items-center gap-3">
+                    <CoinIcon symbol={selectedSymbol} size={32} />
                     <h2 className="text-lg font-bold">{selectedSymbol}</h2>
                     <button
                       type="button"
