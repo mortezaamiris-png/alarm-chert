@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createChart, IChartApi, ISeriesApi, LineStyle } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 interface WatchList {
@@ -19,6 +18,12 @@ interface WatchItem {
   note?: string | null;
   sort_order?: number | null;
   created_at?: string;
+}
+
+interface SearchHit {
+  symbol: string;
+  baseCoin?: string;
+  quoteCoin?: string;
 }
 
 const TIMEFRAMES = [
@@ -129,7 +134,9 @@ function DetailChart({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineRef = useRef<any>(null);
+  const lastPriceRef = useRef<number>(0);
 
+  // init chart once
   useEffect(() => {
     if (!ref.current) return;
     ref.current.innerHTML = "";
@@ -168,6 +175,7 @@ function DetailChart({
     };
   }, []);
 
+  // load candles when symbol/interval change
   useEffect(() => {
     if (!seriesRef.current || !symbol) return;
     (async () => {
@@ -188,6 +196,7 @@ function DetailChart({
           }))
           .reverse();
         const last = candles[candles.length - 1].close;
+        lastPriceRef.current = last;
         const { precision, minMove } = getPrecision(last);
         seriesRef.current!.applyOptions({
           priceFormat: { type: "price", precision, minMove },
@@ -195,13 +204,14 @@ function DetailChart({
         seriesRef.current!.setData(candles as any);
         chartRef.current?.timeScale().fitContent();
 
+        // re-apply price line after data load
         if (lineRef.current) {
           try {
             seriesRef.current!.removePriceLine(lineRef.current);
           } catch {}
           lineRef.current = null;
         }
-        if (showPriceLine) {
+        if (showPriceLine && last) {
           lineRef.current = seriesRef.current!.createPriceLine({
             price: last,
             color: "#f97316",
@@ -213,7 +223,28 @@ function DetailChart({
         }
       } catch {}
     })();
-  }, [symbol, interval, showPriceLine]);
+  }, [symbol, interval]);
+
+  // toggle price line only (without reloading candles)
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    if (lineRef.current) {
+      try {
+        seriesRef.current.removePriceLine(lineRef.current);
+      } catch {}
+      lineRef.current = null;
+    }
+    if (showPriceLine && lastPriceRef.current > 0) {
+      lineRef.current = seriesRef.current.createPriceLine({
+        price: lastPriceRef.current,
+        color: "#f97316",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "Last",
+      });
+    }
+  }, [showPriceLine]);
 
   return (
     <div
@@ -229,8 +260,6 @@ export default function WatchlistPage() {
   const [lists, setLists] = useState<WatchList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [items, setItems] = useState<WatchItem[]>([]);
-  const [symbolInput, setSymbolInput] = useState("");
-  const [noteInput, setNoteInput] = useState("");
   const [newListName, setNewListName] = useState("");
   const [showNewList, setShowNewList] = useState(false);
   const [interval, setIntervalTf] = useState(() => loadLS("wl_tf", "60"));
@@ -239,17 +268,23 @@ export default function WatchlistPage() {
   const [showPriceLine, setShowPriceLine] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [allSymbols, setAllSymbols] = useState<SearchHit[]>([]);
   const [prices, setPrices] = useState<Record<string, number>>({});
   const [menuItemId, setMenuItemId] = useState<string | null>(null);
   const [listMenuId, setListMenuId] = useState<string | null>(null);
+  const [justAdded, setJustAdded] = useState<string | null>(null);
 
-  // Drag + floating card
+  // Drag
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(null);
-  const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 48 });
+  const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 52 });
   const dragIdRef = useRef<string | null>(null);
   const itemsRef = useRef<WatchItem[]>([]);
   const offsetRef = useRef({ x: 0, y: 0 });
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -262,7 +297,25 @@ export default function WatchlistPage() {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
 
-  // Live prices
+  // preload symbol list once for search
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(
+          "https://api.bybit.com/v5/market/instruments-info?category=spot&status=Trading&limit=1000"
+        );
+        const data = await res.json();
+        const list = (data.result?.list || []).map((x: any) => ({
+          symbol: x.symbol as string,
+          baseCoin: x.baseCoin as string,
+          quoteCoin: x.quoteCoin as string,
+        }));
+        setAllSymbols(list);
+      } catch {}
+    })();
+  }, []);
+
+  // live prices
   useEffect(() => {
     if (!items.length) return;
     let cancelled = false;
@@ -332,7 +385,6 @@ export default function WatchlistPage() {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
 
-  // Close menus on outside click
   useEffect(() => {
     const close = () => {
       setMenuItemId(null);
@@ -341,6 +393,31 @@ export default function WatchlistPage() {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
+
+  // search filter
+  const runSearch = (q: string) => {
+    setSearchQuery(q);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!q.trim()) {
+      setSearchHits([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    searchTimer.current = setTimeout(() => {
+      const up = q.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const hits = allSymbols
+        .filter(
+          (s) =>
+            s.symbol.includes(up) ||
+            (s.baseCoin || "").includes(up) ||
+            (s.quoteCoin || "").includes(up)
+        )
+        .slice(0, 20);
+      setSearchHits(hits);
+      setSearching(false);
+    }, 180);
+  };
 
   const persistOrder = async (ordered: WatchItem[]) => {
     setItems(ordered);
@@ -441,7 +518,7 @@ export default function WatchlistPage() {
       x: clientX - rect.left,
       y: clientY - rect.top,
     };
-    setFloatSize({ w: rect.width, h: rect.height });
+    setFloatSize({ w: rect.width, h: Math.max(rect.height, 52) });
     setFloatPos({ x: rect.left, y: rect.top });
     dragIdRef.current = id;
     setDraggingId(id);
@@ -481,15 +558,12 @@ export default function WatchlistPage() {
     await loadLists();
   };
 
-  const addItem = async () => {
+  const addSymbol = async (sym: string) => {
     if (!activeListId) return;
-    const sym = symbolInput.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!sym || sym.length < 5) {
-      alert("Enter a valid symbol e.g. BTCUSDT");
-      return;
-    }
-    if (items.some((i) => i.symbol === sym)) {
-      alert("Already in list");
+    const symbol = sym.toUpperCase();
+    if (items.some((i) => i.symbol === symbol)) {
+      setJustAdded(symbol);
+      setTimeout(() => setJustAdded(null), 1200);
       return;
     }
     setSaving(true);
@@ -497,8 +571,8 @@ export default function WatchlistPage() {
       const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
       const payload: any = {
         list_id: activeListId,
-        symbol: sym,
-        note: noteInput.trim() || null,
+        symbol,
+        note: null,
         sort_order: maxOrder + 1,
       };
       let { data, error } = await supabase
@@ -517,10 +591,9 @@ export default function WatchlistPage() {
         return;
       }
       setItems((prev) => [...prev, data]);
-      setSymbolInput("");
-      setNoteInput("");
-      setShowSearch(false);
-      if (!selectedSymbol) setSelectedSymbol(sym);
+      setJustAdded(symbol);
+      setTimeout(() => setJustAdded(null), 1500);
+      if (!selectedSymbol) setSelectedSymbol(symbol);
     } finally {
       setSaving(false);
     }
@@ -538,31 +611,28 @@ export default function WatchlistPage() {
   };
 
   const draggingItem = items.find((i) => i.id === draggingId);
+  const inList = (sym: string) => items.some((i) => i.symbol === sym);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* Floating lift card */}
+      {/* Floating card */}
       {draggingId && floatPos && draggingItem && (
         <div
-          className="fixed z-[9999] pointer-events-none rounded-xl border border-orange-500/80 bg-gray-900/95 shadow-2xl shadow-orange-500/25"
+          className="fixed z-[9999] pointer-events-none rounded-xl border-2 border-orange-500 bg-gray-900 shadow-2xl shadow-orange-500/30"
           style={{
             left: floatPos.x,
             top: floatPos.y,
             width: floatSize.w,
             minHeight: floatSize.h,
-            transform: "scale(1.05) rotate(1.5deg)",
-            transition: "box-shadow 0.15s ease",
+            transform: "scale(1.04) rotate(1deg)",
           }}
         >
-          <div className="flex items-center gap-2 px-3 py-2.5">
+          <div className="flex items-center gap-2 px-3 py-3">
             <span className="text-gray-500">⋮⋮</span>
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-sm text-white truncate">
                 {draggingItem.symbol}
               </div>
-              {draggingItem.note && (
-                <div className="text-gray-400 text-xs truncate">{draggingItem.note}</div>
-              )}
             </div>
             {prices[draggingItem.symbol] != null && (
               <span className="text-orange-400 text-xs font-medium">
@@ -573,17 +643,9 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Title row */}
+      {/* Title — NO Go chart */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-2xl font-bold">Watchlist</h1>
-          <Link
-            href="/dashboard"
-            className="text-orange-400 text-xs hover:underline opacity-80"
-          >
-            Go chart →
-          </Link>
-        </div>
+        <h1 className="text-2xl font-bold">Watchlist</h1>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -606,7 +668,7 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs — no permanent Delete */}
+      {/* List tabs */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
           <div key={l.id} className="relative">
@@ -615,10 +677,6 @@ export default function WatchlistPage() {
               onClick={() => {
                 setActiveListId(l.id);
                 setListMenuId(null);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setListMenuId(l.id);
               }}
               className={`px-3 py-1.5 rounded-full text-sm ${
                 activeListId === l.id
@@ -701,56 +759,81 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Search icon → expands */}
-      <div className="flex flex-wrap items-center gap-2 mb-6">
+      {/* Search — TradingView style */}
+      <div className="mb-6 relative">
         {!showSearch ? (
           <button
             type="button"
             onClick={() => setShowSearch(true)}
             className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
-            title="Search & add"
+            title="Search"
           >
             🔍
           </button>
         ) : (
-          <div className="flex flex-wrap gap-2 flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3">
-            <input
-              autoFocus
-              value={symbolInput}
-              onChange={(e) =>
-                setSymbolInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addItem();
-              }}
-              placeholder="Search symbol (BTCUSDT)"
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[140px]"
-            />
-            <input
-              value={noteInput}
-              onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Note (optional)"
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[100px]"
-            />
-            <button
-              type="button"
-              onClick={addItem}
-              disabled={saving || !activeListId}
-              className="bg-orange-500 text-white px-5 py-2 rounded-lg text-sm font-medium"
-            >
-              Add
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowSearch(false);
-                setSymbolInput("");
-                setNoteInput("");
-              }}
-              className="text-gray-400 px-2"
-            >
-              ✕
-            </button>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-xl">
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
+              <span className="text-gray-500">🔍</span>
+              <input
+                autoFocus
+                value={searchQuery}
+                onChange={(e) => runSearch(e.target.value)}
+                placeholder="Search symbol (BTC, ETH, SOL…)"
+                className="flex-1 bg-transparent outline-none text-white text-sm py-1"
+              />
+              {searching && (
+                <span className="text-xs text-orange-400 animate-pulse">Searching…</span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSearch(false);
+                  setSearchQuery("");
+                  setSearchHits([]);
+                }}
+                className="text-gray-400 text-sm px-2"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {!searchQuery.trim() && (
+                <p className="text-gray-500 text-sm p-4">Type a symbol to search…</p>
+              )}
+              {searchQuery.trim() && !searching && searchHits.length === 0 && (
+                <p className="text-gray-500 text-sm p-4">No results</p>
+              )}
+              {searchHits.map((hit) => {
+                const added = inList(hit.symbol);
+                const flash = justAdded === hit.symbol;
+                return (
+                  <div
+                    key={hit.symbol}
+                    className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
+                  >
+                    <div>
+                      <div className="font-medium text-sm">{hit.symbol}</div>
+                      <div className="text-xs text-gray-500">
+                        {hit.baseCoin}/{hit.quoteCoin}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => addSymbol(hit.symbol)}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-bold transition ${
+                        added || flash
+                          ? "bg-green-600 text-white"
+                          : "bg-gray-700 text-gray-200 hover:bg-orange-500 hover:text-white"
+                      }`}
+                      title={added ? "Already in list" : "Add"}
+                    >
+                      {added || flash ? "✓" : "+"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -768,10 +851,14 @@ export default function WatchlistPage() {
               data-item-id={item.id}
               className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-200 ${
                 draggingId === item.id
-                  ? "opacity-20 border-dashed border-orange-500/50 scale-[0.98]"
+                  ? "opacity-20 border-dashed border-orange-500/60 scale-[0.97]"
                   : "border-gray-800"
               }`}
-              style={{ WebkitUserSelect: "none", userSelect: "none" }}
+              style={{
+                WebkitUserSelect: "none",
+                userSelect: "none",
+                minHeight: draggingId === item.id ? floatSize.h : undefined,
+              }}
             >
               <div className="flex items-center justify-between mb-1">
                 <div className="min-w-0">
@@ -793,17 +880,16 @@ export default function WatchlistPage() {
                       const row = (e.currentTarget as HTMLElement).closest(
                         "[data-item-id]"
                       ) as HTMLElement;
-                      // long press style: start drag after short delay, or open menu on click
+                      let dragged = false;
                       const timer = setTimeout(() => {
+                        dragged = true;
                         if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                      }, 180);
-                      const cancel = () => {
-                        clearTimeout(timer);
-                        window.removeEventListener("pointerup", onUp);
-                      };
+                      }, 160);
                       const onUp = () => {
                         clearTimeout(timer);
-                        setMenuItemId((prev) => (prev === item.id ? null : item.id));
+                        if (!dragged) {
+                          setMenuItemId((prev) => (prev === item.id ? null : item.id));
+                        }
                         window.removeEventListener("pointerup", onUp);
                       };
                       window.addEventListener("pointerup", onUp);
@@ -815,7 +901,7 @@ export default function WatchlistPage() {
                   </div>
                   {menuItemId === item.id && (
                     <div
-                      className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[100px]"
+                      className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <button
@@ -839,7 +925,9 @@ export default function WatchlistPage() {
                   )}
                 </div>
               </div>
-              <MiniChart symbol={item.symbol} interval={interval} />
+              {draggingId !== item.id && (
+                <MiniChart symbol={item.symbol} interval={interval} />
+              )}
               <div className="flex justify-between mt-2 text-xs">
                 <button
                   type="button"
@@ -869,16 +957,21 @@ export default function WatchlistPage() {
                 <div
                   key={item.id}
                   data-item-id={item.id}
-                  className={`flex items-center gap-1 px-2 py-2.5 border-b border-gray-800/80 select-none transition-all duration-200 ${
+                  className={`flex items-center gap-1 px-2 border-b border-gray-800/80 select-none transition-all duration-150 ${
                     selectedSymbol === item.symbol && draggingId !== item.id
                       ? "bg-gray-800 border-l-2 border-l-orange-500"
                       : ""
                   } ${
                     draggingId === item.id
-                      ? "opacity-15 border-dashed border-orange-500/40 min-h-[52px]"
+                      ? "opacity-25 border border-dashed border-orange-500/50 bg-gray-950"
                       : ""
                   }`}
-                  style={{ WebkitUserSelect: "none", userSelect: "none" }}
+                  style={{
+                    WebkitUserSelect: "none",
+                    userSelect: "none",
+                    minHeight: 52,
+                    height: draggingId === item.id ? floatSize.h : undefined,
+                  }}
                 >
                   <div className="relative shrink-0">
                     <div
@@ -892,7 +985,7 @@ export default function WatchlistPage() {
                         const timer = setTimeout(() => {
                           dragged = true;
                           if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                        }, 160);
+                        }, 150);
                         const onUp = () => {
                           clearTimeout(timer);
                           if (!dragged) {
@@ -902,7 +995,7 @@ export default function WatchlistPage() {
                         };
                         window.addEventListener("pointerup", onUp);
                       }}
-                      className="w-8 h-10 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+                      className="w-8 h-12 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none"
                       style={{ touchAction: "none" }}
                     >
                       ⋮⋮
@@ -938,7 +1031,7 @@ export default function WatchlistPage() {
                     onClick={() => {
                       if (!draggingId) setSelectedSymbol(item.symbol);
                     }}
-                    className="flex-1 min-w-0 text-left py-1"
+                    className="flex-1 min-w-0 text-left py-3"
                   >
                     <div className="font-medium text-sm truncate">{item.symbol}</div>
                     {item.note && (
@@ -946,8 +1039,7 @@ export default function WatchlistPage() {
                     )}
                   </button>
 
-                  {/* Live price instead of X */}
-                  <div className="text-right shrink-0 pr-1 min-w-[70px]">
+                  <div className="text-right shrink-0 pr-1 min-w-[72px]">
                     {prices[item.symbol] != null ? (
                       <span className="text-sm text-gray-200 font-medium">
                         {formatPrice(prices[item.symbol])}
@@ -978,17 +1070,19 @@ export default function WatchlistPage() {
                       Open full chart →
                     </button>
                   </div>
-                  <label className="flex items-center gap-2 text-sm text-gray-300">
+                  <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
                     <input
                       type="checkbox"
                       checked={showPriceLine}
                       onChange={(e) => setShowPriceLine(e.target.checked)}
+                      className="accent-orange-500"
                     />
                     Price line
                   </label>
                 </div>
 
                 <DetailChart
+                  key={`${selectedSymbol}-${interval}`}
                   symbol={selectedSymbol}
                   interval={interval}
                   showPriceLine={showPriceLine}
