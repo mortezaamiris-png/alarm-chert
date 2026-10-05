@@ -55,10 +55,8 @@ function getPrecision(price: number) {
   return { precision: 2, minMove: 0.01 };
 }
 
-/** Mini sparkline for grid cards */
 function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -83,7 +81,6 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
       lastValueVisible: false,
       crosshairMarkerVisible: false,
     });
-    chartRef.current = chart;
 
     (async () => {
       try {
@@ -106,14 +103,12 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
 
     return () => {
       chart.remove();
-      chartRef.current = null;
     };
   }, [symbol, interval]);
 
-  return <div ref={ref} className="w-full h-20" />;
+  return <div ref={ref} className="w-full h-20 pointer-events-none" />;
 }
 
-/** Main chart for list mode (candles + optional last-price line) */
 function DetailChart({
   symbol,
   interval,
@@ -213,7 +208,13 @@ function DetailChart({
     })();
   }, [symbol, interval, showPriceLine]);
 
-  return <div ref={ref} className="w-full rounded-xl overflow-hidden border border-gray-800" style={{ height: 420 }} />;
+  return (
+    <div
+      ref={ref}
+      className="w-full rounded-xl overflow-hidden border border-gray-800"
+      style={{ height: 420 }}
+    />
+  );
 }
 
 export default function WatchlistPage() {
@@ -229,7 +230,6 @@ export default function WatchlistPage() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadLS("wl_view", "grid"));
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [showPriceLine, setShowPriceLine] = useState(true);
-  const [dragId, setDragId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -252,22 +252,25 @@ export default function WatchlistPage() {
     }
   }, [activeListId]);
 
-  const loadItems = useCallback(async (listId: string) => {
-    const { data } = await supabase
-      .from("watchlist_items")
-      .select("*")
-      .eq("list_id", listId)
-      .order("sort_order", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: true });
-    const rows = (data || []) as WatchItem[];
-    // ensure sort_order
-    rows.sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
-    setItems(rows);
-    if (rows.length && !selectedSymbol) setSelectedSymbol(rows[0].symbol);
-    if (selectedSymbol && !rows.find((r) => r.symbol === selectedSymbol)) {
-      setSelectedSymbol(rows[0]?.symbol || null);
-    }
-  }, [selectedSymbol]);
+  const loadItems = useCallback(
+    async (listId: string) => {
+      const { data } = await supabase
+        .from("watchlist_items")
+        .select("*")
+        .eq("list_id", listId)
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("created_at", { ascending: true });
+      const rows = ((data || []) as WatchItem[]).sort(
+        (a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999)
+      );
+      setItems(rows);
+      if (rows.length && !selectedSymbol) setSelectedSymbol(rows[0].symbol);
+      if (selectedSymbol && !rows.find((r) => r.symbol === selectedSymbol)) {
+        setSelectedSymbol(rows[0]?.symbol || null);
+      }
+    },
+    [selectedSymbol]
+  );
 
   useEffect(() => {
     loadLists();
@@ -276,6 +279,31 @@ export default function WatchlistPage() {
   useEffect(() => {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
+
+  const persistOrder = async (ordered: WatchItem[]) => {
+    setItems(ordered);
+    await Promise.all(
+      ordered.map((item, idx) =>
+        supabase
+          .from("watchlist_items")
+          .update({ sort_order: idx + 1 })
+          .eq("id", item.id)
+      )
+    );
+  };
+
+  /** Move item up or down by one step — works on iPad */
+  const moveItem = async (id: string, direction: "up" | "down") => {
+    const idx = items.findIndex((i) => i.id === id);
+    if (idx < 0) return;
+    const newIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (newIdx < 0 || newIdx >= items.length) return;
+    const arr = [...items];
+    const [moved] = arr.splice(idx, 1);
+    arr.splice(newIdx, 0, moved);
+    const withOrder = arr.map((item, i) => ({ ...item, sort_order: i + 1 }));
+    await persistOrder(withOrder);
+  };
 
   const createList = async () => {
     const name = newListName.trim() || "New list";
@@ -334,7 +362,7 @@ export default function WatchlistPage() {
         .insert([payload])
         .select()
         .single();
-      if (error && String(error.message).includes("sort_order")) {
+      if (error && String(error.message || "").toLowerCase().includes("sort_order")) {
         delete payload.sort_order;
         const r = await supabase.from("watchlist_items").insert([payload]).select().single();
         data = r.data;
@@ -358,38 +386,48 @@ export default function WatchlistPage() {
     setItems((prev) => prev.filter((i) => i.id !== id));
   };
 
-  const reorder = async (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    const arr = [...items];
-    const fromIdx = arr.findIndex((i) => i.id === fromId);
-    const toIdx = arr.findIndex((i) => i.id === toId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = arr.splice(fromIdx, 1);
-    arr.splice(toIdx, 0, moved);
-    const withOrder = arr.map((item, idx) => ({ ...item, sort_order: idx + 1 }));
-    setItems(withOrder);
-    // persist
-    await Promise.all(
-      withOrder.map((item, idx) =>
-        supabase
-          .from("watchlist_items")
-          .update({ sort_order: idx + 1 })
-          .eq("id", item.id)
-      )
-    );
-  };
-
-  const onDragStart = (id: string) => setDragId(id);
-  const onDragOver = (e: React.DragEvent) => e.preventDefault();
-  const onDrop = (targetId: string) => {
-    if (dragId) reorder(dragId, targetId);
-    setDragId(null);
-  };
-
   const goChart = (sym: string) => {
     localStorage.setItem("chart_symbol", sym);
     router.push("/dashboard");
   };
+
+  /** Reorder controls — works on touch + mouse */
+  const MoveButtons = ({ id, index }: { id: string; index: number }) => (
+    <div className="flex flex-col gap-0.5 shrink-0">
+      <button
+        type="button"
+        disabled={index === 0}
+        onClick={(e) => {
+          e.stopPropagation();
+          moveItem(id, "up");
+        }}
+        className={`w-7 h-7 rounded text-xs leading-none ${
+          index === 0
+            ? "bg-gray-800 text-gray-600"
+            : "bg-gray-700 text-white active:bg-orange-500"
+        }`}
+        title="Move up"
+      >
+        ▲
+      </button>
+      <button
+        type="button"
+        disabled={index === items.length - 1}
+        onClick={(e) => {
+          e.stopPropagation();
+          moveItem(id, "down");
+        }}
+        className={`w-7 h-7 rounded text-xs leading-none ${
+          index === items.length - 1
+            ? "bg-gray-800 text-gray-600"
+            : "bg-gray-700 text-white active:bg-orange-500"
+        }`}
+        title="Move down"
+      >
+        ▼
+      </button>
+    </div>
+  );
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
@@ -401,11 +439,9 @@ export default function WatchlistPage() {
           <h1 className="text-2xl font-bold">Watchlist</h1>
         </div>
         <div className="flex items-center gap-2">
-          {/* View mode toggle */}
           <button
             type="button"
             onClick={() => setViewMode("grid")}
-            title="Grid view"
             className={`px-3 py-2 rounded-lg text-sm ${
               viewMode === "grid" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
             }`}
@@ -415,7 +451,6 @@ export default function WatchlistPage() {
           <button
             type="button"
             onClick={() => setViewMode("list")}
-            title="List + chart view"
             className={`px-3 py-2 rounded-lg text-sm ${
               viewMode === "list" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
             }`}
@@ -425,7 +460,6 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
           <button
@@ -478,7 +512,6 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Timeframe — top only in grid mode */}
       {viewMode === "grid" && (
         <div className="flex flex-wrap gap-2 mb-4">
           {TIMEFRAMES.map((tf) => (
@@ -498,7 +531,6 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Add symbol */}
       <div className="flex flex-wrap gap-2 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-3">
         <input
           value={symbolInput}
@@ -528,27 +560,24 @@ export default function WatchlistPage() {
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
       )}
 
-      {/* ===== GRID VIEW ===== */}
+      {/* GRID */}
       {viewMode === "grid" && activeListId && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          {items.map((item) => (
+          {items.map((item, index) => (
             <div
               key={item.id}
-              draggable
-              onDragStart={() => onDragStart(item.id)}
-              onDragOver={onDragOver}
-              onDrop={() => onDrop(item.id)}
-              className={`bg-gray-900 border border-gray-800 rounded-xl p-3 cursor-grab active:cursor-grabbing ${
-                dragId === item.id ? "opacity-50 border-orange-500" : ""
-              }`}
+              className="bg-gray-900 border border-gray-800 rounded-xl p-3 select-none"
+              style={{ WebkitUserSelect: "none", userSelect: "none" }}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-semibold text-sm">{item.symbol}</span>
-                <span className="text-gray-600 text-xs">⋮⋮</span>
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <div className="min-w-0">
+                  <div className="font-semibold text-sm truncate">{item.symbol}</div>
+                  {item.note && (
+                    <p className="text-gray-500 text-xs truncate">{item.note}</p>
+                  )}
+                </div>
+                <MoveButtons id={item.id} index={index} />
               </div>
-              {item.note && (
-                <p className="text-gray-500 text-xs mb-1 truncate">{item.note}</p>
-              )}
               <MiniChart symbol={item.symbol} interval={interval} />
               <div className="flex justify-between mt-2 text-xs">
                 <button
@@ -574,43 +603,39 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* ===== LIST + CHART VIEW (TradingView style) ===== */}
+      {/* LIST + CHART */}
       {viewMode === "list" && activeListId && (
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
-          {/* Left symbol list */}
-          <div className="w-full md:w-72 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
+          <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
             <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400">
-              Drag to reorder · Click to preview
+              Use ▲ ▼ to reorder · Tap name to preview
             </div>
             <div className="overflow-y-auto flex-1">
-              {items.map((item) => (
+              {items.map((item, index) => (
                 <div
                   key={item.id}
-                  draggable
-                  onDragStart={() => onDragStart(item.id)}
-                  onDragOver={onDragOver}
-                  onDrop={() => onDrop(item.id)}
-                  onClick={() => setSelectedSymbol(item.symbol)}
-                  className={`flex items-center gap-2 px-3 py-2.5 border-b border-gray-800/80 cursor-pointer ${
+                  className={`flex items-center gap-2 px-2 py-2 border-b border-gray-800/80 select-none ${
                     selectedSymbol === item.symbol
                       ? "bg-gray-800 border-l-2 border-l-orange-500"
                       : "hover:bg-gray-800/50"
-                  } ${dragId === item.id ? "opacity-50" : ""}`}
+                  }`}
+                  style={{ WebkitUserSelect: "none", userSelect: "none" }}
                 >
-                  <span className="text-gray-600 text-xs cursor-grab">⋮⋮</span>
-                  <div className="flex-1 min-w-0">
+                  <MoveButtons id={item.id} index={index} />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSymbol(item.symbol)}
+                    className="flex-1 min-w-0 text-left py-1"
+                  >
                     <div className="font-medium text-sm truncate">{item.symbol}</div>
                     {item.note && (
                       <div className="text-gray-500 text-xs truncate">{item.note}</div>
                     )}
-                  </div>
+                  </button>
                   <button
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteItem(item.id);
-                    }}
-                    className="text-red-400 text-xs shrink-0"
+                    onClick={() => deleteItem(item.id)}
+                    className="text-red-400 text-sm shrink-0 w-8 h-8"
                   >
                     ✕
                   </button>
@@ -622,7 +647,6 @@ export default function WatchlistPage() {
             </div>
           </div>
 
-          {/* Right chart panel */}
           <div className="flex-1 min-w-0">
             {selectedSymbol ? (
               <>
@@ -653,7 +677,6 @@ export default function WatchlistPage() {
                   showPriceLine={showPriceLine}
                 />
 
-                {/* Timeframes under chart (like TradingView) */}
                 <div className="flex flex-wrap gap-2 mt-3">
                   {TIMEFRAMES.map((tf) => (
                     <button
