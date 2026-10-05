@@ -17,6 +17,8 @@ interface ChartLine {
   price: number;
   color: string;
   note?: string | null;
+  width?: number | null;
+  style?: string | null; // "full" | "ray"
 }
 
 interface Alarm {
@@ -30,15 +32,18 @@ interface Alarm {
   color?: string | null;
 }
 
-type ToolMode = "none" | "draw" | "alarm" | "move";
+type ToolMode = "none" | "draw" | "ray" | "alarm" | "move";
 
-const TIMEFRAMES = [
+const ALL_TIMEFRAMES = [
   { label: "1m", value: "1" },
   { label: "5m", value: "5" },
   { label: "15m", value: "15" },
   { label: "1h", value: "60" },
+  { label: "2h", value: "120" },
   { label: "4h", value: "240" },
   { label: "1D", value: "D" },
+  { label: "1W", value: "W" },
+  { label: "1M", value: "M" },
 ];
 
 const PIVOT_TFS = [
@@ -49,14 +54,15 @@ const PIVOT_TFS = [
 ];
 
 const TIMEZONES = [
-  { label: "تهران", value: "Asia/Tehran" },
+  { label: "Tehran", value: "Asia/Tehran" },
   { label: "UTC", value: "UTC" },
-  { label: "لندن", value: "Europe/London" },
-  { label: "نیویورک", value: "America/New_York" },
+  { label: "London", value: "Europe/London" },
+  { label: "New York", value: "America/New_York" },
 ];
 
 const DEFAULT_ALARM_COLOR = "#3b82f6";
 const DEFAULT_LINE_COLOR = "#f97316";
+const LINE_WIDTHS = [1, 2, 3] as const;
 
 function loadLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -96,6 +102,19 @@ function formatTimeTZ(time: number, timeZone: string) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function barSeconds(tf: string) {
+  if (tf === "1") return 60;
+  if (tf === "5") return 300;
+  if (tf === "15") return 900;
+  if (tf === "60") return 3600;
+  if (tf === "120") return 7200;
+  if (tf === "240") return 14400;
+  if (tf === "D") return 86400;
+  if (tf === "W") return 604800;
+  if (tf === "M") return 2592000;
+  return 3600;
 }
 
 function calcSMA(candles: { time: number; close: number }[], period: number) {
@@ -213,20 +232,60 @@ function groupBySymbol<T extends { symbol: string }>(items: T[]): { symbol: stri
     .map(([symbol, items]) => ({ symbol, items }));
 }
 
+function playAlarmBeep() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.frequency.value = 880;
+    o.type = "sine";
+    g.gain.setValueAtTime(0.25, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+    o.start(ctx.currentTime);
+    o.stop(ctx.currentTime + 0.4);
+    setTimeout(() => {
+      const o2 = ctx.createOscillator();
+      const g2 = ctx.createGain();
+      o2.connect(g2);
+      g2.connect(ctx.destination);
+      o2.frequency.value = 1175;
+      o2.type = "sine";
+      g2.gain.setValueAtTime(0.25, ctx.currentTime);
+      g2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+      o2.start();
+      o2.stop(ctx.currentTime + 0.5);
+    }, 200);
+  } catch {}
+}
+
+function showLocalNotification(title: string, body: string) {
+  try {
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      new Notification(title, { body, icon: "/icon-192.png", tag: "alarm-chert" });
+    }
+  } catch {}
+  playAlarmBeep();
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
+  const previewRayRef = useRef<any>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
-  const chartLinesRef = useRef<Map<string, IPriceLine>>(new Map());
+  const chartLinesRef = useRef<Map<string, any>>(new Map());
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const candlesRef = useRef<any[]>([]);
+  const lastPriceRef = useRef<number | null>(null);
+  const notifiedAlarmsRef = useRef<Set<string>>(new Set());
 
   const [symbol, setSymbol] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("chart_symbol") || "BTCUSDT" : "BTCUSDT"
@@ -235,6 +294,10 @@ export default function DashboardPage() {
     typeof window !== "undefined" ? localStorage.getItem("chart_interval") || "60" : "60"
   );
   const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
+  const [tfMenuOpen, setTfMenuOpen] = useState(false);
+  const [favTfs, setFavTfs] = useState<string[]>(() =>
+    loadLS("fav_tfs", ["1", "5", "15", "60", "240", "D"])
+  );
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
@@ -245,11 +308,11 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
+  const [notifEnabled, setNotifEnabled] = useState(false);
 
-  // رنگ پیش‌فرض خط جدید
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
+  const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
 
-  // اندیکاتورها + چشم (همه در localStorage)
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
   const [smaVisible, setSmaVisible] = useState(() => loadLS("vis_sma", true));
   const [smaSettings, setSmaSettings] = useState(false);
@@ -301,12 +364,10 @@ export default function DashboardPage() {
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
   const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
 
-  // ویرایش نوت
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
 
-  // persist اندیکاتور + چشم
   useEffect(() => { saveLS("ind_sma", showSMA); }, [showSMA]);
   useEffect(() => { saveLS("vis_sma", smaVisible); }, [smaVisible]);
   useEffect(() => { saveLS("sma1", sma1); saveLS("sma2", sma2); saveLS("sma3", sma3); }, [sma1, sma2, sma3]);
@@ -346,6 +407,8 @@ export default function DashboardPage() {
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
   useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("draw_color", drawColor); }, [drawColor]);
+  useEffect(() => { saveLS("draw_width", drawWidth); }, [drawWidth]);
+  useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { localStorage.setItem("chart_symbol", symbol); }, [symbol]);
   useEffect(() => { localStorage.setItem("chart_interval", interval); }, [interval]);
 
@@ -356,13 +419,16 @@ export default function DashboardPage() {
   const conditionRef = useRef(condition);
   const savingRef = useRef(saving);
   const symbolRef = useRef(symbol);
+  const intervalRef = useRef(interval);
   const timeZoneRef = useRef(timeZone);
   const drawColorRef = useRef(drawColor);
+  const drawWidthRef = useRef(drawWidth);
   const showRSIRef = useRef(showRSI);
   const showDMIRef = useRef(showDMI);
   const showVolRef = useRef(showVol);
   const rsiHeightRef = useRef(rsiHeight);
   const dmiHeightRef = useRef(dmiHeight);
+  const alarmsRef = useRef(alarms);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
@@ -371,13 +437,16 @@ export default function DashboardPage() {
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { savingRef.current = saving; }, [saving]);
   useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+  useEffect(() => { intervalRef.current = interval; }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
   useEffect(() => { drawColorRef.current = drawColor; }, [drawColor]);
+  useEffect(() => { drawWidthRef.current = drawWidth; }, [drawWidth]);
   useEffect(() => { showRSIRef.current = showRSI; }, [showRSI]);
   useEffect(() => { showDMIRef.current = showDMI; }, [showDMI]);
   useEffect(() => { showVolRef.current = showVol; }, [showVol]);
   useEffect(() => { rsiHeightRef.current = rsiHeight; }, [rsiHeight]);
   useEffect(() => { dmiHeightRef.current = dmiHeight; }, [dmiHeight]);
+  useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
 
   const updateMargins = useCallback(() => {
     if (!chartRef.current) return;
@@ -396,8 +465,12 @@ export default function DashboardPage() {
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
-      seriesRef.current.removePriceLine(previewLineRef.current);
+      try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
       previewLineRef.current = null;
+    }
+    if (previewRayRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(previewRayRef.current); } catch {}
+      previewRayRef.current = null;
     }
     setPreviewPrice(null);
   };
@@ -409,21 +482,51 @@ export default function DashboardPage() {
     clearPreview();
   };
 
-  const addLine = async (price: number) => {
+  const toggleFavTf = (v: string) => {
+    setFavTfs((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]));
+  };
+
+  const requestNotifPermission = async () => {
+    try {
+      if (typeof Notification === "undefined") {
+        alert("Notifications not supported on this browser");
+        return;
+      }
+      const p = await Notification.requestPermission();
+      setNotifEnabled(p === "granted");
+      if (p === "granted") {
+        showLocalNotification("Alarm Chert", "Notifications enabled");
+      }
+    } catch {
+      alert("Could not enable notifications");
+    }
+  };
+
+  const addLine = async (price: number, style: "full" | "ray" = "full") => {
     if (savingRef.current) return;
     setSaving(true);
     try {
       const p = formatPrice(price);
-      const { data, error } = await supabase
-        .from("chart_lines")
-        .insert([{
-          symbol: symbolRef.current,
-          price: p,
-          color: drawColorRef.current || DEFAULT_LINE_COLOR,
-          note: null,
-        }])
-        .select()
-        .single();
+      const payload: any = {
+        symbol: symbolRef.current,
+        price: p,
+        color: drawColorRef.current || DEFAULT_LINE_COLOR,
+        note: null,
+        width: drawWidthRef.current,
+        style,
+      };
+      let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+      if (error && (String(error.message).includes("width") || String(error.message).includes("style"))) {
+        delete payload.width;
+        delete payload.style;
+        const r = await supabase.from("chart_lines").insert([payload]).select().single();
+        data = r.data;
+        error = r.error;
+        if (data) {
+          (data as any).width = drawWidthRef.current;
+          (data as any).style = style;
+        }
+      }
       if (error) { alert(error.message); return; }
       setLines((prev) => [data, ...prev]);
       resetMode();
@@ -505,14 +608,16 @@ export default function DashboardPage() {
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
   };
 
+  const updateLineWidth = async (id: string, width: number) => {
+    const { error } = await supabase.from("chart_lines").update({ width }).eq("id", id);
+    if (!error) setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+    else setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+  };
+
   const updateAlarmColor = async (id: string, color: string) => {
     const { error } = await supabase.from("alarms").update({ color }).eq("id", id);
-    if (error) {
-      // ستون color نباشد — فقط در state
-      setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
-      return;
-    }
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
+    if (error) { /* column may not exist */ }
   };
 
   const saveNote = async () => {
@@ -560,15 +665,13 @@ export default function DashboardPage() {
     setPreviewPrice(price);
   };
 
-  const goToSymbol = (sym: string) => {
-    setSymbol(sym.toUpperCase());
-  };
+  const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());
 
   const getConditionSymbol = (c: string) => (c === "above" ? "≥" : c === "below" ? "≤" : "≈");
   const getConditionLabel = (c: string) =>
-    c === "above" ? "بالای قیمت" : c === "below" ? "پایین قیمت" : "برخورد";
+    c === "above" ? "Above" : c === "below" ? "Below" : "Cross";
 
-  // ——— indicators (همان منطق قبلی) ———
+  // ——— indicators ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -609,9 +712,7 @@ export default function DashboardPage() {
       const data = await res.json();
       const list = data.result?.list;
       if (!list || list.length < 2) return;
-      const barSec =
-        interval === "1" ? 60 : interval === "5" ? 300 : interval === "15" ? 900 :
-        interval === "60" ? 3600 : interval === "240" ? 14400 : 86400;
+      const bs = barSeconds(intervalRef.current);
       const lastT = candles[candles.length - 1].time as number;
       const periods = pivotHistory ? 1 + pivotHistCount : 1;
 
@@ -624,8 +725,8 @@ export default function DashboardPage() {
         const s1 = 2 * pp - high, s2 = pp - range, s3 = s1 - range, s4 = s3 - (s1 - s2);
         const isCurrent = i === 1;
         const alpha = isCurrent ? 1 : 0.45;
-        const half = barSec * (isCurrent ? 5 : 3);
-        const offset = (i - 1) * barSec * 8;
+        const half = bs * (isCurrent ? 5 : 3);
+        const offset = (i - 1) * bs * 8;
         const t0 = lastT - half - offset;
         const t1 = lastT + half - offset;
         let levels = [
@@ -825,12 +926,16 @@ export default function DashboardPage() {
         .reverse();
       if (!candles.length) return;
       candlesRef.current = candles;
+      lastPriceRef.current = candles[candles.length - 1].close;
       const lastClose = candles[candles.length - 1].close;
       const { precision, minMove } = getPrecision(lastClose);
       seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove } });
       seriesRef.current.setData(candles);
       chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+      // future space on the right
+      chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
       chartRef.current?.timeScale().fitContent();
+      chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
       updateMargins();
       applySMA(candles);
       applyRSI(candles);
@@ -841,12 +946,8 @@ export default function DashboardPage() {
     } catch (e) { console.error(e); }
   };
 
-  /** همه خط‌ها و آلارم‌های فعال */
   const loadAllLines = async () => {
-    const { data } = await supabase
-      .from("chart_lines")
-      .select("*")
-      .order("created_at", { ascending: false });
+    const { data } = await supabase.from("chart_lines").select("*").order("created_at", { ascending: false });
     setLines(data || []);
   };
 
@@ -860,6 +961,50 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
+  // Client-side alarm check (sound + notification) while page open
+  useEffect(() => {
+    if (typeof Notification !== "undefined") {
+      setNotifEnabled(Notification.permission === "granted");
+    }
+    const check = async () => {
+      const list = alarmsRef.current;
+      if (!list.length) return;
+      const symbols = Array.from(new Set(list.map((a) => a.symbol.toUpperCase())));
+      for (const sym of symbols) {
+        try {
+          const res = await fetch(
+            `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
+          );
+          const data = await res.json();
+          const price = parseFloat(data.result?.list?.[0]?.lastPrice);
+          if (!price) continue;
+          list
+            .filter((a) => a.symbol.toUpperCase() === sym)
+            .forEach((a) => {
+              if (notifiedAlarmsRef.current.has(a.id)) return;
+              let hit = false;
+              if (a.condition === "above" && price >= a.price) hit = true;
+              if (a.condition === "below" && price <= a.price) hit = true;
+              if (a.condition === "cross") {
+                // simple: within 0.05%
+                if (Math.abs(price - a.price) / a.price < 0.0005) hit = true;
+              }
+              if (hit) {
+                notifiedAlarmsRef.current.add(a.id);
+                showLocalNotification(
+                  `Alarm: ${a.symbol}`,
+                  `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
+                );
+              }
+            });
+        } catch {}
+      }
+    };
+    const id = setInterval(check, 20000);
+    check();
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => {
     if (!chartContainerRef.current) return;
     const chart = createChart(chartContainerRef.current, {
@@ -867,7 +1012,12 @@ export default function DashboardPage() {
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
       width: chartContainerRef.current.clientWidth,
       height: 700,
-      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: true },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderVisible: true,
+        rightOffset: 15,
+      },
       localization: {
         locale: "en-GB",
         timeFormatter: (t: number) => formatTimeTZ(t, timeZoneRef.current),
@@ -892,22 +1042,53 @@ export default function DashboardPage() {
       if (price === null) return;
       const rounded = formatPrice(price);
       setPreviewPrice(rounded);
-      if (previewLineRef.current) seriesRef.current.removePriceLine(previewLineRef.current);
-      previewLineRef.current = seriesRef.current.createPriceLine({
-        price: rounded,
-        color: modeRef.current === "alarm" ? DEFAULT_ALARM_COLOR : drawColorRef.current,
-        lineWidth: 2,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: modeRef.current === "alarm" ? "آلارم" : "خط",
-      });
+
+      if (previewLineRef.current) {
+        try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
+        previewLineRef.current = null;
+      }
+      if (previewRayRef.current && chartRef.current) {
+        try { chartRef.current.removeSeries(previewRayRef.current); } catch {}
+        previewRayRef.current = null;
+      }
+
+      const m = modeRef.current;
+      if (m === "ray") {
+        const lastT = candlesRef.current.length
+          ? (candlesRef.current[candlesRef.current.length - 1].time as number)
+          : Math.floor(Date.now() / 1000);
+        const t0 = param.time ? (param.time as number) : lastT;
+        const t1 = lastT + barSeconds(intervalRef.current) * 40;
+        const s = chartRef.current!.addLineSeries({
+          color: drawColorRef.current,
+          lineWidth: drawWidthRef.current,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        s.setData([
+          { time: t0 as any, value: rounded },
+          { time: t1 as any, value: rounded },
+        ]);
+        previewRayRef.current = s;
+      } else {
+        previewLineRef.current = seriesRef.current.createPriceLine({
+          price: rounded,
+          color: m === "alarm" ? DEFAULT_ALARM_COLOR : drawColorRef.current,
+          lineWidth: drawWidthRef.current,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: m === "alarm" ? "Alarm" : m === "draw" ? "Line" : "Move",
+        });
+      }
     });
 
-    chart.subscribeClick(() => {
+    chart.subscribeClick((param) => {
       const m = modeRef.current;
       const price = previewPriceRef.current;
       if (!price || m === "none" || savingRef.current) return;
-      if (m === "draw") addLine(price);
+      if (m === "draw") addLine(price, "full");
+      else if (m === "ray") addLine(price, "ray");
       else if (m === "alarm") createAlarmDirect(price);
       else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
         if (movingTypeRef.current === "line") updateLinePrice(movingIdRef.current, price);
@@ -960,7 +1141,6 @@ export default function DashboardPage() {
   useEffect(() => { if (candlesRef.current.length) applyPivot(symbol, candlesRef.current); }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotHistory, pivotHistCount, symbol, interval]);
   useEffect(() => { if (candlesRef.current.length) applyTrend(candlesRef.current); }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
 
-  // روی چارت فقط نماد فعلی
   useEffect(() => {
     if (!seriesRef.current) return;
     alarmLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
@@ -976,34 +1156,63 @@ export default function DashboardPage() {
           lineWidth: 2,
           lineStyle: LineStyle.Solid,
           axisLabelVisible: true,
-          title: alarm.note || `آلارم ${getConditionSymbol(alarm.condition)}`,
+          title: alarm.note || `Alarm ${getConditionSymbol(alarm.condition)}`,
         });
         alarmLinesRef.current.set(alarm.id, pl);
       });
   }, [alarms, mode, movingId, movingType, symbol]);
 
   useEffect(() => {
-    if (!seriesRef.current) return;
-    chartLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
+    if (!seriesRef.current || !chartRef.current) return;
+    chartLinesRef.current.forEach((obj) => {
+      try {
+        if (obj.type === "price") seriesRef.current?.removePriceLine(obj.ref);
+        else chartRef.current?.removeSeries(obj.ref);
+      } catch {}
+    });
     chartLinesRef.current.clear();
+
+    const candles = candlesRef.current;
+    const lastT = candles.length ? (candles[candles.length - 1].time as number) : Math.floor(Date.now() / 1000);
+    const futureT = lastT + barSeconds(interval) * 50;
+
     lines
       .filter((l) => l.symbol.toUpperCase() === symbol.toUpperCase())
       .forEach((line) => {
         if (mode === "move" && movingType === "line" && movingId === line.id) return;
-        const pl = seriesRef.current!.createPriceLine({
-          price: line.price,
-          color: line.color || DEFAULT_LINE_COLOR,
-          lineWidth: 2,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title: line.note || "خط",
-        });
-        chartLinesRef.current.set(line.id, pl);
+        const w = (line.width as 1 | 2 | 3) || 2;
+        const style = line.style || "full";
+        if (style === "ray") {
+          const s = chartRef.current!.addLineSeries({
+            color: line.color || DEFAULT_LINE_COLOR,
+            lineWidth: w,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          s.setData([
+            { time: lastT as any, value: line.price },
+            { time: futureT as any, value: line.price },
+          ]);
+          chartLinesRef.current.set(line.id, { type: "ray", ref: s });
+        } else {
+          const pl = seriesRef.current!.createPriceLine({
+            price: line.price,
+            color: line.color || DEFAULT_LINE_COLOR,
+            lineWidth: w,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: line.note || "Line",
+          });
+          chartLinesRef.current.set(line.id, { type: "price", ref: pl });
+        }
       });
-  }, [lines, mode, movingId, movingType, symbol]);
+  }, [lines, mode, movingId, movingType, symbol, interval]);
 
   const alarmGroups = useMemo(() => groupBySymbol(alarms), [alarms]);
   const lineGroups = useMemo(() => groupBySymbol(lines), [lines]);
+
+  const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
 
   const IndChip = ({
     label, visible, onToggleVisible, onSettings, onRemove,
@@ -1021,8 +1230,16 @@ export default function DashboardPage() {
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-        <h1 className="text-2xl font-bold">چارت زنده</h1>
+        <h1 className="text-2xl font-bold">Live Chart</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={requestNotifPermission}
+            className={`px-3 py-2 rounded-lg text-sm ${notifEnabled ? "bg-green-700" : "bg-gray-800"}`}
+            title="Enable sound + notification on this device"
+          >
+            {notifEnabled ? "🔔 On" : "🔔 Notify"}
+          </button>
           <select value={timeZone} onChange={(e) => setTimeZone(e.target.value)}
             className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white">
             {TIMEZONES.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
@@ -1030,47 +1247,118 @@ export default function DashboardPage() {
           <input type="text" value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-32" placeholder="BTCUSDT" />
-          <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">آلارم‌ها</Link>
+          <Link href="/alerts" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm">Alerts</Link>
         </div>
       </div>
 
-      <div className="mb-3 flex flex-wrap gap-2">
-        {TIMEFRAMES.map((tf) => (
-          <button key={tf.value} onClick={() => setIntervalTf(tf.value)}
-            className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}>
+      {/* Favorites + TF menu */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {favTfButtons.map((tf) => (
+          <button
+            key={tf.value}
+            onClick={() => setIntervalTf(tf.value)}
+            className={`px-3 py-1.5 rounded text-sm ${interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}
+          >
             {tf.label}
           </button>
         ))}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setTfMenuOpen(!tfMenuOpen)}
+            className="px-3 py-1.5 rounded text-sm bg-gray-800 border border-gray-600"
+          >
+            ⏱ TF ▾
+          </button>
+          {tfMenuOpen && (
+            <div className="absolute top-full left-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[220px] p-3 shadow-xl">
+              <p className="text-xs text-gray-400 mb-2">Star = show as quick button</p>
+              <div className="grid grid-cols-3 gap-2">
+                {ALL_TIMEFRAMES.map((tf) => (
+                  <div key={tf.value} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleFavTf(tf.value)}
+                      className="text-yellow-400 text-sm"
+                    >
+                      {favTfs.includes(tf.value) ? "★" : "☆"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setIntervalTf(tf.value); setTfMenuOpen(false); }}
+                      className={`flex-1 px-2 py-1 rounded text-sm ${interval === tf.value ? "bg-orange-500" : "bg-gray-800"}`}
+                    >
+                      {tf.label}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500" : "bg-gray-800"}`}>✏️ خط</button>
-        {mode === "draw" && (
-          <input type="color" value={drawColor} onChange={(e) => setDrawColor(e.target.value)}
-            className="w-9 h-9 rounded cursor-pointer" title="رنگ خط جدید" />
+        <button
+          onClick={() => setMode(mode === "draw" ? "none" : "draw")}
+          className={`px-3 py-2 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500" : "bg-gray-800"}`}
+          title="Full horizontal line"
+        >
+          ✏️ Line
+        </button>
+        <button
+          onClick={() => setMode(mode === "ray" ? "none" : "ray")}
+          className={`px-3 py-2 rounded-lg text-sm ${mode === "ray" ? "bg-orange-500" : "bg-gray-800"}`}
+          title="Ray to the right"
+        >
+          → Ray
+        </button>
+        {(mode === "draw" || mode === "ray") && (
+          <>
+            <input type="color" value={drawColor} onChange={(e) => setDrawColor(e.target.value)}
+              className="w-9 h-9 rounded cursor-pointer" title="Color" />
+            <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
+              {LINE_WIDTHS.map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setDrawWidth(w)}
+                  className={`px-2 py-1 rounded text-xs ${drawWidth === w ? "bg-orange-500" : "bg-gray-700"}`}
+                  title={`Width ${w}`}
+                >
+                  <span style={{ display: "inline-block", width: 16, height: w * 2, background: "#fff", borderRadius: 1 }} />
+                </button>
+              ))}
+            </div>
+          </>
         )}
-        <button onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-          className={`px-3 py-2 rounded-lg text-sm ${mode === "alarm" ? "bg-blue-600" : "bg-gray-800"}`}>🔔 آلارم</button>
+        <button
+          onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
+          className={`px-3 py-2 rounded-lg text-sm ${mode === "alarm" ? "bg-blue-600" : "bg-gray-800"}`}
+        >
+          🔔 Alarm
+        </button>
         <div className="relative">
-          <button onClick={() => setShowIndicatorMenu(!showIndicatorMenu)} className="px-3 py-2 rounded-lg text-sm bg-gray-800">📊 اندیکاتور</button>
+          <button onClick={() => setShowIndicatorMenu(!showIndicatorMenu)} className="px-3 py-2 rounded-lg text-sm bg-gray-800">
+            📊 Indicators
+          </button>
           {showIndicatorMenu && (
             <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
-              <button onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">3SMA</button>
-              <button onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Pivot</button>
-              <button onClick={() => { setShowTrend(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Trend Line</button>
-              <button onClick={() => { setShowRSI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">RSI</button>
-              <button onClick={() => { setShowDMI(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">DMI</button>
-              <button onClick={() => { setShowVol(true); setShowIndicatorMenu(false); }} className="w-full text-right px-4 py-2 hover:bg-gray-800 text-sm">Volume</button>
+              <button onClick={() => { setShowSMA(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">3SMA</button>
+              <button onClick={() => { setShowPivot(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Pivot</button>
+              <button onClick={() => { setShowTrend(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Trend Line</button>
+              <button onClick={() => { setShowRSI(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">RSI</button>
+              <button onClick={() => { setShowDMI(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">DMI</button>
+              <button onClick={() => { setShowVol(true); setShowIndicatorMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm">Volume</button>
             </div>
           )}
         </div>
         {mode === "alarm" && (
           <select value={condition} onChange={(e) => setCondition(e.target.value as any)}
             className="bg-gray-800 rounded-lg px-2 py-2 text-sm">
-            <option value="above">بالا</option>
-            <option value="below">پایین</option>
-            <option value="cross">برخورد</option>
+            <option value="above">Above</option>
+            <option value="below">Below</option>
+            <option value="cross">Cross</option>
           </select>
         )}
       </div>
@@ -1084,7 +1372,6 @@ export default function DashboardPage() {
         {showVol && <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible(!volVisible)} onRemove={() => { setShowVol(false); removeVol(); }} />}
       </div>
 
-      {/* تنظیمات اندیکاتور — کوتاه */}
       {smaSettings && showSMA && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           {[
@@ -1101,27 +1388,27 @@ export default function DashboardPage() {
               <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-10 h-8 rounded" />
             </div>
           ))}
-          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">بستن</button>
+          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">Close</button>
         </div>
       )}
 
       {pivotSettings && showPivot && (
         <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
           <div className="flex flex-wrap gap-2 items-center">
-            <span>تایم‌فریم:</span>
+            <span>TF:</span>
             {PIVOT_TFS.map((tf) => (
               <button key={tf.value} type="button" onClick={() => setPivotTf(tf.value)}
                 className={`px-2 py-1 rounded ${pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"}`}>{tf.label}</button>
             ))}
           </div>
           <label className="flex items-center gap-2"><input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} /> R4/S4</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={pivotHistory} onChange={(e) => setPivotHistory(e.target.checked)} /> دوره‌های قبلی</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={pivotHistory} onChange={(e) => setPivotHistory(e.target.checked)} /> Previous periods</label>
           {pivotHistory && (
             <select value={pivotHistCount} onChange={(e) => setPivotHistCount(Number(e.target.value))} className="bg-gray-800 rounded px-2 py-1">
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
             </select>
           )}
-          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">بستن</button>
+          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">Close</button>
         </div>
       )}
 
@@ -1131,10 +1418,10 @@ export default function DashboardPage() {
             onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, ""); setTrendPeriodStr(v); const n = parseInt(v, 10); if (!isNaN(n) && n >= 5) setTrendPeriod(n); }}
             className="w-16 bg-gray-800 rounded px-2 py-1.5" />
           <div className="flex gap-3">
-            <label className="flex items-center gap-1">صعودی <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-8 h-7 rounded" /></label>
-            <label className="flex items-center gap-1">نزولی <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-1">Up <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-8 h-7 rounded" /></label>
+            <label className="flex items-center gap-1">Down <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-8 h-7 rounded" /></label>
           </div>
-          <button type="button" onClick={() => setTrendSettings(false)} className="text-orange-400">بستن</button>
+          <button type="button" onClick={() => setTrendSettings(false)} className="text-orange-400">Close</button>
         </div>
       )}
 
@@ -1144,8 +1431,8 @@ export default function DashboardPage() {
             onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, ""); setRsiPeriodStr(v); const n = parseInt(v, 10); if (!isNaN(n) && n >= 2) setRsiPeriod(n); }}
             className="w-16 bg-gray-800 rounded px-2 py-1.5" />
           <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-8 rounded" />
-          <label className="flex items-center gap-2">ارتفاع <input type="range" min={10} max={35} value={rsiHeight} onChange={(e) => setRsiHeight(Number(e.target.value))} className="w-28" />{rsiHeight}%</label>
-          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">بستن</button>
+          <label className="flex items-center gap-2">Height <input type="range" min={10} max={35} value={rsiHeight} onChange={(e) => setRsiHeight(Number(e.target.value))} className="w-28" />{rsiHeight}%</label>
+          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">Close</button>
         </div>
       )}
 
@@ -1159,24 +1446,19 @@ export default function DashboardPage() {
             <label className="flex items-center gap-1">−DI <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-8 h-7 rounded" /></label>
             <label className="flex items-center gap-1">ADX <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-8 h-7 rounded" /></label>
           </div>
-          <label className="flex items-center gap-2">ارتفاع <input type="range" min={10} max={35} value={dmiHeight} onChange={(e) => setDmiHeight(Number(e.target.value))} className="w-28" />{dmiHeight}%</label>
-          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">بستن</button>
+          <label className="flex items-center gap-2">Height <input type="range" min={10} max={35} value={dmiHeight} onChange={(e) => setDmiHeight(Number(e.target.value))} className="w-28" />{dmiHeight}%</label>
+          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">Close</button>
         </div>
       )}
 
       <div ref={chartContainerRef} className="bg-gray-900 border border-gray-800 rounded-xl" style={{ height: "700px", touchAction: "none" }} />
 
-      {/* لیست گروه‌بندی‌شده */}
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
-          <h2 className="text-green-400 font-semibold mb-3">آلارم‌ها ({alarms.length})</h2>
+          <h2 className="text-green-400 font-semibold mb-3">Alarms ({alarms.length})</h2>
           {alarmGroups.map((g) => (
             <div key={g.symbol} className="mb-4">
-              <button
-                type="button"
-                onClick={() => goToSymbol(g.symbol)}
-                className="text-sm font-bold text-orange-400 mb-2 hover:underline"
-              >
+              <button type="button" onClick={() => goToSymbol(g.symbol)} className="text-sm font-bold text-orange-400 mb-2 hover:underline">
                 {g.symbol}
               </button>
               {g.items.map((a) => (
@@ -1184,41 +1466,34 @@ export default function DashboardPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <button type="button" onClick={() => goToSymbol(a.symbol)} className="text-left hover:text-orange-300">
                       {getConditionSymbol(a.condition)} {a.price}
-                      {a.note ? <span className="text-gray-500 mr-2"> · {a.note}</span> : null}
+                      {a.note ? <span className="text-gray-500 ml-2"> · {a.note}</span> : null}
                     </button>
                     <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="color"
-                        value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                        className="w-7 h-7 rounded cursor-pointer"
-                        title="رنگ"
-                      />
-                      <button type="button" onClick={() => startEditNote(a.id, "alarm", a.note)} className="text-gray-400 hover:text-white" title="نوت">📝</button>
-                      <button type="button" onClick={() => cycleCondition(a)} className="text-gray-300 hover:text-white">
-                        {getConditionLabel(a.condition)}
-                      </button>
-                      <button type="button" onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">جابه‌جا</button>
-                      <button type="button" onClick={() => deleteAlarm(a.id)} className="text-red-400">حذف</button>
+                      <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
+                        onChange={(e) => updateAlarmColor(a.id, e.target.value)} className="w-7 h-7 rounded cursor-pointer" />
+                      <button type="button" onClick={() => startEditNote(a.id, "alarm", a.note)} className="text-gray-400">📝</button>
+                      <button type="button" onClick={() => cycleCondition(a)} className="text-gray-300">{getConditionLabel(a.condition)}</button>
+                      <button type="button" onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">Move</button>
+                      <button type="button" onClick={() => deleteAlarm(a.id)} className="text-red-400">Delete</button>
                     </div>
                   </div>
                   {editingNoteId === a.id && editingNoteType === "alarm" && (
                     <div className="mt-2 flex gap-2">
                       <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="یادداشت..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">ذخیره</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">لغو</button>
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
+                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">Cancel</button>
                     </div>
                   )}
                 </div>
               ))}
             </div>
           ))}
-          {!alarms.length && <p className="text-gray-500 text-sm">آلارمی نیست</p>}
+          {!alarms.length && <p className="text-gray-500 text-sm">No alarms</p>}
         </div>
 
         <div>
-          <h2 className="text-orange-400 font-semibold mb-3">خط‌ها ({lines.length})</h2>
+          <h2 className="text-orange-400 font-semibold mb-3">Lines ({lines.length})</h2>
           {lineGroups.map((g) => (
             <div key={g.symbol} className="mb-4">
               <button type="button" onClick={() => goToSymbol(g.symbol)} className="text-sm font-bold text-orange-400 mb-2 hover:underline">
@@ -1228,36 +1503,41 @@ export default function DashboardPage() {
                 <div key={l.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span>
-                      {l.price}
-                      {l.note ? <span className="text-gray-500 mr-2"> · {l.note}</span> : null}
+                      {l.price} {l.style === "ray" ? <span className="text-gray-500">(ray)</span> : null}
+                      {l.note ? <span className="text-gray-500 ml-2"> · {l.note}</span> : null}
                     </span>
                     <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="color"
-                        value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => updateLineColor(l.id, e.target.value)}
-                        className="w-7 h-7 rounded cursor-pointer"
-                        title="رنگ خط"
-                      />
-                      <button type="button" onClick={() => startEditNote(l.id, "line", l.note)} className="text-gray-400 hover:text-white" title="نوت">📝</button>
-                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-green-400">آلارم</button>
-                      <button type="button" onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">جابه‌جا</button>
-                      <button type="button" onClick={() => deleteLine(l.id)} className="text-red-400">حذف</button>
+                      <input type="color" value={l.color || DEFAULT_LINE_COLOR}
+                        onChange={(e) => updateLineColor(l.id, e.target.value)} className="w-7 h-7 rounded cursor-pointer" />
+                      <select
+                        value={l.width || 2}
+                        onChange={(e) => updateLineWidth(l.id, Number(e.target.value))}
+                        className="bg-gray-800 rounded px-1 py-0.5 text-xs"
+                        title="Width"
+                      >
+                        <option value={1}>W1</option>
+                        <option value={2}>W2</option>
+                        <option value={3}>W3</option>
+                      </select>
+                      <button type="button" onClick={() => startEditNote(l.id, "line", l.note)} className="text-gray-400">📝</button>
+                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-green-400">Alarm</button>
+                      <button type="button" onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">Move</button>
+                      <button type="button" onClick={() => deleteLine(l.id)} className="text-red-400">Delete</button>
                     </div>
                   </div>
                   {editingNoteId === l.id && editingNoteType === "line" && (
                     <div className="mt-2 flex gap-2">
                       <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="یادداشت روی خط..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">ذخیره</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">لغو</button>
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
+                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }} className="text-gray-500 text-sm">Cancel</button>
                     </div>
                   )}
                 </div>
               ))}
             </div>
           ))}
-          {!lines.length && <p className="text-gray-500 text-sm">خطی نیست</p>}
+          {!lines.length && <p className="text-gray-500 text-sm">No lines</p>}
         </div>
       </div>
     </div>
