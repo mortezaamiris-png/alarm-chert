@@ -232,12 +232,13 @@ export default function WatchlistPage() {
   const [showPriceLine, setShowPriceLine] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Drag state (touch + mouse)
+  // Drag + floating card (TradingView-style lift)
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(null);
+  const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 48 });
   const dragIdRef = useRef<string | null>(null);
   const itemsRef = useRef<WatchItem[]>([]);
-  const listContainerRef = useRef<HTMLDivElement>(null);
-  const gridContainerRef = useRef<HTMLDivElement>(null);
+  const offsetRef = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     itemsRef.current = items;
@@ -321,6 +322,7 @@ export default function WatchlistPage() {
     const id = dragIdRef.current;
     dragIdRef.current = null;
     setDraggingId(null);
+    setFloatPos(null);
     if (!id) return;
     const ordered = itemsRef.current.map((item, i) => ({
       ...item,
@@ -329,10 +331,13 @@ export default function WatchlistPage() {
     await persistOrder(ordered);
   };
 
-  // Global pointer/touch move & end while dragging
   useEffect(() => {
-    const onMove = (clientY: number, clientX: number) => {
+    const onMove = (clientX: number, clientY: number) => {
       if (!dragIdRef.current) return;
+      setFloatPos({
+        x: clientX - offsetRef.current.x,
+        y: clientY - offsetRef.current.y,
+      });
       const el = document.elementFromPoint(clientX, clientY);
       if (!el) return;
       const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
@@ -346,13 +351,13 @@ export default function WatchlistPage() {
     const onPointerMove = (e: PointerEvent) => {
       if (!dragIdRef.current) return;
       e.preventDefault();
-      onMove(e.clientY, e.clientX);
+      onMove(e.clientX, e.clientY);
     };
     const onTouchMove = (e: TouchEvent) => {
       if (!dragIdRef.current) return;
       if (e.touches[0]) {
         e.preventDefault();
-        onMove(e.touches[0].clientY, e.touches[0].clientX);
+        onMove(e.touches[0].clientX, e.touches[0].clientY);
       }
     };
     const onEnd = () => {
@@ -374,7 +379,19 @@ export default function WatchlistPage() {
     };
   }, []);
 
-  const startDrag = (id: string) => {
+  const startDrag = (
+    id: string,
+    clientX: number,
+    clientY: number,
+    rowEl: HTMLElement
+  ) => {
+    const rect = rowEl.getBoundingClientRect();
+    offsetRef.current = {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    };
+    setFloatSize({ w: rect.width, h: rect.height });
+    setFloatPos({ x: rect.left, y: rect.top });
     dragIdRef.current = id;
     setDraggingId(id);
   };
@@ -465,8 +482,37 @@ export default function WatchlistPage() {
     router.push("/dashboard");
   };
 
+  const draggingItem = items.find((i) => i.id === draggingId);
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
+      {/* Floating lift card — follows finger like TradingView */}
+      {draggingId && floatPos && draggingItem && (
+        <div
+          className="fixed z-[9999] pointer-events-none rounded-xl border border-orange-500/80 bg-gray-900/95 shadow-2xl shadow-orange-500/20"
+          style={{
+            left: floatPos.x,
+            top: floatPos.y,
+            width: floatSize.w,
+            minHeight: floatSize.h,
+            transform: "scale(1.04) rotate(1deg)",
+            transition: "box-shadow 0.15s ease",
+          }}
+        >
+          <div className="flex items-center gap-2 px-3 py-2.5">
+            <span className="text-gray-500">⋮⋮</span>
+            <div className="min-w-0">
+              <div className="font-semibold text-sm text-white truncate">
+                {draggingItem.symbol}
+              </div>
+              {draggingItem.note && (
+                <div className="text-gray-400 text-xs truncate">{draggingItem.note}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">
           <Link href="/dashboard" className="text-orange-400 text-sm hover:underline">
@@ -596,19 +642,16 @@ export default function WatchlistPage() {
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
       )}
 
-      {/* GRID — hold handle ⋮⋮ and drag */}
+      {/* GRID */}
       {viewMode === "grid" && activeListId && (
-        <div
-          ref={gridContainerRef}
-          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"
-        >
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {items.map((item) => (
             <div
               key={item.id}
               data-item-id={item.id}
-              className={`bg-gray-900 border rounded-xl p-3 select-none transition-opacity ${
+              className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-150 ${
                 draggingId === item.id
-                  ? "opacity-40 border-orange-500 scale-[0.98]"
+                  ? "opacity-25 border-dashed border-orange-500/50"
                   : "border-gray-800"
               }`}
               style={{ WebkitUserSelect: "none", userSelect: "none" }}
@@ -620,20 +663,24 @@ export default function WatchlistPage() {
                     <p className="text-gray-500 text-xs truncate">{item.note}</p>
                   )}
                 </div>
-                {/* Drag handle — hold and move */}
                 <div
                   onPointerDown={(e) => {
                     e.preventDefault();
-                    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-                    startDrag(item.id);
+                    const row = (e.currentTarget as HTMLElement).closest(
+                      "[data-item-id]"
+                    ) as HTMLElement;
+                    if (row) startDrag(item.id, e.clientX, e.clientY, row);
                   }}
                   onTouchStart={(e) => {
                     e.preventDefault();
-                    startDrag(item.id);
+                    const t = e.touches[0];
+                    const row = (e.currentTarget as HTMLElement).closest(
+                      "[data-item-id]"
+                    ) as HTMLElement;
+                    if (row && t) startDrag(item.id, t.clientX, t.clientY, row);
                   }}
                   className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab active:cursor-grabbing touch-none"
                   style={{ touchAction: "none" }}
-                  title="Hold and drag"
                 >
                   ⋮⋮
                 </div>
@@ -663,40 +710,44 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* LIST + CHART — hold row or handle and drag */}
+      {/* LIST + CHART */}
       {viewMode === "list" && activeListId && (
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
-          <div
-            ref={listContainerRef}
-            className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]"
-          >
+          <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
             <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400">
-              Hold ⋮⋮ and drag to reorder · Tap name to preview
+              Hold ⋮⋮ and drag · Tap name to preview
             </div>
             <div className="overflow-y-auto flex-1">
               {items.map((item) => (
                 <div
                   key={item.id}
                   data-item-id={item.id}
-                  className={`flex items-center gap-2 px-2 py-2.5 border-b border-gray-800/80 select-none ${
-                    selectedSymbol === item.symbol
+                  className={`flex items-center gap-2 px-2 py-2.5 border-b border-gray-800/80 select-none transition-all duration-150 ${
+                    selectedSymbol === item.symbol && draggingId !== item.id
                       ? "bg-gray-800 border-l-2 border-l-orange-500"
                       : ""
                   } ${
-                    draggingId === item.id ? "opacity-40 bg-orange-500/10" : ""
+                    draggingId === item.id
+                      ? "opacity-20 border-dashed border-orange-500/40"
+                      : ""
                   }`}
                   style={{ WebkitUserSelect: "none", userSelect: "none" }}
                 >
-                  {/* Drag handle */}
                   <div
                     onPointerDown={(e) => {
                       e.preventDefault();
-                      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-                      startDrag(item.id);
+                      const row = (e.currentTarget as HTMLElement).closest(
+                        "[data-item-id]"
+                      ) as HTMLElement;
+                      if (row) startDrag(item.id, e.clientX, e.clientY, row);
                     }}
                     onTouchStart={(e) => {
                       e.preventDefault();
-                      startDrag(item.id);
+                      const t = e.touches[0];
+                      const row = (e.currentTarget as HTMLElement).closest(
+                        "[data-item-id]"
+                      ) as HTMLElement;
+                      if (row && t) startDrag(item.id, t.clientX, t.clientY, row);
                     }}
                     className="w-8 h-10 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none shrink-0"
                     style={{ touchAction: "none" }}
