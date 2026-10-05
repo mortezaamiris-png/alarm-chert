@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { createChart, IChartApi, ISeriesApi } from "lightweight-charts";
+import { createChart, ISeriesApi } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 
@@ -317,7 +317,6 @@ export default function WatchlistPage() {
     })();
   }, []);
 
-  // live price + 24h %
   useEffect(() => {
     if (!items.length && !searchHits.length) return;
     let cancelled = false;
@@ -334,7 +333,6 @@ export default function WatchlistPage() {
       await Promise.all(
         symbols.map(async (sym) => {
           try {
-            // try spot first, then linear
             let res = await fetch(
               `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
             );
@@ -409,8 +407,11 @@ export default function WatchlistPage() {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
 
+  // close menus on outside click
   useEffect(() => {
-    const close = () => {
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest("[data-menu-root]")) return;
       setMenuItemId(null);
       setListMenuId(null);
     };
@@ -579,11 +580,8 @@ export default function WatchlistPage() {
   const addSymbol = async (sym: string) => {
     if (!activeListId) return;
     const symbol = sym.toUpperCase();
-    if (items.some((i) => i.symbol === symbol)) {
-      setJustAdded(symbol);
-      setTimeout(() => setJustAdded(null), 1200);
-      return;
-    }
+    // already in list → do nothing here (toggle handles remove)
+    if (items.some((i) => i.symbol === symbol)) return;
     setSaving(true);
     try {
       const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
@@ -610,10 +608,37 @@ export default function WatchlistPage() {
       }
       setItems((prev) => [...prev, data]);
       setJustAdded(symbol);
-      setTimeout(() => setJustAdded(null), 1500);
+      setTimeout(() => setJustAdded(null), 1200);
       if (!selectedSymbol) setSelectedSymbol(symbol);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** remove by symbol (used from search green check) */
+  const removeSymbol = async (sym: string) => {
+    const symbol = sym.toUpperCase();
+    const found = items.find((i) => i.symbol === symbol);
+    if (!found) return;
+    setSaving(true);
+    try {
+      await supabase.from("watchlist_items").delete().eq("id", found.id);
+      setItems((prev) => prev.filter((i) => i.id !== found.id));
+      if (selectedSymbol === symbol) {
+        setSelectedSymbol(null);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** toggle: if in list → remove ; else → add */
+  const toggleSymbol = async (sym: string) => {
+    const symbol = sym.toUpperCase();
+    if (items.some((i) => i.symbol === symbol)) {
+      await removeSymbol(symbol);
+    } else {
+      await addSymbol(symbol);
     }
   };
 
@@ -702,15 +727,16 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs — ⋮⋮ like coins */}
+      {/* List tabs — ⋮⋮ opens Delete */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
-          <div key={l.id} className="relative flex items-center">
+          <div key={l.id} className="relative flex items-center" data-menu-root>
             <button
               type="button"
               onClick={() => {
                 setActiveListId(l.id);
                 setListMenuId(null);
+                setMenuItemId(null);
               }}
               className={`px-3 py-1.5 rounded-full text-sm ${
                 activeListId === l.id
@@ -723,24 +749,27 @@ export default function WatchlistPage() {
             <button
               type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 setMenuItemId(null);
                 setListMenuId((prev) => (prev === l.id ? null : l.id));
               }}
               className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none"
-              title="List menu"
             >
               ⋮⋮
             </button>
             {listMenuId === l.id && (
               <div
-                className="absolute top-full left-0 mt-1 z-[60] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[130px]"
+                className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
                   type="button"
-                  onClick={() => deleteList(l.id)}
-                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteList(l.id);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-sm text-red-400 hover:bg-gray-800"
                 >
                   Delete list
                 </button>
@@ -795,7 +824,7 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* Search */}
+      {/* Search — green ✓ removes */}
       <div className="mb-6 relative">
         {!showSearch ? (
           <button
@@ -891,10 +920,11 @@ export default function WatchlistPage() {
                     <button
                       type="button"
                       disabled={saving}
-                      onClick={() => addSymbol(hit.symbol)}
+                      onClick={() => toggleSymbol(hit.symbol)}
+                      title={added ? "Remove from list" : "Add to list"}
                       className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${
                         added || flash
-                          ? "bg-green-600 text-white"
+                          ? "bg-green-600 text-white hover:bg-red-600"
                           : "bg-gray-700 text-gray-200 hover:bg-orange-500"
                       }`}
                     >
@@ -931,7 +961,7 @@ export default function WatchlistPage() {
                   <div className="font-semibold text-sm truncate">{item.symbol}</div>
                   <PriceBlock sym={item.symbol} />
                 </div>
-                <div className="relative">
+                <div className="relative" data-menu-root>
                   <div
                     onPointerDown={(e) => {
                       e.preventDefault();
@@ -1027,7 +1057,7 @@ export default function WatchlistPage() {
                     minHeight: 52,
                   }}
                 >
-                  <div className="relative shrink-0">
+                  <div className="relative shrink-0" data-menu-root>
                     <div
                       onPointerDown={(e) => {
                         e.preventDefault();
