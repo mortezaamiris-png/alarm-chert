@@ -221,9 +221,15 @@ function findPivots(candles: any[], period: number) {
     let isH = true,
       isL = true;
     for (let j = 1; j <= period; j++) {
-      if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high)
+      if (
+        candles[i].high <= candles[i - j].high ||
+        candles[i].high <= candles[i + j].high
+      )
         isH = false;
-      if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low)
+      if (
+        candles[i].low >= candles[i - j].low ||
+        candles[i].low >= candles[i + j].low
+      )
         isL = false;
     }
     if (isH) highs.push({ i, price: candles[i].high, time: candles[i].time });
@@ -748,11 +754,8 @@ export default function DashboardPage() {
   };
 
   const updateLineWidth = async (id: string, width: number) => {
-    const { error } = await supabase.from("chart_lines").update({ width }).eq("id", id);
+    await supabase.from("chart_lines").update({ width }).eq("id", id);
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
-    if (error) {
-      /* column may not exist — still update UI */
-    }
   };
 
   const updateAlarmColor = async (id: string, color: string) => {
@@ -817,7 +820,6 @@ export default function DashboardPage() {
 
   const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());
 
-  // ——— indicators ———
   const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
@@ -1218,7 +1220,7 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
-  // Client alarm check — ONLY on real cross
+  // Client: ONLY local beep/notification — server sends Telegram + marks triggered
   useEffect(() => {
     if (typeof Notification !== "undefined") {
       setNotifEnabled(Notification.permission === "granted");
@@ -1227,6 +1229,7 @@ export default function DashboardPage() {
     const check = async () => {
       const list = alarmsRef.current.filter((a) => a.is_active && !a.triggered);
       if (!list.length) return;
+
       const symbols = Array.from(new Set(list.map((a) => a.symbol.toUpperCase())));
 
       for (const sym of symbols) {
@@ -1242,23 +1245,31 @@ export default function DashboardPage() {
 
           for (const a of list.filter((x) => x.symbol.toUpperCase() === sym)) {
             if (notifiedAlarmsRef.current.has(a.id)) continue;
+
             if (didCross(a.condition, a.price, prev, price)) {
               notifiedAlarmsRef.current.add(a.id);
               showLocalNotification(
                 `Alarm: ${a.symbol}`,
                 `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
               );
-              await supabase
-                .from("alarms")
-                .update({ triggered: true, is_active: false })
-                .eq("id", a.id);
-              setAlarms((prevA) => prevA.filter((x) => x.id !== a.id));
+              // عمداً DB را آپدیت نمی‌کنیم — سرور تلگرام می‌فرستد و triggered می‌کند
             }
           }
 
           prevPricesRef.current[sym] = price;
         } catch {}
       }
+
+      // هم‌سان‌سازی با سرور (اگر سرور تریگر کرده، خط از UI برود)
+      try {
+        const { data } = await supabase
+          .from("alarms")
+          .select("*")
+          .eq("is_active", true)
+          .eq("triggered", false)
+          .order("created_at", { ascending: false });
+        if (data) setAlarms(data);
+      } catch {}
     };
 
     const id = setInterval(check, 15000);
