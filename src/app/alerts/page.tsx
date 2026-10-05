@@ -14,7 +14,8 @@ interface Alert {
   is_active: boolean;
   triggered: boolean;
   triggered_at: string | null;
-  repeat: boolean;
+  repeat?: boolean;
+  note?: string | null;
 }
 
 export default function AlertsPage() {
@@ -25,57 +26,94 @@ export default function AlertsPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [repeat, setRepeat] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [fetching, setFetching] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAlerts();
   }, []);
 
   const fetchAlerts = async () => {
-    const { data, error } = await supabase
-      .from("alarms")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) {
-      console.error(error);
-      return;
+    setFetching(true);
+    setErrorMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from("alarms")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error(error);
+        setErrorMsg(error.message || "Failed to load alerts");
+        setAlerts([]);
+        return;
+      }
+      setAlerts((data as Alert[]) || []);
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message || "Network error");
+      setAlerts([]);
+    } finally {
+      setFetching(false);
     }
-    setAlerts(data || []);
   };
 
   const addAlert = async () => {
     if (!price || isNaN(Number(price))) {
-      alert("قیمت معتبر وارد کن");
+      alert("Enter a valid price");
       return;
     }
     setLoading(true);
-    const { error } = await supabase.from("alarms").insert([
-      {
-        symbol: symbol.toUpperCase(),
-        price: Number(price),
-        condition,
-        is_active: true,
-        triggered: false,
-        repeat,
-        note: "آلارم از سایت",
-      },
-    ]);
-    setLoading(false);
-    if (error) {
-      alert("خطا: " + error.message);
-      return;
+    setErrorMsg(null);
+    try {
+      const { error } = await supabase.from("alarms").insert([
+        {
+          symbol: symbol.toUpperCase().trim(),
+          price: Number(price),
+          condition,
+          is_active: true,
+          triggered: false,
+          repeat,
+          note: "Alert from site",
+        },
+      ]);
+      if (error) {
+        setErrorMsg(error.message);
+        alert("Error: " + error.message);
+        return;
+      }
+      setPrice("");
+      setRepeat(false);
+      await fetchAlerts();
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Insert failed");
+      alert("Error: " + (e?.message || "Insert failed"));
+    } finally {
+      setLoading(false);
     }
-    setPrice("");
-    setRepeat(false);
-    fetchAlerts();
   };
 
   const deleteAlert = async (id: string) => {
-    await supabase.from("alarms").update({ is_active: false }).eq("id", id);
-    fetchAlerts();
+    try {
+      // soft delete
+      const { error } = await supabase
+        .from("alarms")
+        .update({ is_active: false })
+        .eq("id", id);
+      if (error) {
+        // fallback hard delete
+        await supabase.from("alarms").delete().eq("id", id);
+      }
+      await fetchAlerts();
+    } catch (e: any) {
+      alert("Delete failed: " + (e?.message || ""));
+    }
   };
 
   const goToChart = (sym: string) => {
-    localStorage.setItem("chart_symbol", sym.toUpperCase());
+    try {
+      localStorage.setItem("chart_symbol", sym.toUpperCase());
+    } catch {}
     router.push("/dashboard");
   };
 
@@ -88,46 +126,73 @@ export default function AlertsPage() {
     return "≈";
   };
 
+  const getConditionLabel = (cond: string) => {
+    if (cond === "above") return "Above";
+    if (cond === "below") return "Below";
+    return "Cross";
+  };
+
   return (
-    <div className="max-w-3xl mx-auto px-4 py-10">
-      <div className="mb-8">
+    <div className="max-w-3xl mx-auto px-4 py-8">
+      <div className="mb-6">
         <Link href="/dashboard" className="text-orange-400 hover:underline text-sm">
-          ← بازگشت به چارت
+          ← Back to chart
         </Link>
-        <h1 className="text-3xl font-bold mt-2">تنظیم آلارم</h1>
+        <h1 className="text-3xl font-bold mt-2">Alerts</h1>
+        <p className="text-gray-500 text-sm mt-1">
+          Create price alerts. Telegram + site notify when triggered.
+        </p>
       </div>
 
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+      {errorMsg && (
+        <div className="mb-4 rounded-xl border border-red-800/60 bg-red-950/40 text-red-300 text-sm px-4 py-3">
+          {errorMsg}
+          <button
+            type="button"
+            onClick={fetchAlerts}
+            className="ml-3 underline text-orange-400"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Add form */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-8">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">نماد</label>
+            <label className="block text-sm text-gray-400 mb-1">Symbol</label>
             <input
               type="text"
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
+              placeholder="BTCUSDT"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white outline-none focus:border-orange-500"
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">قیمت</label>
+            <label className="block text-sm text-gray-400 mb-1">Price</label>
             <input
               type="number"
               step="any"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
+              placeholder="86000"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white outline-none focus:border-orange-500"
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">شرط</label>
+            <label className="block text-sm text-gray-400 mb-1">Condition</label>
             <select
               value={condition}
-              onChange={(e) => setCondition(e.target.value as any)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white"
+              onChange={(e) =>
+                setCondition(e.target.value as "above" | "below" | "cross")
+              }
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white outline-none focus:border-orange-500"
             >
-              <option value="above">بالای این قیمت (≥)</option>
-              <option value="below">پایین این قیمت (≤)</option>
-              <option value="cross">برخورد (≈)</option>
+              <option value="above">Above (≥)</option>
+              <option value="below">Below (≤)</option>
+              <option value="cross">Cross (≈)</option>
             </select>
           </div>
         </div>
@@ -141,62 +206,83 @@ export default function AlertsPage() {
             className="w-4 h-4 accent-orange-500"
           />
           <label htmlFor="repeat" className="text-sm text-gray-300">
-            آلارم تکراری (هر بار که قیمت رد شد دوباره پیام بده)
+            Repeat (alert again every time price crosses)
           </label>
         </div>
 
         <button
+          type="button"
           onClick={addAlert}
           disabled={loading}
           className="mt-5 w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-3 rounded-lg disabled:opacity-50"
         >
-          {loading ? "در حال ذخیره..." : "افزودن آلارم"}
+          {loading ? "Saving…" : "Add alert"}
         </button>
       </div>
 
+      {/* Active */}
       <div className="mb-10">
-        <h2 className="text-xl font-semibold mb-4 text-green-400">
-          آلارم‌های فعال ({activeAlerts.length})
-        </h2>
-        {activeAlerts.length === 0 ? (
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-green-400">
+            Active ({activeAlerts.length})
+          </h2>
+          <button
+            type="button"
+            onClick={fetchAlerts}
+            className="text-xs text-gray-400 hover:text-white"
+          >
+            Refresh
+          </button>
+        </div>
+
+        {fetching ? (
+          <div className="text-center text-gray-500 py-8">Loading…</div>
+        ) : activeAlerts.length === 0 ? (
           <div className="text-center text-gray-500 py-8 border border-dashed border-gray-700 rounded-xl">
-            آلارم فعالی نیست
+            No active alerts
           </div>
         ) : (
           <div className="space-y-3">
             {activeAlerts.map((alert) => (
               <div
                 key={alert.id}
-                className="flex items-center justify-between bg-gray-900 border border-green-800/50 rounded-xl px-5 py-4"
+                className="flex items-center justify-between gap-3 bg-gray-900 border border-green-800/40 rounded-xl px-4 py-3.5"
               >
-                <div>
-                  <div className="font-medium">
-                    {alert.symbol}{" "}
+                <div className="min-w-0">
+                  <div className="font-medium flex flex-wrap items-center gap-2">
+                    <span>{alert.symbol}</span>
                     <span className="text-orange-400">
                       {getConditionSymbol(alert.condition)} {alert.price}
                     </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
+                      {getConditionLabel(alert.condition)}
+                    </span>
                     {alert.repeat && (
-                      <span className="mr-2 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
-                        تکراری
+                      <span className="text-[10px] bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
+                        Repeat
                       </span>
                     )}
                   </div>
-                  <div className="text-sm text-gray-500 mt-1">
-                    {new Date(alert.created_at).toLocaleString("fa-IR")}
+                  <div className="text-xs text-gray-500 mt-1">
+                    {alert.created_at
+                      ? new Date(alert.created_at).toLocaleString()
+                      : ""}
                   </div>
                 </div>
-                <div className="flex gap-3 text-sm">
+                <div className="flex gap-3 text-sm shrink-0">
                   <button
+                    type="button"
                     onClick={() => goToChart(alert.symbol)}
                     className="text-blue-400 hover:text-blue-300"
                   >
-                    چارت
+                    Chart
                   </button>
                   <button
+                    type="button"
                     onClick={() => deleteAlert(alert.id)}
                     className="text-red-400 hover:text-red-300"
                   >
-                    حذف
+                    Delete
                   </button>
                 </div>
               </div>
@@ -205,32 +291,39 @@ export default function AlertsPage() {
         )}
       </div>
 
+      {/* History */}
       <div>
         <h2 className="text-xl font-semibold mb-4 text-gray-400">
-          تاریخچه / تریگر شده ({triggeredAlerts.length})
+          History / Triggered ({triggeredAlerts.length})
         </h2>
         {triggeredAlerts.length === 0 ? (
-          <div className="text-center text-gray-600 py-6 text-sm">خالی</div>
+          <div className="text-center text-gray-600 py-6 text-sm">Empty</div>
         ) : (
           <div className="space-y-3">
-            {triggeredAlerts.slice(0, 30).map((alert) => (
+            {triggeredAlerts.slice(0, 40).map((alert) => (
               <div
                 key={alert.id}
-                className="flex items-center justify-between bg-gray-900/50 border border-gray-800 rounded-xl px-5 py-4 opacity-70"
+                className="flex items-center justify-between gap-3 bg-gray-900/50 border border-gray-800 rounded-xl px-4 py-3.5 opacity-75"
               >
-                <div>
+                <div className="min-w-0">
                   <div className="font-medium text-gray-300">
                     {alert.symbol}{" "}
                     <span className="text-gray-500">
                       {getConditionSymbol(alert.condition)} {alert.price}
                     </span>
                   </div>
+                  {alert.triggered_at && (
+                    <div className="text-xs text-gray-600 mt-0.5">
+                      {new Date(alert.triggered_at).toLocaleString()}
+                    </div>
+                  )}
                 </div>
                 <button
+                  type="button"
                   onClick={() => goToChart(alert.symbol)}
-                  className="text-blue-400 text-sm"
+                  className="text-blue-400 text-sm shrink-0"
                 >
-                  چارت
+                  Chart
                 </button>
               </div>
             ))}
