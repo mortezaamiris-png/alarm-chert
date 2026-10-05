@@ -55,6 +55,13 @@ function getPrecision(price: number) {
   return { precision: 2, minMove: 0.01 };
 }
 
+function formatPrice(p: number) {
+  if (p >= 1000) return p.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (p >= 1) return p.toFixed(4);
+  if (p >= 0.01) return p.toFixed(5);
+  return p.toFixed(6);
+}
+
 function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -231,8 +238,12 @@ export default function WatchlistPage() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [showPriceLine, setShowPriceLine] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [prices, setPrices] = useState<Record<string, number>>({});
+  const [menuItemId, setMenuItemId] = useState<string | null>(null);
+  const [listMenuId, setListMenuId] = useState<string | null>(null);
 
-  // Drag + floating card (TradingView-style lift)
+  // Drag + floating card
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(null);
   const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 48 });
@@ -250,6 +261,35 @@ export default function WatchlistPage() {
   useEffect(() => {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
+
+  // Live prices
+  useEffect(() => {
+    if (!items.length) return;
+    let cancelled = false;
+    const fetchPrices = async () => {
+      const symbols = Array.from(new Set(items.map((i) => i.symbol.toUpperCase())));
+      const next: Record<string, number> = {};
+      await Promise.all(
+        symbols.map(async (sym) => {
+          try {
+            const res = await fetch(
+              `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
+            );
+            const data = await res.json();
+            const p = parseFloat(data.result?.list?.[0]?.lastPrice);
+            if (p && !Number.isNaN(p)) next[sym] = p;
+          } catch {}
+        })
+      );
+      if (!cancelled) setPrices((prev) => ({ ...prev, ...next }));
+    };
+    fetchPrices();
+    const id = setInterval(fetchPrices, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [items]);
 
   const loadLists = useCallback(async () => {
     const { data } = await supabase
@@ -291,6 +331,16 @@ export default function WatchlistPage() {
   useEffect(() => {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const close = () => {
+      setMenuItemId(null);
+      setListMenuId(null);
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, []);
 
   const persistOrder = async (ordered: WatchItem[]) => {
     setItems(ordered);
@@ -385,6 +435,7 @@ export default function WatchlistPage() {
     clientY: number,
     rowEl: HTMLElement
   ) => {
+    setMenuItemId(null);
     const rect = rowEl.getBoundingClientRect();
     offsetRef.current = {
       x: clientX - rect.left,
@@ -418,13 +469,15 @@ export default function WatchlistPage() {
     }
   };
 
-  const deleteList = async () => {
-    if (!activeListId) return;
+  const deleteList = async (listId: string) => {
     if (!confirm("Delete this list and all its symbols?")) return;
-    await supabase.from("watchlist_items").delete().eq("list_id", activeListId);
-    await supabase.from("watchlist_lists").delete().eq("id", activeListId);
-    setActiveListId(null);
-    setItems([]);
+    await supabase.from("watchlist_items").delete().eq("list_id", listId);
+    await supabase.from("watchlist_lists").delete().eq("id", listId);
+    setListMenuId(null);
+    if (activeListId === listId) {
+      setActiveListId(null);
+      setItems([]);
+    }
     await loadLists();
   };
 
@@ -466,6 +519,7 @@ export default function WatchlistPage() {
       setItems((prev) => [...prev, data]);
       setSymbolInput("");
       setNoteInput("");
+      setShowSearch(false);
       if (!selectedSymbol) setSelectedSymbol(sym);
     } finally {
       setSaving(false);
@@ -475,6 +529,7 @@ export default function WatchlistPage() {
   const deleteItem = async (id: string) => {
     await supabase.from("watchlist_items").delete().eq("id", id);
     setItems((prev) => prev.filter((i) => i.id !== id));
+    setMenuItemId(null);
   };
 
   const goChart = (sym: string) => {
@@ -486,22 +541,22 @@ export default function WatchlistPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* Floating lift card — follows finger like TradingView */}
+      {/* Floating lift card */}
       {draggingId && floatPos && draggingItem && (
         <div
-          className="fixed z-[9999] pointer-events-none rounded-xl border border-orange-500/80 bg-gray-900/95 shadow-2xl shadow-orange-500/20"
+          className="fixed z-[9999] pointer-events-none rounded-xl border border-orange-500/80 bg-gray-900/95 shadow-2xl shadow-orange-500/25"
           style={{
             left: floatPos.x,
             top: floatPos.y,
             width: floatSize.w,
             minHeight: floatSize.h,
-            transform: "scale(1.04) rotate(1deg)",
+            transform: "scale(1.05) rotate(1.5deg)",
             transition: "box-shadow 0.15s ease",
           }}
         >
           <div className="flex items-center gap-2 px-3 py-2.5">
             <span className="text-gray-500">⋮⋮</span>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <div className="font-semibold text-sm text-white truncate">
                 {draggingItem.symbol}
               </div>
@@ -509,16 +564,25 @@ export default function WatchlistPage() {
                 <div className="text-gray-400 text-xs truncate">{draggingItem.note}</div>
               )}
             </div>
+            {prices[draggingItem.symbol] != null && (
+              <span className="text-orange-400 text-xs font-medium">
+                {formatPrice(prices[draggingItem.symbol])}
+              </span>
+            )}
           </div>
         </div>
       )}
 
+      {/* Title row */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3">
-          <Link href="/dashboard" className="text-orange-400 text-sm hover:underline">
-            ← Back to Chart
-          </Link>
+        <div className="flex items-baseline gap-2">
           <h1 className="text-2xl font-bold">Watchlist</h1>
+          <Link
+            href="/dashboard"
+            className="text-orange-400 text-xs hover:underline opacity-80"
+          >
+            Go chart →
+          </Link>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -542,20 +606,53 @@ export default function WatchlistPage() {
         </div>
       </div>
 
+      {/* List tabs — no permanent Delete */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
-          <button
-            key={l.id}
-            type="button"
-            onClick={() => setActiveListId(l.id)}
-            className={`px-3 py-1.5 rounded-full text-sm ${
-              activeListId === l.id
-                ? "bg-orange-500 text-white"
-                : "bg-gray-800 text-gray-300"
-            }`}
-          >
-            {l.name}
-          </button>
+          <div key={l.id} className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveListId(l.id);
+                setListMenuId(null);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setListMenuId(l.id);
+              }}
+              className={`px-3 py-1.5 rounded-full text-sm ${
+                activeListId === l.id
+                  ? "bg-orange-500 text-white"
+                  : "bg-gray-800 text-gray-300"
+              }`}
+            >
+              {l.name}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setListMenuId(listMenuId === l.id ? null : l.id);
+              }}
+              className="ml-0.5 px-1.5 py-1 text-gray-500 hover:text-gray-300 text-xs"
+            >
+              ⋮
+            </button>
+            {listMenuId === l.id && (
+              <div
+                className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[120px]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => deleteList(l.id)}
+                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                >
+                  Delete list
+                </button>
+              </div>
+            )}
+          </div>
         ))}
         <button
           type="button"
@@ -564,15 +661,6 @@ export default function WatchlistPage() {
         >
           + New list
         </button>
-        {activeListId && (
-          <button
-            type="button"
-            onClick={deleteList}
-            className="px-3 py-1.5 rounded-full text-sm text-red-400"
-          >
-            Delete list
-          </button>
-        )}
       </div>
 
       {showNewList && (
@@ -613,29 +701,58 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-3">
-        <input
-          value={symbolInput}
-          onChange={(e) =>
-            setSymbolInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))
-          }
-          placeholder="Symbol (BTCUSDT)"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[120px]"
-        />
-        <input
-          value={noteInput}
-          onChange={(e) => setNoteInput(e.target.value)}
-          placeholder="Note (optional)"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[120px]"
-        />
-        <button
-          type="button"
-          onClick={addItem}
-          disabled={saving || !activeListId}
-          className="bg-orange-500 text-white px-5 py-2 rounded-lg text-sm font-medium"
-        >
-          Add
-        </button>
+      {/* Search icon → expands */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        {!showSearch ? (
+          <button
+            type="button"
+            onClick={() => setShowSearch(true)}
+            className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
+            title="Search & add"
+          >
+            🔍
+          </button>
+        ) : (
+          <div className="flex flex-wrap gap-2 flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3">
+            <input
+              autoFocus
+              value={symbolInput}
+              onChange={(e) =>
+                setSymbolInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addItem();
+              }}
+              placeholder="Search symbol (BTCUSDT)"
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[140px]"
+            />
+            <input
+              value={noteInput}
+              onChange={(e) => setNoteInput(e.target.value)}
+              placeholder="Note (optional)"
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 min-w-[100px]"
+            />
+            <button
+              type="button"
+              onClick={addItem}
+              disabled={saving || !activeListId}
+              className="bg-orange-500 text-white px-5 py-2 rounded-lg text-sm font-medium"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowSearch(false);
+                setSymbolInput("");
+                setNoteInput("");
+              }}
+              className="text-gray-400 px-2"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       {!activeListId && (
@@ -649,9 +766,9 @@ export default function WatchlistPage() {
             <div
               key={item.id}
               data-item-id={item.id}
-              className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-150 ${
+              className={`bg-gray-900 border rounded-xl p-3 select-none transition-all duration-200 ${
                 draggingId === item.id
-                  ? "opacity-25 border-dashed border-orange-500/50"
+                  ? "opacity-20 border-dashed border-orange-500/50 scale-[0.98]"
                   : "border-gray-800"
               }`}
               style={{ WebkitUserSelect: "none", userSelect: "none" }}
@@ -659,30 +776,67 @@ export default function WatchlistPage() {
               <div className="flex items-center justify-between mb-1">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm truncate">{item.symbol}</div>
+                  {prices[item.symbol] != null && (
+                    <div className="text-orange-400 text-xs">
+                      {formatPrice(prices[item.symbol])}
+                    </div>
+                  )}
                   {item.note && (
                     <p className="text-gray-500 text-xs truncate">{item.note}</p>
                   )}
                 </div>
-                <div
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    const row = (e.currentTarget as HTMLElement).closest(
-                      "[data-item-id]"
-                    ) as HTMLElement;
-                    if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                  }}
-                  onTouchStart={(e) => {
-                    e.preventDefault();
-                    const t = e.touches[0];
-                    const row = (e.currentTarget as HTMLElement).closest(
-                      "[data-item-id]"
-                    ) as HTMLElement;
-                    if (row && t) startDrag(item.id, t.clientX, t.clientY, row);
-                  }}
-                  className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab active:cursor-grabbing touch-none"
-                  style={{ touchAction: "none" }}
-                >
-                  ⋮⋮
+                <div className="relative">
+                  <div
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const row = (e.currentTarget as HTMLElement).closest(
+                        "[data-item-id]"
+                      ) as HTMLElement;
+                      // long press style: start drag after short delay, or open menu on click
+                      const timer = setTimeout(() => {
+                        if (row) startDrag(item.id, e.clientX, e.clientY, row);
+                      }, 180);
+                      const cancel = () => {
+                        clearTimeout(timer);
+                        window.removeEventListener("pointerup", onUp);
+                      };
+                      const onUp = () => {
+                        clearTimeout(timer);
+                        setMenuItemId((prev) => (prev === item.id ? null : item.id));
+                        window.removeEventListener("pointerup", onUp);
+                      };
+                      window.addEventListener("pointerup", onUp);
+                    }}
+                    className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab active:cursor-grabbing touch-none"
+                    style={{ touchAction: "none" }}
+                  >
+                    ⋮⋮
+                  </div>
+                  {menuItemId === item.id && (
+                    <div
+                      className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[100px]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => deleteItem(item.id)}
+                        className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          goChart(item.symbol);
+                          setMenuItemId(null);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                      >
+                        Open chart
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               <MiniChart symbol={item.symbol} interval={interval} />
@@ -694,18 +848,11 @@ export default function WatchlistPage() {
                 >
                   Chart
                 </button>
-                <button
-                  type="button"
-                  onClick={() => deleteItem(item.id)}
-                  className="text-red-400 hover:underline"
-                >
-                  Delete
-                </button>
               </div>
             </div>
           ))}
           {!items.length && (
-            <p className="text-gray-500 text-sm col-span-full">No symbols yet. Add one above.</p>
+            <p className="text-gray-500 text-sm col-span-full">No symbols yet. Tap 🔍 to add.</p>
           )}
         </div>
       )}
@@ -715,44 +862,75 @@ export default function WatchlistPage() {
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
           <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
             <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400">
-              Hold ⋮⋮ and drag · Tap name to preview
+              Hold ⋮⋮ to drag · Tap ⋮⋮ for menu · Tap name to preview
             </div>
             <div className="overflow-y-auto flex-1">
               {items.map((item) => (
                 <div
                   key={item.id}
                   data-item-id={item.id}
-                  className={`flex items-center gap-2 px-2 py-2.5 border-b border-gray-800/80 select-none transition-all duration-150 ${
+                  className={`flex items-center gap-1 px-2 py-2.5 border-b border-gray-800/80 select-none transition-all duration-200 ${
                     selectedSymbol === item.symbol && draggingId !== item.id
                       ? "bg-gray-800 border-l-2 border-l-orange-500"
                       : ""
                   } ${
                     draggingId === item.id
-                      ? "opacity-20 border-dashed border-orange-500/40"
+                      ? "opacity-15 border-dashed border-orange-500/40 min-h-[52px]"
                       : ""
                   }`}
                   style={{ WebkitUserSelect: "none", userSelect: "none" }}
                 >
-                  <div
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      const row = (e.currentTarget as HTMLElement).closest(
-                        "[data-item-id]"
-                      ) as HTMLElement;
-                      if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                    }}
-                    onTouchStart={(e) => {
-                      e.preventDefault();
-                      const t = e.touches[0];
-                      const row = (e.currentTarget as HTMLElement).closest(
-                        "[data-item-id]"
-                      ) as HTMLElement;
-                      if (row && t) startDrag(item.id, t.clientX, t.clientY, row);
-                    }}
-                    className="w-8 h-10 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none shrink-0"
-                    style={{ touchAction: "none" }}
-                  >
-                    ⋮⋮
+                  <div className="relative shrink-0">
+                    <div
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const row = (e.currentTarget as HTMLElement).closest(
+                          "[data-item-id]"
+                        ) as HTMLElement;
+                        let dragged = false;
+                        const timer = setTimeout(() => {
+                          dragged = true;
+                          if (row) startDrag(item.id, e.clientX, e.clientY, row);
+                        }, 160);
+                        const onUp = () => {
+                          clearTimeout(timer);
+                          if (!dragged) {
+                            setMenuItemId((prev) => (prev === item.id ? null : item.id));
+                          }
+                          window.removeEventListener("pointerup", onUp);
+                        };
+                        window.addEventListener("pointerup", onUp);
+                      }}
+                      className="w-8 h-10 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+                      style={{ touchAction: "none" }}
+                    >
+                      ⋮⋮
+                    </div>
+                    {menuItemId === item.id && (
+                      <div
+                        className="absolute left-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => deleteItem(item.id)}
+                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            goChart(item.symbol);
+                            setMenuItemId(null);
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                        >
+                          Open chart
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -768,17 +946,20 @@ export default function WatchlistPage() {
                     )}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => deleteItem(item.id)}
-                    className="text-red-400 text-sm shrink-0 w-8 h-8"
-                  >
-                    ✕
-                  </button>
+                  {/* Live price instead of X */}
+                  <div className="text-right shrink-0 pr-1 min-w-[70px]">
+                    {prices[item.symbol] != null ? (
+                      <span className="text-sm text-gray-200 font-medium">
+                        {formatPrice(prices[item.symbol])}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-600">—</span>
+                    )}
+                  </div>
                 </div>
               ))}
               {!items.length && (
-                <p className="text-gray-500 text-sm p-4">No symbols yet.</p>
+                <p className="text-gray-500 text-sm p-4">No symbols yet. Tap 🔍 to add.</p>
               )}
             </div>
           </div>
