@@ -232,6 +232,17 @@ export default function WatchlistPage() {
   const [showPriceLine, setShowPriceLine] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Drag state (touch + mouse)
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragIdRef = useRef<string | null>(null);
+  const itemsRef = useRef<WatchItem[]>([]);
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
   useEffect(() => {
     saveLS("wl_tf", interval);
   }, [interval]);
@@ -282,6 +293,7 @@ export default function WatchlistPage() {
 
   const persistOrder = async (ordered: WatchItem[]) => {
     setItems(ordered);
+    itemsRef.current = ordered;
     await Promise.all(
       ordered.map((item, idx) =>
         supabase
@@ -292,17 +304,79 @@ export default function WatchlistPage() {
     );
   };
 
-  /** Move item up or down by one step — works on iPad */
-  const moveItem = async (id: string, direction: "up" | "down") => {
-    const idx = items.findIndex((i) => i.id === id);
-    if (idx < 0) return;
-    const newIdx = direction === "up" ? idx - 1 : idx + 1;
-    if (newIdx < 0 || newIdx >= items.length) return;
-    const arr = [...items];
-    const [moved] = arr.splice(idx, 1);
-    arr.splice(newIdx, 0, moved);
+  const reorderById = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const arr = [...itemsRef.current];
+    const fromIdx = arr.findIndex((i) => i.id === fromId);
+    const toIdx = arr.findIndex((i) => i.id === toId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
     const withOrder = arr.map((item, i) => ({ ...item, sort_order: i + 1 }));
-    await persistOrder(withOrder);
+    setItems(withOrder);
+    itemsRef.current = withOrder;
+  };
+
+  const finishDrag = async () => {
+    const id = dragIdRef.current;
+    dragIdRef.current = null;
+    setDraggingId(null);
+    if (!id) return;
+    const ordered = itemsRef.current.map((item, i) => ({
+      ...item,
+      sort_order: i + 1,
+    }));
+    await persistOrder(ordered);
+  };
+
+  // Global pointer/touch move & end while dragging
+  useEffect(() => {
+    const onMove = (clientY: number, clientX: number) => {
+      if (!dragIdRef.current) return;
+      const el = document.elementFromPoint(clientX, clientY);
+      if (!el) return;
+      const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
+      if (!row) return;
+      const targetId = row.getAttribute("data-item-id");
+      if (targetId && targetId !== dragIdRef.current) {
+        reorderById(dragIdRef.current, targetId);
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragIdRef.current) return;
+      e.preventDefault();
+      onMove(e.clientY, e.clientX);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!dragIdRef.current) return;
+      if (e.touches[0]) {
+        e.preventDefault();
+        onMove(e.touches[0].clientY, e.touches[0].clientX);
+      }
+    };
+    const onEnd = () => {
+      if (dragIdRef.current) finishDrag();
+    };
+
+    document.addEventListener("pointermove", onPointerMove, { passive: false });
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("pointerup", onEnd);
+    document.addEventListener("touchend", onEnd);
+    document.addEventListener("pointercancel", onEnd);
+
+    return () => {
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("pointerup", onEnd);
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("pointercancel", onEnd);
+    };
+  }, []);
+
+  const startDrag = (id: string) => {
+    dragIdRef.current = id;
+    setDraggingId(id);
   };
 
   const createList = async () => {
@@ -390,44 +464,6 @@ export default function WatchlistPage() {
     localStorage.setItem("chart_symbol", sym);
     router.push("/dashboard");
   };
-
-  /** Reorder controls — works on touch + mouse */
-  const MoveButtons = ({ id, index }: { id: string; index: number }) => (
-    <div className="flex flex-col gap-0.5 shrink-0">
-      <button
-        type="button"
-        disabled={index === 0}
-        onClick={(e) => {
-          e.stopPropagation();
-          moveItem(id, "up");
-        }}
-        className={`w-7 h-7 rounded text-xs leading-none ${
-          index === 0
-            ? "bg-gray-800 text-gray-600"
-            : "bg-gray-700 text-white active:bg-orange-500"
-        }`}
-        title="Move up"
-      >
-        ▲
-      </button>
-      <button
-        type="button"
-        disabled={index === items.length - 1}
-        onClick={(e) => {
-          e.stopPropagation();
-          moveItem(id, "down");
-        }}
-        className={`w-7 h-7 rounded text-xs leading-none ${
-          index === items.length - 1
-            ? "bg-gray-800 text-gray-600"
-            : "bg-gray-700 text-white active:bg-orange-500"
-        }`}
-        title="Move down"
-      >
-        ▼
-      </button>
-    </div>
-  );
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
@@ -560,23 +596,47 @@ export default function WatchlistPage() {
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
       )}
 
-      {/* GRID */}
+      {/* GRID — hold handle ⋮⋮ and drag */}
       {viewMode === "grid" && activeListId && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          {items.map((item, index) => (
+        <div
+          ref={gridContainerRef}
+          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"
+        >
+          {items.map((item) => (
             <div
               key={item.id}
-              className="bg-gray-900 border border-gray-800 rounded-xl p-3 select-none"
+              data-item-id={item.id}
+              className={`bg-gray-900 border rounded-xl p-3 select-none transition-opacity ${
+                draggingId === item.id
+                  ? "opacity-40 border-orange-500 scale-[0.98]"
+                  : "border-gray-800"
+              }`}
               style={{ WebkitUserSelect: "none", userSelect: "none" }}
             >
-              <div className="flex items-start justify-between gap-2 mb-1">
+              <div className="flex items-center justify-between mb-1">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm truncate">{item.symbol}</div>
                   {item.note && (
                     <p className="text-gray-500 text-xs truncate">{item.note}</p>
                   )}
                 </div>
-                <MoveButtons id={item.id} index={index} />
+                {/* Drag handle — hold and move */}
+                <div
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                    startDrag(item.id);
+                  }}
+                  onTouchStart={(e) => {
+                    e.preventDefault();
+                    startDrag(item.id);
+                  }}
+                  className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab active:cursor-grabbing touch-none"
+                  style={{ touchAction: "none" }}
+                  title="Hold and drag"
+                >
+                  ⋮⋮
+                </div>
               </div>
               <MiniChart symbol={item.symbol} interval={interval} />
               <div className="flex justify-between mt-2 text-xs">
@@ -603,28 +663,52 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* LIST + CHART */}
+      {/* LIST + CHART — hold row or handle and drag */}
       {viewMode === "list" && activeListId && (
         <div className="flex flex-col md:flex-row gap-4 min-h-[480px]">
-          <div className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]">
+          <div
+            ref={listContainerRef}
+            className="w-full md:w-80 shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-h-[520px]"
+          >
             <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400">
-              Use ▲ ▼ to reorder · Tap name to preview
+              Hold ⋮⋮ and drag to reorder · Tap name to preview
             </div>
             <div className="overflow-y-auto flex-1">
-              {items.map((item, index) => (
+              {items.map((item) => (
                 <div
                   key={item.id}
-                  className={`flex items-center gap-2 px-2 py-2 border-b border-gray-800/80 select-none ${
+                  data-item-id={item.id}
+                  className={`flex items-center gap-2 px-2 py-2.5 border-b border-gray-800/80 select-none ${
                     selectedSymbol === item.symbol
                       ? "bg-gray-800 border-l-2 border-l-orange-500"
-                      : "hover:bg-gray-800/50"
+                      : ""
+                  } ${
+                    draggingId === item.id ? "opacity-40 bg-orange-500/10" : ""
                   }`}
                   style={{ WebkitUserSelect: "none", userSelect: "none" }}
                 >
-                  <MoveButtons id={item.id} index={index} />
+                  {/* Drag handle */}
+                  <div
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                      startDrag(item.id);
+                    }}
+                    onTouchStart={(e) => {
+                      e.preventDefault();
+                      startDrag(item.id);
+                    }}
+                    className="w-8 h-10 flex items-center justify-center text-gray-500 cursor-grab active:cursor-grabbing touch-none shrink-0"
+                    style={{ touchAction: "none" }}
+                  >
+                    ⋮⋮
+                  </div>
+
                   <button
                     type="button"
-                    onClick={() => setSelectedSymbol(item.symbol)}
+                    onClick={() => {
+                      if (!draggingId) setSelectedSymbol(item.symbol);
+                    }}
                     className="flex-1 min-w-0 text-left py-1"
                   >
                     <div className="font-medium text-sm truncate">{item.symbol}</div>
@@ -632,6 +716,7 @@ export default function WatchlistPage() {
                       <div className="text-gray-500 text-xs truncate">{item.note}</div>
                     )}
                   </button>
+
                   <button
                     type="button"
                     onClick={() => deleteItem(item.id)}
