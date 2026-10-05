@@ -238,20 +238,6 @@ function findPivots(candles: any[], period: number) {
   return { highs, lows };
 }
 
-function groupBySymbol<T extends { symbol: string }>(
-  items: T[]
-): { symbol: string; items: T[] }[] {
-  const map = new Map<string, T[]>();
-  items.forEach((it) => {
-    const s = (it.symbol || "").toUpperCase();
-    if (!map.has(s)) map.set(s, []);
-    map.get(s)!.push(it);
-  });
-  return Array.from(map.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([symbol, items]) => ({ symbol, items }));
-}
-
 function playAlarmBeep() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -311,6 +297,68 @@ function didCross(
   );
 }
 
+function IndChip({
+  label,
+  visible,
+  onToggleVisible,
+  onSettings,
+  onRemove,
+}: {
+  label: string;
+  visible: boolean;
+  onToggleVisible: () => void;
+  onSettings?: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="inline-flex items-center gap-0.5 bg-[#1c1c1c] border border-gray-700 rounded-md px-1.5 py-0.5 text-[11px] text-gray-200 shadow-sm">
+      <span className="px-1 font-medium whitespace-nowrap">{label}</span>
+      <button
+        type="button"
+        onClick={onToggleVisible}
+        title={visible ? "Hide" : "Show"}
+        className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700 text-gray-300"
+      >
+        {visible ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+            <line x1="1" y1="1" x2="23" y2="23" />
+          </svg>
+        )}
+      </button>
+      {onSettings && (
+        <button
+          type="button"
+          onClick={onSettings}
+          title="Settings"
+          className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700 text-gray-300"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove"
+        className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700 text-gray-400 hover:text-red-400"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -355,6 +403,7 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(false);
+  const [showSideWl, setShowSideWl] = useState(true);
 
   const [drawColor, setDrawColor] = useState(() =>
     loadLS("draw_color", DEFAULT_LINE_COLOR)
@@ -818,9 +867,7 @@ export default function DashboardPage() {
     setPreviewPrice(price);
   };
 
-  const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());
-
-  const removeSMA = () => {
+  const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());  const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
       chartRef.current.removeSeries(smaSeriesRef.current.s1);
@@ -874,20 +921,21 @@ export default function DashboardPage() {
     if (!showPivot || !pivotVisible) return;
     try {
       const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${pivotTf}&limit=10`
+        `/api/kline?symbol=${encodeURIComponent(sym)}&interval=${pivotTf}&limit=10`
       );
       const data = await res.json();
-      const list = data.result?.list;
+      const list = data?.data;
       if (!list || list.length < 2) return;
       const bs = barSeconds(intervalRef.current);
       const lastT = candles[candles.length - 1].time as number;
       const periods = pivotHistory ? 1 + pivotHistCount : 1;
 
       for (let i = 1; i <= periods && i < list.length; i++) {
-        const bar = list[i];
-        const high = parseFloat(bar[2]),
-          low = parseFloat(bar[3]),
-          close = parseFloat(bar[4]);
+        const bar = list[list.length - 1 - i];
+        if (!bar) continue;
+        const high = Number(bar.high),
+          low = Number(bar.low),
+          close = Number(bar.close);
         const range = high - low;
         const pp = (high + low + close) / 3;
         const r1 = 2 * pp - low,
@@ -1164,20 +1212,19 @@ export default function DashboardPage() {
   const loadCandles = async (sym: string, tf: string) => {
     try {
       const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${tf}&limit=300`
+        `/api/kline?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=300`
       );
       const data = await res.json();
-      if (!data.result?.list?.length || !seriesRef.current) return;
-      const candles = data.result.list
-        .map((item: any) => ({
-          time: Number(item[0]) / 1000,
-          open: parseFloat(item[1]),
-          high: parseFloat(item[2]),
-          low: parseFloat(item[3]),
-          close: parseFloat(item[4]),
-          volume: parseFloat(item[5]),
-        }))
-        .reverse();
+      const list = data?.data;
+      if (!list?.length || !seriesRef.current) return;
+      const candles = list.map((item: any) => ({
+        time: Number(item.time),
+        open: Number(item.open),
+        high: Number(item.high),
+        low: Number(item.low),
+        close: Number(item.close),
+        volume: Number(item.volume || item.value || 0),
+      }));
       if (!candles.length) return;
       candlesRef.current = candles;
       const lastClose = candles[candles.length - 1].close;
@@ -1220,7 +1267,6 @@ export default function DashboardPage() {
     setAlarms(data || []);
   };
 
-  // Client: ONLY local beep/notification — server sends Telegram + marks triggered
   useEffect(() => {
     if (typeof Notification !== "undefined") {
       setNotifEnabled(Notification.permission === "granted");
@@ -1235,10 +1281,10 @@ export default function DashboardPage() {
       for (const sym of symbols) {
         try {
           const res = await fetch(
-            `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
+            `/api/ticker?symbols=${encodeURIComponent(sym)}`
           );
           const data = await res.json();
-          const price = parseFloat(data.result?.list?.[0]?.lastPrice);
+          const price = Number(data?.data?.[sym]?.lastPrice);
           if (!price || Number.isNaN(price)) continue;
 
           const prev = prevPricesRef.current[sym];
@@ -1252,7 +1298,6 @@ export default function DashboardPage() {
                 `Alarm: ${a.symbol}`,
                 `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
               );
-              // عمداً DB را آپدیت نمی‌کنیم — سرور تلگرام می‌فرستد و triggered می‌کند
             }
           }
 
@@ -1260,7 +1305,6 @@ export default function DashboardPage() {
         } catch {}
       }
 
-      // هم‌سان‌سازی با سرور (اگر سرور تریگر کرده، خط از UI برود)
       try {
         const { data } = await supabase
           .from("alarms")
@@ -1547,42 +1591,26 @@ export default function DashboardPage() {
       });
   }, [lines, mode, movingId, movingType, symbol, interval]);
 
-  const alarmGroups = useMemo(() => groupBySymbol(alarms), [alarms]);
-  const lineGroups = useMemo(() => groupBySymbol(lines), [lines]);
-  const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
-
-  const IndChip = ({
-    label,
-    visible,
-    onToggleVisible,
-    onSettings,
-    onRemove,
-  }: {
-    label: string;
-    visible: boolean;
-    onToggleVisible: () => void;
-    onSettings?: () => void;
-    onRemove: () => void;
-  }) => (
-    <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm">
-      <span className="text-gray-200">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="p-1 text-gray-400">
-        {visible ? "👁" : "🚫"}
-      </button>
-      {onSettings && (
-        <button type="button" onClick={onSettings} className="p-1 text-gray-400">
-          ⚙
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={onRemove}
-        className="p-1 text-gray-400 hover:text-red-400"
-      >
-        🗑
-      </button>
-    </div>
+  const symbolUpper = symbol.toUpperCase();
+  const currentAlarms = useMemo(
+    () =>
+      alarms.filter(
+        (a) => a.symbol.toUpperCase() === symbolUpper && a.is_active && !a.triggered
+      ),
+    [alarms, symbolUpper]
   );
+  const currentLines = useMemo(
+    () => lines.filter((l) => l.symbol.toUpperCase() === symbolUpper),
+    [lines, symbolUpper]
+  );
+  const alarmSymbols = useMemo(() => {
+    const set = new Set<string>();
+    alarms.forEach((a) => {
+      if (a.is_active && !a.triggered) set.add(a.symbol.toUpperCase());
+    });
+    return Array.from(set).sort();
+  }, [alarms]);
+  const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
@@ -1682,219 +1710,222 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "draw" ? "bg-orange-500" : "bg-gray-800"
-          }`}
-        >
-          ✏️ Line
-        </button>
-        <button
-          onClick={() => setMode(mode === "ray" ? "none" : "ray")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "ray" ? "bg-orange-500" : "bg-gray-800"
-          }`}
-        >
-          → Ray
-        </button>
-        {(mode === "draw" || mode === "ray") && (
-          <>
-            <input
-              type="color"
-              value={drawColor}
-              onChange={(e) => setDrawColor(e.target.value)}
-              className="w-9 h-9 rounded cursor-pointer"
-            />
-            <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
-              {LINE_WIDTHS.map((w) => (
-                <button
-                  key={w}
-                  type="button"
-                  onClick={() => setDrawWidth(w)}
-                  className={`px-2 py-1 rounded text-xs ${
-                    drawWidth === w ? "bg-orange-500" : "bg-gray-700"
-                  }`}
-                >
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: 16,
-                      height: w * 2,
-                      background: "#fff",
-                      borderRadius: 1,
-                    }}
-                  />
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-        <button
-          onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
-          }`}
-        >
-          🔔 Alarm
-        </button>
-        <div className="relative">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
+            onClick={() => setMode(mode === "draw" ? "none" : "draw")}
+            className={`px-3 py-2 rounded-lg text-sm ${
+              mode === "draw" ? "bg-orange-500" : "bg-gray-800"
+            }`}
           >
-            📊 Indicators
+            ✏️ Line
           </button>
-          {showIndicatorMenu && (
-            <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
-              <button
-                onClick={() => {
-                  setShowSMA(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                3SMA
-              </button>
-              <button
-                onClick={() => {
-                  setShowPivot(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Pivot
-              </button>
-              <button
-                onClick={() => {
-                  setShowTrend(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Trend Line
-              </button>
-              <button
-                onClick={() => {
-                  setShowRSI(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                RSI
-              </button>
-              <button
-                onClick={() => {
-                  setShowDMI(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                DMI
-              </button>
-              <button
-                onClick={() => {
-                  setShowVol(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Volume
-              </button>
-            </div>
+          <button
+            onClick={() => setMode(mode === "ray" ? "none" : "ray")}
+            className={`px-3 py-2 rounded-lg text-sm ${
+              mode === "ray" ? "bg-orange-500" : "bg-gray-800"
+            }`}
+          >
+            → Ray
+          </button>
+          {(mode === "draw" || mode === "ray") && (
+            <>
+              <input
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="w-9 h-9 rounded cursor-pointer"
+              />
+              <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
+                {LINE_WIDTHS.map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    onClick={() => setDrawWidth(w)}
+                    className={`px-2 py-1 rounded text-xs ${
+                      drawWidth === w ? "bg-orange-500" : "bg-gray-700"
+                    }`}
+                  >
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 16,
+                        height: w * 2,
+                        background: "#fff",
+                        borderRadius: 1,
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          <button
+            onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
+            className={`px-3 py-2 rounded-lg text-sm ${
+              mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
+            }`}
+          >
+            🔔 Alarm
+          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
+              className="px-3 py-2 rounded-lg text-sm bg-gray-800"
+            >
+              📊 Indicators
+            </button>
+            {showIndicatorMenu && (
+              <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
+                <button
+                  onClick={() => {
+                    setShowSMA(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  3SMA
+                </button>
+                <button
+                  onClick={() => {
+                    setShowPivot(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  Pivot
+                </button>
+                <button
+                  onClick={() => {
+                    setShowTrend(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  Trend Line
+                </button>
+                <button
+                  onClick={() => {
+                    setShowRSI(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  RSI
+                </button>
+                <button
+                  onClick={() => {
+                    setShowDMI(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  DMI
+                </button>
+                <button
+                  onClick={() => {
+                    setShowVol(true);
+                    setShowIndicatorMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+                >
+                  Volume
+                </button>
+              </div>
+            )}
+          </div>
+          {mode === "alarm" && (
+            <select
+              value={condition}
+              onChange={(e) => setCondition(e.target.value as any)}
+              className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
+            >
+              <option value="above">Above</option>
+              <option value="below">Below</option>
+              <option value="cross">Cross</option>
+            </select>
           )}
         </div>
-        {mode === "alarm" && (
-          <select
-            value={condition}
-            onChange={(e) => setCondition(e.target.value as any)}
-            className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
-          >
-            <option value="above">Above</option>
-            <option value="below">Below</option>
-            <option value="cross">Cross</option>
-          </select>
-        )}
-      </div>
 
-      <div className="mb-2 flex flex-wrap gap-2">
-        {showSMA && (
-          <IndChip
-            label="3SMA"
-            visible={smaVisible}
-            onToggleVisible={() => setSmaVisible(!smaVisible)}
-            onSettings={() => setSmaSettings(!smaSettings)}
-            onRemove={() => {
-              setShowSMA(false);
-              removeSMA();
-              setSmaSettings(false);
-            }}
-          />
-        )}
-        {showPivot && (
-          <IndChip
-            label="Pivot"
-            visible={pivotVisible}
-            onToggleVisible={() => setPivotVisible(!pivotVisible)}
-            onSettings={() => setPivotSettings(!pivotSettings)}
-            onRemove={() => {
-              setShowPivot(false);
-              removePivot();
-              setPivotSettings(false);
-            }}
-          />
-        )}
-        {showTrend && (
-          <IndChip
-            label="Trend"
-            visible={trendVisible}
-            onToggleVisible={() => setTrendVisible(!trendVisible)}
-            onSettings={() => setTrendSettings(!trendSettings)}
-            onRemove={() => {
-              setShowTrend(false);
-              removeTrend();
-              setTrendSettings(false);
-            }}
-          />
-        )}
-        {showRSI && (
-          <IndChip
-            label="RSI"
-            visible={rsiVisible}
-            onToggleVisible={() => setRsiVisible(!rsiVisible)}
-            onSettings={() => setRsiSettings(!rsiSettings)}
-            onRemove={() => {
-              setShowRSI(false);
-              removeRSI();
-              setRsiSettings(false);
-            }}
-          />
-        )}
-        {showDMI && (
-          <IndChip
-            label="DMI"
-            visible={dmiVisible}
-            onToggleVisible={() => setDmiVisible(!dmiVisible)}
-            onSettings={() => setDmiSettings(!dmiSettings)}
-            onRemove={() => {
-              setShowDMI(false);
-              removeDMI();
-              setDmiSettings(false);
-            }}
-          />
-        )}
-        {showVol && (
-          <IndChip
-            label="Vol"
-            visible={volVisible}
-            onToggleVisible={() => setVolVisible(!volVisible)}
-            onRemove={() => {
-              setShowVol(false);
-              removeVol();
-            }}
-          />
-        )}
+        {/* TradingView-style indicator chips — top right */}
+        <div className="flex flex-wrap items-center gap-1.5 justify-end">
+          {showSMA && (
+            <IndChip
+              label="3SMA"
+              visible={smaVisible}
+              onToggleVisible={() => setSmaVisible(!smaVisible)}
+              onSettings={() => setSmaSettings(!smaSettings)}
+              onRemove={() => {
+                setShowSMA(false);
+                removeSMA();
+                setSmaSettings(false);
+              }}
+            />
+          )}
+          {showPivot && (
+            <IndChip
+              label="Pivot"
+              visible={pivotVisible}
+              onToggleVisible={() => setPivotVisible(!pivotVisible)}
+              onSettings={() => setPivotSettings(!pivotSettings)}
+              onRemove={() => {
+                setShowPivot(false);
+                removePivot();
+                setPivotSettings(false);
+              }}
+            />
+          )}
+          {showTrend && (
+            <IndChip
+              label="Trend"
+              visible={trendVisible}
+              onToggleVisible={() => setTrendVisible(!trendVisible)}
+              onSettings={() => setTrendSettings(!trendSettings)}
+              onRemove={() => {
+                setShowTrend(false);
+                removeTrend();
+                setTrendSettings(false);
+              }}
+            />
+          )}
+          {showRSI && (
+            <IndChip
+              label="RSI"
+              visible={rsiVisible}
+              onToggleVisible={() => setRsiVisible(!rsiVisible)}
+              onSettings={() => setRsiSettings(!rsiSettings)}
+              onRemove={() => {
+                setShowRSI(false);
+                removeRSI();
+                setRsiSettings(false);
+              }}
+            />
+          )}
+          {showDMI && (
+            <IndChip
+              label="DMI"
+              visible={dmiVisible}
+              onToggleVisible={() => setDmiVisible(!dmiVisible)}
+              onSettings={() => setDmiSettings(!dmiSettings)}
+              onRemove={() => {
+                setShowDMI(false);
+                removeDMI();
+                setDmiSettings(false);
+              }}
+            />
+          )}
+          {showVol && (
+            <IndChip
+              label="Vol"
+              visible={volVisible}
+              onToggleVisible={() => setVolVisible(!volVisible)}
+              onRemove={() => {
+                setShowVol(false);
+                removeVol();
+              }}
+            />
+          )}
+        </div>
       </div>
 
       {smaSettings && showSMA && (
@@ -1952,11 +1983,7 @@ export default function DashboardPage() {
               />
             </div>
           ))}
-          <button
-            type="button"
-            onClick={() => setSmaSettings(false)}
-            className="text-orange-400"
-          >
+          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">
             Close
           </button>
         </div>
@@ -2006,11 +2033,7 @@ export default function DashboardPage() {
               <option value={3}>3</option>
             </select>
           )}
-          <button
-            type="button"
-            onClick={() => setPivotSettings(false)}
-            className="text-orange-400"
-          >
+          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">
             Close
           </button>
         </div>
@@ -2050,11 +2073,7 @@ export default function DashboardPage() {
               />
             </label>
           </div>
-          <button
-            type="button"
-            onClick={() => setTrendSettings(false)}
-            className="text-orange-400"
-          >
+          <button type="button" onClick={() => setTrendSettings(false)} className="text-orange-400">
             Close
           </button>
         </div>
@@ -2092,11 +2111,7 @@ export default function DashboardPage() {
             />
             {rsiHeight}%
           </label>
-          <button
-            type="button"
-            onClick={() => setRsiSettings(false)}
-            className="text-orange-400"
-          >
+          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">
             Close
           </button>
         </div>
@@ -2157,233 +2172,188 @@ export default function DashboardPage() {
             />
             {dmiHeight}%
           </label>
-          <button
-            type="button"
-            onClick={() => setDmiSettings(false)}
-            className="text-orange-400"
-          >
+          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">
             Close
           </button>
         </div>
       )}
 
-      <div
-        ref={chartContainerRef}
-        className="bg-gray-900 border border-gray-800 rounded-xl"
-        style={{ height: "700px", touchAction: "none" }}
-      />
+      {/* Chart + side watchlist */}
+      <div className="flex gap-3 items-stretch">
+        <div className="flex-1 min-w-0">
+          <div
+            ref={chartContainerRef}
+            className="bg-gray-900 border border-gray-800 rounded-xl"
+            style={{ height: "700px", touchAction: "none" }}
+          />
+        </div>
 
+        <div className={`shrink-0 transition-all ${showSideWl ? "w-40 sm:w-44" : "w-9"}`}>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl h-full flex flex-col overflow-hidden" style={{ minHeight: 700 }}>
+            <button
+              type="button"
+              onClick={() => setShowSideWl((v) => !v)}
+              className="px-2 py-2 text-xs text-gray-400 hover:text-white border-b border-gray-800 flex items-center justify-center gap-1"
+              title={showSideWl ? "Hide" : "Show"}
+            >
+              {showSideWl ? "« Hide" : "»"}
+            </button>
+            {showSideWl && (
+              <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
+                <div className="text-[10px] text-gray-500 px-1 mb-1">With alarms</div>
+                {alarmSymbols.length === 0 && (
+                  <p className="text-[11px] text-gray-600 px-1">No alarms</p>
+                )}
+                {alarmSymbols.map((sym) => (
+                  <button
+                    key={sym}
+                    type="button"
+                    onClick={() => setSymbol(sym)}
+                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-medium truncate ${
+                      symbolUpper === sym
+                        ? "bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                        : "text-gray-300 hover:bg-gray-800"
+                    }`}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom lists — only current symbol */}
       <div className="mt-6 grid md:grid-cols-2 gap-6">
         <div>
           <h2 className="text-green-400 font-semibold mb-3">
-            Alarms ({alarms.length})
+            Alarms — {symbol} ({currentAlarms.length})
           </h2>
-          {alarmGroups.map((g) => (
-            <div key={g.symbol} className="mb-4">
-              <button
-                type="button"
-                onClick={() => goToSymbol(g.symbol)}
-                className="text-sm font-bold text-orange-400 mb-2 hover:underline"
-              >
-                {g.symbol}
-              </button>
-              {g.items.map((a) => (
-                <div
-                  key={a.id}
-                  className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => goToSymbol(a.symbol)}
-                      className="text-left hover:text-orange-300"
-                    >
-                      {getConditionSymbol(a.condition)} {a.price}
-                      {a.note ? (
-                        <span className="text-gray-500 ml-2"> · {a.note}</span>
-                      ) : null}
-                    </button>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="color"
-                        value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                        className="w-7 h-7 rounded cursor-pointer"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => startEditNote(a.id, "alarm", a.note)}
-                        className="text-gray-400"
-                      >
-                        📝
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => cycleCondition(a)}
-                        className="text-gray-300"
-                      >
-                        {getConditionLabel(a.condition)}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => startMove(a.id, "alarm", a.price)}
-                        className="text-blue-400"
-                      >
-                        Move
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteAlarm(a.id)}
-                        className="text-red-400"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                  {editingNoteId === a.id && editingNoteType === "alarm" && (
-                    <div className="mt-2 flex gap-2">
-                      <input
-                        value={noteDraft}
-                        onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
-                        placeholder="Note..."
-                      />
-                      <button
-                        type="button"
-                        onClick={saveNote}
-                        className="text-green-400 text-sm"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingNoteId(null);
-                          setEditingNoteType(null);
-                        }}
-                        className="text-gray-500 text-sm"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
+          {currentAlarms.map((a) => (
+            <div key={a.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {getConditionSymbol(a.condition)} {a.price}
+                  {a.note ? <span className="text-gray-500 ml-2"> · {a.note}</span> : null}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="color"
+                    value={a.color || DEFAULT_ALARM_COLOR}
+                    onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                    className="w-7 h-7 rounded cursor-pointer"
+                  />
+                  <button type="button" onClick={() => startEditNote(a.id, "alarm", a.note)} className="text-gray-400">
+                    📝
+                  </button>
+                  <button type="button" onClick={() => cycleCondition(a)} className="text-gray-300">
+                    {getConditionLabel(a.condition)}
+                  </button>
+                  <button type="button" onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">
+                    Move
+                  </button>
+                  <button type="button" onClick={() => deleteAlarm(a.id)} className="text-red-400">
+                    Delete
+                  </button>
                 </div>
-              ))}
+              </div>
+              {editingNoteId === a.id && editingNoteType === "alarm" && (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                    placeholder="Note..."
+                  />
+                  <button type="button" onClick={saveNote} className="text-green-400 text-sm">
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingNoteId(null);
+                      setEditingNoteType(null);
+                    }}
+                    className="text-gray-500 text-sm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           ))}
-          {!alarms.length && (
-            <p className="text-gray-500 text-sm">No alarms</p>
-          )}
+          {!currentAlarms.length && <p className="text-gray-500 text-sm">No alarms for this symbol</p>}
         </div>
 
         <div>
           <h2 className="text-orange-400 font-semibold mb-3">
-            Lines ({lines.length})
+            Lines — {symbol} ({currentLines.length})
           </h2>
-          {lineGroups.map((g) => (
-            <div key={g.symbol} className="mb-4">
-              <button
-                type="button"
-                onClick={() => goToSymbol(g.symbol)}
-                className="text-sm font-bold text-orange-400 mb-2 hover:underline"
-              >
-                {g.symbol}
-              </button>
-              {g.items.map((l) => (
-                <div
-                  key={l.id}
-                  className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span>
-                      {l.price}{" "}
-                      {l.style === "ray" ? (
-                        <span className="text-gray-500">(ray)</span>
-                      ) : null}
-                      {l.note ? (
-                        <span className="text-gray-500 ml-2"> · {l.note}</span>
-                      ) : null}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="color"
-                        value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => updateLineColor(l.id, e.target.value)}
-                        className="w-7 h-7 rounded cursor-pointer"
-                      />
-                      <select
-                        value={l.width || 2}
-                        onChange={(e) =>
-                          updateLineWidth(l.id, Number(e.target.value))
-                        }
-                        className="bg-gray-800 rounded px-1 py-0.5 text-xs"
-                      >
-                        <option value={1}>W1</option>
-                        <option value={2}>W2</option>
-                        <option value={3}>W3</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => startEditNote(l.id, "line", l.note)}
-                        className="text-gray-400"
-                      >
-                        📝
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => convertLineToAlarm(l)}
-                        className="text-green-400"
-                      >
-                        Alarm
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => startMove(l.id, "line", l.price)}
-                        className="text-blue-400"
-                      >
-                        Move
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteLine(l.id)}
-                        className="text-red-400"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                  {editingNoteId === l.id && editingNoteType === "line" && (
-                    <div className="mt-2 flex gap-2">
-                      <input
-                        value={noteDraft}
-                        onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
-                        placeholder="Note..."
-                      />
-                      <button
-                        type="button"
-                        onClick={saveNote}
-                        className="text-green-400 text-sm"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingNoteId(null);
-                          setEditingNoteType(null);
-                        }}
-                        className="text-gray-500 text-sm"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
+          {currentLines.map((l) => (
+            <div key={l.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {l.price}{" "}
+                  {l.style === "ray" ? <span className="text-gray-500">(ray)</span> : null}
+                  {l.note ? <span className="text-gray-500 ml-2"> · {l.note}</span> : null}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="color"
+                    value={l.color || DEFAULT_LINE_COLOR}
+                    onChange={(e) => updateLineColor(l.id, e.target.value)}
+                    className="w-7 h-7 rounded cursor-pointer"
+                  />
+                  <select
+                    value={l.width || 2}
+                    onChange={(e) => updateLineWidth(l.id, Number(e.target.value))}
+                    className="bg-gray-800 rounded px-1 py-0.5 text-xs"
+                  >
+                    <option value={1}>W1</option>
+                    <option value={2}>W2</option>
+                    <option value={3}>W3</option>
+                  </select>
+                  <button type="button" onClick={() => startEditNote(l.id, "line", l.note)} className="text-gray-400">
+                    📝
+                  </button>
+                  <button type="button" onClick={() => convertLineToAlarm(l)} className="text-green-400">
+                    Alarm
+                  </button>
+                  <button type="button" onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">
+                    Move
+                  </button>
+                  <button type="button" onClick={() => deleteLine(l.id)} className="text-red-400">
+                    Delete
+                  </button>
                 </div>
-              ))}
+              </div>
+              {editingNoteId === l.id && editingNoteType === "line" && (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                    placeholder="Note..."
+                  />
+                  <button type="button" onClick={saveNote} className="text-green-400 text-sm">
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingNoteId(null);
+                      setEditingNoteType(null);
+                    }}
+                    className="text-gray-500 text-sm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           ))}
-          {!lines.length && <p className="text-gray-500 text-sm">No lines</p>}
+          {!currentLines.length && <p className="text-gray-500 text-sm">No lines for this symbol</p>}
         </div>
       </div>
     </div>
