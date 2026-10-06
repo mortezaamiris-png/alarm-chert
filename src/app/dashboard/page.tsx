@@ -488,7 +488,8 @@ export default function DashboardPage() {
 
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
-  const [noteDraft, setNoteDraft] = useState("");  const modeRef = useRef(mode);
+  const [noteDraft, setNoteDraft] = useState("");
+    const modeRef = useRef(mode);
   const previewPriceRef = useRef(previewPrice);
   const conditionRef = useRef(condition);
   const movingIdRef = useRef(movingId);
