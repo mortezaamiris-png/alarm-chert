@@ -10,6 +10,7 @@ type Candle = {
   low: number;
   close: number;
   value: number;
+  volume: number;
 };
 
 function toBinanceInterval(interval: string) {
@@ -18,6 +19,7 @@ function toBinanceInterval(interval: string) {
     "5": "5m",
     "15": "15m",
     "60": "1h",
+    "120": "2h",
     "240": "4h",
     D: "1d",
     W: "1w",
@@ -32,6 +34,7 @@ function toOkxBar(interval: string) {
     "5": "5m",
     "15": "15m",
     "60": "1H",
+    "120": "2H",
     "240": "4H",
     D: "1D",
     W: "1W",
@@ -55,6 +58,7 @@ async function fromBybit(
       const data = await res.json();
       const list = data?.result?.list;
       if (!list?.length) continue;
+      // Bybit: [start, open, high, low, close, volume, turnover]
       return list
         .map((item: any) => ({
           time: Math.floor(Number(item[0]) / 1000),
@@ -63,6 +67,7 @@ async function fromBybit(
           low: parseFloat(item[3]),
           close: parseFloat(item[4]),
           value: parseFloat(item[4]),
+          volume: parseFloat(item[5] || "0"),
         }))
         .reverse();
     } catch {
@@ -86,6 +91,7 @@ async function fromBinance(
     if (!res.ok) return null;
     const list = await res.json();
     if (!Array.isArray(list) || !list.length) return null;
+    // Binance: [openTime, o, h, l, c, volume, ...]
     return list.map((item: any) => ({
       time: Math.floor(Number(item[0]) / 1000),
       open: parseFloat(item[1]),
@@ -93,6 +99,7 @@ async function fromBinance(
       low: parseFloat(item[3]),
       close: parseFloat(item[4]),
       value: parseFloat(item[4]),
+      volume: parseFloat(item[5] || "0"),
     }));
   } catch {
     return null;
@@ -115,7 +122,7 @@ async function fromOkx(
     const data = await res.json();
     const list = data?.data;
     if (!Array.isArray(list) || !list.length) return null;
-    // OKX: [ts, o, h, l, c, ...] newest first
+    // OKX: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm] newest first
     return list
       .map((item: any) => ({
         time: Math.floor(Number(item[0]) / 1000),
@@ -124,6 +131,7 @@ async function fromOkx(
         low: parseFloat(item[3]),
         close: parseFloat(item[4]),
         value: parseFloat(item[4]),
+        volume: parseFloat(item[5] || "0"),
       }))
       .reverse();
   } catch {
