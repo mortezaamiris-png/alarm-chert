@@ -529,7 +529,8 @@ export default function DashboardPage() {
       previewLineRef.current = null;
     }
     setPreviewPrice(null);
-  }, []);  const destroyChart = useCallback(() => {
+  }, []);
+    const destroyChart = useCallback(() => {
     clearPreview();
     alarmLinesRef.current.forEach((pl) => {
       try { seriesRef.current?.removePriceLine(pl); } catch {}
