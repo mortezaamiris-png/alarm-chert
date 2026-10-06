@@ -143,9 +143,7 @@ function calcDMI(
   const adx: { time: number; value: number }[] = [];
   const p = Math.max(2, period);
   if (candles.length < p + 2) return { plusDI, minusDI, adx };
-  const tr: number[] = [];
-  const plusDM: number[] = [];
-  const minusDM: number[] = [];
+  const tr: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
     const ph = candles[i - 1].high, pl = candles[i - 1].low;
@@ -225,9 +223,6 @@ function showLocalNotification(title: string, body: string) {
 function getConditionSymbol(c: string) {
   return c === "above" ? "≥" : c === "below" ? "≤" : "≈";
 }
-function getConditionLabel(c: string) {
-  return c === "above" ? "Above" : c === "below" ? "Below" : "Cross";
-}
 function didCross(
   condition: string,
   target: number,
@@ -248,29 +243,20 @@ function CoinIcon({ symbol }: { symbol: string }) {
   return (
     <img
       src={`https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${base}.png`}
-      alt=""
-      width={20}
-      height={20}
-      className="w-5 h-5 rounded-full shrink-0"
+      alt="" width={20} height={20} className="w-5 h-5 rounded-full shrink-0"
       onError={(e) => {
-        (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${base}&background=374151&color=fff&size=32`;
+        (e.target as HTMLImageElement).src =
+          `https://ui-avatars.com/api/?name=${base}&background=374151&color=fff&size=32`;
       }}
     />
   );
 }
 
 function IndChip({
-  label,
-  visible,
-  onToggleVisible,
-  onSettings,
-  onRemove,
+  label, visible, onToggleVisible, onSettings, onRemove,
 }: {
-  label: string;
-  visible: boolean;
-  onToggleVisible: () => void;
-  onSettings?: () => void;
-  onRemove: () => void;
+  label: string; visible: boolean;
+  onToggleVisible: () => void; onSettings?: () => void; onRemove: () => void;
 }) {
   return (
     <div className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100">
@@ -279,13 +265,9 @@ function IndChip({
         {visible ? "👁" : "⊘"}
       </button>
       {onSettings && (
-        <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
-          ⚙
-        </button>
+        <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">⚙</button>
       )}
-      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">
-        ×
-      </button>
+      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">×</button>
     </div>
   );
 }
@@ -326,7 +308,7 @@ export default function DashboardPage() {
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [movingType, setMovingType] = useState<"line" | "alarm" | null>(null);
-  const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
+  const [condition, setCondition] = useState<"above" | "below" | "cross">("cross");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [showSideWl, setShowSideWl] = useState(true);
@@ -391,7 +373,6 @@ export default function DashboardPage() {
   const [noteDraft, setNoteDraft] = useState("");
 
   const modeRef = useRef(mode);
-  const previewPriceRef = useRef(previewPrice);
   const conditionRef = useRef(condition);
   const movingIdRef = useRef(movingId);
   const movingTypeRef = useRef(movingType);
@@ -399,12 +380,9 @@ export default function DashboardPage() {
   const drawWidthRef = useRef(drawWidth);
   const drawDashRef = useRef(drawDash);
   const symbolRef = useRef(symbol);
-  const alarmsRef = useRef(alarms);
-  const linesRef = useRef(lines);
   const intervalRef = useRef(interval);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { previewPriceRef.current = previewPrice; }, [previewPrice]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { movingIdRef.current = movingId; }, [movingId]);
   useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
@@ -415,8 +393,6 @@ export default function DashboardPage() {
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
   useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
-  useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
-  useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
 
   useEffect(() => {
@@ -539,7 +515,6 @@ export default function DashboardPage() {
     }
   }, [clearPreview]);
 
-  // فیکس ۳: موقع Move خط نقطه‌چین و ضخیم می‌شود
   const renderAllLinesAndAlarms = useCallback(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
@@ -556,8 +531,8 @@ export default function DashboardPage() {
 
     const candles = candlesRef.current;
     if (!candles.length) return;
-    const firstTime = candles[0].time;
     const lastTime = candles[candles.length - 1].time;
+    const firstTime = candles[0].time;
     const extend = Math.max(1, Math.floor((lastTime - firstTime) * 0.15));
 
     currentLines.forEach((l) => {
@@ -566,6 +541,11 @@ export default function DashboardPage() {
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
+        const title = isMoving
+          ? "MOVING"
+          : l.note
+          ? `L ${l.note}`
+          : `Line ${formatPrice(l.price)}`;
         if (l.start_time != null) {
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
@@ -579,26 +559,28 @@ export default function DashboardPage() {
         } else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
-            axisLabelVisible: true,
-            title: isMoving ? "MOVING" : l.note ? `L ${l.note}` : `Line ${formatPrice(l.price)}`,
+            axisLabelVisible: true, title,
           });
           alarmLinesRef.current.set(`line-${l.id}`, pl);
         }
       } catch {}
     });
 
+    // فیکس ۳: نوت الارم روی چارت
     currentAlarms.forEach((a) => {
       try {
         const isMoving = movingId === a.id && movingType === "alarm";
         const color = isMoving ? "#f59e0b" : a.color || DEFAULT_ALARM_COLOR;
         const width = isMoving ? 3 : ((a.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
+        const title = isMoving
+          ? "MOVING"
+          : a.note
+          ? `${getConditionSymbol(a.condition)} ${a.note}`
+          : `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
         const pl = series.createPriceLine({
           price: a.price, color, lineWidth: width, lineStyle: style,
-          axisLabelVisible: true,
-          title: isMoving
-            ? "MOVING"
-            : `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`,
+          axisLabelVisible: true, title,
         });
         alarmLinesRef.current.set(`alarm-${a.id}`, pl);
       } catch {}
@@ -671,9 +653,7 @@ export default function DashboardPage() {
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
 
   const removePivot = useCallback(() => {
-    pivotSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
+    pivotSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     pivotSeriesRef.current = [];
   }, []);
   const applyPivot = useCallback(async () => {
@@ -705,12 +685,8 @@ export default function DashboardPage() {
           ]
         : [
             { p: pp, col: "#eab308", t: "P" },
-            { p: r1, col: "#22c55e", t: "R1" },
-            { p: r2, col: "#16a34a", t: "R2" },
-            { p: r3, col: "#15803d", t: "R3" },
-            { p: s1, col: "#ef4444", t: "S1" },
-            { p: s2, col: "#dc2626", t: "S2" },
-            { p: s3, col: "#b91c1c", t: "S3" },
+            { p: r1, col: "#22c55e", t: "R1" }, { p: r2, col: "#16a34a", t: "R2" }, { p: r3, col: "#15803d", t: "R3" },
+            { p: s1, col: "#ef4444", t: "S1" }, { p: s2, col: "#dc2626", t: "S2" }, { p: s3, col: "#b91c1c", t: "S3" },
           ];
       const times = candlesRef.current.map((x: any) => x.time);
       levels.forEach(({ p, col, t }) => {
@@ -725,9 +701,7 @@ export default function DashboardPage() {
   }, [showPivot, pivotVisible, pivotTf, pivotFib, removePivot]);
 
   const removeTrend = useCallback(() => {
-    trendSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
+    trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     trendSeriesRef.current = [];
   }, []);
   const applyTrend = useCallback(() => {
@@ -751,9 +725,7 @@ export default function DashboardPage() {
       if (!valid) continue;
       const endIdx = candles.length - 1;
       try {
-        const ls = chartRef.current!.addLineSeries({
-          color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
+        const ls = chartRef.current!.addLineSeries({ color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
         ls.setData([
           { time: a.time as any, value: a.price },
           { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
@@ -774,9 +746,7 @@ export default function DashboardPage() {
       if (!valid) continue;
       const endIdx = candles.length - 1;
       try {
-        const ls = chartRef.current!.addLineSeries({
-          color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
+        const ls = chartRef.current!.addLineSeries({ color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
         ls.setData([
           { time: a.time as any, value: a.price },
           { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
@@ -880,7 +850,6 @@ export default function DashboardPage() {
         if (previewLineRef.current) {
           try { series.removePriceLine(previewLineRef.current); } catch {}
         }
-        // فیکس ۱: رنگ پیش‌نمایش الارم = رنگ انتخابی کاربر
         previewLineRef.current = series.createPriceLine({
           price,
           color: drawColorRef.current,
@@ -957,7 +926,6 @@ export default function DashboardPage() {
           return;
         }
 
-        // فیکس ۱: رنگ الارم = drawColor + بالای لیست
         if (m === "alarm") {
           clickLockRef.current = true;
           setSaving(true);
@@ -1137,7 +1105,6 @@ export default function DashboardPage() {
     await supabase.from("chart_lines").update({ dash }).eq("id", id);
   };
 
-  // فیکس ۱: تبدیل خط → الارم با همان رنگ + بالای لیست
   const convertLineToAlarm = async (line: ChartLine) => {
     try {
       const chosenColor = line.color || DEFAULT_LINE_COLOR;
@@ -1197,14 +1164,34 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
-      {/* Top bar */}
+      {/* فیکس ۱: هدر مثل قبلی — عنوان چپ، کنترل‌ها راست */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
+        <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
+        <div className="flex-1" />
+        <select
+          value={timeZone}
+          onChange={(e) => setTimeZone(e.target.value)}
+          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
+        >
+          {TIMEZONES.map((z) => (
+            <option key={z.value} value={z.value}>{z.label}</option>
+          ))}
+        </select>
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
           onKeyDown={(e) => e.key === "Enter" && loadCandles()}
           className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm w-28 font-mono"
         />
+        {!showSideWl && (
+          <button
+            type="button"
+            onClick={() => setShowSideWl(true)}
+            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
+          >
+            Show list
+          </button>
+        )}
         <div className="flex items-center gap-1">
           {favTfButtons.map((t) => (
             <button
@@ -1223,33 +1210,14 @@ export default function DashboardPage() {
             onClick={() => setTfMenuOpen((v) => !v)}
             className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
           >
-            TF
+            TF ▾
           </button>
         </div>
-        <select
-          value={timeZone}
-          onChange={(e) => setTimeZone(e.target.value)}
-          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
-        >
-          {TIMEZONES.map((z) => (
-            <option key={z.value} value={z.value}>{z.label}</option>
-          ))}
-        </select>
-        <div className="flex-1" />
-        {statusMsg && <span className="text-xs text-gray-400">{statusMsg}</span>}
-        {!showSideWl && (
-          <button
-            type="button"
-            onClick={() => setShowSideWl(true)}
-            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
-          >
-            Show list
-          </button>
-        )}
+        {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
       </div>
 
       {tfMenuOpen && (
-        <div className="absolute z-50 top-16 left-4 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl">
+        <div className="absolute z-50 top-16 right-4 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl">
           {ALL_TIMEFRAMES.map((t) => (
             <div key={t.value} className="flex items-center gap-2 py-1">
               <button
@@ -1321,7 +1289,6 @@ export default function DashboardPage() {
             style={{ height: 640 }}
           />
 
-          {/* Indicator chips top-left */}
           <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
             {showSMA && (
               <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible((v) => !v)}
@@ -1373,9 +1340,9 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* فیکس ۲: پنل رنگ و ضخامت — گوشه پایین-راست چارت */}
+          {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
           {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
-            <div className="absolute bottom-3 right-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+            <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
               <input
                 type="color"
                 value={drawColor}
@@ -1419,12 +1386,11 @@ export default function DashboardPage() {
                 <span className="text-xs text-orange-300 font-mono">{formatPrice(previewPrice)}</span>
               )}
               {mode === "move" && (
-                <span className="text-xs text-amber-400">Click chart to confirm</span>
+                <span className="text-xs text-amber-400">Click chart</span>
               )}
             </div>
           )}
 
-          {/* Settings popovers */}
           {smaSettings && showSMA && (
             <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
               <p className="font-medium mb-2">SMA Settings</p>
@@ -1435,15 +1401,9 @@ export default function DashboardPage() {
               ].map((row) => (
                 <div key={row.label} className="flex items-center gap-2 mb-1">
                   <span className="text-xs w-10">{row.label}</span>
-                  <input
-                    value={row.str}
-                    onChange={(e) => row.setStr(e.target.value)}
-                    onBlur={() => {
-                      const n = parseInt(row.str, 10);
-                      if (!Number.isNaN(n) && n > 0) row.set(n);
-                    }}
-                    className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
-                  />
+                  <input value={row.str} onChange={(e) => row.setStr(e.target.value)}
+                    onBlur={() => { const n = parseInt(row.str, 10); if (!Number.isNaN(n) && n > 0) row.set(n); }}
+                    className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
                   <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-6 h-6" />
                 </div>
               ))}
@@ -1554,7 +1514,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Side watchlist */}
         {showSideWl && (
           <div className="w-44 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between">
