@@ -122,15 +122,13 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
   const out: { time: number; value: number }[] = [];
   const p = Math.max(2, period);
   if (candles.length < p + 1) return out;
-  let gains = 0,
-    losses = 0;
+  let gains = 0, losses = 0;
   for (let i = 1; i <= p; i++) {
     const d = candles[i].close - candles[i - 1].close;
     if (d >= 0) gains += d;
     else losses -= d;
   }
-  let avgGain = gains / p,
-    avgLoss = losses / p;
+  let avgGain = gains / p, avgLoss = losses / p;
   out.push({
     time: candles[p].time,
     value: 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)),
@@ -160,14 +158,10 @@ function calcDMI(
   const plusDM: number[] = [];
   const minusDM: number[] = [];
   for (let i = 1; i < candles.length; i++) {
-    const h = candles[i].high,
-      l = candles[i].low,
-      pc = candles[i - 1].close;
-    const ph = candles[i - 1].high,
-      pl = candles[i - 1].low;
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    const ph = candles[i - 1].high, pl = candles[i - 1].low;
     tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
-    const up = h - ph,
-      down = pl - l;
+    const up = h - ph, down = pl - l;
     plusDM.push(up > down && up > 0 ? up : 0);
     minusDM.push(down > up && down > 0 ? down : 0);
   }
@@ -199,22 +193,86 @@ function calcDMI(
 }
 
 function findPivots(candles: any[], leftRight: number) {
-  const highs: { time: number; price: number }[] = [];
-  const lows: { time: number; price: number }[] = [];
+  const highs: { index: number; time: number; price: number }[] = [];
+  const lows: { index: number; time: number; price: number }[] = [];
   const lr = Math.max(2, leftRight);
   for (let i = lr; i < candles.length - lr; i++) {
-    let isH = true,
-      isL = true;
+    let isH = true, isL = true;
     for (let j = 1; j <= lr; j++) {
-      if (candles[i].high < candles[i - j].high || candles[i].high < candles[i + j].high)
-        isH = false;
-      if (candles[i].low > candles[i - j].low || candles[i].low > candles[i + j].low)
-        isL = false;
+      if (candles[i].high < candles[i - j].high || candles[i].high < candles[i + j].high) isH = false;
+      if (candles[i].low > candles[i - j].low || candles[i].low > candles[i + j].low) isL = false;
     }
-    if (isH) highs.push({ time: candles[i].time, price: candles[i].high });
-    if (isL) lows.push({ time: candles[i].time, price: candles[i].low });
+    if (isH) highs.push({ index: i, time: candles[i].time, price: candles[i].high });
+    if (isL) lows.push({ index: i, time: candles[i].time, price: candles[i].low });
   }
   return { highs, lows };
+}
+
+/** Trend lines شبیه Pine: خط‌های معتبر که قیمت آن‌ها را نشکسته */
+function buildValidTrends(
+  candles: any[],
+  period: number,
+  maxLines: number
+) {
+  const { highs, lows } = findPivots(candles, period);
+  const upLines: { t1: number; p1: number; t2: number; p2: number }[] = [];
+  const dnLines: { t1: number; p1: number; t2: number; p2: number }[] = [];
+
+  // bottom (uptrend): value1 > value2  و close زیر خط نرود
+  for (let i = 0; i < lows.length - 1 && upLines.length < maxLines; i++) {
+    for (let j = i + 1; j < lows.length && upLines.length < maxLines; j++) {
+      const a = lows[i], b = lows[j];
+      if (a.price <= b.price) continue;
+      const diff = (a.price - b.price) / (a.index - b.index);
+      let valid = true;
+      let endIdx = a.index;
+      for (let x = b.index + 1; x <= a.index; x++) {
+        const lineY = b.price + diff * (x - b.index);
+        if (candles[x].close < lineY) {
+          valid = false;
+          break;
+        }
+        endIdx = x;
+      }
+      if (valid) {
+        upLines.push({
+          t1: b.time,
+          p1: b.price,
+          t2: candles[endIdx].time,
+          p2: b.price + diff * (endIdx - b.index),
+        });
+      }
+    }
+  }
+
+  // top (downtrend)
+  for (let i = 0; i < highs.length - 1 && dnLines.length < maxLines; i++) {
+    for (let j = i + 1; j < highs.length && dnLines.length < maxLines; j++) {
+      const a = highs[i], b = highs[j];
+      if (a.price >= b.price) continue;
+      const diff = (b.price - a.price) / (a.index - b.index);
+      let valid = true;
+      let endIdx = a.index;
+      for (let x = b.index + 1; x <= a.index; x++) {
+        const lineY = b.price - diff * (x - b.index);
+        if (candles[x].close > lineY) {
+          valid = false;
+          break;
+        }
+        endIdx = x;
+      }
+      if (valid) {
+        dnLines.push({
+          t1: b.time,
+          p1: b.price,
+          t2: candles[endIdx].time,
+          p2: b.price - diff * (endIdx - b.index),
+        });
+      }
+    }
+  }
+
+  return { upLines, dnLines };
 }
 
 function playAlarmBeep() {
@@ -279,6 +337,7 @@ function CoinIcon({ symbol }: { symbol: string }) {
   );
 }
 
+/** چیپ شفاف بدون کادر سنگین */
 function IndChip({
   label,
   visible,
@@ -293,18 +352,18 @@ function IndChip({
   onRemove: () => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-0.5 bg-[#1c1c1c]/95 border border-gray-700 rounded-md px-1.5 py-0.5 text-[11px] text-gray-200 shadow-md">
-      <span className="px-1 font-medium whitespace-nowrap">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700">
+    <div className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100">
+      <span className="px-0.5 font-medium whitespace-nowrap opacity-90">{label}</span>
+      <button type="button" onClick={onToggleVisible} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
         {visible ? "👁" : "⊘"}
       </button>
       {onSettings && (
-        <button type="button" onClick={onSettings} className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700">
+        <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
           ⚙
         </button>
       )}
-      <button type="button" onClick={onRemove} className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700 text-red-400">
-        🗑
+      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">
+        ×
       </button>
     </div>
   );
@@ -351,6 +410,8 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [showSideWl, setShowSideWl] = useState(true);
   const [statusMsg, setStatusMsg] = useState("");
+  const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
+  const dragSymRef = useRef<string | null>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
@@ -397,11 +458,11 @@ export default function DashboardPage() {
   const [showTrend, setShowTrend] = useState(() => loadLS("ind_trend", false));
   const [trendVisible, setTrendVisible] = useState(() => loadLS("vis_trend", true));
   const [trendSettings, setTrendSettings] = useState(false);
-  const [trendPeriod, setTrendPeriod] = useState(() => loadLS("trend_p", 5));
-  const [trendPeriodStr, setTrendPeriodStr] = useState(() => String(loadLS("trend_p", 5)));
+  const [trendPeriod, setTrendPeriod] = useState(() => loadLS("trend_p", 12));
+  const [trendPeriodStr, setTrendPeriodStr] = useState(() => String(loadLS("trend_p", 12)));
   const [trendUpColor, setTrendUpColor] = useState(() => loadLS("trend_up", "#84cc16"));
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
-  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 4));
+  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
 
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
@@ -434,6 +495,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
   useEffect(() => { linesRef.current = lines; }, [lines]);
+  useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
 
   useEffect(() => {
     saveLS("ind_sma", showSMA); saveLS("vis_sma", smaVisible);
@@ -496,33 +558,35 @@ export default function DashboardPage() {
     });
     return m;
   }, [lines]);
-  const alarmSymbols = useMemo(() => {
+
+  const alarmSymbolsRaw = useMemo(() => {
     const set = new Set<string>();
     alarms.forEach((a) => {
       if (a.is_active && !a.triggered) set.add(a.symbol.toUpperCase());
     });
-    return Array.from(set).sort();
+    return Array.from(set);
   }, [alarms]);
+
+  const alarmSymbols = useMemo(() => {
+    const set = new Set(alarmSymbolsRaw);
+    const ordered = sideOrder.filter((s) => set.has(s));
+    const rest = alarmSymbolsRaw.filter((s) => !ordered.includes(s)).sort();
+    return [...ordered, ...rest];
+  }, [alarmSymbolsRaw, sideOrder]);
 
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
     let bottom = 0.05;
     if (showVol && volVisible) {
-      try {
-        chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-      } catch {}
+      try { chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } }); } catch {}
       bottom = 0.2;
     }
     if (showRSI && rsiVisible) {
-      try {
-        chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.72, bottom } });
-      } catch {}
+      try { chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.72, bottom } }); } catch {}
     }
     if (showDMI && dmiVisible) {
-      try {
-        chart.priceScale("dmi").applyOptions({ scaleMargins: { top: 0.78, bottom } });
-      } catch {}
+      try { chart.priceScale("dmi").applyOptions({ scaleMargins: { top: 0.78, bottom } }); } catch {}
     }
     chart.priceScale("right").applyOptions({
       scaleMargins: {
@@ -539,430 +603,594 @@ export default function DashboardPage() {
       previewLineRef.current = null;
     }
     setPreviewPrice(null);
-  }, []);  const clearAllDrawings = useCallback(() => {
-    if (seriesRef.current) {
+  }, []);  const destroyChart = useCallback(() => {
+    try {
       alarmLinesRef.current.forEach((pl) => {
-        try { seriesRef.current!.removePriceLine(pl); } catch {}
+        try { seriesRef.current?.removePriceLine(pl); } catch {}
       });
-    }
-    alarmLinesRef.current.clear();
-    if (chartRef.current) {
+      alarmLinesRef.current.clear();
       chartLinesRef.current.forEach((s) => {
-        try { chartRef.current!.removeSeries(s); } catch {}
+        try { chartRef.current?.removeSeries(s); } catch {}
       });
-    }
-    chartLinesRef.current.clear();
-    clearPreview();
-  }, [clearPreview]);
+      chartLinesRef.current.clear();
+      if (smaSeriesRef.current) {
+        try {
+          chartRef.current?.removeSeries(smaSeriesRef.current.s1);
+          chartRef.current?.removeSeries(smaSeriesRef.current.s2);
+          chartRef.current?.removeSeries(smaSeriesRef.current.s3);
+        } catch {}
+        smaSeriesRef.current = null;
+      }
+      if (rsiSeriesRef.current) {
+        try { chartRef.current?.removeSeries(rsiSeriesRef.current); } catch {}
+        rsiSeriesRef.current = null;
+      }
+      if (dmiSeriesRef.current) {
+        try {
+          chartRef.current?.removeSeries(dmiSeriesRef.current.plus);
+          chartRef.current?.removeSeries(dmiSeriesRef.current.minus);
+          chartRef.current?.removeSeries(dmiSeriesRef.current.adx);
+        } catch {}
+        dmiSeriesRef.current = null;
+      }
+      pivotSeriesRef.current.forEach((s) => {
+        try { chartRef.current?.removeSeries(s); } catch {}
+      });
+      pivotSeriesRef.current = [];
+      trendSeriesRef.current.forEach((s) => {
+        try { chartRef.current?.removeSeries(s); } catch {}
+      });
+      trendSeriesRef.current = [];
+      if (volumeSeriesRef.current) {
+        try { chartRef.current?.removeSeries(volumeSeriesRef.current); } catch {}
+        volumeSeriesRef.current = null;
+      }
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+      seriesRef.current = null;
+      if (chartContainerRef.current) chartContainerRef.current.innerHTML = "";
+    } catch {}
+  }, []);
 
   const renderAllLinesAndAlarms = useCallback(() => {
-    if (!seriesRef.current || !chartRef.current) return;
     const series = seriesRef.current;
     const chart = chartRef.current;
-    const sym = symbolRef.current.toUpperCase();
-    const candles = candlesRef.current;
+    if (!series || !chart) return;
 
-    clearAllDrawings();
-
-    linesRef.current
-      .filter((l) => l.symbol.toUpperCase() === sym)
-      .forEach((l) => {
-        try {
-          if (l.style === "ray" && l.start_time && candles.length) {
-            const lastT = candles[candles.length - 1].time as number;
-            const ray = chart.addLineSeries({
-              color: l.color || DEFAULT_LINE_COLOR,
-              lineWidth: (l.width as any) || 2,
-              lineStyle: toLineStyle(l.dash),
-              priceLineVisible: false,
-              lastValueVisible: true,
-              crosshairMarkerVisible: false,
-            });
-            ray.setData([
-              { time: l.start_time as any, value: l.price },
-              { time: (lastT + barSeconds(intervalRef.current) * 80) as any, value: l.price },
-            ]);
-            chartLinesRef.current.set(l.id, ray);
-          } else {
-            const pl = series.createPriceLine({
-              price: l.price,
-              color: l.color || DEFAULT_LINE_COLOR,
-              lineWidth: (l.width as any) || 2,
-              lineStyle: toLineStyle(l.dash),
-              axisLabelVisible: true,
-              title: l.note ? String(l.note) : `Line ${formatPrice(l.price)}`,
-            });
-            alarmLinesRef.current.set(`line-${l.id}`, pl);
-          }
-        } catch (e) {
-          console.error("render line", e);
-        }
-      });
-
-    alarmsRef.current
-      .filter((a) => a.symbol.toUpperCase() === sym && a.is_active && !a.triggered)
-      .forEach((a) => {
-        try {
-          const pl = series.createPriceLine({
-            price: a.price,
-            color: a.color || DEFAULT_ALARM_COLOR,
-            lineWidth: (a.width as any) || 2,
-            lineStyle: toLineStyle(a.dash),
-            axisLabelVisible: true,
-            title: `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`,
-          });
-          alarmLinesRef.current.set(a.id, pl);
-        } catch (e) {
-          console.error("render alarm", e);
-        }
-      });
-  }, [clearAllDrawings]);
-
-  const removeSMA = () => {
-    if (!chartRef.current || !smaSeriesRef.current) return;
-    try {
-      chartRef.current.removeSeries(smaSeriesRef.current.s1);
-      chartRef.current.removeSeries(smaSeriesRef.current.s2);
-      chartRef.current.removeSeries(smaSeriesRef.current.s3);
-    } catch {}
-    smaSeriesRef.current = null;
-  };
-  const applySMA = (candles: any[]) => {
-    if (!chartRef.current || !smaVisible) return;
-    removeSMA();
-    const c = chartRef.current;
-    const s1 = c.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    const s2 = c.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    const s3 = c.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    s1.setData(calcSMA(candles, sma1) as any);
-    s2.setData(calcSMA(candles, sma2) as any);
-    s3.setData(calcSMA(candles, sma3) as any);
-    smaSeriesRef.current = { s1, s2, s3 };
-  };
-
-  const removeRSI = () => {
-    if (!chartRef.current || !rsiSeriesRef.current) return;
-    try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
-    rsiSeriesRef.current = null;
-  };
-  const applyRSI = (candles: any[]) => {
-    if (!chartRef.current || !rsiVisible) return;
-    removeRSI();
-    const s = chartRef.current.addLineSeries({
-      color: rsiColor, lineWidth: 2, priceScaleId: "rsi",
-      priceLineVisible: false, lastValueVisible: true,
+    alarmLinesRef.current.forEach((pl) => {
+      try { series.removePriceLine(pl); } catch {}
     });
-    s.setData(calcRSI(candles, rsiPeriod) as any);
-    rsiSeriesRef.current = s;
-    updateMargins();
-  };
+    alarmLinesRef.current.clear();
+    chartLinesRef.current.forEach((s) => {
+      try { chart.removeSeries(s); } catch {}
+    });
+    chartLinesRef.current.clear();
 
-  const removeDMI = () => {
-    if (!chartRef.current || !dmiSeriesRef.current) return;
+    const candles = candlesRef.current;
+    if (!candles.length) return;
+    const firstTime = candles[0].time;
+    const lastTime = candles[candles.length - 1].time;
+    const extend = Math.max(1, Math.floor((lastTime - firstTime) * 0.15));
+
+    currentLines.forEach((l) => {
+      try {
+        const color = l.color || DEFAULT_LINE_COLOR;
+        const width = (l.width as 1 | 2 | 3) || 2;
+        const style = toLineStyle(l.dash || l.style);
+        if (l.start_time != null) {
+          const ls: any = chart.addLineSeries({
+            color,
+            lineWidth: width,
+            lineStyle: style,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          ls.setData([
+            { time: l.start_time as any, value: l.price },
+            { time: (lastTime + extend) as any, value: l.price },
+          ]);
+          chartLinesRef.current.set(l.id, ls);
+        } else {
+          const pl = series.createPriceLine({
+            price: l.price,
+            color,
+            lineWidth: width,
+            lineStyle: style,
+            axisLabelVisible: true,
+            title: l.note ? `L ${l.note}` : `Line ${formatPrice(l.price)}`,
+          });
+          alarmLinesRef.current.set(`line-${l.id}`, pl);
+        }
+      } catch {}
+    });
+
+    currentAlarms.forEach((a) => {
+      try {
+        const color = a.color || DEFAULT_ALARM_COLOR;
+        const width = (a.width as 1 | 2 | 3) || 2;
+        const style = toLineStyle(a.dash);
+        const pl = series.createPriceLine({
+          price: a.price,
+          color,
+          lineWidth: width,
+          lineStyle: style,
+          axisLabelVisible: true,
+          title: `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`,
+        });
+        alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+      } catch {}
+    });
+  }, [currentLines, currentAlarms]);
+
+  const removeSMA = useCallback(() => {
+    if (smaSeriesRef.current && chartRef.current) {
+      try {
+        chartRef.current.removeSeries(smaSeriesRef.current.s1);
+        chartRef.current.removeSeries(smaSeriesRef.current.s2);
+        chartRef.current.removeSeries(smaSeriesRef.current.s3);
+      } catch {}
+      smaSeriesRef.current = null;
+    }
+  }, []);
+  const applySMA = useCallback(() => {
+    removeSMA();
+    if (!showSMA || !smaVisible || !chartRef.current || !candlesRef.current.length) return;
+    const c = candlesRef.current;
+    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s1.setData(calcSMA(c, sma1) as any);
+    s2.setData(calcSMA(c, sma2) as any);
+    s3.setData(calcSMA(c, sma3) as any);
+    smaSeriesRef.current = { s1, s2, s3 };
+  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
+
+  const removeRSI = useCallback(() => {
+    if (rsiSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+      rsiSeriesRef.current = null;
+    }
+  }, []);
+  const applyRSI = useCallback(() => {
+    removeRSI();
+    if (!showRSI || !rsiVisible || !chartRef.current || !candlesRef.current.length) return;
+    const data = calcRSI(candlesRef.current, rsiPeriod);
+    const s = chartRef.current.addLineSeries({
+      color: rsiColor,
+      lineWidth: 1,
+      priceScaleId: "rsi",
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    s.setData(data as any);
+    rsiSeriesRef.current = s;
     try {
-      chartRef.current.removeSeries(dmiSeriesRef.current.plus);
-      chartRef.current.removeSeries(dmiSeriesRef.current.minus);
-      chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+      chartRef.current.priceScale("rsi").applyOptions({
+        scaleMargins: { top: 0.75, bottom: 0.05 },
+        borderVisible: false,
+      });
     } catch {}
-    dmiSeriesRef.current = null;
-  };
-  const applyDMI = (candles: any[]) => {
-    if (!chartRef.current || !dmiVisible) return;
+    updateMargins();
+  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, removeRSI, updateMargins]);
+
+  const removeDMI = useCallback(() => {
+    if (dmiSeriesRef.current && chartRef.current) {
+      try {
+        chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+        chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+        chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+      } catch {}
+      dmiSeriesRef.current = null;
+    }
+  }, []);
+  const applyDMI = useCallback(() => {
     removeDMI();
-    const { plusDI, minusDI, adx } = calcDMI(candles, dmiPeriod);
-    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 2, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: true });
+    if (!showDMI || !dmiVisible || !chartRef.current || !candlesRef.current.length) return;
+    const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
+    const plus = chartRef.current.addLineSeries({
+      color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false,
+    });
+    const minus = chartRef.current.addLineSeries({
+      color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false,
+    });
+    const adxS = chartRef.current.addLineSeries({
+      color: dmiAdxColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: true,
+    });
     plus.setData(plusDI as any);
     minus.setData(minusDI as any);
     adxS.setData(adx as any);
     dmiSeriesRef.current = { plus, minus, adx: adxS };
+    try {
+      chartRef.current.priceScale("dmi").applyOptions({
+        scaleMargins: { top: 0.78, bottom: 0.05 },
+        borderVisible: false,
+      });
+    } catch {}
     updateMargins();
-  };
+  }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
 
-  const removePivot = () => {
-    if (!chartRef.current) return;
-    pivotSeriesRef.current.forEach((s) => { try { chartRef.current!.removeSeries(s); } catch {} });
-    pivotSeriesRef.current = [];
-  };
-  const applyPivot = (candles: any[]) => {
-    if (!chartRef.current || !pivotVisible || !candles.length) return;
-    removePivot();
-    const last = candles[candles.length - 1];
-    const lookback = pivotTf === "W" ? 30 : pivotTf === "D" ? 15 : 8;
-    const slice = candles.slice(-lookback * 3);
-    const hi = Math.max(...slice.map((c: any) => c.high));
-    const lo = Math.min(...slice.map((c: any) => c.low));
-    const cl = last.close;
-    const pp = (hi + lo + cl) / 3;
-    const levels = [
-      { p: pp, c: "#eab308", t: "PP" },
-      { p: 2 * pp - lo, c: "#ef4444", t: "R1" },
-      { p: 2 * pp - hi, c: "#22c55e", t: "S1" },
-      { p: pp + (hi - lo), c: "#f97316", t: "R2" },
-      { p: pp - (hi - lo), c: "#14b8a6", t: "S2" },
-    ];
-    if (pivotFib) {
-      levels.push(
-        { p: hi + 2 * (pp - lo), c: "#dc2626", t: "R3" },
-        { p: lo - 2 * (hi - pp), c: "#16a34a", t: "S3" }
-      );
-    }
-    const t0 = candles[Math.max(0, candles.length - 80)].time;
-    const t1 = last.time;
-    levels.forEach((lv) => {
-      const s = chartRef.current!.addLineSeries({
-        color: lv.c, lineWidth: 1, lineStyle: LineStyle.Dashed,
-        priceLineVisible: false, lastValueVisible: true, title: lv.t,
-      });
-      s.setData([
-        { time: t0 as any, value: lv.p },
-        { time: t1 as any, value: lv.p },
-      ]);
-      pivotSeriesRef.current.push(s);
+  const removePivot = useCallback(() => {
+    pivotSeriesRef.current.forEach((s) => {
+      try { chartRef.current?.removeSeries(s); } catch {}
     });
-  };
+    pivotSeriesRef.current = [];
+  }, []);
+  const applyPivot = useCallback(async () => {
+    removePivot();
+    if (!showPivot || !pivotVisible || !chartRef.current || !candlesRef.current.length) return;
+    try {
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=5`);
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length < 2) return;
+      const prev = data[data.length - 2];
+      const h = prev.high, l = prev.low, c = prev.close;
+      const pp = (h + l + c) / 3;
+      const r1 = 2 * pp - l, s1 = 2 * pp - h;
+      const r2 = pp + (h - l), s2 = pp - (h - l);
+      const r3 = h + 2 * (pp - l), s3 = l - 2 * (h - pp);
+      const levels: { price: number; color: string; title: string }[] = [
+        { price: pp, color: "#eab308", title: "P" },
+        { price: r1, color: "#22c55e", title: "R1" },
+        { price: s1, color: "#ef4444", title: "S1" },
+        { price: r2, color: "#16a34a", title: "R2" },
+        { price: s2, color: "#dc2626", title: "S2" },
+        { price: r3, color: "#15803d", title: "R3" },
+        { price: s3, color: "#b91c1c", title: "S3" },
+      ];
+      if (pivotFib) {
+        levels.push(
+          { price: pp + 0.382 * (h - l), color: "#86efac", title: "R0.382" },
+          { price: pp - 0.382 * (h - l), color: "#fca5a5", title: "S0.382" },
+          { price: pp + 0.618 * (h - l), color: "#4ade80", title: "R0.618" },
+          { price: pp - 0.618 * (h - l), color: "#f87171", title: "S0.618" }
+        );
+      }
+      const firstTime = candlesRef.current[0].time;
+      const lastTime = candlesRef.current[candlesRef.current.length - 1].time;
+      levels.forEach((lv) => {
+        const s: any = chartRef.current!.addLineSeries({
+          color: lv.color,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: lv.title,
+        });
+        s.setData([
+          { time: firstTime, value: lv.price },
+          { time: lastTime, value: lv.price },
+        ]);
+        pivotSeriesRef.current.push(s);
+      });
+    } catch {}
+  }, [showPivot, pivotVisible, pivotTf, pivotFib, removePivot]);
 
-  const removeTrend = () => {
-    if (!chartRef.current) return;
-    trendSeriesRef.current.forEach((s) => { try { chartRef.current!.removeSeries(s); } catch {} });
+  const removeTrend = useCallback(() => {
+    trendSeriesRef.current.forEach((s) => {
+      try { chartRef.current?.removeSeries(s); } catch {}
+    });
     trendSeriesRef.current = [];
-  };
-  // Trend ساده: فقط آخرین ۲ سقف و ۲ کف را وصل کن
-  const applyTrend = (candles: any[]) => {
-    if (!chartRef.current || !trendVisible || candles.length < 30) return;
+  }, []);
+  const applyTrend = useCallback(() => {
     removeTrend();
-    const lr = Math.max(2, Math.min(12, trendPeriod));
-    const { highs, lows } = findPivots(candles, lr);
-    const up = highs.slice(-Math.max(2, trendMax));
-    const dn = lows.slice(-Math.max(2, trendMax));
-    if (up.length >= 2) {
-      const a = up[up.length - 2];
-      const b = up[up.length - 1];
-      const s = chartRef.current.addLineSeries({
-        color: trendUpColor, lineWidth: 2,
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      });
-      s.setData([
-        { time: a.time as any, value: a.price },
-        { time: b.time as any, value: b.price },
-      ]);
-      trendSeriesRef.current.push(s);
-    }
-    if (dn.length >= 2) {
-      const a = dn[dn.length - 2];
-      const b = dn[dn.length - 1];
-      const s = chartRef.current.addLineSeries({
-        color: trendDownColor, lineWidth: 2,
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      });
-      s.setData([
-        { time: a.time as any, value: a.price },
-        { time: b.time as any, value: b.price },
-      ]);
-      trendSeriesRef.current.push(s);
-    }
-  };
+    if (!showTrend || !trendVisible || !chartRef.current || candlesRef.current.length < 30) return;
+    const { upLines, dnLines } = buildValidTrends(candlesRef.current, trendPeriod, trendMax);
+    upLines.forEach((ln) => {
+      try {
+        const s: any = chartRef.current!.addLineSeries({
+          color: trendUpColor,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        s.setData([
+          { time: ln.t1 as any, value: ln.p1 },
+          { time: ln.t2 as any, value: ln.p2 },
+        ]);
+        trendSeriesRef.current.push(s);
+      } catch {}
+    });
+    dnLines.forEach((ln) => {
+      try {
+        const s: any = chartRef.current!.addLineSeries({
+          color: trendDownColor,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        s.setData([
+          { time: ln.t1 as any, value: ln.p1 },
+          { time: ln.t2 as any, value: ln.p2 },
+        ]);
+        trendSeriesRef.current.push(s);
+      } catch {}
+    });
+  }, [showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
 
-  const destroyChart = () => {
-    clearAllDrawings();
-    removeSMA(); removeRSI(); removeDMI(); removePivot(); removeTrend();
-    if (chartRef.current) {
-      try { chartRef.current.remove(); } catch {}
+  const applyVolume = useCallback(() => {
+    if (!chartRef.current || !candlesRef.current.length) return;
+    if (volumeSeriesRef.current) {
+      try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
+      volumeSeriesRef.current = null;
     }
-    chartRef.current = null;
-    seriesRef.current = null;
-    volumeSeriesRef.current = null;
-    if (chartContainerRef.current) chartContainerRef.current.innerHTML = "";
-  };
+    if (!showVol || !volVisible) {
+      updateMargins();
+      return;
+    }
+    const volData = candlesRef.current.map((c: any) => ({
+      time: c.time,
+      value: c.volume || 0,
+      color: c.close >= c.open ? "rgba(34,197,94,0.45)" : "rgba(239,68,68,0.45)",
+    }));
+    const vs: any = chartRef.current.addHistogramSeries({
+      priceScaleId: "volume",
+      priceFormat: { type: "volume" },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    vs.setData(volData);
+    volumeSeriesRef.current = vs;
+    try {
+      chartRef.current.priceScale("volume").applyOptions({
+        scaleMargins: { top: 0.82, bottom: 0 },
+        borderVisible: false,
+      });
+    } catch {}
+    updateMargins();
+  }, [showVol, volVisible, updateMargins]);
+
+  const rebuildIndicators = useCallback(() => {
+    applySMA();
+    applyRSI();
+    applyDMI();
+    applyPivot();
+    applyTrend();
+    applyVolume();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume]);
 
   const loadCandles = useCallback(async () => {
     if (!chartContainerRef.current) return;
+    setStatusMsg("Loading...");
     try {
       const res = await fetch(
-        `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=500`
+        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=1000`,
+        { cache: "no-store" }
       );
-      const json = await res.json();
-      const raw = json?.data || json;
-      if (!Array.isArray(raw) || !raw.length) {
-        setStatusMsg("No candle data");
+      const raw = await res.json();
+      if (!Array.isArray(raw) || raw.length === 0) {
+        setStatusMsg("No data");
         return;
       }
-
-      const processed = raw.map((item: any) => ({
-        time: item.time,
-        open: Number(item.open),
-        high: Number(item.high),
-        low: Number(item.low),
-        close: Number(item.close),
-        volume: Number(item.volume ?? 0),
+      const candles = raw.map((c: any) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume ?? c.value ?? 0,
       }));
-      candlesRef.current = processed;
-      const last = processed[processed.length - 1]?.close || 1;
-      const { precision, minMove } = getPrecision(last);
+      candlesRef.current = candles;
+      const lastClose = candles[candles.length - 1].close;
+      const prec = getPrecision(lastClose);
 
-      // همیشه چارت را از نو بساز تا مقیاس قیمت درست شود
       destroyChart();
 
       const chart = createChart(chartContainerRef.current, {
+        layout: {
+          background: { color: "#0a0a0a" },
+          textColor: "#9ca3af",
+          fontSize: 11,
+        },
+        grid: {
+          vertLines: { color: "rgba(42,46,57,0.5)" },
+          horzLines: { color: "rgba(42,46,57,0.5)" },
+        },
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { color: "rgba(156,163,175,0.4)", width: 1, style: LineStyle.Dashed },
+          horzLine: { color: "rgba(156,163,175,0.4)", width: 1, style: LineStyle.Dashed },
+        },
+        rightPriceScale: {
+          borderVisible: false,
+          scaleMargins: { top: 0.05, bottom: 0.1 },
+          autoScale: true,
+        },
+        timeScale: {
+          borderVisible: false,
+          timeVisible: true,
+          secondsVisible: false,
+          rightOffset: 8,
+        },
+        localization: {
+          timeFormatter: (t: number) => {
+            try {
+              return new Intl.DateTimeFormat("en-GB", {
+                timeZone,
+                hour: "2-digit",
+                minute: "2-digit",
+                day: "2-digit",
+                month: "short",
+              }).format(new Date(t * 1000));
+            } catch {
+              return String(t);
+            }
+          },
+        },
         width: chartContainerRef.current.clientWidth,
-        height: 700,
-        layout: { background: { color: "#111111" }, textColor: "#ccc" },
-        grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
-        // بدون آهن‌ربا
-        crosshair: { mode: CrosshairMode.Normal },
-        timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#333" },
-        rightPriceScale: { borderColor: "#333", autoScale: true },
+        height: 640,
       });
       chartRef.current = chart;
 
-      const candleSeries = chart.addCandlestickSeries({
+      const series = chart.addCandlestickSeries({
         upColor: "#22c55e",
         downColor: "#ef4444",
         borderUpColor: "#22c55e",
         borderDownColor: "#ef4444",
         wickUpColor: "#22c55e",
         wickDownColor: "#ef4444",
-        priceFormat: { type: "price", precision, minMove },
+        priceFormat: { type: "price", precision: prec.precision, minMove: prec.minMove },
       });
-      seriesRef.current = candleSeries;
-      candleSeries.setData(processed as any);
-
-      const volSeries = chart.addHistogramSeries({
-        color: "#666",
-        priceFormat: { type: "volume" },
-        priceScaleId: "volume",
-        lastValueVisible: false,
-        priceLineVisible: false,
-        visible: showVol && volVisible,
-      });
-      volumeSeriesRef.current = volSeries;
-      volSeries.setData(
-        processed.map((c: any) => ({
-          time: c.time,
-          value: c.volume,
-          color: c.close >= c.open ? "rgba(34,197,94,0.45)" : "rgba(239,68,68,0.45)",
-        })) as any
-      );
-      chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-
+      series.setData(candles as any);
+      seriesRef.current = series;
       chart.timeScale().fitContent();
       chart.priceScale("right").applyOptions({ autoScale: true });
 
       chart.subscribeCrosshairMove((param) => {
-        const m = modeRef.current;
-        if (m !== "draw" && m !== "ray" && m !== "alarm" && m !== "move") return;
-        if (!param.point || param.point.y < 0 || !seriesRef.current) return;
-        const price = seriesRef.current.coordinateToPrice(param.point.y);
-        if (price == null || Number.isNaN(price as number)) return;
-        setPreviewPrice(price as number);
-
+        if (modeRef.current === "none" || modeRef.current === "move") return;
+        if (!param.point || param.point.x < 0 || param.point.y < 0) return;
+        const price = series.coordinateToPrice(param.point.y);
+        if (price == null || Number.isNaN(price)) return;
+        setPreviewPrice(price);
         if (previewLineRef.current) {
-          try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
+          try { series.removePriceLine(previewLineRef.current); } catch {}
         }
-        const col = m === "alarm" ? DEFAULT_ALARM_COLOR : drawColorRef.current;
-        previewLineRef.current = seriesRef.current.createPriceLine({
-          price: price as number,
-          color: col,
+        previewLineRef.current = series.createPriceLine({
+          price,
+          color: modeRef.current === "alarm" ? DEFAULT_ALARM_COLOR : drawColorRef.current,
           lineWidth: drawWidthRef.current,
           lineStyle: toLineStyle(drawDashRef.current),
           axisLabelVisible: true,
-          title:
-            m === "alarm"
-              ? `Alarm ${getConditionSymbol(conditionRef.current)}`
-              : m === "ray"
-              ? "Ray"
-              : m === "move"
-              ? "Move"
-              : "Line",
+          title: "",
         });
       });
 
       chart.subscribeClick(async (param) => {
         if (clickLockRef.current) return;
-        if (!param.point || !seriesRef.current) return;
-        const priceRaw = seriesRef.current.coordinateToPrice(param.point.y);
-        if (priceRaw == null) return;
-        const p = formatPrice(priceRaw as number);
+        if (!param.point || param.point.x < 0 || param.point.y < 0) return;
+        const price = series.coordinateToPrice(param.point.y);
+        if (price == null || Number.isNaN(price)) return;
+        const fp = formatPrice(price);
         const m = modeRef.current;
 
-        clickLockRef.current = true;
-        try {
-          if (m === "move" && movingIdRef.current && movingTypeRef.current) {
-            await updateMoved(movingIdRef.current, movingTypeRef.current, p);
-            setMovingId(null);
-            setMovingType(null);
-            setMode("none");
-            clearPreview();
-            return;
+        if (m === "move" && movingIdRef.current) {
+          clickLockRef.current = true;
+          const id = movingIdRef.current;
+          const typ = movingTypeRef.current;
+          if (typ === "line") {
+            await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
+            setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
+          } else if (typ === "alarm") {
+            await supabase.from("alarms").update({ price: fp }).eq("id", id);
+            setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
           }
-          if (m === "draw" || m === "ray") {
-            const t = param.time != null ? Number(param.time) : candlesRef.current[candlesRef.current.length - 1]?.time;
-            await saveLine(p, m === "ray" ? "ray" : "line", t);
-            setMode("none");
-            clearPreview();
-            return;
+          setMovingId(null);
+          setMovingType(null);
+          setMode("none");
+          clearPreview();
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        if (m === "draw" || m === "ray") {
+          clickLockRef.current = true;
+          setSaving(true);
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+          };
+          if (m === "ray") {
+            const t = param.time ? Number(param.time) : candlesRef.current[candlesRef.current.length - 1]?.time;
+            if (t) base.start_time = t;
           }
-          if (m === "alarm") {
-            await saveAlarm(p);
-            setMode("none");
-            clearPreview();
-            return;
+          let payload = { ...base };
+          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+          if (error) {
+            payload = { symbol: base.symbol, price: base.price, color: base.color, width: base.width };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
-        } finally {
+          if (error) {
+            payload = { symbol: base.symbol, price: base.price, color: base.color };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
+          if (!error && data) {
+            setLines((prev) => [...prev, data as ChartLine]);
+            setStatusMsg("Line saved");
+          } else {
+            setStatusMsg("Save failed");
+          }
+          setSaving(false);
+          clearPreview();
+          setMode("none");
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        if (m === "alarm") {
+          clickLockRef.current = true;
+          setSaving(true);
+          const payload: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            condition: conditionRef.current,
+            is_active: true,
+            triggered: false,
+            color: DEFAULT_ALARM_COLOR,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+          };
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+          if (error) {
+            const minimal = {
+              symbol: payload.symbol,
+              price: payload.price,
+              condition: payload.condition,
+              is_active: true,
+              triggered: false,
+            };
+            ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+          }
+          if (!error && data) {
+            setAlarms((prev) => [...prev, data as Alarm]);
+            setStatusMsg("Alarm saved");
+          } else {
+            setStatusMsg("Alarm save failed");
+          }
+          setSaving(false);
+          clearPreview();
+          setMode("none");
           setTimeout(() => { clickLockRef.current = false; }, 300);
         }
       });
 
-      if (showSMA && smaVisible) applySMA(processed);
-      if (showRSI && rsiVisible) applyRSI(processed);
-      if (showDMI && dmiVisible) applyDMI(processed);
-      if (showPivot && pivotVisible) applyPivot(processed);
-      if (showTrend && trendVisible) applyTrend(processed);
-      updateMargins();
+      rebuildIndicators();
       renderAllLinesAndAlarms();
       setStatusMsg("");
     } catch (e: any) {
       console.error(e);
-      setStatusMsg(e?.message || "Load failed");
+      setStatusMsg("Load error");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, interval]);
-
-  const loadAllLines = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("chart_lines")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) console.error("lines", error);
-    setLines((data as ChartLine[]) || []);
-  }, []);
-
-  const loadAllAlarms = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("alarms")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) console.error("alarms", error);
-    setAlarms((data as Alarm[]) || []);
-  }, []);
-
-  useEffect(() => {
-    loadAllLines();
-    loadAllAlarms();
-  }, [loadAllLines, loadAllAlarms]);
+  }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, timeZone]);
 
   useEffect(() => {
     loadCandles();
-  }, [loadCandles]);
+  }, [symbol, interval, timeZone]); // eslint-disable-line
 
   useEffect(() => {
-    renderAllLinesAndAlarms();
-  }, [lines, alarms, symbol, renderAllLinesAndAlarms]);
+    if (seriesRef.current && chartRef.current) {
+      renderAllLinesAndAlarms();
+    }
+  }, [currentLines, currentAlarms, renderAllLinesAndAlarms]);
+
+  useEffect(() => {
+    rebuildIndicators();
+  }, [
+    showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3,
+    showRSI, rsiVisible, rsiPeriod, rsiColor,
+    showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
+    showPivot, pivotVisible, pivotTf, pivotFib,
+    showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
+    showVol, volVisible,
+  ]); // eslint-disable-line
 
   useEffect(() => {
     const onResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
+      if (chartRef.current && chartContainerRef.current) {
         chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
       }
     };
@@ -971,156 +1199,81 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      if (chartContainerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
-      }
-    }, 320);
-    return () => clearTimeout(t);
+    if (chartRef.current && chartContainerRef.current) {
+      setTimeout(() => {
+        chartRef.current?.applyOptions({ width: chartContainerRef.current!.clientWidth });
+        chartRef.current?.timeScale().fitContent();
+      }, 320);
+    }
   }, [showSideWl]);
 
-  // re-apply indicators when toggled
   useEffect(() => {
-    const c = candlesRef.current;
-    if (!c.length || !chartRef.current) return;
-    if (showSMA && smaVisible) applySMA(c); else removeSMA();
-    if (showRSI && rsiVisible) applyRSI(c); else removeRSI();
-    if (showDMI && dmiVisible) applyDMI(c); else removeDMI();
-    if (showPivot && pivotVisible) applyPivot(c); else removePivot();
-    if (showTrend && trendVisible) applyTrend(c); else removeTrend();
-    if (volumeSeriesRef.current) {
-      volumeSeriesRef.current.applyOptions({ visible: showVol && volVisible });
-    }
-    updateMargins();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3,
-      showRSI, rsiVisible, rsiPeriod, rsiColor,
-      showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
-      showPivot, pivotVisible, pivotTf, pivotFib,
-      showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax,
-      showVol, volVisible]);
+    const load = async () => {
+      const { data: a } = await supabase
+        .from("alarms")
+        .select("*")
+        .eq("is_active", true)
+        .eq("triggered", false)
+        .order("created_at", { ascending: false });
+      if (a) setAlarms(a as Alarm[]);
+      const { data: l } = await supabase
+        .from("chart_lines")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (l) setLines(l as ChartLine[]);
+    };
+    load();
+  }, []);
 
+  // realtime price check
   useEffect(() => {
-    let cancelled = false;
     const tick = async () => {
       const active = alarmsRef.current.filter((a) => a.is_active && !a.triggered);
       if (!active.length) return;
-      const symbols = [...new Set(active.map((a) => a.symbol.toUpperCase()))];
+      const syms = [...new Set(active.map((a) => a.symbol.toUpperCase()))];
       try {
-        const res = await fetch(`/api/ticker?symbols=${encodeURIComponent(symbols.join(","))}`);
-        const json = await res.json();
-        if (!json?.ok || !json.data || cancelled) return;
-        for (const a of active) {
-          const row = json.data[a.symbol.toUpperCase()];
-          const price = row?.lastPrice;
-          if (price == null) continue;
-          const prev = prevPricesRef.current[a.symbol.toUpperCase()];
-          prevPricesRef.current[a.symbol.toUpperCase()] = price;
-          if (!didCross(a.condition, a.price, prev, price)) continue;
-          if (notifiedAlarmsRef.current.has(a.id)) continue;
-          notifiedAlarmsRef.current.add(a.id);
-          showLocalNotification(
-            `${a.symbol} ${formatPrice(price)}`,
-            `Alarm ${getConditionLabel(a.condition)} ${formatPrice(a.price)}`
-          );
-          await supabase
-            .from("alarms")
-            .update({ triggered: true, is_active: false, last_price: price })
-            .eq("id", a.id);
+        const res = await fetch(`/api/ticker?symbols=${syms.join(",")}`, { cache: "no-store" });
+        const data = await res.json();
+        const prices: Record<string, number> = {};
+        if (Array.isArray(data)) {
+          data.forEach((t: any) => {
+            if (t.symbol && t.lastPrice != null) prices[t.symbol.toUpperCase()] = parseFloat(t.lastPrice);
+          });
+        } else if (data && typeof data === "object") {
+          Object.entries(data).forEach(([k, v]: any) => {
+            prices[k.toUpperCase()] = parseFloat(v);
+          });
         }
-        if (!cancelled) loadAllAlarms();
+        for (const a of active) {
+          const price = prices[a.symbol.toUpperCase()];
+          if (price == null) continue;
+          const prev = prevPricesRef.current[a.symbol.toUpperCase()] ?? a.last_price;
+          if (didCross(a.condition, a.price, prev, price)) {
+            if (!notifiedAlarmsRef.current.has(a.id)) {
+              notifiedAlarmsRef.current.add(a.id);
+              showLocalNotification(
+                `${a.symbol} ${formatPrice(price)}`,
+                `Alarm ${getConditionLabel(a.condition)} ${formatPrice(a.price)}`
+              );
+              await supabase
+                .from("alarms")
+                .update({ triggered: true, is_active: false, last_price: price })
+                .eq("id", a.id);
+              setAlarms((prev) =>
+                prev.map((x) =>
+                  x.id === a.id ? { ...x, triggered: true, is_active: false } : x
+                )
+              );
+            }
+          }
+          prevPricesRef.current[a.symbol.toUpperCase()] = price;
+        }
       } catch {}
     };
+    const id = setInterval(tick, 8000);
     tick();
-    const id = setInterval(tick, 12000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [loadAllAlarms]);
-
-  // --- ذخیره خط: اول با فیلدهای اصلی، اگر dash خطا داد بدون dash ---
-  const saveLine = async (price: number, style: string, startTime?: number) => {
-    setSaving(true);
-    setStatusMsg("Saving line…");
-    try {
-      const base: any = {
-        symbol: symbolUpper,
-        price,
-        color: drawColor,
-        style,
-        note: null,
-      };
-      if (style === "ray" && startTime) base.start_time = startTime;
-
-      // اول با width + dash
-      let payload = { ...base, width: drawWidth, dash: drawDash };
-      let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-
-      if (error) {
-        // بدون dash
-        payload = { ...base, width: drawWidth };
-        ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
-      }
-      if (error) {
-        // فقط فیلدهای پایه
-        payload = { ...base };
-        ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
-      }
-      if (error) {
-        setStatusMsg("Save failed: " + error.message);
-        console.error(error);
-        return;
-      }
-      if (data) {
-        setLines((prev) => [data as ChartLine, ...prev]);
-        setStatusMsg("Line saved");
-      } else {
-        await loadAllLines();
-      }
-    } finally {
-      setSaving(false);
-      setTimeout(() => setStatusMsg(""), 2000);
-    }
-  };
-
-  const saveAlarm = async (price: number) => {
-    setSaving(true);
-    setStatusMsg("Saving alarm…");
-    try {
-      const base: any = {
-        symbol: symbolUpper,
-        price,
-        condition,
-        is_active: true,
-        triggered: false,
-        color: DEFAULT_ALARM_COLOR,
-      };
-      let payload = { ...base, width: drawWidth, dash: drawDash };
-      let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-      if (error) {
-        payload = { ...base };
-        ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
-      }
-      if (error) {
-        setStatusMsg("Alarm save failed: " + error.message);
-        return;
-      }
-      if (data) setAlarms((prev) => [data as Alarm, ...prev]);
-      else await loadAllAlarms();
-      setStatusMsg("Alarm saved");
-    } finally {
-      setSaving(false);
-      setTimeout(() => setStatusMsg(""), 2000);
-    }
-  };
-
-  const updateMoved = async (id: string, type: "line" | "alarm", price: number) => {
-    if (type === "line") {
-      await supabase.from("chart_lines").update({ price }).eq("id", id);
-      await loadAllLines();
-    } else {
-      await supabase.from("alarms").update({ price }).eq("id", id);
-      await loadAllAlarms();
-    }
-  };
+    return () => clearInterval(id);
+  }, []);
 
   const deleteLine = async (id: string) => {
     await supabase.from("chart_lines").delete().eq("id", id);
@@ -1130,495 +1283,746 @@ export default function DashboardPage() {
     await supabase.from("alarms").delete().eq("id", id);
     setAlarms((prev) => prev.filter((a) => a.id !== id));
   };
-
+  const updateAlarmCondition = async (id: string, condition: "above" | "below" | "cross") => {
+    await supabase.from("alarms").update({ condition }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
+  };
+  const updateAlarmColor = async (id: string, color: string) => {
+    await supabase.from("alarms").update({ color }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
+  };
+  const updateAlarmWidth = async (id: string, width: number) => {
+    await supabase.from("alarms").update({ width }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, width } : a)));
+  };
+  const updateAlarmDash = async (id: string, dash: string) => {
+    await supabase.from("alarms").update({ dash }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, dash } : a)));
+  };
+  const updateLineColor = async (id: string, color: string) => {
+    await supabase.from("chart_lines").update({ color }).eq("id", id);
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
+  };
+  const updateLineWidth = async (id: string, width: number) => {
+    await supabase.from("chart_lines").update({ width }).eq("id", id);
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+  };
+  const updateLineDash = async (id: string, dash: string) => {
+    await supabase.from("chart_lines").update({ dash }).eq("id", id);
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
+  };
   const convertLineToAlarm = async (line: ChartLine) => {
-    setSaving(true);
-    try {
-      await supabase.from("alarms").insert([{
-        symbol: line.symbol,
-        price: line.price,
-        condition: "cross",
-        is_active: true,
-        triggered: false,
-        color: line.color || DEFAULT_ALARM_COLOR,
-        note: line.note,
-      }]);
-      await supabase.from("chart_lines").delete().eq("id", line.id);
-      await loadAllLines();
-      await loadAllAlarms();
-    } finally {
-      setSaving(false);
+    const payload: any = {
+      symbol: line.symbol,
+      price: line.price,
+      condition: "cross",
+      is_active: true,
+      triggered: false,
+      color: line.color || DEFAULT_ALARM_COLOR,
+      width: line.width || 2,
+      dash: line.dash || "solid",
+      note: line.note,
+    };
+    const { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+    if (!error && data) {
+      setAlarms((prev) => [...prev, data as Alarm]);
+      await deleteLine(line.id);
     }
   };
-
-  const updateAlarmCondition = async (id: string, c: "above" | "below" | "cross") => {
-    await supabase.from("alarms").update({ condition: c }).eq("id", id);
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition: c } : a)));
-  };
-
-  const updateLineMeta = async (id: string, patch: Partial<ChartLine>) => {
-    const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
-    if (!error) setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-    else {
-      // اگر dash ستون ندارد، فقط state محلی
-      setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-    }
-  };
-
-  const updateAlarmMeta = async (id: string, patch: Partial<Alarm>) => {
-    const { error } = await supabase.from("alarms").update(patch).eq("id", id);
-    if (!error) setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-    else setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-  };
-
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
-    if (editingNoteType === "line") await updateLineMeta(editingNoteId, { note: noteDraft });
-    else await updateAlarmMeta(editingNoteId, { note: noteDraft });
+    if (editingNoteType === "line") {
+      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
+    } else {
+      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
+    }
     setEditingNoteId(null);
     setEditingNoteType(null);
-    setNoteDraft("");
   };
-
   const goToSymbol = (sym: string) => {
-    setSymbol(sym.toUpperCase().trim());
+    setSymbol(sym.toUpperCase());
   };
 
-  const startMove = (id: string, type: "line" | "alarm") => {
-    setMovingId(id);
-    setMovingType(type);
-    setMode("move");
+  // side list drag
+  const onSideDragStart = (sym: string) => {
+    dragSymRef.current = sym;
+  };
+  const onSideDragOver = (e: React.DragEvent, overSym: string) => {
+    e.preventDefault();
+    const from = dragSymRef.current;
+    if (!from || from === overSym) return;
+    setSideOrder((prev) => {
+      const base = alarmSymbols.filter((s) => s !== from);
+      const idx = base.indexOf(overSym);
+      if (idx < 0) return prev;
+      const next = [...base];
+      next.splice(idx, 0, from);
+      return next;
+    });
+  };
+  const onSideDragEnd = () => {
+    dragSymRef.current = null;
   };
 
-  const commitSymbol = () => {
-    const s = symbol.trim().toUpperCase();
-    if (s) setSymbol(s);
-  };
-
-  // ---------------- JSX ----------------
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white">
-      <div className="max-w-[1600px] mx-auto px-3 py-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-          <h1 className="text-2xl font-bold">Live Chart</h1>
-          <div className="flex items-center gap-2">
-            <select
-              value={timeZone}
-              onChange={(e) => setTimeZone(e.target.value)}
-              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
-            >
-              {TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>{tz.label}</option>
-              ))}
-            </select>
-            <input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-              onBlur={commitSymbol}
-              onKeyDown={(e) => { if (e.key === "Enter") commitSymbol(); }}
-              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm w-36"
-            />
-            {/* دکمه لیست همیشه در نوار ابزار */}
-            <button
-              type="button"
-              onClick={() => setShowSideWl((v) => !v)}
-              className="px-3 py-1.5 rounded-lg text-sm bg-gray-800 border border-gray-600"
-            >
-              {showSideWl ? "Hide List" : "Show List"}
-            </button>
-          </div>
+    <div className="max-w-[1600px] mx-auto px-2 sm:px-4 py-3 text-gray-100">
+      {/* Top bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <h1 className="text-xl font-bold">Live Chart</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={timeZone}
+            onChange={(e) => setTimeZone(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm"
+          >
+            {TIMEZONES.map((z) => (
+              <option key={z.value} value={z.value}>{z.label}</option>
+            ))}
+          </select>
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") goToSymbol((e.target as HTMLInputElement).value);
+            }}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1 text-sm w-28 font-mono"
+          />
+          <button
+            type="button"
+            onClick={() => setShowSideWl((v) => !v)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1 text-sm hover:bg-gray-700"
+          >
+            {showSideWl ? "Hide List" : "Show List"}
+          </button>
         </div>
+      </div>
 
-        {/* TF سمت راست */}
-        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-          {favTfButtons.map((tf) => (
+      {/* Timeframes - right aligned */}
+      <div className="flex justify-end flex-wrap gap-1 mb-2">
+        {favTfButtons.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => setIntervalTf(t.value)}
+            className={`px-2.5 py-1 rounded text-xs font-medium ${
+              interval === t.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setTfMenuOpen((v) => !v)}
+            className="px-2.5 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:bg-gray-700"
+          >
+            TF ▾
+          </button>
+          {tfMenuOpen && (
+            <div className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl min-w-[140px]">
+              {ALL_TIMEFRAMES.map((t) => (
+                <div key={t.value} className="flex items-center justify-between gap-2 py-1">
+                  <button
+                    type="button"
+                    className={`text-sm ${interval === t.value ? "text-orange-400" : "text-gray-300"}`}
+                    onClick={() => {
+                      setIntervalTf(t.value);
+                      setTfMenuOpen(false);
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleFavTf(t.value)}
+                    className={favTfs.includes(t.value) ? "text-yellow-400" : "text-gray-600"}
+                  >
+                    ★
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Chart + side list */}
+      <div className="flex gap-0 relative">
+        {/* Vertical tools */}
+        <div className="flex flex-col gap-1 mr-1.5 pt-1 shrink-0">
+          {[
+            { id: "draw" as ToolMode, label: "Line", icon: "✏️" },
+            { id: "ray" as ToolMode, label: "Ray", icon: "→" },
+            { id: "alarm" as ToolMode, label: "Alarm", icon: "🔔" },
+          ].map((t) => (
             <button
-              key={tf.value}
+              key={t.id}
               type="button"
-              onClick={() => setIntervalTf(tf.value)}
-              className={`px-3 py-1.5 rounded text-sm ${
-                interval === tf.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
+              title={t.label}
+              onClick={() => {
+                setMode((m) => (m === t.id ? "none" : t.id));
+                setMovingId(null);
+                clearPreview();
+              }}
+              className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
+                mode === t.id
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
               }`}
             >
-              {tf.label}
+              <span className="text-sm leading-none">{t.icon}</span>
+              <span className="leading-none mt-0.5">{t.label}</span>
             </button>
           ))}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setTfMenuOpen(!tfMenuOpen)}
-              className="px-3 py-1.5 rounded text-sm bg-gray-800 border border-gray-600"
-            >
-              ⏱ TF ▾
-            </button>
-            {tfMenuOpen && (
-              <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[220px] p-3 shadow-xl">
-                <p className="text-xs text-gray-400 mb-2">Star = quick button</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {ALL_TIMEFRAMES.map((tf) => (
-                    <div key={tf.value} className="flex items-center gap-1">
-                      <button type="button" onClick={() => toggleFavTf(tf.value)} className="text-yellow-400 text-sm">
-                        {favTfs.includes(tf.value) ? "★" : "☆"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setIntervalTf(tf.value); setTfMenuOpen(false); }}
-                        className={`flex-1 px-2 py-1 rounded text-sm ${
-                          interval === tf.value ? "bg-orange-500" : "bg-gray-800"
-                        }`}
-                      >
-                        {tf.label}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Tools */}
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => { setMode(mode === "draw" ? "none" : "draw"); clearPreview(); }}
-            className={`px-3 py-1.5 rounded-lg text-sm ${mode === "draw" ? "bg-orange-500 text-white" : "bg-gray-800"}`}>
-            ✏ Line
-          </button>
-          <button type="button" onClick={() => { setMode(mode === "ray" ? "none" : "ray"); clearPreview(); }}
-            className={`px-3 py-1.5 rounded-lg text-sm ${mode === "ray" ? "bg-orange-500 text-white" : "bg-gray-800"}`}>
-            → Ray
-          </button>
-          <button type="button" onClick={() => { setMode(mode === "alarm" ? "none" : "alarm"); clearPreview(); }}
-            className={`px-3 py-1.5 rounded-lg text-sm ${mode === "alarm" ? "bg-orange-500 text-white" : "bg-gray-800"}`}>
-            🔔 Alarm
-          </button>
-          <button type="button" onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-            className="px-3 py-1.5 rounded-lg text-sm bg-gray-800">
-            ▦ Indicators
+          <button
+            type="button"
+            title="Indicators"
+            onClick={() => setShowIndicatorMenu((v) => !v)}
+            className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
+              showIndicatorMenu
+                ? "bg-blue-500/20 border-blue-500 text-blue-300"
+                : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
+            }`}
+          >
+            <span className="text-sm leading-none">📊</span>
+            <span className="leading-none mt-0.5">Ind</span>
           </button>
 
+          {/* width / dash when drawing */}
           {(mode === "draw" || mode === "ray" || mode === "alarm") && (
-            <>
-              <input type="color" value={drawColor} onChange={(e) => setDrawColor(e.target.value)}
-                className="w-8 h-8 rounded cursor-pointer bg-transparent" />
-              {LINE_WIDTHS.map((w) => (
-                <button key={w} type="button" onClick={() => setDrawWidth(w)}
-                  className={`px-2 py-1 rounded text-xs ${drawWidth === w ? "bg-orange-500" : "bg-gray-700"}`}>
-                  {w}px
-                </button>
-              ))}
-              <button type="button" onClick={() => setDrawDash("solid")}
-                className={`px-2 py-1 rounded text-xs ${drawDash === "solid" ? "bg-orange-500" : "bg-gray-700"}`}>
-                ——
+            <div className="mt-1 flex flex-col gap-1 items-center">
+              <div className="flex flex-col gap-0.5">
+                {LINE_WIDTHS.map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    onClick={() => setDrawWidth(w)}
+                    className={`w-8 h-6 rounded text-[10px] ${
+                      drawWidth === w ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-400"
+                    }`}
+                  >
+                    W{w}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrawDash((d) => (d === "solid" ? "dashed" : "solid"))}
+                className="w-8 h-6 rounded text-[10px] bg-gray-800 text-gray-300"
+                title="Solid / Dashed"
+              >
+                {drawDash === "solid" ? "——" : "- -"}
               </button>
-              <button type="button" onClick={() => setDrawDash("dashed")}
-                className={`px-2 py-1 rounded text-xs ${drawDash === "dashed" ? "bg-orange-500" : "bg-gray-700"}`}>
-                - - -
-              </button>
+              <input
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="w-8 h-6 rounded cursor-pointer bg-transparent border-0"
+              />
               {mode === "alarm" && (
-                <select value={condition} onChange={(e) => setCondition(e.target.value as any)}
-                  className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm">
-                  <option value="above">Above</option>
-                  <option value="below">Below</option>
-                  <option value="cross">Cross</option>
+                <select
+                  value={condition}
+                  onChange={(e) => setCondition(e.target.value as any)}
+                  className="w-8 text-[9px] bg-gray-800 rounded py-0.5"
+                >
+                  <option value="above">≥</option>
+                  <option value="below">≤</option>
+                  <option value="cross">≈</option>
                 </select>
               )}
-            </>
+            </div>
           )}
-          {mode === "move" && <span className="text-sm text-yellow-400">Click chart to set new price…</span>}
-          {(saving || statusMsg) && <span className="text-xs text-gray-400">{statusMsg || "Saving…"}</span>}
         </div>
 
-        {showIndicatorMenu && (
-          <div className="mb-3 flex flex-wrap gap-2 p-3 bg-gray-900 border border-gray-800 rounded-xl">
-            {[
-              { label: "3SMA", on: showSMA, set: setShowSMA },
-              { label: "Pivot", on: showPivot, set: setShowPivot },
-              { label: "Trend", on: showTrend, set: setShowTrend },
-              { label: "RSI", on: showRSI, set: setShowRSI },
-              { label: "DMI", on: showDMI, set: setShowDMI },
-              { label: "Vol", on: showVol, set: setShowVol },
-            ].map((x) => (
-              <button key={x.label} type="button" onClick={() => x.set(!x.on)}
-                className={`px-3 py-1.5 rounded text-sm ${x.on ? "bg-orange-500 text-white" : "bg-gray-800"}`}>
-                {x.label}
-              </button>
-            ))}
+        {/* Chart area */}
+        <div className="flex-1 min-w-0 relative">
+          <div
+            ref={chartContainerRef}
+            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
+            style={{ height: 640 }}
+          />
+          {/* Indicator chips - transparent top-left on chart */}
+          <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
+            {showSMA && (
+              <IndChip
+                label="3SMA"
+                visible={smaVisible}
+                onToggleVisible={() => setSmaVisible((v) => !v)}
+                onSettings={() => setSmaSettings((v) => !v)}
+                onRemove={() => { setShowSMA(false); removeSMA(); }}
+              />
+            )}
+            {showPivot && (
+              <IndChip
+                label="Pivot"
+                visible={pivotVisible}
+                onToggleVisible={() => setPivotVisible((v) => !v)}
+                onSettings={() => setPivotSettings((v) => !v)}
+                onRemove={() => { setShowPivot(false); removePivot(); }}
+              />
+            )}
+            {showTrend && (
+              <IndChip
+                label="Trend"
+                visible={trendVisible}
+                onToggleVisible={() => setTrendVisible((v) => !v)}
+                onSettings={() => setTrendSettings((v) => !v)}
+                onRemove={() => { setShowTrend(false); removeTrend(); }}
+              />
+            )}
+            {showRSI && (
+              <IndChip
+                label="RSI"
+                visible={rsiVisible}
+                onToggleVisible={() => setRsiVisible((v) => !v)}
+                onSettings={() => setRsiSettings((v) => !v)}
+                onRemove={() => { setShowRSI(false); removeRSI(); }}
+              />
+            )}
+            {showDMI && (
+              <IndChip
+                label="DMI"
+                visible={dmiVisible}
+                onToggleVisible={() => setDmiVisible((v) => !v)}
+                onSettings={() => setDmiSettings((v) => !v)}
+                onRemove={() => { setShowDMI(false); removeDMI(); }}
+              />
+            )}
+            {showVol && (
+              <IndChip
+                label="Vol"
+                visible={volVisible}
+                onToggleVisible={() => setVolVisible((v) => !v)}
+                onRemove={() => { setShowVol(false); applyVolume(); }}
+              />
+            )}
           </div>
-        )}
 
-        {/* Chart + side */}
-        <div className="relative flex gap-0">
-          <div className={`transition-all duration-300 ${showSideWl ? "flex-1" : "w-full"}`}>
-            <div className="relative bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-              <div ref={chartContainerRef} className="w-full" style={{ height: 700 }} />
-
-              <div className="absolute top-3 left-3 z-30 flex flex-col gap-1 pointer-events-auto">
-                {showSMA && (
-                  <IndChip label="3SMA" visible={smaVisible}
-                    onToggleVisible={() => setSmaVisible(!smaVisible)}
-                    onSettings={() => setSmaSettings(true)}
-                    onRemove={() => { setShowSMA(false); removeSMA(); }} />
-                )}
-                {showPivot && (
-                  <IndChip label="Pivot" visible={pivotVisible}
-                    onToggleVisible={() => setPivotVisible(!pivotVisible)}
-                    onSettings={() => setPivotSettings(true)}
-                    onRemove={() => { setShowPivot(false); removePivot(); }} />
-                )}
-                {showTrend && (
-                  <IndChip label="Trend" visible={trendVisible}
-                    onToggleVisible={() => setTrendVisible(!trendVisible)}
-                    onSettings={() => setTrendSettings(true)}
-                    onRemove={() => { setShowTrend(false); removeTrend(); }} />
-                )}
-                {showRSI && (
-                  <IndChip label="RSI" visible={rsiVisible}
-                    onToggleVisible={() => setRsiVisible(!rsiVisible)}
-                    onSettings={() => setRsiSettings(true)}
-                    onRemove={() => { setShowRSI(false); removeRSI(); }} />
-                )}
-                {showDMI && (
-                  <IndChip label="DMI" visible={dmiVisible}
-                    onToggleVisible={() => setDmiVisible(!dmiVisible)}
-                    onSettings={() => setDmiSettings(true)}
-                    onRemove={() => { setShowDMI(false); removeDMI(); }} />
-                )}
-                {showVol && (
-                  <IndChip label="Vol" visible={volVisible}
-                    onToggleVisible={() => {
-                      const n = !volVisible;
-                      setVolVisible(n);
-                      volumeSeriesRef.current?.applyOptions({ visible: n });
-                    }}
-                    onRemove={() => {
-                      setShowVol(false);
-                      volumeSeriesRef.current?.applyOptions({ visible: false });
-                    }} />
-                )}
-              </div>
-
-              {!showSideWl && (
-                <button type="button" onClick={() => setShowSideWl(true)}
-                  className="absolute top-3 right-3 z-40 bg-gray-900 border border-orange-500 px-3 py-1.5 rounded-lg text-xs hover:bg-gray-800 shadow-lg">
-                  » Show List
+          {/* Indicator menu */}
+          {showIndicatorMenu && (
+            <div className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
+              {[
+                { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
+                { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
+                { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
+                { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
+                { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
+                { key: "vol", label: "Volume", on: showVol, set: setShowVol },
+              ].map((it) => (
+                <button
+                  key={it.key}
+                  type="button"
+                  onClick={() => it.set((v: boolean) => !v)}
+                  className={`w-full text-left px-2 py-1.5 rounded text-sm mb-0.5 ${
+                    it.on ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  {it.on ? "✓ " : ""}{it.label}
                 </button>
+              ))}
+            </div>
+          )}
+
+          {/* Settings panels */}
+          {smaSettings && showSMA && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+              <p className="font-medium mb-2">3SMA Settings</p>
+              {[
+                { str: sma1Str, setStr: setSma1Str, set: setSma1, color: smaColor1, setC: setSmaColor1, label: "SMA1" },
+                { str: sma2Str, setStr: setSma2Str, set: setSma2, color: smaColor2, setC: setSmaColor2, label: "SMA2" },
+                { str: sma3Str, setStr: setSma3Str, set: setSma3, color: smaColor3, setC: setSmaColor3, label: "SMA3" },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center gap-2 mb-1.5">
+                  <span className="w-10 text-xs text-gray-400">{row.label}</span>
+                  <input
+                    value={row.str}
+                    onChange={(e) => row.setStr(e.target.value)}
+                    onBlur={() => {
+                      const n = parseInt(row.str, 10);
+                      if (!Number.isNaN(n) && n > 0) row.set(n);
+                      else row.setStr(String(row.label === "SMA1" ? sma1 : row.label === "SMA2" ? sma2 : sma3));
+                    }}
+                    className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
+                  />
+                  <input type="color" value={row.color} onChange={(e) => row.setC(e.target.value)} className="w-6 h-6" />
+                </div>
+              ))}
+              <button type="button" onClick={() => setSmaSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
+            </div>
+          )}
+          {pivotSettings && showPivot && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">Pivot TF</p>
+              <div className="flex flex-wrap gap-1 mb-2">
+                {PIVOT_TFS.map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setPivotTf(t.value)}
+                    className={`px-2 py-0.5 rounded text-xs ${pivotTf === t.value ? "bg-orange-500" : "bg-gray-800"}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
+                Fib levels
+              </label>
+              <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
+            </div>
+          )}
+          {trendSettings && showTrend && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">Trend Settings</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Period</span>
+                <input
+                  value={trendPeriodStr}
+                  onChange={(e) => setTrendPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(trendPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 4) setTrendPeriod(n);
+                    else setTrendPeriodStr(String(trendPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Max</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={trendMax}
+                  onChange={(e) => setTrendMax(Math.min(5, Math.max(1, parseInt(e.target.value, 10) || 3)))}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Up</span>
+                <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Down</span>
+                <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setTrendSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
+            </div>
+          )}
+          {rsiSettings && showRSI && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">RSI</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">Period</span>
+                <input
+                  value={rsiPeriodStr}
+                  onChange={(e) => setRsiPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(rsiPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 2) setRsiPeriod(n);
+                    else setRsiPeriodStr(String(rsiPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">Color</span>
+                <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setRsiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+          {dmiSettings && showDMI && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">DMI</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">Period</span>
+                <input
+                  value={dmiPeriodStr}
+                  onChange={(e) => setDmiPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(dmiPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 2) setDmiPeriod(n);
+                    else setDmiPeriodStr(String(dmiPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">+DI</span>
+                <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">-DI</span>
+                <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">ADX</span>
+                <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setDmiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+
+          {saving && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/70 text-orange-300 text-sm px-3 py-1 rounded-full z-20">
+              Saving...
+            </div>
+          )}
+          {statusMsg && (
+            <div className="absolute bottom-3 right-3 bg-black/70 text-gray-300 text-xs px-2 py-1 rounded z-20">
+              {statusMsg}
+            </div>
+          )}
+          {previewPrice != null && (mode === "draw" || mode === "ray" || mode === "alarm") && (
+            <div className="absolute top-2 right-2 bg-black/60 text-xs px-2 py-1 rounded z-10">
+              {formatPrice(previewPrice)}
+            </div>
+          )}
+        </div>
+
+        {/* Side list - simple conditional */}
+        {showSideWl && (
+          <div className="w-44 shrink-0 ml-2 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+            <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-xs text-gray-400">With alarms</span>
+              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white">
+                « Hide
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
+              {alarmSymbols.map((sym) => (
+                <div
+                  key={sym}
+                  draggable
+                  onDragStart={() => onSideDragStart(sym)}
+                  onDragOver={(e) => onSideDragOver(e, sym)}
+                  onDragEnd={onSideDragEnd}
+                  onClick={() => goToSymbol(sym)}
+                  className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg cursor-pointer text-xs ${
+                    symbolUpper === sym
+                      ? "bg-orange-500/20 border border-orange-500/50"
+                      : "hover:bg-gray-800 border border-transparent"
+                  }`}
+                >
+                  <CoinIcon symbol={sym} />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate">{sym.replace("USDT", "")}</div>
+                    <div className="text-[10px] text-gray-500">
+                      {alarmCountBySym[sym] || 0} alarm
+                      {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {!alarmSymbols.length && (
+                <p className="text-gray-600 text-xs text-center py-4">No active alarms</p>
               )}
             </div>
           </div>
+        )}
+      </div>
 
-          <div className={`overflow-hidden transition-all duration-300 ease-in-out ${
-            showSideWl ? "w-44 ml-3 opacity-100" : "w-0 ml-0 opacity-0"
-          }`}>
-            <div className="w-44 h-[700px] bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden flex flex-col">
-              <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400 flex justify-between items-center">
-                <span>With alarms</span>
-                <button type="button" onClick={() => setShowSideWl(false)} className="text-red-400 hover:text-red-300">
-                  « Hide
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                {alarmSymbols.length === 0 ? (
-                  <div className="text-center text-gray-600 py-8 text-xs">No active alarms</div>
-                ) : (
-                  alarmSymbols.map((sym) => {
-                    const aCnt = alarmCountBySym[sym] || 0;
-                    const lCnt = lineCountBySym[sym] || 0;
-                    return (
-                      <button key={sym} type="button" onClick={() => goToSymbol(sym)}
-                        className={`w-full flex items-center gap-2 px-2 py-2 rounded-xl text-left transition-all ${
-                          symbolUpper === sym
-                            ? "bg-orange-500/20 border border-orange-400"
-                            : "hover:bg-gray-800 border border-transparent"
-                        }`}>
-                        <CoinIcon symbol={sym} />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium text-xs truncate">{sym}</div>
-                          <div className="text-[10px] text-gray-500 flex gap-1 flex-wrap">
-                            {aCnt > 0 && <span className="text-blue-400">{aCnt} alarm</span>}
-                            {lCnt > 0 && <span className="text-orange-400">{lCnt} line</span>}
-                          </div>
-                        </div>
+      {/* Bottom lists */}
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Alarms */}
+        <div>
+          <h3 className="text-sm font-medium text-green-400 mb-2">
+            Alarms — {symbolUpper} ({currentAlarms.length})
+          </h3>
+          <div className="space-y-1.5">
+            {currentAlarms.map((a) => (
+              <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-mono">{getConditionSymbol(a.condition)} {formatPrice(a.price)}</span>
+                  {a.note && <span className="text-gray-500 text-xs">{a.note}</span>}
+                  <select
+                    value={a.condition}
+                    onChange={(e) => updateAlarmCondition(a.id, e.target.value as any)}
+                    className="bg-gray-800 rounded px-1 py-0.5 text-xs"
+                  >
+                    <option value="above">Above</option>
+                    <option value="below">Below</option>
+                    <option value="cross">Cross</option>
+                  </select>
+                  <input
+                    type="color"
+                    value={a.color || DEFAULT_ALARM_COLOR}
+                    onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                    className="w-6 h-6 rounded cursor-pointer"
+                  />
+                  <div className="flex gap-0.5">
+                    {LINE_WIDTHS.map((w) => (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => updateAlarmWidth(a.id, w)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] ${
+                          (a.width || 2) === w ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-400"
+                        }`}
+                      >
+                        W{w}
                       </button>
-                    );
-                  })
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => updateAlarmDash(a.id, a.dash === "dashed" ? "solid" : "dashed")}
+                    className="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-300"
+                  >
+                    {a.dash === "dashed" ? "- -" : "——"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingNoteId(a.id);
+                      setEditingNoteType("alarm");
+                      setNoteDraft(a.note || "");
+                    }}
+                    className="text-xs text-gray-400 hover:text-white"
+                  >
+                    Note
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("move");
+                      setMovingId(a.id);
+                      setMovingType("alarm");
+                    }}
+                    className="text-xs text-blue-400"
+                  >
+                    Move
+                  </button>
+                  <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400">
+                    Delete
+                  </button>
+                </div>
+                {editingNoteId === a.id && editingNoteType === "alarm" && (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                      placeholder="Note..."
+                    />
+                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                    <button
+                      type="button"
+                      onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
+                      className="text-gray-500 text-sm"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 )}
               </div>
-            </div>
+            ))}
+            {!currentAlarms.length && <p className="text-gray-600 text-sm">No alarms</p>}
           </div>
         </div>
 
-        {/* Bottom lists */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <h3 className="text-sm text-green-400 mb-2">Alarms — {symbolUpper} ({currentAlarms.length})</h3>
-            <div className="space-y-2">
-              {currentAlarms.map((a) => (
-                <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-medium">{getConditionSymbol(a.condition)} {formatPrice(a.price)}</span>
-                    {a.note && <span className="text-gray-500 text-xs">{a.note}</span>}
-                    <div className="flex-1" />
-                    <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
-                      onChange={(e) => updateAlarmMeta(a.id, { color: e.target.value })}
-                      className="w-6 h-6 rounded cursor-pointer bg-transparent" />
-                    <select value={a.condition} onChange={(e) => updateAlarmCondition(a.id, e.target.value as any)}
-                      className="bg-gray-800 rounded px-1 py-0.5 text-xs">
-                      <option value="above">Above</option>
-                      <option value="below">Below</option>
-                      <option value="cross">Cross</option>
-                    </select>
-                    <button type="button" onClick={() => updateAlarmMeta(a.id, { dash: a.dash === "dashed" ? "solid" : "dashed" })}
-                      className="text-xs px-1.5 py-0.5 bg-gray-800 rounded">
-                      {a.dash === "dashed" ? "- - -" : "——"}
-                    </button>
-                    <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
-                      className="text-xs text-gray-400">Note</button>
-                    <button type="button" onClick={() => startMove(a.id, "alarm")} className="text-xs text-blue-400">Move</button>
-                    <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400">Delete</button>
+        {/* Lines */}
+        <div>
+          <h3 className="text-sm font-medium text-orange-400 mb-2">
+            Lines — {symbolUpper} ({currentLines.length})
+          </h3>
+          <div className="space-y-1.5">
+            {currentLines.map((l) => (
+              <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-mono">{formatPrice(l.price)}</span>
+                  {l.note && <span className="text-gray-500 text-xs">{l.note}</span>}
+                  <input
+                    type="color"
+                    value={l.color || DEFAULT_LINE_COLOR}
+                    onChange={(e) => updateLineColor(l.id, e.target.value)}
+                    className="w-6 h-6 rounded cursor-pointer"
+                  />
+                  <div className="flex gap-0.5">
+                    {LINE_WIDTHS.map((w) => (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => updateLineWidth(l.id, w)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] ${
+                          (l.width || 2) === w ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-400"
+                        }`}
+                      >
+                        W{w}
+                      </button>
+                    ))}
                   </div>
-                  {editingNoteId === a.id && editingNoteType === "alarm" && (
-                    <div className="mt-2 flex gap-2">
-                      <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
-                        className="text-gray-500 text-sm">Cancel</button>
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => updateLineDash(l.id, (l.dash || l.style) === "dashed" ? "solid" : "dashed")}
+                    className="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-300"
+                  >
+                    {(l.dash || l.style) === "dashed" ? "- -" : "——"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => convertLineToAlarm(l)}
+                    className="text-xs text-green-400"
+                  >
+                    Alarm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingNoteId(l.id);
+                      setEditingNoteType("line");
+                      setNoteDraft(l.note || "");
+                    }}
+                    className="text-xs text-gray-400 hover:text-white"
+                  >
+                    Note
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("move");
+                      setMovingId(l.id);
+                      setMovingType("line");
+                    }}
+                    className="text-xs text-blue-400"
+                  >
+                    Move
+                  </button>
+                  <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400">
+                    Delete
+                  </button>
                 </div>
-              ))}
-              {!currentAlarms.length && <p className="text-gray-500 text-sm">No alarms for this symbol</p>}
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-sm text-orange-400 mb-2">Lines — {symbolUpper} ({currentLines.length})</h3>
-            <div className="space-y-2">
-              {currentLines.map((l) => (
-                <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-medium">{formatPrice(l.price)}</span>
-                    {l.note && <span className="text-gray-500 text-xs">{l.note}</span>}
-                    <div className="flex-1" />
-                    <input type="color" value={l.color || DEFAULT_LINE_COLOR}
-                      onChange={(e) => updateLineMeta(l.id, { color: e.target.value })}
-                      className="w-6 h-6 rounded cursor-pointer bg-transparent" />
-                    <select value={String(l.width || 2)}
-                      onChange={(e) => updateLineMeta(l.id, { width: parseInt(e.target.value, 10) })}
-                      className="bg-gray-800 rounded px-1 py-0.5 text-xs">
-                      <option value="1">W1</option>
-                      <option value="2">W2</option>
-                      <option value="3">W3</option>
-                    </select>
-                    <button type="button" onClick={() => updateLineMeta(l.id, { dash: l.dash === "dashed" ? "solid" : "dashed" })}
-                      className="text-xs px-1.5 py-0.5 bg-gray-800 rounded">
-                      {l.dash === "dashed" ? "- - -" : "——"}
+                {editingNoteId === l.id && editingNoteType === "line" && (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                      placeholder="Note..."
+                    />
+                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                    <button
+                      type="button"
+                      onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
+                      className="text-gray-500 text-sm"
+                    >
+                      Cancel
                     </button>
-                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-blue-400">Alarm</button>
-                    <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
-                      className="text-xs text-gray-400">Note</button>
-                    <button type="button" onClick={() => startMove(l.id, "line")} className="text-xs text-blue-400">Move</button>
-                    <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400">Delete</button>
                   </div>
-                  {editingNoteId === l.id && editingNoteType === "line" && (
-                    <div className="mt-2 flex gap-2">
-                      <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                      <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                      <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
-                        className="text-gray-500 text-sm">Cancel</button>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {!currentLines.length && <p className="text-gray-500 text-sm">No lines for this symbol</p>}
-            </div>
+                )}
+              </div>
+            ))}
+            {!currentLines.length && <p className="text-gray-600 text-sm">No lines</p>}
           </div>
         </div>
-
-        {/* Settings modals */}
-        {smaSettings && (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
-              <h4 className="font-bold">3SMA Settings</h4>
-              {([[sma1Str, setSma1Str, setSma1, smaColor1, setSmaColor1],
-                 [sma2Str, setSma2Str, setSma2, smaColor2, setSmaColor2],
-                 [sma3Str, setSma3Str, setSma3, smaColor3, setSmaColor3]] as const).map((row, i) => (
-                <div key={i} className="flex gap-2 items-center">
-                  <span className="text-xs w-8">#{i + 1}</span>
-                  <input value={row[0]} onChange={(e) => row[1](e.target.value)}
-                    onBlur={() => { const n = parseInt(row[0], 10); if (!Number.isNaN(n) && n > 0) row[2](n); }}
-                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" />
-                  <input type="color" value={row[3]} onChange={(e) => row[4](e.target.value)} className="w-8 h-8" />
-                </div>
-              ))}
-              <button type="button" onClick={() => setSmaSettings(false)} className="w-full bg-orange-500 rounded py-2 text-sm">Done</button>
-            </div>
-          </div>
-        )}
-        {rsiSettings && (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
-              <h4 className="font-bold">RSI Settings</h4>
-              <input value={rsiPeriodStr} onChange={(e) => setRsiPeriodStr(e.target.value)}
-                onBlur={() => { const n = parseInt(rsiPeriodStr, 10); if (!Number.isNaN(n) && n > 1) setRsiPeriod(n); }}
-                className="w-full bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Period" />
-              <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-10 h-10" />
-              <button type="button" onClick={() => setRsiSettings(false)} className="w-full bg-orange-500 rounded py-2 text-sm">Done</button>
-            </div>
-          </div>
-        )}
-        {dmiSettings && (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
-              <h4 className="font-bold">DMI Settings</h4>
-              <input value={dmiPeriodStr} onChange={(e) => setDmiPeriodStr(e.target.value)}
-                onBlur={() => { const n = parseInt(dmiPeriodStr, 10); if (!Number.isNaN(n) && n > 1) setDmiPeriod(n); }}
-                className="w-full bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Period" />
-              <div className="flex gap-2">
-                <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-10 h-10" />
-                <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-10 h-10" />
-                <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-10 h-10" />
-              </div>
-              <button type="button" onClick={() => setDmiSettings(false)} className="w-full bg-orange-500 rounded py-2 text-sm">Done</button>
-            </div>
-          </div>
-        )}
-        {pivotSettings && (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
-              <h4 className="font-bold">Pivot Settings</h4>
-              <select value={pivotTf} onChange={(e) => setPivotTf(e.target.value)}
-                className="w-full bg-gray-800 rounded px-2 py-1 text-sm">
-                {PIVOT_TFS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-                Fib R3/S3
-              </label>
-              <button type="button" onClick={() => setPivotSettings(false)} className="w-full bg-orange-500 rounded py-2 text-sm">Done</button>
-            </div>
-          </div>
-        )}
-        {trendSettings && (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
-              <h4 className="font-bold">Trend Settings</h4>
-              <p className="text-xs text-gray-400">Pivot strength (2–12)</p>
-              <input value={trendPeriodStr} onChange={(e) => setTrendPeriodStr(e.target.value)}
-                onBlur={() => { const n = parseInt(trendPeriodStr, 10); if (!Number.isNaN(n) && n > 1) setTrendPeriod(n); }}
-                className="w-full bg-gray-800 rounded px-2 py-1 text-sm" />
-              <div className="flex gap-2">
-                <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-10 h-10" />
-                <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-10 h-10" />
-              </div>
-              <button type="button" onClick={() => setTrendSettings(false)} className="w-full bg-orange-500 rounded py-2 text-sm">Done</button>
-            </div>
-          </div>
-        )}
-
-        <p className="text-center text-xs text-gray-600 mt-8">© 2026 Alarm Chert</p>
       </div>
+
+      <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
     </div>
   );
 }
