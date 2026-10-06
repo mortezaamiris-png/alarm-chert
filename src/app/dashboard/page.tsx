@@ -297,6 +297,22 @@ function didCross(
   );
 }
 
+function CoinIcon({ symbol }: { symbol: string }) {
+  const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
+  return (
+    <img
+      src={`https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${base}.png`}
+      alt=""
+      width={20}
+      height={20}
+      className="w-5 h-5 rounded-full shrink-0"
+      onError={(e) => {
+        (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${base}&background=374151&color=fff&size=32`;
+      }}
+    />
+  );
+}
+
 function IndChip({
   label,
   visible,
@@ -311,7 +327,7 @@ function IndChip({
   onRemove: () => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-0.5 bg-[#1c1c1c] border border-gray-700 rounded-md px-1.5 py-0.5 text-[11px] text-gray-200 shadow-sm">
+    <div className="inline-flex items-center gap-0.5 bg-[#1c1c1c]/95 border border-gray-700 rounded-md px-1.5 py-0.5 text-[11px] text-gray-200 shadow-md backdrop-blur-sm">
       <span className="px-1 font-medium whitespace-nowrap">{label}</span>
       <button
         type="button"
@@ -613,11 +629,11 @@ export default function DashboardPage() {
     const volOn = showVolRef.current;
     const rh = rsiHeightRef.current / 100;
     const dh = dmiHeightRef.current / 100;
-    let bottom = volOn ? 0.12 : 0.06;
+    let bottom = volOn ? 0.18 : 0.06;
     if (rsiOn && dmiOn) bottom = rh + dh + 0.04;
     else if (rsiOn) bottom = rh + 0.04;
     else if (dmiOn) bottom = dh + 0.04;
-    if (volOn && (rsiOn || dmiOn)) bottom += 0.06;
+    if (volOn && (rsiOn || dmiOn)) bottom += 0.1;
     chartRef.current.priceScale("right").applyOptions({
       scaleMargins: { top: 0.04, bottom },
     });
@@ -942,10 +958,10 @@ export default function DashboardPage() {
           r2 = pp + range,
           r3 = r1 + range,
           r4 = r3 + (r2 - r1);
-        const s1 = 2 * pp - high,
-          s2 = pp - range,
-          s3 = s1 - range,
-          s4 = s3 - (s1 - s2);
+        const s1p = 2 * pp - high,
+          s2p = pp - range,
+          s3p = s1p - range,
+          s4p = s3p - (s1p - s2p);
         const isCurrent = i === 1;
         const alpha = isCurrent ? 1 : 0.45;
         const half = bs * (isCurrent ? 5 : 3);
@@ -957,14 +973,14 @@ export default function DashboardPage() {
           { price: r2, color: isCurrent ? "#22d3ee" : `rgba(34,211,238,${alpha})` },
           { price: r1, color: isCurrent ? "#06b6d4" : `rgba(6,182,212,${alpha})` },
           { price: pp, color: isCurrent ? "#ffffff" : `rgba(255,255,255,${alpha})` },
-          { price: s1, color: isCurrent ? "#e879f9" : `rgba(232,121,249,${alpha})` },
-          { price: s2, color: isCurrent ? "#d946ef" : `rgba(217,70,239,${alpha})` },
-          { price: s3, color: isCurrent ? "#c026d3" : `rgba(192,38,211,${alpha})` },
+          { price: s1p, color: isCurrent ? "#e879f9" : `rgba(232,121,249,${alpha})` },
+          { price: s2p, color: isCurrent ? "#d946ef" : `rgba(217,70,239,${alpha})` },
+          { price: s3p, color: isCurrent ? "#c026d3" : `rgba(192,38,211,${alpha})` },
         ];
         if (pivotFib) {
           levels.push(
             { price: r4, color: isCurrent ? "#a5f3fc" : `rgba(165,243,252,${alpha})` },
-            { price: s4, color: isCurrent ? "#f0abfc" : `rgba(240,171,252,${alpha})` }
+            { price: s4p, color: isCurrent ? "#f0abfc" : `rgba(240,171,252,${alpha})` }
           );
         }
         levels.forEach((lv) => {
@@ -1194,7 +1210,7 @@ export default function DashboardPage() {
       priceScaleId: "vol",
     });
     chartRef.current.priceScale("vol").applyOptions({
-      scaleMargins: { top: 0.85, bottom: 0 },
+      scaleMargins: { top: 0.8, bottom: 0 },
       borderVisible: false,
     });
     vol.setData(
@@ -1223,7 +1239,7 @@ export default function DashboardPage() {
         high: Number(item.high),
         low: Number(item.low),
         close: Number(item.close),
-        volume: Number(item.volume || item.value || 0),
+        volume: Number(item.volume ?? item.vol ?? 0),
       }));
       if (!candles.length) return;
       candlesRef.current = candles;
@@ -1591,6 +1607,18 @@ export default function DashboardPage() {
       });
   }, [lines, mode, movingId, movingType, symbol, interval]);
 
+  // resize chart when side panel toggles
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+        });
+      }
+    }, 320);
+    return () => clearTimeout(t);
+  }, [showSideWl]);
+
   const symbolUpper = symbol.toUpperCase();
   const currentAlarms = useMemo(
     () =>
@@ -1610,6 +1638,24 @@ export default function DashboardPage() {
     });
     return Array.from(set).sort();
   }, [alarms]);
+  const alarmCountBySym = useMemo(() => {
+    const m: Record<string, number> = {};
+    alarms.forEach((a) => {
+      if (a.is_active && !a.triggered) {
+        const s = a.symbol.toUpperCase();
+        m[s] = (m[s] || 0) + 1;
+      }
+    });
+    return m;
+  }, [alarms]);
+  const lineCountBySym = useMemo(() => {
+    const m: Record<string, number> = {};
+    lines.forEach((l) => {
+      const s = l.symbol.toUpperCase();
+      m[s] = (m[s] || 0) + 1;
+    });
+    return m;
+  }, [lines]);
   const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
 
   return (
@@ -1710,222 +1756,140 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setMode(mode === "draw" ? "none" : "draw")}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "draw" ? "bg-orange-500" : "bg-gray-800"
+          }`}
+        >
+          ✏️ Line
+        </button>
+        <button
+          onClick={() => setMode(mode === "ray" ? "none" : "ray")}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "ray" ? "bg-orange-500" : "bg-gray-800"
+          }`}
+        >
+          → Ray
+        </button>
+        {(mode === "draw" || mode === "ray") && (
+          <>
+            <input
+              type="color"
+              value={drawColor}
+              onChange={(e) => setDrawColor(e.target.value)}
+              className="w-9 h-9 rounded cursor-pointer"
+            />
+            <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
+              {LINE_WIDTHS.map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setDrawWidth(w)}
+                  className={`px-2 py-1 rounded text-xs ${
+                    drawWidth === w ? "bg-orange-500" : "bg-gray-700"
+                  }`}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 16,
+                      height: w * 2,
+                      background: "#fff",
+                      borderRadius: 1,
+                    }}
+                  />
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <button
+          onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
+          className={`px-3 py-2 rounded-lg text-sm ${
+            mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
+          }`}
+        >
+          🔔 Alarm
+        </button>
+        <div className="relative">
           <button
-            onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              mode === "draw" ? "bg-orange-500" : "bg-gray-800"
-            }`}
+            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
+            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
           >
-            ✏️ Line
+            📊 Indicators
           </button>
-          <button
-            onClick={() => setMode(mode === "ray" ? "none" : "ray")}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              mode === "ray" ? "bg-orange-500" : "bg-gray-800"
-            }`}
-          >
-            → Ray
-          </button>
-          {(mode === "draw" || mode === "ray") && (
-            <>
-              <input
-                type="color"
-                value={drawColor}
-                onChange={(e) => setDrawColor(e.target.value)}
-                className="w-9 h-9 rounded cursor-pointer"
-              />
-              <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
-                {LINE_WIDTHS.map((w) => (
-                  <button
-                    key={w}
-                    type="button"
-                    onClick={() => setDrawWidth(w)}
-                    className={`px-2 py-1 rounded text-xs ${
-                      drawWidth === w ? "bg-orange-500" : "bg-gray-700"
-                    }`}
-                  >
-                    <span
-                      style={{
-                        display: "inline-block",
-                        width: 16,
-                        height: w * 2,
-                        background: "#fff",
-                        borderRadius: 1,
-                      }}
-                    />
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          <button
-            onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
-            }`}
-          >
-            🔔 Alarm
-          </button>
-          <div className="relative">
-            <button
-              onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-              className="px-3 py-2 rounded-lg text-sm bg-gray-800"
-            >
-              📊 Indicators
-            </button>
-            {showIndicatorMenu && (
-              <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
-                <button
-                  onClick={() => {
-                    setShowSMA(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  3SMA
-                </button>
-                <button
-                  onClick={() => {
-                    setShowPivot(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  Pivot
-                </button>
-                <button
-                  onClick={() => {
-                    setShowTrend(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  Trend Line
-                </button>
-                <button
-                  onClick={() => {
-                    setShowRSI(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  RSI
-                </button>
-                <button
-                  onClick={() => {
-                    setShowDMI(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  DMI
-                </button>
-                <button
-                  onClick={() => {
-                    setShowVol(true);
-                    setShowIndicatorMenu(false);
-                  }}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-                >
-                  Volume
-                </button>
-              </div>
-            )}
-          </div>
-          {mode === "alarm" && (
-            <select
-              value={condition}
-              onChange={(e) => setCondition(e.target.value as any)}
-              className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
-            >
-              <option value="above">Above</option>
-              <option value="below">Below</option>
-              <option value="cross">Cross</option>
-            </select>
+          {showIndicatorMenu && (
+            <div className="absolute top-full left-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
+              <button
+                onClick={() => {
+                  setShowSMA(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                3SMA
+              </button>
+              <button
+                onClick={() => {
+                  setShowPivot(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Pivot
+              </button>
+              <button
+                onClick={() => {
+                  setShowTrend(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Trend Line
+              </button>
+              <button
+                onClick={() => {
+                  setShowRSI(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                RSI
+              </button>
+              <button
+                onClick={() => {
+                  setShowDMI(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                DMI
+              </button>
+              <button
+                onClick={() => {
+                  setShowVol(true);
+                  setShowIndicatorMenu(false);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
+              >
+                Volume
+              </button>
+            </div>
           )}
         </div>
-
-        {/* TradingView-style indicator chips — top right */}
-        <div className="flex flex-wrap items-center gap-1.5 justify-end">
-          {showSMA && (
-            <IndChip
-              label="3SMA"
-              visible={smaVisible}
-              onToggleVisible={() => setSmaVisible(!smaVisible)}
-              onSettings={() => setSmaSettings(!smaSettings)}
-              onRemove={() => {
-                setShowSMA(false);
-                removeSMA();
-                setSmaSettings(false);
-              }}
-            />
-          )}
-          {showPivot && (
-            <IndChip
-              label="Pivot"
-              visible={pivotVisible}
-              onToggleVisible={() => setPivotVisible(!pivotVisible)}
-              onSettings={() => setPivotSettings(!pivotSettings)}
-              onRemove={() => {
-                setShowPivot(false);
-                removePivot();
-                setPivotSettings(false);
-              }}
-            />
-          )}
-          {showTrend && (
-            <IndChip
-              label="Trend"
-              visible={trendVisible}
-              onToggleVisible={() => setTrendVisible(!trendVisible)}
-              onSettings={() => setTrendSettings(!trendSettings)}
-              onRemove={() => {
-                setShowTrend(false);
-                removeTrend();
-                setTrendSettings(false);
-              }}
-            />
-          )}
-          {showRSI && (
-            <IndChip
-              label="RSI"
-              visible={rsiVisible}
-              onToggleVisible={() => setRsiVisible(!rsiVisible)}
-              onSettings={() => setRsiSettings(!rsiSettings)}
-              onRemove={() => {
-                setShowRSI(false);
-                removeRSI();
-                setRsiSettings(false);
-              }}
-            />
-          )}
-          {showDMI && (
-            <IndChip
-              label="DMI"
-              visible={dmiVisible}
-              onToggleVisible={() => setDmiVisible(!dmiVisible)}
-              onSettings={() => setDmiSettings(!dmiSettings)}
-              onRemove={() => {
-                setShowDMI(false);
-                removeDMI();
-                setDmiSettings(false);
-              }}
-            />
-          )}
-          {showVol && (
-            <IndChip
-              label="Vol"
-              visible={volVisible}
-              onToggleVisible={() => setVolVisible(!volVisible)}
-              onRemove={() => {
-                setShowVol(false);
-                removeVol();
-              }}
-            />
-          )}
-        </div>
+        {mode === "alarm" && (
+          <select
+            value={condition}
+            onChange={(e) => setCondition(e.target.value as any)}
+            className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
+          >
+            <option value="above">Above</option>
+            <option value="below">Below</option>
+            <option value="cross">Cross</option>
+          </select>
+        )}
       </div>
 
       {smaSettings && showSMA && (
@@ -2179,47 +2143,163 @@ export default function DashboardPage() {
       )}
 
       {/* Chart + side watchlist */}
-      <div className="flex gap-3 items-stretch">
-        <div className="flex-1 min-w-0">
-          <div
-            ref={chartContainerRef}
-            className="bg-gray-900 border border-gray-800 rounded-xl"
-            style={{ height: "700px", touchAction: "none" }}
-          />
+      <div className="relative flex items-stretch">
+        <div
+          className="min-w-0 transition-all duration-300 ease-in-out"
+          style={{ width: showSideWl ? "calc(100% - 11.75rem)" : "100%" }}
+        >
+          <div className="relative">
+            <div
+              ref={chartContainerRef}
+              className="bg-gray-900 border border-gray-800 rounded-xl"
+              style={{ height: "700px", touchAction: "none" }}
+            />
+
+            {/* Indicators on chart — top LEFT */}
+            <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 pointer-events-auto">
+              {showSMA && (
+                <IndChip
+                  label="3SMA"
+                  visible={smaVisible}
+                  onToggleVisible={() => setSmaVisible(!smaVisible)}
+                  onSettings={() => setSmaSettings(!smaSettings)}
+                  onRemove={() => {
+                    setShowSMA(false);
+                    removeSMA();
+                    setSmaSettings(false);
+                  }}
+                />
+              )}
+              {showPivot && (
+                <IndChip
+                  label="Pivot"
+                  visible={pivotVisible}
+                  onToggleVisible={() => setPivotVisible(!pivotVisible)}
+                  onSettings={() => setPivotSettings(!pivotSettings)}
+                  onRemove={() => {
+                    setShowPivot(false);
+                    removePivot();
+                    setPivotSettings(false);
+                  }}
+                />
+              )}
+              {showTrend && (
+                <IndChip
+                  label="Trend"
+                  visible={trendVisible}
+                  onToggleVisible={() => setTrendVisible(!trendVisible)}
+                  onSettings={() => setTrendSettings(!trendSettings)}
+                  onRemove={() => {
+                    setShowTrend(false);
+                    removeTrend();
+                    setTrendSettings(false);
+                  }}
+                />
+              )}
+              {showRSI && (
+                <IndChip
+                  label="RSI"
+                  visible={rsiVisible}
+                  onToggleVisible={() => setRsiVisible(!rsiVisible)}
+                  onSettings={() => setRsiSettings(!rsiSettings)}
+                  onRemove={() => {
+                    setShowRSI(false);
+                    removeRSI();
+                    setRsiSettings(false);
+                  }}
+                />
+              )}
+              {showDMI && (
+                <IndChip
+                  label="DMI"
+                  visible={dmiVisible}
+                  onToggleVisible={() => setDmiVisible(!dmiVisible)}
+                  onSettings={() => setDmiSettings(!dmiSettings)}
+                  onRemove={() => {
+                    setShowDMI(false);
+                    removeDMI();
+                    setDmiSettings(false);
+                  }}
+                />
+              )}
+              {showVol && (
+                <IndChip
+                  label="Vol"
+                  visible={volVisible}
+                  onToggleVisible={() => setVolVisible(!volVisible)}
+                  onRemove={() => {
+                    setShowVol(false);
+                    removeVol();
+                  }}
+                />
+              )}
+            </div>
+
+            {!showSideWl && (
+              <button
+                type="button"
+                onClick={() => setShowSideWl(true)}
+                className="absolute top-2 right-2 z-20 bg-gray-900/90 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-300 hover:text-white shadow-lg"
+              >
+                » List
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className={`shrink-0 transition-all ${showSideWl ? "w-40 sm:w-44" : "w-9"}`}>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl h-full flex flex-col overflow-hidden" style={{ minHeight: 700 }}>
+        {/* Side panel */}
+        <div
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${
+            showSideWl ? "w-44 ml-3 opacity-100" : "w-0 ml-0 opacity-0"
+          }`}
+        >
+          <div
+            className="bg-gray-900 border border-gray-800 rounded-xl h-full flex flex-col overflow-hidden"
+            style={{ minHeight: 700, width: "11rem" }}
+          >
             <button
               type="button"
-              onClick={() => setShowSideWl((v) => !v)}
+              onClick={() => setShowSideWl(false)}
               className="px-2 py-2 text-xs text-gray-400 hover:text-white border-b border-gray-800 flex items-center justify-center gap-1"
-              title={showSideWl ? "Hide" : "Show"}
             >
-              {showSideWl ? "« Hide" : "»"}
+              « Hide
             </button>
-            {showSideWl && (
-              <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
-                <div className="text-[10px] text-gray-500 px-1 mb-1">With alarms</div>
-                {alarmSymbols.length === 0 && (
-                  <p className="text-[11px] text-gray-600 px-1">No alarms</p>
-                )}
-                {alarmSymbols.map((sym) => (
+            <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
+              <div className="text-[10px] text-gray-500 px-1 mb-1">With alarms</div>
+              {alarmSymbols.length === 0 && (
+                <p className="text-[11px] text-gray-600 px-1">No alarms</p>
+              )}
+              {alarmSymbols.map((sym) => {
+                const aCnt = alarmCountBySym[sym] || 0;
+                const lCnt = lineCountBySym[sym] || 0;
+                return (
                   <button
                     key={sym}
                     type="button"
                     onClick={() => setSymbol(sym)}
-                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-medium truncate ${
+                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center gap-2 ${
                       symbolUpper === sym
                         ? "bg-orange-500/20 text-orange-300 border border-orange-500/40"
                         : "text-gray-300 hover:bg-gray-800"
                     }`}
                   >
-                    {sym}
+                    <CoinIcon symbol={sym} />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{sym}</div>
+                      <div className="text-[10px] text-gray-500">
+                        {aCnt > 0 && (
+                          <span className="text-blue-400">{aCnt} alarm</span>
+                        )}
+                        {aCnt > 0 && lCnt > 0 && <span> · </span>}
+                        {lCnt > 0 && (
+                          <span className="text-orange-400">{lCnt} line</span>
+                        )}
+                      </div>
+                    </div>
                   </button>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
@@ -2235,7 +2315,9 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span>
                   {getConditionSymbol(a.condition)} {a.price}
-                  {a.note ? <span className="text-gray-500 ml-2"> · {a.note}</span> : null}
+                  {a.note ? (
+                    <span className="text-gray-500 ml-2"> · {a.note}</span>
+                  ) : null}
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
                   <input
@@ -2244,16 +2326,32 @@ export default function DashboardPage() {
                     onChange={(e) => updateAlarmColor(a.id, e.target.value)}
                     className="w-7 h-7 rounded cursor-pointer"
                   />
-                  <button type="button" onClick={() => startEditNote(a.id, "alarm", a.note)} className="text-gray-400">
+                  <button
+                    type="button"
+                    onClick={() => startEditNote(a.id, "alarm", a.note)}
+                    className="text-gray-400"
+                  >
                     📝
                   </button>
-                  <button type="button" onClick={() => cycleCondition(a)} className="text-gray-300">
+                  <button
+                    type="button"
+                    onClick={() => cycleCondition(a)}
+                    className="text-gray-300"
+                  >
                     {getConditionLabel(a.condition)}
                   </button>
-                  <button type="button" onClick={() => startMove(a.id, "alarm", a.price)} className="text-blue-400">
+                  <button
+                    type="button"
+                    onClick={() => startMove(a.id, "alarm", a.price)}
+                    className="text-blue-400"
+                  >
                     Move
                   </button>
-                  <button type="button" onClick={() => deleteAlarm(a.id)} className="text-red-400">
+                  <button
+                    type="button"
+                    onClick={() => deleteAlarm(a.id)}
+                    className="text-red-400"
+                  >
                     Delete
                   </button>
                 </div>
@@ -2283,7 +2381,9 @@ export default function DashboardPage() {
               )}
             </div>
           ))}
-          {!currentAlarms.length && <p className="text-gray-500 text-sm">No alarms for this symbol</p>}
+          {!currentAlarms.length && (
+            <p className="text-gray-500 text-sm">No alarms for this symbol</p>
+          )}
         </div>
 
         <div>
@@ -2295,8 +2395,12 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span>
                   {l.price}{" "}
-                  {l.style === "ray" ? <span className="text-gray-500">(ray)</span> : null}
-                  {l.note ? <span className="text-gray-500 ml-2"> · {l.note}</span> : null}
+                  {l.style === "ray" ? (
+                    <span className="text-gray-500">(ray)</span>
+                  ) : null}
+                  {l.note ? (
+                    <span className="text-gray-500 ml-2"> · {l.note}</span>
+                  ) : null}
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
                   <input
@@ -2314,16 +2418,32 @@ export default function DashboardPage() {
                     <option value={2}>W2</option>
                     <option value={3}>W3</option>
                   </select>
-                  <button type="button" onClick={() => startEditNote(l.id, "line", l.note)} className="text-gray-400">
+                  <button
+                    type="button"
+                    onClick={() => startEditNote(l.id, "line", l.note)}
+                    className="text-gray-400"
+                  >
                     📝
                   </button>
-                  <button type="button" onClick={() => convertLineToAlarm(l)} className="text-green-400">
+                  <button
+                    type="button"
+                    onClick={() => convertLineToAlarm(l)}
+                    className="text-green-400"
+                  >
                     Alarm
                   </button>
-                  <button type="button" onClick={() => startMove(l.id, "line", l.price)} className="text-blue-400">
+                  <button
+                    type="button"
+                    onClick={() => startMove(l.id, "line", l.price)}
+                    className="text-blue-400"
+                  >
                     Move
                   </button>
-                  <button type="button" onClick={() => deleteLine(l.id)} className="text-red-400">
+                  <button
+                    type="button"
+                    onClick={() => deleteLine(l.id)}
+                    className="text-red-400"
+                  >
                     Delete
                   </button>
                 </div>
@@ -2353,7 +2473,9 @@ export default function DashboardPage() {
               )}
             </div>
           ))}
-          {!currentLines.length && <p className="text-gray-500 text-sm">No lines for this symbol</p>}
+          {!currentLines.length && (
+            <p className="text-gray-500 text-sm">No lines for this symbol</p>
+          )}
         </div>
       </div>
     </div>
