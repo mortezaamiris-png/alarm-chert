@@ -196,57 +196,6 @@ function findPivots(candles: any[], leftRight: number) {
   return { highs, lows };
 }
 
-function buildValidTrends(candles: any[], period: number, maxLines: number) {
-  const { highs, lows } = findPivots(candles, period);
-  const upLines: { t1: number; p1: number; t2: number; p2: number }[] = [];
-  const dnLines: { t1: number; p1: number; t2: number; p2: number }[] = [];
-
-  for (let i = 0; i < lows.length - 1 && upLines.length < maxLines; i++) {
-    for (let j = i + 1; j < lows.length && upLines.length < maxLines; j++) {
-      const a = lows[i], b = lows[j];
-      if (a.price <= b.price) continue;
-      const diff = (a.price - b.price) / (a.index - b.index);
-      let valid = true;
-      let endIdx = a.index;
-      for (let x = b.index + 1; x <= a.index; x++) {
-        const lineY = b.price + diff * (x - b.index);
-        if (candles[x].close < lineY) { valid = false; break; }
-        endIdx = x;
-      }
-      if (valid) {
-        upLines.push({
-          t1: b.time, p1: b.price,
-          t2: candles[endIdx].time,
-          p2: b.price + diff * (endIdx - b.index),
-        });
-      }
-    }
-  }
-
-  for (let i = 0; i < highs.length - 1 && dnLines.length < maxLines; i++) {
-    for (let j = i + 1; j < highs.length && dnLines.length < maxLines; j++) {
-      const a = highs[i], b = highs[j];
-      if (a.price >= b.price) continue;
-      const diff = (b.price - a.price) / (a.index - b.index);
-      let valid = true;
-      let endIdx = a.index;
-      for (let x = b.index + 1; x <= a.index; x++) {
-        const lineY = b.price - diff * (x - b.index);
-        if (candles[x].close > lineY) { valid = false; break; }
-        endIdx = x;
-      }
-      if (valid) {
-        dnLines.push({
-          t1: b.time, p1: b.price,
-          t2: candles[endIdx].time,
-          p2: b.price - diff * (endIdx - b.index),
-        });
-      }
-    }
-  }
-  return { upLines, dnLines };
-}
-
 function playAlarmBeep() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -808,31 +757,98 @@ export default function DashboardPage() {
   }, [showPivot, pivotVisible, pivotTf, pivotFib, removePivot]);
 
   const removeTrend = useCallback(() => {
-    trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
+    trendSeriesRef.current.forEach((s) => {
+      try { chartRef.current?.removeSeries(s); } catch {}
+    });
     trendSeriesRef.current = [];
   }, []);
+
   const applyTrend = useCallback(() => {
-    removeTrend();
-    if (!showTrend || !trendVisible || !chartRef.current || candlesRef.current.length < 30) return;
-    const { upLines, dnLines } = buildValidTrends(candlesRef.current, trendPeriod, trendMax);
-    upLines.forEach((ln) => {
-      try {
-        const s: any = chartRef.current!.addLineSeries({
-          color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
-        s.setData([{ time: ln.t1 as any, value: ln.p1 }, { time: ln.t2 as any, value: ln.p2 }]);
-        trendSeriesRef.current.push(s);
-      } catch {}
-    });
-    dnLines.forEach((ln) => {
-      try {
-        const s: any = chartRef.current!.addLineSeries({
-          color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
-        s.setData([{ time: ln.t1 as any, value: ln.p1 }, { time: ln.t2 as any, value: ln.p2 }]);
-        trendSeriesRef.current.push(s);
-      } catch {}
-    });
+    try {
+      removeTrend();
+      if (!showTrend || !trendVisible) return;
+      const chart = chartRef.current;
+      const candles = candlesRef.current;
+      if (!chart || !candles || candles.length < 40) return;
+
+      const period = Math.max(6, Math.min(40, trendPeriod || 12));
+      const maxLines = Math.max(1, Math.min(5, trendMax || 3));
+      const { highs, lows } = findPivots(candles, period);
+
+      let upCount = 0;
+      for (let i = 0; i < lows.length - 1 && upCount < maxLines; i++) {
+        for (let j = i + 1; j < lows.length && upCount < maxLines; j++) {
+          const a = lows[i];
+          const b = lows[j];
+          if (b.price <= a.price) continue;
+          const slope = (b.price - a.price) / (b.index - a.index);
+          let valid = true;
+          for (let x = a.index + 1; x < b.index; x++) {
+            const lineY = a.price + slope * (x - a.index);
+            if (candles[x].low < lineY * 0.998) {
+              valid = false;
+              break;
+            }
+          }
+          if (!valid) continue;
+          const lastIdx = candles.length - 1;
+          const endPrice = b.price + slope * (lastIdx - b.index);
+          try {
+            const s: any = chart.addLineSeries({
+              color: trendUpColor || "#84cc16",
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            });
+            s.setData([
+              { time: a.time as any, value: a.price },
+              { time: candles[lastIdx].time as any, value: endPrice },
+            ]);
+            trendSeriesRef.current.push(s);
+            upCount++;
+          } catch {}
+        }
+      }
+
+      let dnCount = 0;
+      for (let i = 0; i < highs.length - 1 && dnCount < maxLines; i++) {
+        for (let j = i + 1; j < highs.length && dnCount < maxLines; j++) {
+          const a = highs[i];
+          const b = highs[j];
+          if (b.price >= a.price) continue;
+          const slope = (b.price - a.price) / (b.index - a.index);
+          let valid = true;
+          for (let x = a.index + 1; x < b.index; x++) {
+            const lineY = a.price + slope * (x - a.index);
+            if (candles[x].high > lineY * 1.002) {
+              valid = false;
+              break;
+            }
+          }
+          if (!valid) continue;
+          const lastIdx = candles.length - 1;
+          const endPrice = b.price + slope * (lastIdx - b.index);
+          try {
+            const s: any = chart.addLineSeries({
+              color: trendDownColor || "#ef4444",
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            });
+            s.setData([
+              { time: a.time as any, value: a.price },
+              { time: candles[lastIdx].time as any, value: endPrice },
+            ]);
+            trendSeriesRef.current.push(s);
+            dnCount++;
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.error("applyTrend error", e);
+    }
   }, [showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
 
   const applyVolume = useCallback(() => {
@@ -868,11 +884,8 @@ export default function DashboardPage() {
     setStatusMsg("Loading...");
     try {
       const url = `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(intervalRef.current)}&limit=1000`;
-      console.log("[kline] fetch", url);
       const res = await fetch(url, { cache: "no-store" });
-      console.log("[kline] status", res.status);
       const raw = await res.json();
-      console.log("[kline] sample", Array.isArray(raw) ? raw.slice(0, 2) : raw);
 
       let list: any[] = [];
       if (Array.isArray(raw)) list = raw;
@@ -987,14 +1000,24 @@ export default function DashboardPage() {
           clickLockRef.current = true;
           const id = movingIdRef.current;
           const typ = movingTypeRef.current;
-          if (typ === "line") {
-            await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
-            setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
-          } else if (typ === "alarm") {
-            await supabase.from("alarms").update({ price: fp }).eq("id", id);
-            setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
+          try {
+            if (typ === "line") {
+              await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
+              setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
+              setStatusMsg("Line moved");
+            } else if (typ === "alarm") {
+              await supabase.from("alarms").update({ price: fp }).eq("id", id);
+              setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
+              setStatusMsg("Alarm moved");
+            }
+          } catch (e) {
+            console.error(e);
+            setStatusMsg("Move failed");
           }
-          setMovingId(null); setMovingType(null); setMode("none"); clearPreview();
+          setMovingId(null);
+          setMovingType(null);
+          setMode("none");
+          clearPreview();
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -1206,19 +1229,44 @@ export default function DashboardPage() {
     await supabase.from("chart_lines").update({ dash }).eq("id", id);
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
   };
+
   const convertLineToAlarm = async (line: ChartLine) => {
-    const payload: any = {
-      symbol: line.symbol, price: line.price, condition: "cross",
-      is_active: true, triggered: false,
-      color: line.color || DEFAULT_ALARM_COLOR,
-      width: line.width || 2, dash: line.dash || "solid", note: line.note,
-    };
-    const { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-    if (!error && data) {
+    try {
+      const payload: any = {
+        symbol: line.symbol,
+        price: line.price,
+        condition: "cross",
+        is_active: true,
+        triggered: false,
+        color: line.color || DEFAULT_ALARM_COLOR,
+        width: line.width || 2,
+        note: line.note || null,
+      };
+      let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+      if (error) {
+        const minimal = {
+          symbol: line.symbol,
+          price: line.price,
+          condition: "cross",
+          is_active: true,
+          triggered: false,
+        };
+        ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+      }
+      if (error || !data) {
+        setStatusMsg("Convert failed");
+        return;
+      }
       setAlarms((prev) => [...prev, data as Alarm]);
-      await deleteLine(line.id);
+      await supabase.from("chart_lines").delete().eq("id", line.id);
+      setLines((prev) => prev.filter((l) => l.id !== line.id));
+      setStatusMsg("Converted to alarm");
+    } catch (e) {
+      console.error(e);
+      setStatusMsg("Convert error");
     }
   };
+
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
     if (editingNoteType === "line") {
@@ -1234,7 +1282,6 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-[1600px] mx-auto px-2 sm:px-4 py-3 text-gray-100">
-      {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <h1 className="text-xl font-bold">Live Chart</h1>
         <div className="flex flex-wrap items-center gap-2">
@@ -1265,7 +1312,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Timeframes */}
       <div className="flex justify-end flex-wrap gap-1 mb-2">
         {favTfButtons.map((t) => (
           <button
@@ -1312,9 +1358,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Chart + side list */}
       <div className="flex gap-0 relative">
-        {/* Vertical tools */}
         <div className="flex flex-col gap-1 mr-1.5 pt-1 shrink-0">
           {[
             { id: "draw" as ToolMode, label: "Line", icon: "✏️" },
@@ -1398,7 +1442,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Chart area */}
         <div className="flex-1 min-w-0 relative">
           <div
             ref={chartContainerRef}
@@ -1596,7 +1639,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Side list with pointer drag */}
         {showSideWl && (
           <div className="w-44 shrink-0 ml-2 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between">
@@ -1605,57 +1647,69 @@ export default function DashboardPage() {
                 « Hide
               </button>
             </div>
-            <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
+            <div className="overflow-y-auto flex-1 p-1.5">
               {alarmSymbols.map((sym) => {
                 const isDrag = draggingSym === sym;
                 const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
                 return (
-                  <div
-                    key={sym}
-                    data-sym={sym}
-                    onPointerDown={(e) => {
-                      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-                      setDraggingSym(sym);
-                    }}
-                    onPointerMove={(e) => {
-                      if (!draggingSym) return;
-                      const el = document.elementFromPoint(e.clientX, e.clientY);
-                      const row = el?.closest?.("[data-sym]") as HTMLElement | null;
-                      if (row?.dataset?.sym) setDragOverSym(row.dataset.sym);
-                    }}
-                    onPointerUp={() => {
-                      if (draggingSym && dragOverSym && draggingSym !== dragOverSym) {
-                        setSideOrder((prev) => {
-                          const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== draggingSym);
-                          const idx = base.indexOf(dragOverSym);
-                          if (idx < 0) return prev;
-                          const next = [...base];
-                          next.splice(idx, 0, draggingSym);
-                          return next;
-                        });
-                      }
-                      setDraggingSym(null);
-                      setDragOverSym(null);
-                    }}
-                    onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                    onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                    className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg cursor-grab active:cursor-grabbing text-xs select-none transition-all ${
-                      isDrag
-                        ? "opacity-50 scale-95 bg-orange-500/30 border border-orange-500"
-                        : isOver
-                        ? "bg-orange-500/20 border border-orange-400/60"
-                        : symbolUpper === sym
-                        ? "bg-orange-500/20 border border-orange-500/50"
-                        : "hover:bg-gray-800 border border-transparent"
-                    }`}
-                    style={{ touchAction: "none" }}
-                  >
-                    <CoinIcon symbol={sym} />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate">{sym.replace("USDT", "")}</div>
-                      <div className="text-[10px] text-gray-500">
-                        {alarmCountBySym[sym] || 0} alarm
-                        {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
+                  <div key={sym}>
+                    {isOver && (
+                      <div className="h-10 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                    )}
+                    <div
+                      data-sym={sym}
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        setDraggingSym(sym);
+                        setDragOverSym(null);
+                      }}
+                      onPointerMove={(e) => {
+                        if (!draggingSym) return;
+                        const el = document.elementFromPoint(e.clientX, e.clientY);
+                        const row = el?.closest?.("[data-sym]") as HTMLElement | null;
+                        const target = row?.dataset?.sym || null;
+                        if (target && target !== draggingSym) setDragOverSym(target);
+                      }}
+                      onPointerUp={() => {
+                        if (draggingSym && dragOverSym && draggingSym !== dragOverSym) {
+                          setSideOrder((prev) => {
+                            const base = (prev.length ? prev : alarmSymbols).filter(
+                              (s) => s !== draggingSym
+                            );
+                            const idx = base.indexOf(dragOverSym);
+                            if (idx < 0) return [...base, draggingSym];
+                            const next = [...base];
+                            next.splice(idx, 0, draggingSym);
+                            return next;
+                          });
+                        }
+                        setDraggingSym(null);
+                        setDragOverSym(null);
+                      }}
+                      onPointerCancel={() => {
+                        setDraggingSym(null);
+                        setDragOverSym(null);
+                      }}
+                      onClick={() => {
+                        if (!draggingSym) goToSymbol(sym);
+                      }}
+                      className={`flex items-center gap-1.5 px-1.5 py-1.5 mb-1 rounded-lg cursor-grab active:cursor-grabbing text-xs select-none transition-all duration-150 ${
+                        isDrag
+                          ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg shadow-orange-500/20"
+                          : symbolUpper === sym
+                          ? "bg-orange-500/20 border border-orange-500/50"
+                          : "hover:bg-gray-800 border border-transparent"
+                      }`}
+                      style={{ touchAction: "none" }}
+                    >
+                      <CoinIcon symbol={sym} />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{sym.replace("USDT", "")}</div>
+                        <div className="text-[10px] text-gray-500">
+                          {alarmCountBySym[sym] || 0} alarm
+                          {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1669,7 +1723,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Bottom lists */}
       <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
@@ -1710,8 +1763,18 @@ export default function DashboardPage() {
                     </button>
                     <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
                       className="text-xs text-gray-400 hover:text-white">Note</button>
-                    <button type="button" onClick={() => { setMode("move"); setMovingId(a.id); setMovingType("alarm"); }}
-                      className="text-xs text-blue-400">Move</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("move");
+                        setMovingId(a.id);
+                        setMovingType("alarm");
+                        setStatusMsg("Click on chart to move alarm");
+                      }}
+                      className="text-xs text-blue-400"
+                    >
+                      Move
+                    </button>
                     <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400">Delete</button>
                   </div>
                 </div>
@@ -1759,8 +1822,18 @@ export default function DashboardPage() {
                     <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400">Alarm</button>
                     <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
                       className="text-xs text-gray-400 hover:text-white">Note</button>
-                    <button type="button" onClick={() => { setMode("move"); setMovingId(l.id); setMovingType("line"); }}
-                      className="text-xs text-blue-400">Move</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("move");
+                        setMovingId(l.id);
+                        setMovingType("line");
+                        setStatusMsg("Click on chart to move line");
+                      }}
+                      className="text-xs text-blue-400"
+                    >
+                      Move
+                    </button>
                     <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400">Delete</button>
                   </div>
                 </div>
