@@ -96,43 +96,6 @@ function formatPrice(price: number) {
   return Number(price.toFixed(precision));
 }
 
-/** interval value → seconds */
-function intervalToSeconds(iv: string): number {
-  if (iv === "D") return 86400;
-  if (iv === "W") return 604800;
-  if (iv === "M") return 2592000;
-  const n = parseInt(iv, 10);
-  return Number.isNaN(n) ? 3600 : n * 60;
-}
-
-/** seconds left until next candle close */
-function getCountdown(lastCandleTime: number, iv: string): string {
-  const sec = intervalToSeconds(iv);
-  const now = Math.floor(Date.now() / 1000);
-  const next = (Math.floor(lastCandleTime / sec) + 1) * sec;
-  let left = next - now;
-  if (left < 0) left = 0;
-  const h = Math.floor(left / 3600);
-  const m = Math.floor((left % 3600) / 60);
-  const s = left % 60;
-  if (h > 0) return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function formatTzTime(ts: number, tz: string): string {
-  try {
-    return new Date(ts * 1000).toLocaleString("en-GB", {
-      timeZone: tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      day: "2-digit",
-      month: "short",
-    });
-  } catch {
-    return new Date(ts * 1000).toISOString().slice(0, 16);
-  }
-}
-
 function calcSMA(candles: { time: number; close: number }[], period: number) {
   const out: { time: number; value: number }[] = [];
   const p = Math.max(1, period);
@@ -304,7 +267,7 @@ function IndChip({
       {onSettings && (
         <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">⚙</button>
       )}
-      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs text-red-400">×</button>
+      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">×</button>
     </div>
   );
 }
@@ -326,8 +289,6 @@ export default function DashboardPage() {
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   const prevPricesRef = useRef<Record<string, number>>({});
   const clickLockRef = useRef(false);
-  const tfMenuRef = useRef<HTMLDivElement>(null);
-  const tzMenuRef = useRef<HTMLDivElement>(null);
 
   const [symbol, setSymbol] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("chart_symbol") || "BTCUSDT" : "BTCUSDT"
@@ -337,12 +298,9 @@ export default function DashboardPage() {
   );
   const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
   const [tfMenuOpen, setTfMenuOpen] = useState(false);
-  const [tzMenuOpen, setTzMenuOpen] = useState(false);
   const [favTfs, setFavTfs] = useState<string[]>(() =>
     loadLS("fav_tfs", ["1", "5", "15", "60", "240", "D"])
   );
-  const [countdown, setCountdown] = useState("--:--");
-  const [lastPrice, setLastPrice] = useState<number | null>(null);
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
@@ -423,7 +381,6 @@ export default function DashboardPage() {
   const drawDashRef = useRef(drawDash);
   const symbolRef = useRef(symbol);
   const intervalRef = useRef(interval);
-  const timeZoneRef = useRef(timeZone);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
@@ -434,39 +391,9 @@ export default function DashboardPage() {
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
   useEffect(() => { symbolRef.current = symbol; localStorage.setItem("chart_symbol", symbol); }, [symbol]);
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
-  useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
+  useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
-
-  // فیکس ۱: بستن منوی TF و TZ با کلیک هرجا
-  useEffect(() => {
-    if (!tfMenuOpen && !tzMenuOpen) return;
-    const onDoc = (e: MouseEvent | TouchEvent) => {
-      const t = e.target as Node;
-      if (tfMenuOpen && tfMenuRef.current && !tfMenuRef.current.contains(t)) setTfMenuOpen(false);
-      if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("touchstart", onDoc);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("touchstart", onDoc);
-    };
-  }, [tfMenuOpen, tzMenuOpen]);
-
-  // فیکس ۴: شمارش معکوس هر ۱ ثانیه
-  useEffect(() => {
-    const tick = () => {
-      const candles = candlesRef.current;
-      if (!candles.length) return;
-      const last = candles[candles.length - 1];
-      setCountdown(getCountdown(last.time, intervalRef.current));
-      setLastPrice(last.close);
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [symbol, interval]);
 
   useEffect(() => {
     saveLS("ind_sma", showSMA); saveLS("vis_sma", smaVisible);
@@ -571,152 +498,91 @@ export default function DashboardPage() {
       previewLineRef.current = null;
     }
     setPreviewPrice(null);
-  }, []);
-
-  /** apply timezone formatter to existing chart without full reload */
-  const applyTimezone = useCallback((tz: string) => {
-    if (!chartRef.current) return;
-    try {
-      chartRef.current.applyOptions({
-        localization: {
-          locale: "en-US",
-          timeFormatter: (ts: number) => formatTzTime(ts, tz),
-        },
-      });
-    } catch {}
   }, []);  const destroyChart = useCallback(() => {
     clearPreview();
-    alarmLinesRef.current.forEach((pl) => {
-      try { seriesRef.current?.removePriceLine(pl); } catch {}
-    });
     alarmLinesRef.current.clear();
-    chartLinesRef.current.forEach((obj) => {
-      try {
-        if (obj.line) chartRef.current?.removeSeries(obj.line);
-        else if (obj.pl) seriesRef.current?.removePriceLine(obj.pl);
-      } catch {}
-    });
     chartLinesRef.current.clear();
-    if (smaSeriesRef.current) {
-      try {
-        chartRef.current?.removeSeries(smaSeriesRef.current.s1);
-        chartRef.current?.removeSeries(smaSeriesRef.current.s2);
-        chartRef.current?.removeSeries(smaSeriesRef.current.s3);
-      } catch {}
-      smaSeriesRef.current = null;
-    }
-    if (rsiSeriesRef.current) {
-      try { chartRef.current?.removeSeries(rsiSeriesRef.current); } catch {}
-      rsiSeriesRef.current = null;
-    }
-    if (dmiSeriesRef.current) {
-      try {
-        chartRef.current?.removeSeries(dmiSeriesRef.current.plus);
-        chartRef.current?.removeSeries(dmiSeriesRef.current.minus);
-        chartRef.current?.removeSeries(dmiSeriesRef.current.adx);
-      } catch {}
-      dmiSeriesRef.current = null;
-    }
-    pivotSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
+    smaSeriesRef.current = null;
+    rsiSeriesRef.current = null;
+    dmiSeriesRef.current = null;
     pivotSeriesRef.current = [];
-    trendSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
     trendSeriesRef.current = [];
-    if (volumeSeriesRef.current) {
-      try { chartRef.current?.removeSeries(volumeSeriesRef.current); } catch {}
-      volumeSeriesRef.current = null;
-    }
+    volumeSeriesRef.current = null;
+    seriesRef.current = null;
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
     }
-    seriesRef.current = null;
   }, [clearPreview]);
 
   const renderAllLinesAndAlarms = useCallback(() => {
-    if (!seriesRef.current || !chartRef.current) return;
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
 
     alarmLinesRef.current.forEach((pl) => {
-      try { seriesRef.current?.removePriceLine(pl); } catch {}
+      try { series.removePriceLine(pl); } catch {}
     });
     alarmLinesRef.current.clear();
-    chartLinesRef.current.forEach((obj) => {
-      try {
-        if (obj.line) chartRef.current?.removeSeries(obj.line);
-        else if (obj.pl) seriesRef.current?.removePriceLine(obj.pl);
-      } catch {}
+    chartLinesRef.current.forEach((s) => {
+      try { chart.removeSeries(s); } catch {}
     });
     chartLinesRef.current.clear();
 
-    currentLines.forEach((l) => {
-      const isMoving = movingId === l.id && movingType === "line";
-      const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
-      const width = isMoving ? 3 : l.width || 2;
-      const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-      const title = isMoving
-        ? "MOVING"
-        : l.note
-        ? `L ${l.note}`
-        : `Line ${formatPrice(l.price)}`;
+    const candles = candlesRef.current;
+    if (!candles.length) return;
+    const lastTime = candles[candles.length - 1].time;
+    const firstTime = candles[0].time;
+    const extend = Math.max(1, Math.floor((lastTime - firstTime) * 0.15));
 
-      if (l.start_time != null) {
-        try {
-          const lineSeries = chartRef.current!.addLineSeries({
-            color,
-            lineWidth: width as any,
-            lineStyle: style,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            title,
+    currentLines.forEach((l) => {
+      try {
+        const isMoving = movingId === l.id && movingType === "line";
+        const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
+        const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
+        const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
+        const title = isMoving
+          ? "MOVING"
+          : l.note
+          ? `L ${l.note}`
+          : `Line ${formatPrice(l.price)}`;
+        if (l.start_time != null) {
+          const ls: any = chart.addLineSeries({
+            color, lineWidth: width, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
           });
-          const lastT = candlesRef.current.length
-            ? candlesRef.current[candlesRef.current.length - 1].time
-            : Math.floor(Date.now() / 1000);
-          lineSeries.setData([
+          ls.setData([
             { time: l.start_time as any, value: l.price },
-            { time: lastT as any, value: l.price },
+            { time: (lastTime + extend) as any, value: l.price },
           ]);
-          chartLinesRef.current.set(l.id, { line: lineSeries });
-        } catch {}
-      } else {
-        try {
-          const pl = seriesRef.current!.createPriceLine({
-            price: l.price,
-            color,
-            lineWidth: width as any,
-            lineStyle: style,
-            axisLabelVisible: true,
-            title,
+          chartLinesRef.current.set(l.id, ls);
+        } else {
+          const pl = series.createPriceLine({
+            price: l.price, color, lineWidth: width, lineStyle: style,
+            axisLabelVisible: true, title,
           });
-          chartLinesRef.current.set(l.id, { pl });
-        } catch {}
-      }
+          alarmLinesRef.current.set(`line-${l.id}`, pl);
+        }
+      } catch {}
     });
 
+    // فیکس ۳: نوت الارم روی چارت
     currentAlarms.forEach((a) => {
-      const isMoving = movingId === a.id && movingType === "alarm";
-      const color = isMoving ? "#f59e0b" : a.color || DEFAULT_ALARM_COLOR;
-      const width = isMoving ? 3 : a.width || 2;
-      const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
-      const title = isMoving
-        ? "MOVING"
-        : a.note
-        ? `${getConditionSymbol(a.condition)} ${a.note}`
-        : `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
-
       try {
-        const pl = seriesRef.current!.createPriceLine({
-          price: a.price,
-          color,
-          lineWidth: width as any,
-          lineStyle: style,
-          axisLabelVisible: true,
-          title,
+        const isMoving = movingId === a.id && movingType === "alarm";
+        const color = isMoving ? "#f59e0b" : a.color || DEFAULT_ALARM_COLOR;
+        const width = isMoving ? 3 : ((a.width as 1 | 2 | 3) || 2);
+        const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
+        const title = isMoving
+          ? "MOVING"
+          : a.note
+          ? `${getConditionSymbol(a.condition)} ${a.note}`
+          : `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
+        const pl = series.createPriceLine({
+          price: a.price, color, lineWidth: width, lineStyle: style,
+          axisLabelVisible: true, title,
         });
-        alarmLinesRef.current.set(a.id, pl);
+        alarmLinesRef.current.set(`alarm-${a.id}`, pl);
       } catch {}
     });
   }, [currentLines, currentAlarms, movingId, movingType]);
@@ -732,18 +598,16 @@ export default function DashboardPage() {
     }
   }, []);
   const applySMA = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length || !showSMA) return;
     removeSMA();
-    if (!smaVisible) return;
-    try {
-      const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      s1.setData(calcSMA(candlesRef.current, sma1) as any);
-      s2.setData(calcSMA(candlesRef.current, sma2) as any);
-      s3.setData(calcSMA(candlesRef.current, sma3) as any);
-      smaSeriesRef.current = { s1, s2, s3 };
-    } catch {}
+    if (!showSMA || !smaVisible || !chartRef.current || !candlesRef.current.length) return;
+    const c = candlesRef.current;
+    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s1.setData(calcSMA(c, sma1) as any);
+    s2.setData(calcSMA(c, sma2) as any);
+    s3.setData(calcSMA(c, sma3) as any);
+    smaSeriesRef.current = { s1, s2, s3 };
   }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
@@ -753,18 +617,15 @@ export default function DashboardPage() {
     }
   }, []);
   const applyRSI = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length || !showRSI) return;
     removeRSI();
-    if (!rsiVisible) return;
-    try {
-      const s = chartRef.current.addLineSeries({
-        color: rsiColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: true,
-        priceScaleId: "rsi",
-      });
-      s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
-      rsiSeriesRef.current = s;
-      updateMargins();
-    } catch {}
+    if (!showRSI || !rsiVisible || !chartRef.current || !candlesRef.current.length) return;
+    const s = chartRef.current.addLineSeries({
+      color: rsiColor, lineWidth: 1, priceScaleId: "rsi",
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
+    rsiSeriesRef.current = s;
+    updateMargins();
   }, [showRSI, rsiVisible, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
@@ -778,370 +639,333 @@ export default function DashboardPage() {
     }
   }, []);
   const applyDMI = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length || !showDMI) return;
     removeDMI();
-    if (!dmiVisible) return;
-    try {
-      const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-      const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, priceScaleId: "dmi" });
-      const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, priceScaleId: "dmi" });
-      const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, priceScaleId: "dmi" });
-      plus.setData(plusDI as any);
-      minus.setData(minusDI as any);
-      adxS.setData(adx as any);
-      dmiSeriesRef.current = { plus, minus, adx: adxS };
-      updateMargins();
-    } catch {}
+    if (!showDMI || !dmiVisible || !chartRef.current || !candlesRef.current.length) return;
+    const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
+    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    plus.setData(plusDI as any);
+    minus.setData(minusDI as any);
+    adxS.setData(adx as any);
+    dmiSeriesRef.current = { plus, minus, adx: adxS };
+    updateMargins();
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
 
   const removePivot = useCallback(() => {
-    pivotSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
+    pivotSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     pivotSeriesRef.current = [];
   }, []);
-  const applyPivot = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length || !showPivot || !pivotVisible) return;
+  const applyPivot = useCallback(async () => {
     removePivot();
+    if (!showPivot || !pivotVisible || !chartRef.current || !candlesRef.current.length) return;
     try {
-      const c = candlesRef.current;
-      const last = c[c.length - 1];
-      const lookback = pivotTf === "D" ? 24 : pivotTf === "W" ? 48 : pivotTf === "60" ? 12 : 6;
-      const slice = c.slice(-Math.max(lookback, 5));
-      const hi = Math.max(...slice.map((x: any) => x.high));
-      const lo = Math.min(...slice.map((x: any) => x.low));
-      const cl = last.close;
-      const pp = (hi + lo + cl) / 3;
-      const r1 = 2 * pp - lo, s1 = 2 * pp - hi;
-      const r2 = pp + (hi - lo), s2 = pp - (hi - lo);
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=3`);
+      const data = await res.json();
+      const rows = Array.isArray(data) ? data : data?.data || data?.result?.list || [];
+      if (!rows.length) return;
+      const last = rows[rows.length - 2] || rows[rows.length - 1];
+      const h = parseFloat(last.high || last[2]);
+      const l = parseFloat(last.low || last[3]);
+      const c = parseFloat(last.close || last[4]);
+      if (!h || !l || !c) return;
+      const pp = (h + l + c) / 3;
+      const r1 = 2 * pp - l, s1 = 2 * pp - h;
+      const r2 = pp + (h - l), s2 = pp - (h - l);
+      const r3 = h + 2 * (pp - l), s3 = l - 2 * (h - pp);
       const levels = pivotFib
         ? [
-            { p: pp, c: "#eab308" },
-            { p: pp + 0.382 * (hi - lo), c: "#f97316" },
-            { p: pp + 0.618 * (hi - lo), c: "#ef4444" },
-            { p: pp - 0.382 * (hi - lo), c: "#22c55e" },
-            { p: pp - 0.618 * (hi - lo), c: "#3b82f6" },
+            { p: pp, col: "#eab308", t: "P" },
+            { p: pp + 0.382 * (h - l), col: "#22c55e", t: "R1" },
+            { p: pp + 0.618 * (h - l), col: "#16a34a", t: "R2" },
+            { p: pp + (h - l), col: "#15803d", t: "R3" },
+            { p: pp - 0.382 * (h - l), col: "#ef4444", t: "S1" },
+            { p: pp - 0.618 * (h - l), col: "#dc2626", t: "S2" },
+            { p: pp - (h - l), col: "#b91c1c", t: "S3" },
           ]
         : [
-            { p: pp, c: "#eab308" },
-            { p: r1, c: "#f97316" },
-            { p: r2, c: "#ef4444" },
-            { p: s1, c: "#22c55e" },
-            { p: s2, c: "#3b82f6" },
+            { p: pp, col: "#eab308", t: "P" },
+            { p: r1, col: "#22c55e", t: "R1" }, { p: r2, col: "#16a34a", t: "R2" }, { p: r3, col: "#15803d", t: "R3" },
+            { p: s1, col: "#ef4444", t: "S1" }, { p: s2, col: "#dc2626", t: "S2" }, { p: s3, col: "#b91c1c", t: "S3" },
           ];
-      levels.forEach(({ p, c: col }) => {
-        const s = chartRef.current!.addLineSeries({
+      const times = candlesRef.current.map((x: any) => x.time);
+      levels.forEach(({ p, col, t }) => {
+        const ls = chartRef.current!.addLineSeries({
           color: col, lineWidth: 1, lineStyle: LineStyle.Dashed,
-          priceLineVisible: false, lastValueVisible: true,
+          priceLineVisible: false, lastValueVisible: true, title: t,
         });
-        s.setData([
-          { time: c[0].time as any, value: p },
-          { time: last.time as any, value: p },
-        ]);
-        pivotSeriesRef.current.push(s);
+        ls.setData(times.map((tm: number) => ({ time: tm as any, value: p })));
+        pivotSeriesRef.current.push(ls);
       });
     } catch {}
   }, [showPivot, pivotVisible, pivotTf, pivotFib, removePivot]);
 
   const removeTrend = useCallback(() => {
-    trendSeriesRef.current.forEach((s) => {
-      try { chartRef.current?.removeSeries(s); } catch {}
-    });
+    trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     trendSeriesRef.current = [];
   }, []);
   const applyTrend = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length || !showTrend || !trendVisible) return;
     removeTrend();
-    try {
-      const c = candlesRef.current;
-      const { highs, lows } = findPivots(c, Math.max(3, Math.floor(trendPeriod / 2)));
-      const maxL = Math.max(1, trendMax);
-      const recentH = highs.slice(-maxL - 1);
-      const recentL = lows.slice(-maxL - 1);
-
-      for (let i = 1; i < recentH.length && trendSeriesRef.current.length < maxL; i++) {
-        const a = recentH[i - 1], b = recentH[i];
-        const s = chartRef.current!.addLineSeries({
-          color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
-        s.setData([
-          { time: a.time as any, value: a.price },
-          { time: b.time as any, value: b.price },
-        ]);
-        trendSeriesRef.current.push(s);
+    if (!showTrend || !trendVisible || !chartRef.current || !candlesRef.current.length) return;
+    const candles = candlesRef.current;
+    const period = Math.max(4, trendPeriod);
+    const maxLines = Math.max(1, Math.min(5, trendMax));
+    const { highs, lows } = findPivots(candles, period);
+    const recentLows = lows.slice(-6);
+    const recentHighs = highs.slice(-6);
+    let upCount = 0;
+    for (let i = 0; i < recentLows.length - 1 && upCount < maxLines; i++) {
+      const a = recentLows[i], b = recentLows[i + 1];
+      if (b.price <= a.price) continue;
+      const slope = (b.price - a.price) / (b.index - a.index);
+      let valid = true;
+      for (let x = a.index + 1; x < candles.length; x++) {
+        if (candles[x].low < (a.price + slope * (x - a.index)) * 0.998) { valid = false; break; }
       }
-      for (let i = 1; i < recentL.length && trendSeriesRef.current.length < maxL * 2; i++) {
-        const a = recentL[i - 1], b = recentL[i];
-        const s = chartRef.current!.addLineSeries({
-          color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        });
-        s.setData([
+      if (!valid) continue;
+      const endIdx = candles.length - 1;
+      try {
+        const ls = chartRef.current!.addLineSeries({ color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+        ls.setData([
           { time: a.time as any, value: a.price },
-          { time: b.time as any, value: b.price },
+          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
         ]);
-        trendSeriesRef.current.push(s);
+        trendSeriesRef.current.push(ls);
+        upCount++;
+      } catch {}
+    }
+    let dnCount = 0;
+    for (let i = 0; i < recentHighs.length - 1 && dnCount < maxLines; i++) {
+      const a = recentHighs[i], b = recentHighs[i + 1];
+      if (b.price >= a.price) continue;
+      const slope = (b.price - a.price) / (b.index - a.index);
+      let valid = true;
+      for (let x = a.index + 1; x < candles.length; x++) {
+        if (candles[x].high > (a.price + slope * (x - a.index)) * 1.002) { valid = false; break; }
       }
-    } catch {}
-  }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax, removeTrend]);
+      if (!valid) continue;
+      const endIdx = candles.length - 1;
+      try {
+        const ls = chartRef.current!.addLineSeries({ color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+        ls.setData([
+          { time: a.time as any, value: a.price },
+          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
+        ]);
+        trendSeriesRef.current.push(ls);
+        dnCount++;
+      } catch {}
+    }
+  }, [showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
 
   const applyVolume = useCallback(() => {
-    if (!chartRef.current || !candlesRef.current.length) return;
-    if (volumeSeriesRef.current) {
+    if (volumeSeriesRef.current && chartRef.current) {
       try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
       volumeSeriesRef.current = null;
     }
-    if (!showVol || !volVisible) {
+    if (!showVol || !volVisible || !chartRef.current || !candlesRef.current.length) {
       updateMargins();
       return;
     }
-    try {
-      const vol = chartRef.current.addHistogramSeries({
-        priceFormat: { type: "volume" },
-        priceScaleId: "volume",
-      });
-      vol.setData(
-        candlesRef.current.map((c: any) => ({
-          time: c.time,
-          value: c.volume || 0,
-          color: c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
-        })) as any
-      );
-      volumeSeriesRef.current = vol;
-      updateMargins();
-    } catch {}
+    const vol = chartRef.current.addHistogramSeries({
+      priceScaleId: "volume", priceLineVisible: false, lastValueVisible: false,
+    });
+    vol.setData(
+      candlesRef.current.map((c: any) => ({
+        time: c.time,
+        value: c.volume || 0,
+        color: c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
+      })) as any
+    );
+    volumeSeriesRef.current = vol;
+    updateMargins();
   }, [showVol, volVisible, updateMargins]);
 
   const rebuildIndicators = useCallback(() => {
-    applySMA();
-    applyRSI();
-    applyDMI();
-    applyPivot();
-    applyTrend();
-    applyVolume();
-    updateMargins();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, updateMargins]);
+    applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume]);
 
   const loadCandles = useCallback(async () => {
-    const sym = symbolRef.current.toUpperCase();
-    const iv = intervalRef.current;
-    const tz = timeZoneRef.current;
-    if (!chartContainerRef.current) return;
-
+    const container = chartContainerRef.current;
+    if (!container) return;
     destroyChart();
-    if (chartContainerRef.current) chartContainerRef.current.innerHTML = "";
-
+    setStatusMsg("Loading...");
     try {
-      const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${iv}&limit=500`
-      );
-      const json = await res.json();
-      const list = json?.result?.list || [];
-      if (!list.length) {
-        setStatusMsg("No data");
-        return;
-      }
-      const candles = list
-        .map((d: any) => ({
-          time: Math.floor(Number(d[0]) / 1000),
-          open: parseFloat(d[1]),
-          high: parseFloat(d[2]),
-          low: parseFloat(d[3]),
-          close: parseFloat(d[4]),
-          volume: parseFloat(d[5]),
-        }))
-        .reverse();
-      candlesRef.current = candles;
-      setLastPrice(candles[candles.length - 1]?.close ?? null);
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=500`);
+      const raw = await res.json();
+      let rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+      if (!rows.length) { setStatusMsg("No data"); return; }
 
-      const lastClose = candles[candles.length - 1].close;
+      const candles = rows
+        .map((r: any) => {
+          const time = Math.floor(
+            Number(r.time || r[0] || r.openTime || r.t) /
+              (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+          );
+          return {
+            time,
+            open: parseFloat(r.open ?? r[1]),
+            high: parseFloat(r.high ?? r[2]),
+            low: parseFloat(r.low ?? r[3]),
+            close: parseFloat(r.close ?? r[4]),
+            volume: parseFloat(r.volume ?? r[5] ?? 0),
+          };
+        })
+        .filter((c: any) => c.time && !Number.isNaN(c.close))
+        .sort((a: any, b: any) => a.time - b.time);
+
+      candlesRef.current = candles;
+      const lastClose = candles[candles.length - 1]?.close || 1;
       const { precision, minMove } = getPrecision(lastClose);
 
-      const chart = createChart(chartContainerRef.current, {
-        autoSize: true,
-        layout: {
-          background: { color: "#0b0e11" },
-          textColor: "#d1d5db",
-        },
+      const chart = createChart(container, {
+        layout: { background: { color: "#0b0e11" }, textColor: "#d1d5db", fontSize: 11 },
         grid: {
           vertLines: { color: "rgba(42,46,57,0.5)" },
           horzLines: { color: "rgba(42,46,57,0.5)" },
         },
         crosshair: { mode: CrosshairMode.Normal },
-        rightPriceScale: { borderColor: "#2a2e39", autoScale: true },
-        timeScale: {
-          borderColor: "#2a2e39",
-          timeVisible: true,
-          secondsVisible: false,
-          rightOffset: 6,
-        },
-        localization: {
-          locale: "en-US",
-          timeFormatter: (ts: number) => formatTzTime(ts, tz),
-        },
-        handleScroll: { vertTouchDrag: true },
-        handleScale: { axisPressedMouseMove: true },
+        rightPriceScale: { borderColor: "#2a2e39", scaleMargins: { top: 0.05, bottom: 0.05 } },
+        timeScale: { borderColor: "#2a2e39", timeVisible: true, secondsVisible: false, rightOffset: 5 },
+        localization: { locale: "en-US" },
+        width: container.clientWidth,
+        height: container.clientHeight || 640,
       });
       chartRef.current = chart;
-
       const series = chart.addCandlestickSeries({
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
+        upColor: "#22c55e", downColor: "#ef4444",
+        borderUpColor: "#22c55e", borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e", wickDownColor: "#ef4444",
         priceFormat: { type: "price", precision, minMove },
       });
       series.setData(candles as any);
       seriesRef.current = series;
       chart.timeScale().fitContent();
 
-      rebuildIndicators();
-      renderAllLinesAndAlarms();
-
       chart.subscribeCrosshairMove((param) => {
         if (modeRef.current === "none" || modeRef.current === "move") return;
-        if (!param.point || param.point.x < 0 || param.point.y < 0) {
-          clearPreview();
-          return;
-        }
+        if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
-        if (price == null) return;
-        const snapped = formatPrice(price);
-        setPreviewPrice(snapped);
+        if (price == null || Number.isNaN(price)) return;
+        setPreviewPrice(price);
         if (previewLineRef.current) {
           try { series.removePriceLine(previewLineRef.current); } catch {}
         }
-        const isAlarm = modeRef.current === "alarm";
         previewLineRef.current = series.createPriceLine({
-          price: snapped,
-          color: isAlarm ? drawColorRef.current : drawColorRef.current,
-          lineWidth: (drawWidthRef.current || 2) as any,
+          price,
+          color: drawColorRef.current,
+          lineWidth: drawWidthRef.current,
           lineStyle: toLineStyle(drawDashRef.current),
           axisLabelVisible: true,
-          title: isAlarm ? "New Alarm" : "New Line",
+          title: "",
         });
       });
 
       chart.subscribeClick(async (param) => {
         if (clickLockRef.current) return;
-        if (!param.point || !seriesRef.current) return;
-        const priceRaw = series.coordinateToPrice(param.point.y);
-        if (priceRaw == null) return;
-        const price = formatPrice(priceRaw);
+        if (!param.point || param.point.x < 0 || param.point.y < 0) return;
+        const price = series.coordinateToPrice(param.point.y);
+        if (price == null || Number.isNaN(price)) return;
+        const fp = formatPrice(price);
         const m = modeRef.current;
 
         if (m === "move" && movingIdRef.current) {
           clickLockRef.current = true;
+          const id = movingIdRef.current;
+          const typ = movingTypeRef.current;
           try {
-            if (movingTypeRef.current === "alarm") {
-              const { error } = await supabase
-                .from("alarms")
-                .update({ price })
-                .eq("id", movingIdRef.current);
-              if (!error) {
-                setAlarms((prev) =>
-                  prev.map((a) => (a.id === movingIdRef.current ? { ...a, price } : a))
-                );
-                setStatusMsg("Alarm moved");
-              }
-            } else if (movingTypeRef.current === "line") {
-              const { error } = await supabase
-                .from("chart_lines")
-                .update({ price })
-                .eq("id", movingIdRef.current);
-              if (!error) {
-                setLines((prev) =>
-                  prev.map((l) => (l.id === movingIdRef.current ? { ...l, price } : l))
-                );
-                setStatusMsg("Line moved");
-              }
+            if (typ === "line") {
+              await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
+              setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
+              setStatusMsg("Line moved");
+            } else if (typ === "alarm") {
+              await supabase.from("alarms").update({ price: fp }).eq("id", id);
+              setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
+              setStatusMsg("Alarm moved");
             }
-          } finally {
-            setMovingId(null);
-            setMovingType(null);
-            setMode("none");
-            clearPreview();
-            setTimeout(() => { clickLockRef.current = false; }, 300);
+          } catch {
+            setStatusMsg("Move failed");
           }
+          setMovingId(null);
+          setMovingType(null);
+          setMode("none");
+          clearPreview();
+          setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
 
         if (m === "draw" || m === "ray") {
           clickLockRef.current = true;
           setSaving(true);
-          try {
-            const payload: any = {
-              symbol: symbolRef.current.toUpperCase(),
-              price,
-              color: drawColorRef.current,
-              width: drawWidthRef.current,
-              style: drawDashRef.current,
-              dash: drawDashRef.current,
-              note: null,
-            };
-            if (m === "ray") {
-              const t = param.time
-                ? typeof param.time === "number"
-                  ? param.time
-                  : Math.floor(Date.now() / 1000)
-                : Math.floor(Date.now() / 1000);
-              payload.start_time = t;
-            }
-            const { data, error } = await supabase
-              .from("chart_lines")
-              .insert(payload)
-              .select()
-              .single();
-            if (!error && data) {
-              setLines((prev) => [data as ChartLine, ...prev]);
-              setStatusMsg("Line saved");
-            } else {
-              setStatusMsg("Save failed");
-            }
-          } finally {
-            setMode("none");
-            clearPreview();
-            setSaving(false);
-            setTimeout(() => { clickLockRef.current = false; }, 300);
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+          };
+          if (m === "ray") {
+            const t = param.time ? Number(param.time) : candlesRef.current[candlesRef.current.length - 1]?.time;
+            if (t) base.start_time = t;
           }
+          let payload = { ...base };
+          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+          if (error) {
+            payload = { symbol: base.symbol, price: base.price, color: base.color, width: base.width };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
+          if (error) {
+            payload = { symbol: base.symbol, price: base.price, color: base.color };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
+          if (!error && data) {
+            setLines((prev) => [{ ...(data as ChartLine), color: (data as any).color || base.color }, ...prev]);
+            setStatusMsg("Line saved");
+          } else setStatusMsg("Save failed");
+          setSaving(false); clearPreview(); setMode("none");
+          setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
 
         if (m === "alarm") {
           clickLockRef.current = true;
           setSaving(true);
-          try {
-            const payload = {
-              symbol: symbolRef.current.toUpperCase(),
-              price,
-              condition: conditionRef.current,
-              is_active: true,
-              triggered: false,
-              color: drawColorRef.current,
-              width: drawWidthRef.current,
-              dash: drawDashRef.current,
-              note: null,
+          const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+          const payload: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            condition: conditionRef.current,
+            is_active: true,
+            triggered: false,
+            color: chosenColor,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+          };
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+          if (error) {
+            const minimal = {
+              symbol: payload.symbol, price: payload.price, condition: payload.condition,
+              is_active: true, triggered: false,
             };
-            const { data, error } = await supabase
-              .from("alarms")
-              .insert(payload)
-              .select()
-              .single();
-            if (!error && data) {
-              setAlarms((prev) => [data as Alarm, ...prev]);
-              setStatusMsg("Alarm saved");
-            } else {
-              setStatusMsg("Save failed");
-            }
-          } finally {
-            setMode("none");
-            clearPreview();
-            setSaving(false);
-            setTimeout(() => { clickLockRef.current = false; }, 300);
+            ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
+          if (!error && data) {
+            const saved = {
+              ...(data as Alarm),
+              color: (data as any).color || chosenColor,
+              width: (data as any).width || payload.width,
+              dash: (data as any).dash || payload.dash,
+            };
+            setAlarms((prev) => [saved, ...prev]);
+            setStatusMsg("Alarm saved");
+          } else setStatusMsg("Alarm save failed");
+          setSaving(false); clearPreview(); setMode("none");
+          setTimeout(() => { clickLockRef.current = false; }, 300);
         }
       });
+
+      renderAllLinesAndAlarms();
+      rebuildIndicators();
+      setStatusMsg("");
     } catch (e: any) {
       setStatusMsg(e?.message || "Load error");
     }
@@ -1149,16 +973,23 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadCandles();
-    return () => destroyChart();
+    const onResize = () => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
+        });
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      destroyChart();
+    };
   }, [symbol, interval]);
 
-  // فیکس ۲: وقتی تایم‌زون عوض شد فقط formatter را آپدیت کن (بدون ریلود کامل)
   useEffect(() => {
-    applyTimezone(timeZone);
-  }, [timeZone, applyTimezone]);
-
-  useEffect(() => {
-    renderAllLinesAndAlarms();
+    if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
   }, [currentLines, currentAlarms, movingId, movingType, renderAllLinesAndAlarms]);
 
   useEffect(() => {
@@ -1168,904 +999,732 @@ export default function DashboardPage() {
     showRSI, rsiVisible, rsiPeriod, rsiColor,
     showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
     showPivot, pivotVisible, pivotTf, pivotFib,
-    showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax,
-    showVol, volVisible, rebuildIndicators,
+    showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
+    showVol, volVisible,
   ]);
 
-  // load alarms & lines
   useEffect(() => {
     (async () => {
-      const { data: a } = await supabase
-        .from("alarms")
-        .select("*")
-        .eq("is_active", true)
-        .eq("triggered", false)
-        .order("created_at", { ascending: false });
+      const { data: a } = await supabase.from("alarms").select("*").order("created_at", { ascending: false });
       if (a) setAlarms(a as Alarm[]);
-      const { data: l } = await supabase
-        .from("chart_lines")
-        .select("*")
-        .order("created_at", { ascending: false });
+      const { data: l } = await supabase.from("chart_lines").select("*").order("created_at", { ascending: false });
       if (l) setLines(l as ChartLine[]);
     })();
   }, []);
 
-  // realtime poll + local clear
   useEffect(() => {
+    let alive = true;
     const tick = async () => {
+      if (!alive) return;
       try {
-        const symbols = [
-          ...new Set(
-            alarms.filter((a) => a.is_active && !a.triggered).map((a) => a.symbol.toUpperCase())
-          ),
-        ];
-        if (!symbols.length) return;
+        const { data } = await supabase.from("alarms").select("*").eq("is_active", true);
+        if (!data) return;
+        const stillActive = data.filter((a: any) => !a.triggered);
+        const justTriggered = data.filter((a: any) => a.triggered);
+        if (justTriggered.length) {
+          const ids = new Set(justTriggered.map((a: any) => a.id));
+          setAlarms((prev) =>
+            prev.map((a) => (ids.has(a.id) ? { ...a, triggered: true, is_active: false } : a))
+          );
+          justTriggered.forEach((a: any) => {
+            if (!notifiedAlarmsRef.current.has(a.id)) {
+              notifiedAlarmsRef.current.add(a.id);
+              showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}`);
+            }
+          });
+        }
+        const symbols = [...new Set(stillActive.map((a: any) => a.symbol))];
         for (const sym of symbols) {
           try {
-            const res = await fetch(
-              `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${sym}`
-            );
-            const json = await res.json();
-            const price = parseFloat(json?.result?.list?.[0]?.lastPrice);
+            const res = await fetch(`/api/ticker?symbol=${sym}`);
+            const j = await res.json();
+            const price = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
             prevPricesRef.current[sym] = price;
-
-            const toTrigger = alarms.filter(
-              (a) =>
-                a.symbol.toUpperCase() === sym &&
-                a.is_active &&
-                !a.triggered &&
-                !notifiedAlarmsRef.current.has(a.id) &&
-                didCross(a.condition, a.price, prev, price)
-            );
-            for (const a of toTrigger) {
-              notifiedAlarmsRef.current.add(a.id);
-              await supabase
-                .from("alarms")
-                .update({ triggered: true, is_active: false, last_price: price })
-                .eq("id", a.id);
-              setAlarms((prev) => prev.filter((x) => x.id !== a.id));
-              showLocalNotification(
-                `${a.symbol} Alarm`,
-                `Price ${price} | Target ${a.price} | ${a.condition}`
-              );
-              setStatusMsg(`Triggered: ${a.symbol} @ ${price}`);
+            for (const a of stillActive.filter((x: any) => x.symbol === sym)) {
+              if (didCross(a.condition, a.price, prev, price)) {
+                setAlarms((p) =>
+                  p.map((x) =>
+                    x.id === a.id ? { ...x, triggered: true, is_active: false, last_price: price } : x
+                  )
+                );
+                await supabase
+                  .from("alarms")
+                  .update({ triggered: true, is_active: false, last_price: price })
+                  .eq("id", a.id);
+                if (!notifiedAlarmsRef.current.has(a.id)) {
+                  notifiedAlarmsRef.current.add(a.id);
+                  showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}  now ${price}`);
+                }
+              }
             }
           } catch {}
         }
       } catch {}
     };
-    const id = window.setInterval(tick, 2000);
-    return () => clearInterval(id);
-  }, [alarms]);
+    tick();
+    const id = window.setInterval(tick, 3000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
 
   const deleteAlarm = async (id: string) => {
-    await supabase.from("alarms").delete().eq("id", id);
     setAlarms((prev) => prev.filter((a) => a.id !== id));
+    await supabase.from("alarms").delete().eq("id", id);
   };
   const deleteLine = async (id: string) => {
-    await supabase.from("chart_lines").delete().eq("id", id);
     setLines((prev) => prev.filter((l) => l.id !== id));
+    await supabase.from("chart_lines").delete().eq("id", id);
   };
+  const updateAlarmCondition = async (id: string, condition: Alarm["condition"]) => {
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
+    await supabase.from("alarms").update({ condition }).eq("id", id);
+  };
+  const updateAlarmColor = async (id: string, color: string) => {
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
+    await supabase.from("alarms").update({ color }).eq("id", id);
+  };
+  const updateAlarmWidth = async (id: string, width: number) => {
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, width } : a)));
+    await supabase.from("alarms").update({ width }).eq("id", id);
+  };
+  const updateAlarmDash = async (id: string, dash: string) => {
+    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, dash } : a)));
+    await supabase.from("alarms").update({ dash }).eq("id", id);
+  };
+  const updateLineColor = async (id: string, color: string) => {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
+    await supabase.from("chart_lines").update({ color }).eq("id", id);
+  };
+  const updateLineWidth = async (id: string, width: number) => {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
+    await supabase.from("chart_lines").update({ width }).eq("id", id);
+  };
+  const updateLineDash = async (id: string, dash: string) => {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
+    await supabase.from("chart_lines").update({ dash }).eq("id", id);
+  };
+
   const convertLineToAlarm = async (line: ChartLine) => {
-    const payload = {
-      symbol: line.symbol,
-      price: line.price,
-      condition: "cross" as const,
-      is_active: true,
-      triggered: false,
-      color: line.color || drawColorRef.current,
-      width: line.width || 2,
-      dash: line.dash || line.style || "solid",
-      note: line.note || null,
-    };
-    const { data, error } = await supabase.from("alarms").insert(payload).select().single();
-    if (!error && data) {
-      setAlarms((prev) => [data as Alarm, ...prev]);
-      await deleteLine(line.id);
+    try {
+      const chosenColor = line.color || DEFAULT_LINE_COLOR;
+      const payload: any = {
+        symbol: line.symbol,
+        price: line.price,
+        condition: "cross",
+        is_active: true,
+        triggered: false,
+        color: chosenColor,
+        width: line.width || 2,
+        dash: line.dash || "solid",
+        note: line.note || null,
+      };
+      let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+      if (error) {
+        const minimal = {
+          symbol: line.symbol, price: line.price, condition: "cross",
+          is_active: true, triggered: false,
+        };
+        ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+      }
+      if (error || !data) {
+        setStatusMsg("Convert failed");
+        return;
+      }
+      const saved = {
+        ...(data as Alarm),
+        color: (data as any).color || chosenColor,
+        width: (data as any).width || payload.width,
+        dash: (data as any).dash || payload.dash,
+        note: (data as any).note || payload.note,
+      };
+      setAlarms((prev) => [saved, ...prev]);
+      await supabase.from("chart_lines").delete().eq("id", line.id);
+      setLines((prev) => prev.filter((l) => l.id !== line.id));
       setStatusMsg("Converted to alarm");
+    } catch {
+      setStatusMsg("Convert error");
     }
   };
-  const updateAlarmField = async (id: string, fields: Partial<Alarm>) => {
-    await supabase.from("alarms").update(fields).eq("id", id);
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, ...fields } : a)));
-  };
-  const updateLineField = async (id: string, fields: Partial<ChartLine>) => {
-    await supabase.from("chart_lines").update(fields).eq("id", id);
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...fields } : l)));
-  };
+
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
-    if (editingNoteType === "alarm") {
-      await updateAlarmField(editingNoteId, { note: noteDraft || null });
+    if (editingNoteType === "line") {
+      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
     } else {
-      await updateLineField(editingNoteId, { note: noteDraft || null });
+      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
-    setNoteDraft("");
   };
 
-  // side list drag
-  const onSidePointerDown = (sym: string, e: React.PointerEvent) => {
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    setDraggingSym(sym);
-  };
-  const onSidePointerEnter = (sym: string) => {
-    if (draggingSym && draggingSym !== sym) setDragOverSym(sym);
-  };
-  const onSidePointerUp = () => {
-    if (draggingSym && dragOverSym && draggingSym !== dragOverSym) {
-      setSideOrder((prev) => {
-        const base = prev.length ? [...prev] : [...alarmSymbols];
-        const without = base.filter((s) => s !== draggingSym);
-        const idx = without.indexOf(dragOverSym);
-        if (idx === -1) return [...without, draggingSym];
-        without.splice(idx, 0, draggingSym);
-        return without;
-      });
-    }
-    setDraggingSym(null);
-    setDragOverSym(null);
-  };
-
-  // فیکس ۳: جلوگیری از اسکرول صفحه وقتی روی چارت هستیم
-  useEffect(() => {
-    const el = chartContainerRef.current;
-    if (!el) return;
-    const prevent = (e: TouchEvent | WheelEvent) => {
-      if (el.contains(e.target as Node)) {
-        e.stopPropagation();
-      }
-    };
-    el.addEventListener("wheel", prevent as any, { passive: false });
-    el.addEventListener("touchmove", prevent as any, { passive: false });
-    return () => {
-      el.removeEventListener("wheel", prevent as any);
-      el.removeEventListener("touchmove", prevent as any);
-    };
-  }, []);
-
-  const startMove = (id: string, type: "line" | "alarm") => {
-    setMovingId(id);
-    setMovingType(type);
-    setMode("move");
-    setStatusMsg("Click on chart to set new price");
-  };
+  const goToSymbol = (sym: string) => setSymbol(sym);
 
   return (
-    <div className="min-h-screen bg-[#0b0e11] text-gray-200">
-      <div className="max-w-[1600px] mx-auto px-2 sm:px-4 py-3">
-        {/* Header: Live Chart left — controls right */}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
-          <div className="flex-1" />
-          <input
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") loadCandles();
-            }}
-            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm w-28"
-          />
-          <div className="flex items-center gap-1">
-            {favTfButtons.map((t) => (
+    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
+      {/* فیکس ۱: هدر مثل قبلی — عنوان چپ، کنترل‌ها راست */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
+        <div className="flex-1" />
+        <select
+          value={timeZone}
+          onChange={(e) => setTimeZone(e.target.value)}
+          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
+        >
+          {TIMEZONES.map((z) => (
+            <option key={z.value} value={z.value}>{z.label}</option>
+          ))}
+        </select>
+        <input
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+          onKeyDown={(e) => e.key === "Enter" && loadCandles()}
+          className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm w-28 font-mono"
+        />
+        {!showSideWl && (
+          <button
+            type="button"
+            onClick={() => setShowSideWl(true)}
+            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
+          >
+            Show list
+          </button>
+        )}
+        <div className="flex items-center gap-1">
+          {favTfButtons.map((t) => (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setIntervalTf(t.value)}
+              className={`px-2 py-1 text-xs rounded ${
+                interval === t.value ? "bg-orange-500 text-black" : "bg-gray-800 hover:bg-gray-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setTfMenuOpen((v) => !v)}
+            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
+          >
+            TF ▾
+          </button>
+        </div>
+        {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
+      </div>
+
+      {tfMenuOpen && (
+        <div className="absolute z-50 top-16 right-4 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl">
+          {ALL_TIMEFRAMES.map((t) => (
+            <div key={t.value} className="flex items-center gap-2 py-1">
               <button
-                key={t.value}
                 type="button"
-                onClick={() => setIntervalTf(t.value)}
-                className={`px-2 py-1 rounded text-xs ${
-                  interval === t.value
-                    ? "bg-orange-500 text-white"
-                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
+                className={`flex-1 text-left px-2 py-1 rounded text-sm ${
+                  interval === t.value ? "bg-orange-500/30" : "hover:bg-gray-800"
                 }`}
               >
                 {t.label}
               </button>
-            ))}
-            <div className="relative" ref={tfMenuRef}>
-              <button
-                type="button"
-                onClick={() => setTfMenuOpen((v) => !v)}
-                className="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700"
-              >
-                TF ▾
+              <button type="button" onClick={() => toggleFavTf(t.value)} className="text-yellow-400 text-sm">
+                {favTfs.includes(t.value) ? "★" : "☆"}
               </button>
-              {tfMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded shadow-xl py-1 min-w-[120px]">
-                  {ALL_TIMEFRAMES.map((t) => (
-                    <button
-                      key={t.value}
-                      type="button"
-                      onClick={() => {
-                        setIntervalTf(t.value);
-                        setTfMenuOpen(false);
-                      }}
-                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center justify-between gap-2"
-                    >
-                      <span>{t.label}</span>
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleFavTf(t.value);
-                        }}
-                        className="text-yellow-400 cursor-pointer"
-                      >
-                        {favTfs.includes(t.value) ? "★" : "☆"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
-          </div>
-          {statusMsg && (
-            <span className="text-xs text-orange-400 ml-2">{statusMsg}</span>
-          )}
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {/* Left tools */}
+        <div className="flex flex-col gap-1 shrink-0">
+          {(
+            [
+              { mode: "draw" as ToolMode, icon: "✏️", label: "Line" },
+              { mode: "ray" as ToolMode, icon: "➡️", label: "Ray" },
+              { mode: "alarm" as ToolMode, icon: "🔔", label: "Alarm" },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.mode}
+              type="button"
+              title={t.label}
+              onClick={() => {
+                setMode(mode === t.mode ? "none" : t.mode);
+                setMovingId(null);
+                setMovingType(null);
+              }}
+              className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
+                mode === t.mode
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
+              }`}
+            >
+              <span className="text-sm leading-none">{t.icon}</span>
+              <span className="leading-none mt-0.5">{t.label}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            title="Indicators"
+            onClick={() => setShowIndicatorMenu((v) => !v)}
+            className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
+              showIndicatorMenu
+                ? "bg-blue-500/20 border-blue-500 text-blue-300"
+                : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
+            }`}
+          >
+            <span className="text-sm leading-none">📊</span>
+            <span className="leading-none mt-0.5">Ind</span>
+          </button>
         </div>
 
-        <div className="flex gap-2">
-          {/* Chart area */}
-          <div className="flex-1 min-w-0 relative">
-            {/* Left tools */}
-            <div className="absolute left-1 top-10 z-20 flex flex-col gap-1">
-              {(
-                [
-                  ["draw", "Line", "✏️"],
-                  ["ray", "Ray", "➡️"],
-                  ["alarm", "Alarm", "🔔"],
-                ] as const
-              ).map(([m, label, icon]) => (
+        {/* Chart */}
+        <div className="flex-1 min-w-0 relative">
+          <div
+            ref={chartContainerRef}
+            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
+            style={{ height: 640 }}
+          />
+
+          <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
+            {showSMA && (
+              <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible((v) => !v)}
+                onSettings={() => setSmaSettings((v) => !v)} onRemove={() => { setShowSMA(false); removeSMA(); }} />
+            )}
+            {showPivot && (
+              <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible((v) => !v)}
+                onSettings={() => setPivotSettings((v) => !v)} onRemove={() => { setShowPivot(false); removePivot(); }} />
+            )}
+            {showTrend && (
+              <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
+                onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
+            )}
+            {showRSI && (
+              <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
+                onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
+            )}
+            {showDMI && (
+              <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
+                onSettings={() => setDmiSettings((v) => !v)} onRemove={() => { setShowDMI(false); removeDMI(); }} />
+            )}
+            {showVol && (
+              <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible((v) => !v)}
+                onRemove={() => { setShowVol(false); applyVolume(); }} />
+            )}
+          </div>
+
+          {showIndicatorMenu && (
+            <div className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
+              {[
+                { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
+                { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
+                { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
+                { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
+                { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
+                { key: "vol", label: "Volume", on: showVol, set: setShowVol },
+              ].map((it) => (
                 <button
-                  key={m}
+                  key={it.key}
                   type="button"
-                  title={label}
-                  onClick={() => {
-                    setMode((prev) => (prev === m ? "none" : m));
-                    setMovingId(null);
-                    setMovingType(null);
-                  }}
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center text-sm border ${
-                    mode === m
-                      ? "bg-orange-500 border-orange-400 text-white"
-                      : "bg-gray-900/80 border-gray-700 text-gray-300 hover:bg-gray-800"
+                  onClick={() => it.set((v: boolean) => !v)}
+                  className={`w-full text-left px-2 py-1.5 rounded text-sm mb-0.5 ${
+                    it.on ? "bg-orange-500/20 text-orange-300" : "hover:bg-gray-800"
                   }`}
                 >
-                  {icon}
+                  {it.on ? "✓ " : ""}{it.label}
                 </button>
               ))}
-              <button
-                type="button"
-                title="Indicators"
-                onClick={() => setShowIndicatorMenu((v) => !v)}
-                className="w-9 h-9 rounded-lg flex items-center justify-center text-sm border bg-gray-900/80 border-gray-700 text-gray-300 hover:bg-gray-800"
-              >
-                📊
-              </button>
             </div>
+          )}
 
-            {/* Indicator chips top-left */}
-            <div className="absolute top-2 left-12 z-20 flex flex-col gap-1">
-              {showSMA && (
-                <IndChip
-                  label="3SMA"
-                  visible={smaVisible}
-                  onToggleVisible={() => setSmaVisible((v) => !v)}
-                  onSettings={() => setSmaSettings(true)}
-                  onRemove={() => {
-                    setShowSMA(false);
-                    removeSMA();
-                  }}
-                />
-              )}
-              {showPivot && (
-                <IndChip
-                  label="Pivot"
-                  visible={pivotVisible}
-                  onToggleVisible={() => setPivotVisible((v) => !v)}
-                  onSettings={() => setPivotSettings(true)}
-                  onRemove={() => {
-                    setShowPivot(false);
-                    removePivot();
-                  }}
-                />
-              )}
-              {showTrend && (
-                <IndChip
-                  label="Trend"
-                  visible={trendVisible}
-                  onToggleVisible={() => setTrendVisible((v) => !v)}
-                  onSettings={() => setTrendSettings(true)}
-                  onRemove={() => {
-                    setShowTrend(false);
-                    removeTrend();
-                  }}
-                />
-              )}
-              {showRSI && (
-                <IndChip
-                  label="RSI"
-                  visible={rsiVisible}
-                  onToggleVisible={() => setRsiVisible((v) => !v)}
-                  onSettings={() => setRsiSettings(true)}
-                  onRemove={() => {
-                    setShowRSI(false);
-                    removeRSI();
-                  }}
-                />
-              )}
-              {showDMI && (
-                <IndChip
-                  label="DMI"
-                  visible={dmiVisible}
-                  onToggleVisible={() => setDmiVisible((v) => !v)}
-                  onSettings={() => setDmiSettings(true)}
-                  onRemove={() => {
-                    setShowDMI(false);
-                    removeDMI();
-                  }}
-                />
-              )}
-              {showVol && (
-                <IndChip
-                  label="Vol"
-                  visible={volVisible}
-                  onToggleVisible={() => setVolVisible((v) => !v)}
-                  onRemove={() => {
-                    setShowVol(false);
-                    if (volumeSeriesRef.current) {
-                      try { chartRef.current?.removeSeries(volumeSeriesRef.current); } catch {}
-                      volumeSeriesRef.current = null;
-                    }
-                  }}
-                />
-              )}
-            </div>
-
-            {/* Indicator menu */}
-            {showIndicatorMenu && (
-              <div className="absolute left-12 top-24 z-30 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-2 text-xs w-40">
-                {[
-                  ["3SMA", showSMA, () => setShowSMA(true)],
-                  ["Pivot", showPivot, () => setShowPivot(true)],
-                  ["Trend", showTrend, () => setShowTrend(true)],
-                  ["RSI", showRSI, () => setShowRSI(true)],
-                  ["DMI", showDMI, () => setShowDMI(true)],
-                  ["Volume", showVol, () => setShowVol(true)],
-                ].map(([label, on, fn]) => (
-                  <button
-                    key={label as string}
-                    type="button"
-                    disabled={!!on}
-                    onClick={() => {
-                      (fn as () => void)();
-                      setShowIndicatorMenu(false);
-                    }}
-                    className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-800 disabled:opacity-40"
-                  >
-                    {label as string}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Style panel — bottom LEFT */}
-            {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
-              <div className="absolute bottom-10 left-3 z-30 flex items-center gap-1 bg-gray-900/95 border border-gray-700 rounded-lg px-2 py-1.5 shadow-xl">
-                <input
-                  type="color"
-                  value={drawColor}
-                  onChange={(e) => setDrawColor(e.target.value)}
-                  className="w-7 h-7 rounded cursor-pointer bg-transparent border-0"
-                />
+          {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
+          {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
+            <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+              <input
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
+                title="Color"
+              />
+              <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
                   <button
                     key={w}
                     type="button"
                     onClick={() => setDrawWidth(w)}
                     className={`w-7 h-7 rounded text-xs ${
-                      drawWidth === w ? "bg-orange-500 text-white" : "bg-gray-800"
+                      drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"
                     }`}
                   >
-                    W{w}
+                    {w}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => setDrawDash((d) => (d === "solid" ? "dashed" : "solid"))}
-                  className="px-2 h-7 rounded text-xs bg-gray-800"
-                >
-                  {drawDash === "solid" ? "—" : "- -"}
-                </button>
-                {mode === "alarm" && (
-                  <select
-                    value={condition}
-                    onChange={(e) => setCondition(e.target.value as any)}
-                    className="bg-gray-800 rounded text-xs px-1 h-7"
-                  >
-                    <option value="cross">Cross</option>
-                    <option value="above">Above</option>
-                    <option value="below">Below</option>
-                  </select>
-                )}
               </div>
-            )}
-
-            {/* فیکس ۲ + ۴: شمارش معکوس + تایم‌زون پایین‌راست چارت */}
-            <div className="absolute bottom-10 right-3 z-30 flex items-center gap-2">
-              {lastPrice != null && (
-                <div className="bg-gray-900/90 border border-gray-700 rounded px-2 py-1 text-xs flex items-center gap-2">
-                  <span className="text-gray-400">{symbolUpper}</span>
-                  <span className="text-white font-medium">{formatPrice(lastPrice)}</span>
-                  <span className="text-orange-400 font-mono">{countdown}</span>
-                </div>
+              <button
+                type="button"
+                onClick={() => setDrawDash((d) => (d === "solid" ? "dashed" : "solid"))}
+                className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300"
+              >
+                {drawDash === "solid" ? "——" : "- -"}
+              </button>
+              {mode === "alarm" && (
+                <select
+                  value={condition}
+                  onChange={(e) => setCondition(e.target.value as any)}
+                  className="bg-gray-800 rounded px-1.5 py-1 text-xs"
+                >
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                  <option value="cross">Cross</option>
+                </select>
               )}
-              <div className="relative" ref={tzMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setTzMenuOpen((v) => !v)}
-                  className="bg-gray-900/90 border border-gray-700 rounded px-2 py-1 text-xs hover:bg-gray-800"
-                >
-                  {TIMEZONES.find((t) => t.value === timeZone)?.label || "UTC"} ▾
-                </button>
-                {tzMenuOpen && (
-                  <div className="absolute right-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-700 rounded shadow-xl py-1 min-w-[120px]">
-                    {TIMEZONES.map((t) => (
-                      <button
-                        key={t.value}
-                        type="button"
-                        onClick={() => {
-                          setTimeZone(t.value);
-                          setTzMenuOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 ${
-                          timeZone === t.value ? "text-orange-400" : ""
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Chart canvas — فیکس ۳: touch-action + overscroll */}
-            <div
-              ref={chartContainerRef}
-              className="w-full rounded-lg border border-gray-800 bg-[#0b0e11]"
-              style={{
-                height: 640,
-                touchAction: "none",
-                overscrollBehavior: "none",
-              }}
-            />
-          </div>
-
-          {/* Side watchlist */}
-          {showSideWl && (
-            <div className="w-44 shrink-0 bg-gray-900/60 border border-gray-800 rounded-lg p-2 max-h-[640px] overflow-y-auto">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-gray-400">With alarms</span>
-                <button
-                  type="button"
-                  onClick={() => setShowSideWl(false)}
-                  className="text-[10px] text-gray-500 hover:text-gray-300"
-                >
-                  Hide
-                </button>
-              </div>
-              {alarmSymbols.map((s) => (
-                <div
-                  key={s}
-                  onPointerDown={(e) => onSidePointerDown(s, e)}
-                  onPointerEnter={() => onSidePointerEnter(s)}
-                  onPointerUp={onSidePointerUp}
-                  onClick={() => setSymbol(s)}
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded mb-1 cursor-grab active:cursor-grabbing select-none transition-transform duration-100 ${
-                    symbolUpper === s ? "bg-orange-500/20 border border-orange-500/40" : "hover:bg-gray-800"
-                  } ${draggingSym === s ? "scale-[0.96] opacity-80" : ""} ${
-                    dragOverSym === s ? "border-t-2 border-orange-400" : ""
-                  }`}
-                  style={{ willChange: "transform" }}
-                >
-                  <CoinIcon symbol={s} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium truncate">{s.replace("USDT", "")}</div>
-                    <div className="text-[10px] text-gray-500">
-                      {(alarmCountBySym[s] || 0)} alarm
-                      {(lineCountBySym[s] || 0) > 0 ? ` · ${lineCountBySym[s]} line` : ""}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {!alarmSymbols.length && (
-                <p className="text-[11px] text-gray-600">No active alarms</p>
+              {previewPrice != null && (
+                <span className="text-xs text-orange-300 font-mono">{formatPrice(previewPrice)}</span>
+              )}
+              {mode === "move" && (
+                <span className="text-xs text-amber-400">Click chart</span>
               )}
             </div>
           )}
-          {!showSideWl && (
-            <button
-              type="button"
-              onClick={() => setShowSideWl(true)}
-              className="w-8 shrink-0 bg-gray-900 border border-gray-800 rounded text-xs text-gray-400"
-            >
-              »
-            </button>
+
+          {smaSettings && showSMA && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+              <p className="font-medium mb-2">SMA Settings</p>
+              {[
+                { str: sma1Str, setStr: setSma1Str, set: setSma1, col: smaColor1, setCol: setSmaColor1, label: "SMA1" },
+                { str: sma2Str, setStr: setSma2Str, set: setSma2, col: smaColor2, setCol: setSmaColor2, label: "SMA2" },
+                { str: sma3Str, setStr: setSma3Str, set: setSma3, col: smaColor3, setCol: setSmaColor3, label: "SMA3" },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center gap-2 mb-1">
+                  <span className="text-xs w-10">{row.label}</span>
+                  <input value={row.str} onChange={(e) => row.setStr(e.target.value)}
+                    onBlur={() => { const n = parseInt(row.str, 10); if (!Number.isNaN(n) && n > 0) row.set(n); }}
+                    className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+                  <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-6 h-6" />
+                </div>
+              ))}
+              <button type="button" onClick={() => setSmaSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
+            </div>
+          )}
+          {pivotSettings && showPivot && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">Pivot TF</p>
+              <div className="flex flex-wrap gap-1 mb-2">
+                {PIVOT_TFS.map((t) => (
+                  <button key={t.value} type="button" onClick={() => setPivotTf(t.value)}
+                    className={`px-2 py-0.5 rounded text-xs ${pivotTf === t.value ? "bg-orange-500" : "bg-gray-800"}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
+                Fib levels
+              </label>
+              <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
+            </div>
+          )}
+          {trendSettings && showTrend && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">Trend Settings</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Period</span>
+                <input value={trendPeriodStr} onChange={(e) => setTrendPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(trendPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 4) setTrendPeriod(n);
+                    else setTrendPeriodStr(String(trendPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Max</span>
+                <input type="number" min={1} max={5} value={trendMax}
+                  onChange={(e) => setTrendMax(Math.min(5, Math.max(1, parseInt(e.target.value, 10) || 3)))}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Up</span>
+                <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Down</span>
+                <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setTrendSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
+            </div>
+          )}
+          {rsiSettings && showRSI && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">RSI</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">Period</span>
+                <input value={rsiPeriodStr} onChange={(e) => setRsiPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(rsiPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 2) setRsiPeriod(n);
+                    else setRsiPeriodStr(String(rsiPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">Color</span>
+                <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setRsiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+          {dmiSettings && showDMI && (
+            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">DMI</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">Period</span>
+                <input value={dmiPeriodStr} onChange={(e) => setDmiPeriodStr(e.target.value)}
+                  onBlur={() => {
+                    const n = parseInt(dmiPeriodStr, 10);
+                    if (!Number.isNaN(n) && n >= 2) setDmiPeriod(n);
+                    else setDmiPeriodStr(String(dmiPeriod));
+                  }}
+                  className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">+DI</span>
+                <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">-DI</span>
+                <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">ADX</span>
+                <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setDmiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+
+          {saving && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/70 text-orange-300 text-sm px-3 py-1 rounded-full z-20">
+              Saving...
+            </div>
           )}
         </div>
 
-        {/* Bottom lists */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-          {/* Alarms list */}
-          <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-3">
-            <h3 className="text-sm font-medium text-green-400 mb-2">
-              Alarms — {symbolUpper} ({currentAlarms.length})
-            </h3>
-            <div className="space-y-1.5 max-h-48 overflow-y-auto">
-              {currentAlarms.map((a) => (
-                <div key={a.id} className="bg-gray-800/60 rounded px-2 py-1.5 text-xs">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-gray-200 w-24 shrink-0">
-                      ≈ {formatPrice(a.price)}
-                    </span>
-                    <select
-                      value={a.condition}
-                      onChange={(e) =>
-                        updateAlarmField(a.id, { condition: e.target.value as any })
-                      }
-                      className="bg-gray-900 rounded px-1 py-0.5"
-                    >
-                      <option value="cross">Cross</option>
-                      <option value="above">Above</option>
-                      <option value="below">Below</option>
-                    </select>
-                    <input
-                      type="color"
-                      value={a.color || DEFAULT_ALARM_COLOR}
-                      onChange={(e) => updateAlarmField(a.id, { color: e.target.value })}
-                      className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
-                    />
-                    {LINE_WIDTHS.map((w) => (
-                      <button
-                        key={w}
-                        type="button"
-                        onClick={() => updateAlarmField(a.id, { width: w })}
-                        className={`px-1.5 py-0.5 rounded ${
-                          (a.width || 2) === w ? "bg-orange-500" : "bg-gray-700"
-                        }`}
-                      >
-                        W{w}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateAlarmField(a.id, {
-                          dash: a.dash === "dashed" ? "solid" : "dashed",
-                        })
-                      }
-                      className="px-1.5 py-0.5 rounded bg-gray-700"
-                    >
-                      {a.dash === "dashed" ? "- -" : "—"}
-                    </button>
-                    <div className="flex-1" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingNoteId(a.id);
-                        setEditingNoteType("alarm");
-                        setNoteDraft(a.note || "");
+        {showSideWl && (
+          <div className="w-44 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+            <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-xs text-gray-400">With alarms</span>
+              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white">
+                « Hide
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-1.5">
+              {alarmSymbols.map((sym) => {
+                const isDrag = draggingSym === sym;
+                const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
+                return (
+                  <div key={sym}>
+                    {isOver && (
+                      <div className="h-10 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                    )}
+                    <div
+                      data-sym={sym}
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        setDraggingSym(sym);
+                        setDragOverSym(null);
                       }}
-                      className="text-gray-400 hover:text-white"
+                      onPointerMove={(e) => {
+                        if (!draggingSym) return;
+                        const el = document.elementFromPoint(e.clientX, e.clientY);
+                        const row = el?.closest?.("[data-sym]") as HTMLElement | null;
+                        const target = row?.dataset?.sym || null;
+                        if (target && target !== draggingSym) setDragOverSym(target);
+                      }}
+                      onPointerUp={() => {
+                        if (draggingSym && dragOverSym && draggingSym !== dragOverSym) {
+                          setSideOrder((prev) => {
+                            const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== draggingSym);
+                            const idx = base.indexOf(dragOverSym);
+                            if (idx < 0) return [...base, draggingSym];
+                            const next = [...base];
+                            next.splice(idx, 0, draggingSym);
+                            return next;
+                          });
+                        }
+                        setDraggingSym(null);
+                        setDragOverSym(null);
+                      }}
+                      onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
+                      onClick={() => { if (!draggingSym) goToSymbol(sym); }}
+                      className={`flex items-center gap-1.5 px-1.5 py-1.5 mb-1 rounded-lg cursor-grab active:cursor-grabbing text-xs select-none transition-all duration-150 ${
+                        isDrag
+                          ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg"
+                          : symbolUpper === sym
+                          ? "bg-orange-500/20 border border-orange-500/50"
+                          : "hover:bg-gray-800 border border-transparent"
+                      }`}
+                      style={{ touchAction: "none" }}
                     >
-                      Note
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => startMove(a.id, "alarm")}
-                      className="text-blue-400 hover:text-blue-300"
-                    >
-                      Move
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteAlarm(a.id)}
-                      className="text-red-400 hover:text-red-300"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                  {editingNoteId === a.id && editingNoteType === "alarm" && (
-                    <div className="mt-1.5 flex gap-2">
-                      <input
-                        value={noteDraft}
-                        onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-900 rounded px-2 py-1"
-                        placeholder="Note..."
-                        autoFocus
-                      />
-                      <button type="button" onClick={saveNote} className="text-green-400">
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingNoteId(null);
-                          setEditingNoteType(null);
-                        }}
-                        className="text-gray-500"
-                      >
-                        Cancel
-                      </button>
+                      <CoinIcon symbol={sym} />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{sym.replace("USDT", "")}</div>
+                        <div className="text-[10px] text-gray-500">
+                          {alarmCountBySym[sym] || 0} alarm
+                          {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
-              ))}
-              {!currentAlarms.length && (
-                <p className="text-gray-500 text-sm">No alarms</p>
+                  </div>
+                );
+              })}
+              {!alarmSymbols.length && (
+                <p className="text-gray-600 text-xs text-center py-4">No active alarms</p>
               )}
             </div>
           </div>
+        )}
+      </div>
 
-          {/* Lines list */}
-          <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-3">
-            <h3 className="text-sm font-medium text-orange-400 mb-2">
-              Lines — {symbolUpper} ({currentLines.length})
-            </h3>
-            <div className="space-y-1.5 max-h-48 overflow-y-auto">
-              {currentLines.map((l) => (
-                <div key={l.id} className="bg-gray-800/60 rounded px-2 py-1.5 text-xs">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-gray-200 w-24 shrink-0">
-                      {formatPrice(l.price)}
-                    </span>
-                    <input
-                      type="color"
-                      value={l.color || DEFAULT_LINE_COLOR}
-                      onChange={(e) => updateLineField(l.id, { color: e.target.value })}
-                      className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
-                    />
-                    {LINE_WIDTHS.map((w) => (
-                      <button
-                        key={w}
-                        type="button"
-                        onClick={() => updateLineField(l.id, { width: w })}
-                        className={`px-1.5 py-0.5 rounded ${
-                          (l.width || 2) === w ? "bg-orange-500" : "bg-gray-700"
-                        }`}
-                      >
-                        W{w}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateLineField(l.id, {
-                          dash: (l.dash || l.style) === "dashed" ? "solid" : "dashed",
-                          style: (l.dash || l.style) === "dashed" ? "solid" : "dashed",
-                        })
-                      }
-                      className="px-1.5 py-0.5 rounded bg-gray-700"
+      {/* Bottom lists */}
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div>
+          <h3 className="text-sm font-medium text-green-400 mb-2">
+            Alarms — {symbolUpper} ({currentAlarms.length})
+          </h3>
+          <div className="space-y-1.5">
+            {currentAlarms.map((a) => (
+              <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
+                    {getConditionSymbol(a.condition)} {formatPrice(a.price)}
+                  </span>
+                  {a.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{a.note}</span>}
+                  <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
+                    <select
+                      value={a.condition}
+                      onChange={(e) => updateAlarmCondition(a.id, e.target.value as any)}
+                      className="bg-gray-800 rounded px-1.5 py-0.5 text-xs"
                     >
-                      {(l.dash || l.style) === "dashed" ? "- -" : "—"}
+                      <option value="above">Above</option>
+                      <option value="below">Below</option>
+                      <option value="cross">Cross</option>
+                    </select>
+                    <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
+                      onChange={(e) => updateAlarmColor(a.id, e.target.value)} className="w-6 h-6 rounded cursor-pointer" />
+                    <div className="flex gap-0.5">
+                      {LINE_WIDTHS.map((w) => (
+                        <button key={w} type="button" onClick={() => updateAlarmWidth(a.id, w)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            (a.width || 2) === w ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-400"
+                          }`}>W{w}</button>
+                      ))}
+                    </div>
+                    <button type="button"
+                      onClick={() => updateAlarmDash(a.id, a.dash === "dashed" ? "solid" : "dashed")}
+                      className="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-300">
+                      {a.dash === "dashed" ? "- -" : "——"}
                     </button>
-                    <div className="flex-1" />
+                    <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
+                      className="text-xs text-gray-400 hover:text-white">Note</button>
                     <button
                       type="button"
                       onClick={() => {
-                        setEditingNoteId(l.id);
-                        setEditingNoteType("line");
-                        setNoteDraft(l.note || "");
+                        setMode("move");
+                        setMovingId(a.id);
+                        setMovingType("alarm");
+                        setStatusMsg("Click on chart to move alarm");
                       }}
-                      className="text-gray-400 hover:text-white"
-                    >
-                      Note
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => startMove(l.id, "line")}
-                      className="text-blue-400 hover:text-blue-300"
+                      className="text-xs text-blue-400"
                     >
                       Move
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => convertLineToAlarm(l)}
-                      className="text-green-400 hover:text-green-300"
-                    >
-                      Alarm
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteLine(l.id)}
-                      className="text-red-400 hover:text-red-300"
-                    >
-                      Delete
-                    </button>
+                    <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400">Delete</button>
                   </div>
-                  {editingNoteId === l.id && editingNoteType === "line" && (
-                    <div className="mt-1.5 flex gap-2">
-                      <input
-                        value={noteDraft}
-                        onChange={(e) => setNoteDraft(e.target.value)}
-                        className="flex-1 bg-gray-900 rounded px-2 py-1"
-                        placeholder="Note..."
-                        autoFocus
-                      />
-                      <button type="button" onClick={saveNote} className="text-green-400">
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingNoteId(null);
-                          setEditingNoteType(null);
-                        }}
-                        className="text-gray-500"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
                 </div>
-              ))}
-              {!currentLines.length && (
-                <p className="text-gray-500 text-sm">No lines</p>
-              )}
-            </div>
+                {editingNoteId === a.id && editingNoteType === "alarm" && (
+                  <div className="mt-2 flex gap-2">
+                    <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
+                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
+                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                    <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
+                      className="text-gray-500 text-sm">Cancel</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {!currentAlarms.length && <p className="text-gray-600 text-sm">No alarms</p>}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-medium text-orange-400 mb-2">
+            Lines — {symbolUpper} ({currentLines.length})
+          </h3>
+          <div className="space-y-1.5">
+            {currentLines.map((l) => (
+              <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
+                    {formatPrice(l.price)}
+                  </span>
+                  {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
+                  <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
+                    <input type="color" value={l.color || DEFAULT_LINE_COLOR}
+                      onChange={(e) => updateLineColor(l.id, e.target.value)} className="w-6 h-6 rounded cursor-pointer" />
+                    <div className="flex gap-0.5">
+                      {LINE_WIDTHS.map((w) => (
+                        <button key={w} type="button" onClick={() => updateLineWidth(l.id, w)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            (l.width || 2) === w ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-400"
+                          }`}>W{w}</button>
+                      ))}
+                    </div>
+                    <button type="button"
+                      onClick={() => updateLineDash(l.id, (l.dash || l.style) === "dashed" ? "solid" : "dashed")}
+                      className="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-gray-300">
+                      {(l.dash || l.style) === "dashed" ? "- -" : "——"}
+                    </button>
+                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400">Alarm</button>
+                    <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
+                      className="text-xs text-gray-400 hover:text-white">Note</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("move");
+                        setMovingId(l.id);
+                        setMovingType("line");
+                        setStatusMsg("Click on chart to move line");
+                      }}
+                      className="text-xs text-blue-400"
+                    >
+                      Move
+                    </button>
+                    <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400">Delete</button>
+                  </div>
+                </div>
+                {editingNoteId === l.id && editingNoteType === "line" && (
+                  <div className="mt-2 flex gap-2">
+                    <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
+                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
+                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
+                    <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
+                      className="text-gray-500 text-sm">Cancel</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {!currentLines.length && <p className="text-gray-600 text-sm">No lines</p>}
           </div>
         </div>
       </div>
 
-      {/* Settings modals */}
-      {smaSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setSmaSettings(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-72" onClick={(e) => e.stopPropagation()}>
-            <h4 className="text-sm font-medium mb-3">3SMA Settings</h4>
-            {[
-              [sma1Str, setSma1Str, setSma1, smaColor1, setSmaColor1, "SMA1"],
-              [sma2Str, setSma2Str, setSma2, smaColor2, setSmaColor2, "SMA2"],
-              [sma3Str, setSma3Str, setSma3, smaColor3, setSmaColor3, "SMA3"],
-            ].map(([str, setStr, setNum, col, setCol, label]: any) => (
-              <div key={label} className="flex items-center gap-2 mb-2">
-                <span className="text-xs w-10">{label}</span>
-                <input
-                  value={str}
-                  onChange={(e) => setStr(e.target.value)}
-                  onBlur={() => {
-                    const n = parseInt(str, 10);
-                    if (!Number.isNaN(n) && n > 0) setNum(n);
-                  }}
-                  className="flex-1 bg-gray-800 rounded px-2 py-1 text-xs"
-                />
-                <input type="color" value={col} onChange={(e) => setCol(e.target.value)} className="w-7 h-7" />
-              </div>
-            ))}
-            <button type="button" onClick={() => setSmaSettings(false)} className="mt-2 w-full bg-orange-500 rounded py-1.5 text-xs">OK</button>
-          </div>
-        </div>
-      )}
-      {rsiSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRsiSettings(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-64" onClick={(e) => e.stopPropagation()}>
-            <h4 className="text-sm font-medium mb-3">RSI Settings</h4>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Period</span>
-              <input
-                value={rsiPeriodStr}
-                onChange={(e) => setRsiPeriodStr(e.target.value)}
-                onBlur={() => {
-                  const n = parseInt(rsiPeriodStr, 10);
-                  if (!Number.isNaN(n) && n > 1) setRsiPeriod(n);
-                }}
-                className="flex-1 bg-gray-800 rounded px-2 py-1 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Color</span>
-              <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <button type="button" onClick={() => setRsiSettings(false)} className="mt-2 w-full bg-orange-500 rounded py-1.5 text-xs">OK</button>
-          </div>
-        </div>
-      )}
-      {dmiSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setDmiSettings(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-64" onClick={(e) => e.stopPropagation()}>
-            <h4 className="text-sm font-medium mb-3">DMI Settings</h4>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Period</span>
-              <input
-                value={dmiPeriodStr}
-                onChange={(e) => setDmiPeriodStr(e.target.value)}
-                onBlur={() => {
-                  const n = parseInt(dmiPeriodStr, 10);
-                  if (!Number.isNaN(n) && n > 1) setDmiPeriod(n);
-                }}
-                className="flex-1 bg-gray-800 rounded px-2 py-1 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs w-14">+DI</span>
-              <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs w-14">-DI</span>
-              <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">ADX</span>
-              <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <button type="button" onClick={() => setDmiSettings(false)} className="mt-2 w-full bg-orange-500 rounded py-1.5 text-xs">OK</button>
-          </div>
-        </div>
-      )}
-      {pivotSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setPivotSettings(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-64" onClick={(e) => e.stopPropagation()}>
-            <h4 className="text-sm font-medium mb-3">Pivot Settings</h4>
-            <div className="flex flex-wrap gap-1 mb-2">
-              {PIVOT_TFS.map((t) => (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => setPivotTf(t.value)}
-                  className={`px-2 py-1 rounded text-xs ${pivotTf === t.value ? "bg-orange-500" : "bg-gray-800"}`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-2 text-xs mb-2">
-              <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-              Fibonacci
-            </label>
-            <button type="button" onClick={() => setPivotSettings(false)} className="mt-2 w-full bg-orange-500 rounded py-1.5 text-xs">OK</button>
-          </div>
-        </div>
-      )}
-      {trendSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setTrendSettings(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-64" onClick={(e) => e.stopPropagation()}>
-            <h4 className="text-sm font-medium mb-3">Trend Settings</h4>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Period</span>
-              <input
-                value={trendPeriodStr}
-                onChange={(e) => setTrendPeriodStr(e.target.value)}
-                onBlur={() => {
-                  const n = parseInt(trendPeriodStr, 10);
-                  if (!Number.isNaN(n) && n > 2) setTrendPeriod(n);
-                }}
-                className="flex-1 bg-gray-800 rounded px-2 py-1 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Max</span>
-              <input
-                type="number"
-                min={1}
-                max={6}
-                value={trendMax}
-                onChange={(e) => setTrendMax(Math.max(1, Math.min(6, parseInt(e.target.value, 10) || 1)))}
-                className="flex-1 bg-gray-800 rounded px-2 py-1 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs w-14">Up</span>
-              <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs w-14">Down</span>
-              <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-7 h-7" />
-            </div>
-            <button type="button" onClick={() => setTrendSettings(false)} className="mt-2 w-full bg-orange-500 rounded py-1.5 text-xs">OK</button>
-          </div>
-        </div>
-      )}
+      <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
     </div>
   );
 }
