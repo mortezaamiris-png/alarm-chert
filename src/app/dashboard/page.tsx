@@ -20,6 +20,7 @@ interface ChartLine {
   width?: number | null;
   style?: string | null;
   start_time?: number | null;
+  dash?: string | null;
 }
 
 interface Alarm {
@@ -32,6 +33,8 @@ interface Alarm {
   note?: string | null;
   color?: string | null;
   last_price?: number | null;
+  width?: number | null;
+  dash?: string | null;
 }
 
 type ToolMode = "none" | "draw" | "ray" | "alarm" | "move";
@@ -297,6 +300,10 @@ function didCross(
   );
 }
 
+function toLineStyle(dash?: string | null) {
+  return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
+}
+
 function CoinIcon({ symbol }: { symbol: string }) {
   const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
   return (
@@ -418,13 +425,15 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("above");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
-  const [notifEnabled, setNotifEnabled] = useState(false);
   const [showSideWl, setShowSideWl] = useState(true);
 
   const [drawColor, setDrawColor] = useState(() =>
     loadLS("draw_color", DEFAULT_LINE_COLOR)
   );
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
+  const [drawDash, setDrawDash] = useState<"solid" | "dashed">(() =>
+    loadLS("draw_dash", "solid")
+  );
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
   const [smaVisible, setSmaVisible] = useState(() => loadLS("vis_sma", true));
@@ -479,24 +488,76 @@ export default function DashboardPage() {
 
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
-  const [noteDraft, setNoteDraft] = useState("");
+  const [noteDraft, setNoteDraft] = useState("");  const modeRef = useRef(mode);
+  const previewPriceRef = useRef(previewPrice);
+  const conditionRef = useRef(condition);
+  const movingIdRef = useRef(movingId);
+  const movingTypeRef = useRef(movingType);
+  const drawColorRef = useRef(drawColor);
+  const drawWidthRef = useRef(drawWidth);
+  const drawDashRef = useRef(drawDash);
+  const symbolRef = useRef(symbol);
+  const alarmsRef = useRef(alarms);
+  const linesRef = useRef(lines);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    previewPriceRef.current = previewPrice;
+  }, [previewPrice]);
+  useEffect(() => {
+    conditionRef.current = condition;
+  }, [condition]);
+  useEffect(() => {
+    movingIdRef.current = movingId;
+  }, [movingId]);
+  useEffect(() => {
+    movingTypeRef.current = movingType;
+  }, [movingType]);
+  useEffect(() => {
+    drawColorRef.current = drawColor;
+    saveLS("draw_color", drawColor);
+  }, [drawColor]);
+  useEffect(() => {
+    drawWidthRef.current = drawWidth;
+    saveLS("draw_width", drawWidth);
+  }, [drawWidth]);
+  useEffect(() => {
+    drawDashRef.current = drawDash;
+    saveLS("draw_dash", drawDash);
+  }, [drawDash]);
+  useEffect(() => {
+    symbolRef.current = symbol;
+    localStorage.setItem("chart_symbol", symbol);
+  }, [symbol]);
+  useEffect(() => {
+    localStorage.setItem("chart_interval", interval);
+  }, [interval]);
+  useEffect(() => {
+    saveLS("chart_tz", timeZone);
+  }, [timeZone]);
+  useEffect(() => {
+    saveLS("fav_tfs", favTfs);
+  }, [favTfs]);
+  useEffect(() => {
+    alarmsRef.current = alarms;
+  }, [alarms]);
+  useEffect(() => {
+    linesRef.current = lines;
+  }, [lines]);
 
   useEffect(() => {
     saveLS("ind_sma", showSMA);
-  }, [showSMA]);
-  useEffect(() => {
     saveLS("vis_sma", smaVisible);
-  }, [smaVisible]);
-  useEffect(() => {
     saveLS("sma1", sma1);
     saveLS("sma2", sma2);
     saveLS("sma3", sma3);
-  }, [sma1, sma2, sma3]);
-  useEffect(() => {
     saveLS("smaC1", smaColor1);
     saveLS("smaC2", smaColor2);
     saveLS("smaC3", smaColor3);
-  }, [smaColor1, smaColor2, smaColor3]);
+  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
+
   useEffect(() => {
     saveLS("ind_pivot", showPivot);
     saveLS("vis_pivot", pivotVisible);
@@ -505,6 +566,7 @@ export default function DashboardPage() {
     saveLS("pivot_hist", pivotHistory);
     saveLS("pivot_hist_n", pivotHistCount);
   }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotHistory, pivotHistCount]);
+
   useEffect(() => {
     saveLS("ind_rsi", showRSI);
     saveLS("vis_rsi", rsiVisible);
@@ -512,6 +574,7 @@ export default function DashboardPage() {
     saveLS("rsi_c", rsiColor);
     saveLS("rsi_h", rsiHeight);
   }, [showRSI, rsiVisible, rsiPeriod, rsiColor, rsiHeight]);
+
   useEffect(() => {
     saveLS("ind_dmi", showDMI);
     saveLS("vis_dmi", dmiVisible);
@@ -521,10 +584,12 @@ export default function DashboardPage() {
     saveLS("dmi_ac", dmiAdxColor);
     saveLS("dmi_h", dmiHeight);
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, dmiHeight]);
+
   useEffect(() => {
     saveLS("ind_vol", showVol);
     saveLS("vis_vol", volVisible);
   }, [showVol, volVisible]);
+
   useEffect(() => {
     saveLS("ind_trend", showTrend);
     saveLS("vis_trend", trendVisible);
@@ -533,111 +598,93 @@ export default function DashboardPage() {
     saveLS("trend_dn", trendDownColor);
     saveLS("trend_max", trendMax);
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
-  useEffect(() => {
-    saveLS("chart_tz", timeZone);
-  }, [timeZone]);
-  useEffect(() => {
-    saveLS("draw_color", drawColor);
-  }, [drawColor]);
-  useEffect(() => {
-    saveLS("draw_width", drawWidth);
-  }, [drawWidth]);
-  useEffect(() => {
-    saveLS("fav_tfs", favTfs);
-  }, [favTfs]);
-  useEffect(() => {
-    localStorage.setItem("chart_symbol", symbol);
-  }, [symbol]);
-  useEffect(() => {
-    localStorage.setItem("chart_interval", interval);
-  }, [interval]);
 
-  const modeRef = useRef(mode);
-  const previewPriceRef = useRef(previewPrice);
-  const movingIdRef = useRef(movingId);
-  const movingTypeRef = useRef(movingType);
-  const conditionRef = useRef(condition);
-  const savingRef = useRef(saving);
-  const symbolRef = useRef(symbol);
-  const intervalRef = useRef(interval);
-  const timeZoneRef = useRef(timeZone);
-  const drawColorRef = useRef(drawColor);
-  const drawWidthRef = useRef(drawWidth);
-  const showRSIRef = useRef(showRSI);
-  const showDMIRef = useRef(showDMI);
-  const showVolRef = useRef(showVol);
-  const rsiHeightRef = useRef(rsiHeight);
-  const dmiHeightRef = useRef(dmiHeight);
-  const alarmsRef = useRef(alarms);
+  const favTfButtons = useMemo(
+    () => ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value)),
+    [favTfs]
+  );
 
-  useEffect(() => {
-    modeRef.current = mode;
-  }, [mode]);
-  useEffect(() => {
-    previewPriceRef.current = previewPrice;
-  }, [previewPrice]);
-  useEffect(() => {
-    movingIdRef.current = movingId;
-  }, [movingId]);
-  useEffect(() => {
-    movingTypeRef.current = movingType;
-  }, [movingType]);
-  useEffect(() => {
-    conditionRef.current = condition;
-  }, [condition]);
-  useEffect(() => {
-    savingRef.current = saving;
-  }, [saving]);
-  useEffect(() => {
-    symbolRef.current = symbol;
-  }, [symbol]);
-  useEffect(() => {
-    intervalRef.current = interval;
-  }, [interval]);
-  useEffect(() => {
-    timeZoneRef.current = timeZone;
-  }, [timeZone]);
-  useEffect(() => {
-    drawColorRef.current = drawColor;
-  }, [drawColor]);
-  useEffect(() => {
-    drawWidthRef.current = drawWidth;
-  }, [drawWidth]);
-  useEffect(() => {
-    showRSIRef.current = showRSI;
-  }, [showRSI]);
-  useEffect(() => {
-    showDMIRef.current = showDMI;
-  }, [showDMI]);
-  useEffect(() => {
-    showVolRef.current = showVol;
-  }, [showVol]);
-  useEffect(() => {
-    rsiHeightRef.current = rsiHeight;
-  }, [rsiHeight]);
-  useEffect(() => {
-    dmiHeightRef.current = dmiHeight;
-  }, [dmiHeight]);
-  useEffect(() => {
-    alarmsRef.current = alarms;
+  const toggleFavTf = (v: string) => {
+    setFavTfs((prev) =>
+      prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]
+    );
+  };
+
+  const symbolUpper = symbol.toUpperCase();
+
+  const currentAlarms = useMemo(
+    () =>
+      alarms.filter(
+        (a) => a.symbol.toUpperCase() === symbolUpper && a.is_active && !a.triggered
+      ),
+    [alarms, symbolUpper]
+  );
+
+  const currentLines = useMemo(
+    () => lines.filter((l) => l.symbol.toUpperCase() === symbolUpper),
+    [lines, symbolUpper]
+  );
+
+  const alarmCountBySym = useMemo(() => {
+    const m: Record<string, number> = {};
+    alarms.forEach((a) => {
+      if (a.is_active && !a.triggered) {
+        const s = a.symbol.toUpperCase();
+        m[s] = (m[s] || 0) + 1;
+      }
+    });
+    return m;
+  }, [alarms]);
+
+  const lineCountBySym = useMemo(() => {
+    const m: Record<string, number> = {};
+    lines.forEach((l) => {
+      const s = l.symbol.toUpperCase();
+      m[s] = (m[s] || 0) + 1;
+    });
+    return m;
+  }, [lines]);
+
+  const alarmSymbols = useMemo(() => {
+    const set = new Set<string>();
+    alarms.forEach((a) => {
+      if (a.is_active && !a.triggered) set.add(a.symbol.toUpperCase());
+    });
+    return Array.from(set).sort();
   }, [alarms]);
 
   const updateMargins = useCallback(() => {
-    if (!chartRef.current) return;
-    const rsiOn = showRSIRef.current;
-    const dmiOn = showDMIRef.current;
-    const volOn = showVolRef.current;
-    const rh = rsiHeightRef.current / 100;
-    const dh = dmiHeightRef.current / 100;
-    let bottom = volOn ? 0.18 : 0.06;
-    if (rsiOn && dmiOn) bottom = rh + dh + 0.04;
-    else if (rsiOn) bottom = rh + 0.04;
-    else if (dmiOn) bottom = dh + 0.04;
-    if (volOn && (rsiOn || dmiOn)) bottom += 0.1;
-    chartRef.current.priceScale("right").applyOptions({
-      scaleMargins: { top: 0.04, bottom },
+    const chart = chartRef.current;
+    if (!chart) return;
+    let bottom = 0.02;
+    if (showVol && volVisible) {
+      chart.priceScale("volume").applyOptions({
+        scaleMargins: { top: 0.82, bottom: 0 },
+      });
+      bottom = 0.2;
+    }
+    if (showRSI && rsiVisible) {
+      chart.priceScale("rsi").applyOptions({
+        scaleMargins: { top: 0.72 - (showDMI && dmiVisible ? 0.12 : 0), bottom },
+      });
+    }
+    if (showDMI && dmiVisible) {
+      chart.priceScale("dmi").applyOptions({
+        scaleMargins: { top: 0.78, bottom },
+      });
+    }
+    chart.priceScale("right").applyOptions({
+      scaleMargins: {
+        top: 0.05,
+        bottom: Math.max(
+          bottom,
+          showRSI && rsiVisible ? 0.22 : 0.05,
+          showDMI && dmiVisible ? 0.22 : 0.05,
+          showVol && volVisible ? 0.2 : 0.05
+        ),
+      },
     });
-  }, []);
+  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
 
   const clearPreview = () => {
     if (previewLineRef.current && seriesRef.current) {
@@ -655,235 +702,76 @@ export default function DashboardPage() {
     setPreviewPrice(null);
   };
 
-  const resetMode = () => {
-    setMode("none");
-    setMovingId(null);
-    setMovingType(null);
-    clearPreview();
-  };
+  const renderAllLinesAndAlarms = useCallback(() => {
+    if (!seriesRef.current || !chartRef.current) return;
+    const series = seriesRef.current;
+    const chart = chartRef.current;
 
-  const toggleFavTf = (v: string) => {
-    setFavTfs((prev) =>
-      prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]
-    );
-  };
+    alarmLinesRef.current.forEach((pl) => {
+      try {
+        series.removePriceLine(pl);
+      } catch {}
+    });
+    alarmLinesRef.current.clear();
 
-  const requestNotifPermission = async () => {
-    try {
-      if (typeof Notification === "undefined") {
-        alert("Notifications not supported on this browser");
-        return;
+    chartLinesRef.current.forEach((s) => {
+      try {
+        chart.removeSeries(s);
+      } catch {}
+    });
+    chartLinesRef.current.clear();
+
+    const sym = symbolRef.current.toUpperCase();
+    const candles = candlesRef.current;
+
+    currentAlarms.forEach((a) => {
+      if (a.symbol.toUpperCase() !== sym) return;
+      const pl = series.createPriceLine({
+        price: a.price,
+        color: a.color || DEFAULT_ALARM_COLOR,
+        lineWidth: (a.width as any) || 2,
+        lineStyle: toLineStyle(a.dash),
+        axisLabelVisible: true,
+        title: `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`,
+      });
+      alarmLinesRef.current.set(a.id, pl);
+    });
+
+    currentLines.forEach((l) => {
+      if (l.symbol.toUpperCase() !== sym) return;
+      if (l.style === "ray" && l.start_time && candles.length) {
+        const lastT = candles[candles.length - 1].time;
+        const ray = chart.addLineSeries({
+          color: l.color || DEFAULT_LINE_COLOR,
+          lineWidth: (l.width as any) || 2,
+          lineStyle: toLineStyle(l.dash),
+          priceLineVisible: false,
+          lastValueVisible: true,
+          crosshairMarkerVisible: false,
+        });
+        ray.setData([
+          { time: l.start_time as any, value: l.price },
+          {
+            time: (lastT + barSeconds(interval) * 50) as any,
+            value: l.price,
+          },
+        ]);
+        chartLinesRef.current.set(l.id, ray);
+      } else {
+        const pl = series.createPriceLine({
+          price: l.price,
+          color: l.color || DEFAULT_LINE_COLOR,
+          lineWidth: (l.width as any) || 2,
+          lineStyle: toLineStyle(l.dash),
+          axisLabelVisible: true,
+          title: l.note ? `Line ${l.note}` : `Line ${formatPrice(l.price)}`,
+        });
+        alarmLinesRef.current.set(`line-${l.id}`, pl);
       }
-      const p = await Notification.requestPermission();
-      setNotifEnabled(p === "granted");
-      if (p === "granted") {
-        showLocalNotification("Alarm Chert", "Notifications enabled");
-      }
-    } catch {
-      alert("Could not enable notifications");
-    }
-  };
+    });
+  }, [currentAlarms, currentLines, interval]);
 
-  const addLine = async (
-    price: number,
-    style: "full" | "ray" = "full",
-    startTime: number | null = null
-  ) => {
-    if (savingRef.current) return;
-    setSaving(true);
-    try {
-      const p = formatPrice(price);
-      const payload: any = {
-        symbol: symbolRef.current,
-        price: p,
-        color: drawColorRef.current || DEFAULT_LINE_COLOR,
-        note: null,
-        width: drawWidthRef.current,
-        style,
-        start_time: style === "ray" ? startTime : null,
-      };
-      let { data, error } = await supabase
-        .from("chart_lines")
-        .insert([payload])
-        .select()
-        .single();
-      if (error) {
-        delete payload.width;
-        delete payload.style;
-        delete payload.start_time;
-        const r = await supabase.from("chart_lines").insert([payload]).select().single();
-        data = r.data;
-        error = r.error;
-        if (data) {
-          (data as any).width = drawWidthRef.current;
-          (data as any).style = style;
-          (data as any).start_time = startTime;
-        }
-      }
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      setLines((prev) => [data, ...prev]);
-      resetMode();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const createAlarmDirect = async (price: number) => {
-    if (savingRef.current) return;
-    setSaving(true);
-    try {
-      const p = formatPrice(price);
-      const payload: any = {
-        symbol: symbolRef.current.toUpperCase(),
-        price: p,
-        condition: conditionRef.current,
-        is_active: true,
-        triggered: false,
-        repeat: false,
-        note: null,
-        color: DEFAULT_ALARM_COLOR,
-        last_price: null,
-      };
-      let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-      if (error) {
-        delete payload.color;
-        delete payload.last_price;
-        const r = await supabase.from("alarms").insert([payload]).select().single();
-        data = r.data;
-        error = r.error;
-      }
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      setAlarms((prev) => [data, ...prev]);
-      resetMode();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const convertLineToAlarm = async (line: ChartLine) => {
-    if (savingRef.current) return;
-    setSaving(true);
-    try {
-      const payload: any = {
-        symbol: (line.symbol || symbolRef.current).toUpperCase(),
-        price: line.price,
-        condition: "cross",
-        is_active: true,
-        triggered: false,
-        repeat: false,
-        note: line.note || null,
-        color: line.color || DEFAULT_ALARM_COLOR,
-      };
-      let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-      if (error) {
-        delete payload.color;
-        const r = await supabase.from("alarms").insert([payload]).select().single();
-        data = r.data;
-        error = r.error;
-      }
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      await supabase.from("chart_lines").delete().eq("id", line.id);
-      setLines((prev) => prev.filter((l) => l.id !== line.id));
-      setAlarms((prev) => [data, ...prev]);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const updateLinePrice = async (id: string, price: number) => {
-    const p = formatPrice(price);
-    await supabase.from("chart_lines").update({ price: p }).eq("id", id);
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: p } : l)));
-    resetMode();
-  };
-
-  const updateAlarmPrice = async (id: string, price: number) => {
-    const p = formatPrice(price);
-    await supabase.from("alarms").update({ price: p }).eq("id", id);
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: p } : a)));
-    resetMode();
-  };
-
-  const updateLineColor = async (id: string, color: string) => {
-    await supabase.from("chart_lines").update({ color }).eq("id", id);
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
-  };
-
-  const updateLineWidth = async (id: string, width: number) => {
-    await supabase.from("chart_lines").update({ width }).eq("id", id);
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
-  };
-
-  const updateAlarmColor = async (id: string, color: string) => {
-    await supabase.from("alarms").update({ color }).eq("id", id);
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
-  };
-
-  const saveNote = async () => {
-    if (!editingNoteId || !editingNoteType) return;
-    const note = noteDraft.trim() || null;
-    if (editingNoteType === "line") {
-      await supabase.from("chart_lines").update({ note }).eq("id", editingNoteId);
-      setLines((prev) =>
-        prev.map((l) => (l.id === editingNoteId ? { ...l, note } : l))
-      );
-    } else {
-      await supabase.from("alarms").update({ note }).eq("id", editingNoteId);
-      setAlarms((prev) =>
-        prev.map((a) => (a.id === editingNoteId ? { ...a, note } : a))
-      );
-    }
-    setEditingNoteId(null);
-    setEditingNoteType(null);
-    setNoteDraft("");
-  };
-
-  const startEditNote = (id: string, type: "line" | "alarm", current?: string | null) => {
-    setEditingNoteId(id);
-    setEditingNoteType(type);
-    setNoteDraft(current || "");
-  };
-
-  const deleteLine = async (id: string) => {
-    await supabase.from("chart_lines").delete().eq("id", id);
-    setLines((prev) => prev.filter((l) => l.id !== id));
-  };
-
-  const deleteAlarm = async (id: string) => {
-    await supabase.from("alarms").update({ is_active: false }).eq("id", id);
-    setAlarms((prev) => prev.filter((a) => a.id !== id));
-  };
-
-  const cycleCondition = async (alarm: Alarm) => {
-    const next =
-      alarm.condition === "above"
-        ? "below"
-        : alarm.condition === "below"
-        ? "cross"
-        : "above";
-    await supabase.from("alarms").update({ condition: next }).eq("id", alarm.id);
-    setAlarms((prev) =>
-      prev.map((a) => (a.id === alarm.id ? { ...a, condition: next } : a))
-    );
-  };
-
-  const startMove = (id: string, type: "line" | "alarm", price: number) => {
-    setMode("move");
-    setMovingId(id);
-    setMovingType(type);
-    setPreviewPrice(price);
-  };
-
-  const goToSymbol = (sym: string) => setSymbol(sym.toUpperCase());  const removeSMA = () => {
+  const removeSMA = () => {
     if (!chartRef.current || !smaSeriesRef.current) return;
     try {
       chartRef.current.removeSeries(smaSeriesRef.current.s1);
@@ -894,24 +782,24 @@ export default function DashboardPage() {
   };
 
   const applySMA = (candles: any[]) => {
-    if (!chartRef.current) return;
+    if (!chartRef.current || !smaVisible) return;
     removeSMA();
-    if (!showSMA || !smaVisible || !candles.length) return;
-    const s1 = chartRef.current.addLineSeries({
+    const c = chartRef.current;
+    const s1 = c.addLineSeries({
       color: smaColor1,
-      lineWidth: 2,
+      lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
-    const s2 = chartRef.current.addLineSeries({
+    const s2 = c.addLineSeries({
       color: smaColor2,
-      lineWidth: 2,
+      lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
-    const s3 = chartRef.current.addLineSeries({
+    const s3 = c.addLineSeries({
       color: smaColor3,
-      lineWidth: 2,
+      lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
@@ -919,178 +807,6 @@ export default function DashboardPage() {
     s2.setData(calcSMA(candles, sma2) as any);
     s3.setData(calcSMA(candles, sma3) as any);
     smaSeriesRef.current = { s1, s2, s3 };
-  };
-
-  const removePivot = () => {
-    if (!chartRef.current) return;
-    pivotSeriesRef.current.forEach((s) => {
-      try {
-        chartRef.current?.removeSeries(s);
-      } catch {}
-    });
-    pivotSeriesRef.current = [];
-  };
-
-  const applyPivot = async (sym: string, candles: any[]) => {
-    if (!chartRef.current || !candles.length) return;
-    removePivot();
-    if (!showPivot || !pivotVisible) return;
-    try {
-      const res = await fetch(
-        `/api/kline?symbol=${encodeURIComponent(sym)}&interval=${pivotTf}&limit=10`
-      );
-      const data = await res.json();
-      const list = data?.data;
-      if (!list || list.length < 2) return;
-      const bs = barSeconds(intervalRef.current);
-      const lastT = candles[candles.length - 1].time as number;
-      const periods = pivotHistory ? 1 + pivotHistCount : 1;
-
-      for (let i = 1; i <= periods && i < list.length; i++) {
-        const bar = list[list.length - 1 - i];
-        if (!bar) continue;
-        const high = Number(bar.high),
-          low = Number(bar.low),
-          close = Number(bar.close);
-        const range = high - low;
-        const pp = (high + low + close) / 3;
-        const r1 = 2 * pp - low,
-          r2 = pp + range,
-          r3 = r1 + range,
-          r4 = r3 + (r2 - r1);
-        const s1p = 2 * pp - high,
-          s2p = pp - range,
-          s3p = s1p - range,
-          s4p = s3p - (s1p - s2p);
-        const isCurrent = i === 1;
-        const alpha = isCurrent ? 1 : 0.45;
-        const half = bs * (isCurrent ? 5 : 3);
-        const offset = (i - 1) * bs * 8;
-        const t0 = lastT - half - offset;
-        const t1 = lastT + half - offset;
-        const levels = [
-          { price: r3, color: isCurrent ? "#67e8f9" : `rgba(103,232,249,${alpha})` },
-          { price: r2, color: isCurrent ? "#22d3ee" : `rgba(34,211,238,${alpha})` },
-          { price: r1, color: isCurrent ? "#06b6d4" : `rgba(6,182,212,${alpha})` },
-          { price: pp, color: isCurrent ? "#ffffff" : `rgba(255,255,255,${alpha})` },
-          { price: s1p, color: isCurrent ? "#e879f9" : `rgba(232,121,249,${alpha})` },
-          { price: s2p, color: isCurrent ? "#d946ef" : `rgba(217,70,239,${alpha})` },
-          { price: s3p, color: isCurrent ? "#c026d3" : `rgba(192,38,211,${alpha})` },
-        ];
-        if (pivotFib) {
-          levels.push(
-            { price: r4, color: isCurrent ? "#a5f3fc" : `rgba(165,243,252,${alpha})` },
-            { price: s4p, color: isCurrent ? "#f0abfc" : `rgba(240,171,252,${alpha})` }
-          );
-        }
-        levels.forEach((lv) => {
-          const s = chartRef.current!.addLineSeries({
-            color: lv.color,
-            lineWidth: isCurrent ? 2 : 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          s.setData([
-            { time: t0 as any, value: formatPrice(lv.price) },
-            { time: t1 as any, value: formatPrice(lv.price) },
-          ]);
-          pivotSeriesRef.current.push(s);
-        });
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const removeTrend = () => {
-    if (!chartRef.current) return;
-    trendSeriesRef.current.forEach((s) => {
-      try {
-        chartRef.current?.removeSeries(s);
-      } catch {}
-    });
-    trendSeriesRef.current = [];
-  };
-
-  const applyTrend = (candles: any[]) => {
-    if (!chartRef.current) return;
-    removeTrend();
-    if (!showTrend || !trendVisible || candles.length < trendPeriod * 2 + 5) return;
-    const { highs, lows } = findPivots(candles, Math.max(5, trendPeriod));
-    const maxL = Math.max(1, trendMax);
-    let upCount = 0;
-    for (let a = lows.length - 1; a >= 0 && upCount < maxL; a--) {
-      for (let b = a - 1; b >= 0 && upCount < maxL; b--) {
-        const p1 = lows[b],
-          p2 = lows[a];
-        if (p2.price <= p1.price) continue;
-        const slope = (p2.price - p1.price) / (p2.i - p1.i);
-        let valid = true;
-        for (let k = p1.i + 1; k < candles.length; k++) {
-          if (candles[k].close < (p1.price + slope * (k - p1.i)) * 0.998) {
-            valid = false;
-            break;
-          }
-        }
-        if (valid) {
-          const endI = candles.length - 1;
-          const s = chartRef.current!.addLineSeries({
-            color: trendUpColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          s.setData([
-            { time: p1.time as any, value: p1.price },
-            {
-              time: candles[endI].time as any,
-              value: p1.price + slope * (endI - p1.i),
-            },
-          ]);
-          trendSeriesRef.current.push(s);
-          upCount++;
-          break;
-        }
-      }
-    }
-    let dnCount = 0;
-    for (let a = highs.length - 1; a >= 0 && dnCount < maxL; a--) {
-      for (let b = a - 1; b >= 0 && dnCount < maxL; b--) {
-        const p1 = highs[b],
-          p2 = highs[a];
-        if (p2.price >= p1.price) continue;
-        const slope = (p2.price - p1.price) / (p2.i - p1.i);
-        let valid = true;
-        for (let k = p1.i + 1; k < candles.length; k++) {
-          if (candles[k].close > (p1.price + slope * (k - p1.i)) * 1.002) {
-            valid = false;
-            break;
-          }
-        }
-        if (valid) {
-          const endI = candles.length - 1;
-          const s = chartRef.current!.addLineSeries({
-            color: trendDownColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          s.setData([
-            { time: p1.time as any, value: p1.price },
-            {
-              time: candles[endI].time as any,
-              value: p1.price + slope * (endI - p1.i),
-            },
-          ]);
-          trendSeriesRef.current.push(s);
-          dnCount++;
-          break;
-        }
-      }
-    }
   };
 
   const removeRSI = () => {
@@ -1102,12 +818,8 @@ export default function DashboardPage() {
   };
 
   const applyRSI = (candles: any[]) => {
-    if (!chartRef.current) return;
+    if (!chartRef.current || !rsiVisible) return;
     removeRSI();
-    if (!showRSI || !rsiVisible || !candles.length) return;
-    const both = showRSI && showDMI;
-    const rh = rsiHeight / 100,
-      dh = dmiHeight / 100;
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -1116,28 +828,9 @@ export default function DashboardPage() {
       lastValueVisible: true,
     });
     chartRef.current.priceScale("rsi").applyOptions({
-      scaleMargins: both
-        ? { top: 1 - rh - dh - 0.02, bottom: dh + 0.02 }
-        : { top: 1 - rh - 0.02, bottom: 0.02 },
-      borderVisible: false,
+      scaleMargins: { top: 0.75, bottom: 0.05 },
     });
     s.setData(calcRSI(candles, rsiPeriod) as any);
-    try {
-      s.createPriceLine({
-        price: 70,
-        color: "#ffffff",
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: false,
-      });
-      s.createPriceLine({
-        price: 30,
-        color: "#ffffff",
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: false,
-      });
-    } catch {}
     rsiSeriesRef.current = s;
     updateMargins();
   };
@@ -1153,11 +846,8 @@ export default function DashboardPage() {
   };
 
   const applyDMI = (candles: any[]) => {
-    if (!chartRef.current) return;
+    if (!chartRef.current || !dmiVisible) return;
     removeDMI();
-    if (!showDMI || !dmiVisible || !candles.length) return;
-    const both = showRSI && showDMI;
-    const dh = dmiHeight / 100;
     const { plusDI, minusDI, adx } = calcDMI(candles, dmiPeriod);
     const plus = chartRef.current.addLineSeries({
       color: dmiPlusColor,
@@ -1181,10 +871,7 @@ export default function DashboardPage() {
       lastValueVisible: true,
     });
     chartRef.current.priceScale("dmi").applyOptions({
-      scaleMargins: both
-        ? { top: 1 - dh - 0.01, bottom: 0.01 }
-        : { top: 1 - dh - 0.02, bottom: 0.02 },
-      borderVisible: false,
+      scaleMargins: { top: 0.78, bottom: 0.05 },
     });
     plus.setData(plusDI as any);
     minus.setData(minusDI as any);
@@ -1193,424 +880,394 @@ export default function DashboardPage() {
     updateMargins();
   };
 
-  const removeVol = () => {
-    if (!chartRef.current || !volumeSeriesRef.current) return;
-    try {
-      chartRef.current.removeSeries(volumeSeriesRef.current);
-    } catch {}
-    volumeSeriesRef.current = null;
-  };
-
-  const applyVol = (candles: any[]) => {
+  const removePivot = () => {
     if (!chartRef.current) return;
-    removeVol();
-    if (!showVol || !volVisible || !candles.length) return;
-    const vol = chartRef.current.addHistogramSeries({
-      priceFormat: { type: "volume" },
-      priceScaleId: "vol",
+    pivotSeriesRef.current.forEach((s) => {
+      try {
+        chartRef.current!.removeSeries(s);
+      } catch {}
     });
-    chartRef.current.priceScale("vol").applyOptions({
-      scaleMargins: { top: 0.8, bottom: 0 },
-      borderVisible: false,
-    });
-    vol.setData(
-      candles.map((c: any) => ({
-        time: c.time,
-        value: c.volume || 0,
-        color:
-          c.close >= c.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
-      })) as any
-    );
-    volumeSeriesRef.current = vol;
-    updateMargins();
+    pivotSeriesRef.current = [];
   };
 
-  const loadCandles = async (sym: string, tf: string) => {
+  const applyPivot = async (sym: string, candles: any[]) => {
+    if (!chartRef.current || !pivotVisible || !candles.length) return;
+    removePivot();
+    const last = candles[candles.length - 1];
+    const lookback = pivotTf === "W" ? 20 : pivotTf === "D" ? 10 : 5;
+    const slice = candles.slice(-lookback * 3);
+    const hi = Math.max(...slice.map((c: any) => c.high));
+    const lo = Math.min(...slice.map((c: any) => c.low));
+    const cl = last.close;
+    const pp = (hi + lo + cl) / 3;
+    const r1 = 2 * pp - lo;
+    const s1 = 2 * pp - hi;
+    const r2 = pp + (hi - lo);
+    const s2 = pp - (hi - lo);
+    const r3 = hi + 2 * (pp - lo);
+    const s3 = lo - 2 * (hi - pp);
+    const levels = [
+      { p: pp, c: "#eab308", t: "PP" },
+      { p: r1, c: "#ef4444", t: "R1" },
+      { p: s1, c: "#22c55e", t: "S1" },
+      { p: r2, c: "#f97316", t: "R2" },
+      { p: s2, c: "#14b8a6", t: "S2" },
+    ];
+    if (pivotFib) {
+      levels.push(
+        { p: r3, c: "#dc2626", t: "R3" },
+        { p: s3, c: "#16a34a", t: "S3" }
+      );
+    }
+    levels.forEach((lv) => {
+      const s = chartRef.current!.addLineSeries({
+        color: lv.c,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: lv.t,
+      });
+      const t0 = candles[0].time;
+      const t1 = last.time;
+      s.setData([
+        { time: t0 as any, value: lv.p },
+        { time: t1 as any, value: lv.p },
+      ]);
+      pivotSeriesRef.current.push(s);
+    });
+  };
+
+  const removeTrend = () => {
+    if (!chartRef.current) return;
+    trendSeriesRef.current.forEach((s) => {
+      try {
+        chartRef.current!.removeSeries(s);
+      } catch {}
+    });
+    trendSeriesRef.current = [];
+  };
+
+  const applyTrend = (candles: any[]) => {
+    if (!chartRef.current || !trendVisible || candles.length < 20) return;
+    removeTrend();
+    const { highs, lows } = findPivots(candles, Math.max(3, Math.floor(trendPeriod / 4)));
+    const up = highs.slice(-trendMax);
+    const dn = lows.slice(-trendMax);
+    up.forEach((h, idx) => {
+      if (idx === 0) return;
+      const prev = up[idx - 1];
+      const s = chartRef.current!.addLineSeries({
+        color: trendUpColor,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      s.setData([
+        { time: prev.time as any, value: prev.price },
+        { time: h.time as any, value: h.price },
+      ]);
+      trendSeriesRef.current.push(s);
+    });
+    dn.forEach((l, idx) => {
+      if (idx === 0) return;
+      const prev = dn[idx - 1];
+      const s = chartRef.current!.addLineSeries({
+        color: trendDownColor,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      s.setData([
+        { time: prev.time as any, value: prev.price },
+        { time: l.time as any, value: l.price },
+      ]);
+      trendSeriesRef.current.push(s);
+    });
+  };
+
+  const loadCandles = useCallback(async () => {
+    if (!chartContainerRef.current) return;
     try {
       const res = await fetch(
-        `/api/kline?symbol=${encodeURIComponent(sym)}&interval=${tf}&limit=300`
+        `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=500`
       );
-      const data = await res.json();
-      const list = data?.data;
-      if (!list?.length || !seriesRef.current) return;
-      const candles = list.map((item: any) => ({
-        time: Number(item.time),
+      const json = await res.json();
+      const raw = json?.data || json;
+      if (!Array.isArray(raw) || !raw.length) return;
+
+      const processed = raw.map((item: any) => ({
+        time: item.time,
         open: Number(item.open),
         high: Number(item.high),
         low: Number(item.low),
         close: Number(item.close),
-        volume: Number(item.volume ?? item.vol ?? 0),
+        volume: Number(item.volume ?? item.value ?? 0),
       }));
-      if (!candles.length) return;
-      candlesRef.current = candles;
-      const lastClose = candles[candles.length - 1].close;
-      const { precision, minMove } = getPrecision(lastClose);
-      seriesRef.current.applyOptions({
-        priceFormat: { type: "price", precision, minMove },
-      });
-      seriesRef.current.setData(candles);
-      chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
-      chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
-      chartRef.current?.timeScale().fitContent();
-      chartRef.current?.timeScale().applyOptions({ rightOffset: 15 });
+      candlesRef.current = processed;
+
+      if (!chartRef.current) {
+        const chart = createChart(chartContainerRef.current, {
+          width: chartContainerRef.current.clientWidth,
+          height: 700,
+          layout: { background: { color: "#111111" }, textColor: "#ccc" },
+          grid: {
+            vertLines: { color: "#222" },
+            horzLines: { color: "#222" },
+          },
+          crosshair: { mode: 1 },
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+            borderColor: "#333",
+          },
+          rightPriceScale: { borderColor: "#333" },
+        });
+        chartRef.current = chart;
+
+        const candleSeries = chart.addCandlestickSeries({
+          upColor: "#22c55e",
+          downColor: "#ef4444",
+          borderUpColor: "#22c55e",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#22c55e",
+          wickDownColor: "#ef4444",
+        });
+        seriesRef.current = candleSeries;
+        const last = processed[processed.length - 1]?.close || 1;
+        const { precision, minMove } = getPrecision(last);
+        candleSeries.applyOptions({
+          priceFormat: { type: "price", precision, minMove },
+        });
+        candleSeries.setData(processed as any);
+
+        const volSeries = chart.addHistogramSeries({
+          color: "#666",
+          priceFormat: { type: "volume" },
+          priceScaleId: "volume",
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        volumeSeriesRef.current = volSeries;
+        volSeries.setData(
+          processed.map((c: any) => ({
+            time: c.time,
+            value: c.volume,
+            color:
+              c.close >= c.open
+                ? "rgba(34,197,94,0.45)"
+                : "rgba(239,68,68,0.45)",
+          })) as any
+        );
+        chart.priceScale("volume").applyOptions({
+          scaleMargins: { top: 0.82, bottom: 0 },
+        });
+        if (!showVol || !volVisible) {
+          volSeries.applyOptions({ visible: false });
+        }
+
+        chart.timeScale().fitContent();
+
+        chart.subscribeCrosshairMove((param) => {
+          if (
+            modeRef.current !== "draw" &&
+            modeRef.current !== "ray" &&
+            modeRef.current !== "alarm" &&
+            modeRef.current !== "move"
+          )
+            return;
+          if (!param.point || param.point.y < 0 || !seriesRef.current) return;
+          const price = seriesRef.current.coordinateToPrice(param.point.y);
+          if (price == null) return;
+          setPreviewPrice(price);
+
+          if (modeRef.current === "move" && movingIdRef.current) {
+            if (previewLineRef.current) {
+              try {
+                seriesRef.current.removePriceLine(previewLineRef.current);
+              } catch {}
+            }
+            previewLineRef.current = seriesRef.current.createPriceLine({
+              price,
+              color: "#fff",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: "Move",
+            });
+            return;
+          }
+
+          if (previewLineRef.current) {
+            try {
+              seriesRef.current.removePriceLine(previewLineRef.current);
+            } catch {}
+          }
+          const col =
+            modeRef.current === "alarm"
+              ? DEFAULT_ALARM_COLOR
+              : drawColorRef.current;
+          previewLineRef.current = seriesRef.current.createPriceLine({
+            price,
+            color: col,
+            lineWidth: drawWidthRef.current,
+            lineStyle: toLineStyle(drawDashRef.current),
+            axisLabelVisible: true,
+            title:
+              modeRef.current === "alarm"
+                ? `Alarm ${getConditionSymbol(conditionRef.current)}`
+                : modeRef.current === "ray"
+                ? "Ray"
+                : "Line",
+          });
+        });
+
+        chart.subscribeClick(async (param) => {
+          if (!param.point || !seriesRef.current) return;
+          const price = seriesRef.current.coordinateToPrice(param.point.y);
+          if (price == null) return;
+          const p = formatPrice(price);
+          const m = modeRef.current;
+
+          if (m === "move" && movingIdRef.current && movingTypeRef.current) {
+            await updateMoved(movingIdRef.current, movingTypeRef.current, p);
+            setMovingId(null);
+            setMovingType(null);
+            setMode("none");
+            clearPreview();
+            return;
+          }
+
+          if (m === "draw" || m === "ray") {
+            await saveLine(p, m === "ray" ? "ray" : "line", param.time as number);
+            setMode("none");
+            clearPreview();
+            return;
+          }
+
+          if (m === "alarm") {
+            await saveAlarm(p);
+            setMode("none");
+            clearPreview();
+            return;
+          }
+        });
+      } else {
+        seriesRef.current?.setData(processed as any);
+        if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.setData(
+            processed.map((c: any) => ({
+              time: c.time,
+              value: c.volume,
+              color:
+                c.close >= c.open
+                  ? "rgba(34,197,94,0.45)"
+                  : "rgba(239,68,68,0.45)",
+            })) as any
+          );
+          volumeSeriesRef.current.applyOptions({
+            visible: showVol && volVisible,
+          });
+        }
+      }
+
+      if (showSMA && smaVisible) applySMA(processed);
+      else removeSMA();
+      if (showRSI && rsiVisible) applyRSI(processed);
+      else removeRSI();
+      if (showDMI && dmiVisible) applyDMI(processed);
+      else removeDMI();
+      if (showPivot && pivotVisible) await applyPivot(symbol, processed);
+      else removePivot();
+      if (showTrend && trendVisible) applyTrend(processed);
+      else removeTrend();
+
       updateMargins();
-      applySMA(candles);
-      applyRSI(candles);
-      applyDMI(candles);
-      applyVol(candles);
-      applyPivot(sym, candles);
-      applyTrend(candles);
+      renderAllLinesAndAlarms();
     } catch (e) {
       console.error(e);
     }
-  };
-
-  const loadAllLines = async () => {
-    const { data } = await supabase
-      .from("chart_lines")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setLines(data || []);
-  };
-
-  const loadAllAlarms = async () => {
-    const { data } = await supabase
-      .from("alarms")
-      .select("*")
-      .eq("is_active", true)
-      .eq("triggered", false)
-      .order("created_at", { ascending: false });
-    setAlarms(data || []);
-  };
-
-  useEffect(() => {
-    if (typeof Notification !== "undefined") {
-      setNotifEnabled(Notification.permission === "granted");
-    }
-
-    const check = async () => {
-      const list = alarmsRef.current.filter((a) => a.is_active && !a.triggered);
-      if (!list.length) return;
-
-      const symbols = Array.from(new Set(list.map((a) => a.symbol.toUpperCase())));
-
-      for (const sym of symbols) {
-        try {
-          const res = await fetch(
-            `/api/ticker?symbols=${encodeURIComponent(sym)}`
-          );
-          const data = await res.json();
-          const price = Number(data?.data?.[sym]?.lastPrice);
-          if (!price || Number.isNaN(price)) continue;
-
-          const prev = prevPricesRef.current[sym];
-
-          for (const a of list.filter((x) => x.symbol.toUpperCase() === sym)) {
-            if (notifiedAlarmsRef.current.has(a.id)) continue;
-
-            if (didCross(a.condition, a.price, prev, price)) {
-              notifiedAlarmsRef.current.add(a.id);
-              showLocalNotification(
-                `Alarm: ${a.symbol}`,
-                `${getConditionSymbol(a.condition)} ${a.price}  (now ${price})`
-              );
-            }
-          }
-
-          prevPricesRef.current[sym] = price;
-        } catch {}
-      }
-
-      try {
-        const { data } = await supabase
-          .from("alarms")
-          .select("*")
-          .eq("is_active", true)
-          .eq("triggered", false)
-          .order("created_at", { ascending: false });
-        if (data) setAlarms(data);
-      } catch {}
-    };
-
-    const id = setInterval(check, 15000);
-    check();
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-    const chart = createChart(chartContainerRef.current, {
-      layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
-      grid: {
-        vertLines: { color: "#1f2937" },
-        horzLines: { color: "#1f2937" },
-      },
-      width: chartContainerRef.current.clientWidth,
-      height: 700,
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-        borderVisible: true,
-        rightOffset: 15,
-      },
-      localization: {
-        locale: "en-GB",
-        timeFormatter: (t: number) => formatTimeTZ(t, timeZoneRef.current),
-      },
-      rightPriceScale: {
-        autoScale: true,
-        scaleMargins: { top: 0.04, bottom: 0.12 },
-        borderVisible: false,
-      },
-      crosshair: {
-        mode: 0,
-        horzLine: {
-          visible: true,
-          labelVisible: true,
-          style: LineStyle.Dashed,
-          width: 1,
-          color: "#f97316",
-        },
-        vertLine: {
-          visible: true,
-          labelVisible: true,
-          style: LineStyle.Dashed,
-          width: 1,
-          color: "#6b7280",
-        },
-      },
-    });
-    const series = chart.addCandlestickSeries({
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderVisible: false,
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
-    });
-    chartRef.current = chart;
-    seriesRef.current = series;
-
-    chart.subscribeCrosshairMove((param) => {
-      if (modeRef.current === "none" || !param.point || !seriesRef.current) return;
-      const price = seriesRef.current.coordinateToPrice(param.point.y);
-      if (price === null) return;
-      const rounded = formatPrice(price);
-      setPreviewPrice(rounded);
-
-      if (previewLineRef.current) {
-        try {
-          seriesRef.current.removePriceLine(previewLineRef.current);
-        } catch {}
-        previewLineRef.current = null;
-      }
-      if (previewRayRef.current && chartRef.current) {
-        try {
-          chartRef.current.removeSeries(previewRayRef.current);
-        } catch {}
-        previewRayRef.current = null;
-      }
-
-      const m = modeRef.current;
-      if (m === "ray") {
-        const lastT = candlesRef.current.length
-          ? (candlesRef.current[candlesRef.current.length - 1].time as number)
-          : Math.floor(Date.now() / 1000);
-        const t0 = param.time ? (param.time as number) : lastT;
-        const t1 = lastT + barSeconds(intervalRef.current) * 80;
-        const s = chartRef.current!.addLineSeries({
-          color: drawColorRef.current,
-          lineWidth: drawWidthRef.current,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        s.setData([
-          { time: t0 as any, value: rounded },
-          { time: t1 as any, value: rounded },
-        ]);
-        previewRayRef.current = s;
-      } else {
-        previewLineRef.current = seriesRef.current.createPriceLine({
-          price: rounded,
-          color: m === "alarm" ? DEFAULT_ALARM_COLOR : drawColorRef.current,
-          lineWidth: drawWidthRef.current,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: m === "alarm" ? "Alarm" : m === "draw" ? "Line" : "Move",
-        });
-      }
-    });
-
-    chart.subscribeClick((param) => {
-      const m = modeRef.current;
-      const price = previewPriceRef.current;
-      if (!price || m === "none" || savingRef.current) return;
-
-      if (m === "draw") {
-        addLine(price, "full", null);
-      } else if (m === "ray") {
-        const clickTime = param.time
-          ? (param.time as number)
-          : candlesRef.current.length
-          ? (candlesRef.current[candlesRef.current.length - 1].time as number)
-          : Math.floor(Date.now() / 1000);
-        addLine(price, "ray", clickTime);
-      } else if (m === "alarm") {
-        createAlarmDirect(price);
-      } else if (m === "move" && movingIdRef.current && movingTypeRef.current) {
-        if (movingTypeRef.current === "line")
-          updateLinePrice(movingIdRef.current, price);
-        else updateAlarmPrice(movingIdRef.current, price);
-      }
-    });
-
-    const onResize = () => {
-      if (chartContainerRef.current)
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
-    };
-    window.addEventListener("resize", onResize);
-    loadCandles(symbol, interval);
-    loadAllLines();
-    loadAllAlarms();
-    return () => {
-      window.removeEventListener("resize", onResize);
-      chart.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!chartRef.current) return;
-    chartRef.current.applyOptions({
-      localization: {
-        locale: "en-GB",
-        timeFormatter: (t: number) => formatTimeTZ(t, timeZone),
-      },
-    });
-  }, [timeZone]);
-
-  useEffect(() => {
-    resetMode();
-    loadCandles(symbol, interval);
-  }, [interval]);
-
-  useEffect(() => {
-    if (symbol.length < 5) return;
-    const t = setTimeout(() => {
-      resetMode();
-      loadCandles(symbol, interval);
-    }, 500);
-    return () => clearTimeout(t);
-  }, [symbol]);
-
-  useEffect(() => {
-    if (candlesRef.current.length) applySMA(candlesRef.current);
-  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3]);
-  useEffect(() => {
-    if (candlesRef.current.length) applyRSI(candlesRef.current);
-    else updateMargins();
-  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, rsiHeight, showDMI, dmiHeight]);
-  useEffect(() => {
-    if (candlesRef.current.length) applyDMI(candlesRef.current);
-    else updateMargins();
   }, [
+    symbol,
+    interval,
+    showSMA,
+    smaVisible,
+    sma1,
+    sma2,
+    sma3,
+    smaColor1,
+    smaColor2,
+    smaColor3,
+    showRSI,
+    rsiVisible,
+    rsiPeriod,
+    rsiColor,
     showDMI,
     dmiVisible,
     dmiPeriod,
     dmiPlusColor,
     dmiMinusColor,
     dmiAdxColor,
-    dmiHeight,
-    showRSI,
-    rsiHeight,
+    showPivot,
+    pivotVisible,
+    pivotTf,
+    pivotFib,
+    showTrend,
+    trendVisible,
+    trendPeriod,
+    trendUpColor,
+    trendDownColor,
+    trendMax,
+    showVol,
+    volVisible,
+    renderAllLinesAndAlarms,
+    updateMargins,
   ]);
-  useEffect(() => {
-    if (candlesRef.current.length) applyVol(candlesRef.current);
-    else updateMargins();
-  }, [showVol, volVisible]);
-  useEffect(() => {
-    if (candlesRef.current.length) applyPivot(symbol, candlesRef.current);
-  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotHistory, pivotHistCount, symbol, interval]);
-  useEffect(() => {
-    if (candlesRef.current.length) applyTrend(candlesRef.current);
-  }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
+
+  const loadAllLines = useCallback(async () => {
+    const { data } = await supabase
+      .from("chart_lines")
+      .select("*")
+      .order("created_at", { ascending: false });
+    setLines((data as ChartLine[]) || []);
+  }, []);
+
+  const loadAllAlarms = useCallback(async () => {
+    const { data } = await supabase
+      .from("alarms")
+      .select("*")
+      .order("created_at", { ascending: false });
+    setAlarms((data as Alarm[]) || []);
+  }, []);
 
   useEffect(() => {
-    if (!seriesRef.current) return;
-    alarmLinesRef.current.forEach((pl) => seriesRef.current?.removePriceLine(pl));
-    alarmLinesRef.current.clear();
-    alarms
-      .filter((a) => a.symbol.toUpperCase() === symbol.toUpperCase())
-      .forEach((alarm) => {
-        if (mode === "move" && movingType === "alarm" && movingId === alarm.id) return;
-        const color = alarm.color || DEFAULT_ALARM_COLOR;
-        const pl = seriesRef.current!.createPriceLine({
-          price: alarm.price,
-          color,
-          lineWidth: 2,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title: alarm.note || `Alarm ${getConditionSymbol(alarm.condition)}`,
+    loadAllLines();
+    loadAllAlarms();
+  }, [loadAllLines, loadAllAlarms]);
+
+  useEffect(() => {
+    loadCandles();
+  }, [loadCandles]);
+
+  useEffect(() => {
+    renderAllLinesAndAlarms();
+  }, [currentAlarms, currentLines, renderAllLinesAndAlarms]);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (chartContainerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
         });
-        alarmLinesRef.current.set(alarm.id, pl);
-      });
-  }, [alarms, mode, movingId, movingType, symbol]);
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
-  useEffect(() => {
-    if (!seriesRef.current || !chartRef.current) return;
-    chartLinesRef.current.forEach((obj) => {
-      try {
-        if (obj.type === "price") seriesRef.current?.removePriceLine(obj.ref);
-        else chartRef.current?.removeSeries(obj.ref);
-      } catch {}
-    });
-    chartLinesRef.current.clear();
-
-    const candles = candlesRef.current;
-    const lastT = candles.length
-      ? (candles[candles.length - 1].time as number)
-      : Math.floor(Date.now() / 1000);
-    const futureT = lastT + barSeconds(interval) * 80;
-
-    lines
-      .filter((l) => l.symbol.toUpperCase() === symbol.toUpperCase())
-      .forEach((line) => {
-        if (mode === "move" && movingType === "line" && movingId === line.id) return;
-        const w = (line.width as 1 | 2 | 3) || 2;
-        const style = line.style || "full";
-
-        if (style === "ray") {
-          const start =
-            line.start_time != null ? Number(line.start_time) : lastT;
-          const s = chartRef.current!.addLineSeries({
-            color: line.color || DEFAULT_LINE_COLOR,
-            lineWidth: w,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            crosshairMarkerVisible: false,
-          });
-          s.setData([
-            { time: start as any, value: line.price },
-            { time: futureT as any, value: line.price },
-          ]);
-          chartLinesRef.current.set(line.id, { type: "ray", ref: s });
-        } else {
-          const pl = seriesRef.current!.createPriceLine({
-            price: line.price,
-            color: line.color || DEFAULT_LINE_COLOR,
-            lineWidth: w,
-            lineStyle: LineStyle.Solid,
-            axisLabelVisible: true,
-            title: line.note || "Line",
-          });
-          chartLinesRef.current.set(line.id, { type: "price", ref: pl });
-        }
-      });
-  }, [lines, mode, movingId, movingType, symbol, interval]);
-
-  // resize chart when side panel toggles
   useEffect(() => {
     const t = setTimeout(() => {
-      if (chartRef.current && chartContainerRef.current) {
+      if (chartContainerRef.current && chartRef.current) {
         chartRef.current.applyOptions({
           width: chartContainerRef.current.clientWidth,
         });
@@ -1619,169 +1276,323 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl]);
 
-  const symbolUpper = symbol.toUpperCase();
-  const currentAlarms = useMemo(
-    () =>
-      alarms.filter(
-        (a) => a.symbol.toUpperCase() === symbolUpper && a.is_active && !a.triggered
-      ),
-    [alarms, symbolUpper]
-  );
-  const currentLines = useMemo(
-    () => lines.filter((l) => l.symbol.toUpperCase() === symbolUpper),
-    [lines, symbolUpper]
-  );
-  const alarmSymbols = useMemo(() => {
-    const set = new Set<string>();
-    alarms.forEach((a) => {
-      if (a.is_active && !a.triggered) set.add(a.symbol.toUpperCase());
-    });
-    return Array.from(set).sort();
-  }, [alarms]);
-  const alarmCountBySym = useMemo(() => {
-    const m: Record<string, number> = {};
-    alarms.forEach((a) => {
-      if (a.is_active && !a.triggered) {
-        const s = a.symbol.toUpperCase();
-        m[s] = (m[s] || 0) + 1;
-      }
-    });
-    return m;
-  }, [alarms]);
-  const lineCountBySym = useMemo(() => {
-    const m: Record<string, number> = {};
-    lines.forEach((l) => {
-      const s = l.symbol.toUpperCase();
-      m[s] = (m[s] || 0) + 1;
-    });
-    return m;
-  }, [lines]);
-  const favTfButtons = ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value));
+  // realtime alarm check
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const active = alarmsRef.current.filter((a) => a.is_active && !a.triggered);
+      if (!active.length) return;
+      const symbols = [...new Set(active.map((a) => a.symbol.toUpperCase()))];
+      try {
+        const res = await fetch(
+          `/api/ticker?symbols=${encodeURIComponent(symbols.join(","))}`
+        );
+        const json = await res.json();
+        if (!json?.ok || !json.data || cancelled) return;
+        for (const a of active) {
+          const row = json.data[a.symbol.toUpperCase()];
+          const price = row?.lastPrice;
+          if (price == null) continue;
+          const prev = prevPricesRef.current[a.symbol.toUpperCase()];
+          prevPricesRef.current[a.symbol.toUpperCase()] = price;
+          if (!didCross(a.condition, a.price, prev, price)) continue;
+          if (notifiedAlarmsRef.current.has(a.id)) continue;
+          notifiedAlarmsRef.current.add(a.id);
+          showLocalNotification(
+            `${a.symbol} ${formatPrice(price)}`,
+            `Alarm ${getConditionLabel(a.condition)} ${formatPrice(a.price)}`
+          );
+          await supabase
+            .from("alarms")
+            .update({ triggered: true, is_active: false, last_price: price })
+            .eq("id", a.id);
+        }
+        if (!cancelled) loadAllAlarms();
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 12000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [loadAllAlarms]);
 
+  const saveLine = async (
+    price: number,
+    style: string,
+    startTime?: number
+  ) => {
+    setSaving(true);
+    try {
+      const payload: any = {
+        symbol: symbolUpper,
+        price,
+        color: drawColor,
+        width: drawWidth,
+        style,
+        dash: drawDash,
+        note: null,
+      };
+      if (style === "ray" && startTime) payload.start_time = startTime;
+      await supabase.from("chart_lines").insert([payload]);
+      await loadAllLines();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveAlarm = async (price: number) => {
+    setSaving(true);
+    try {
+      await supabase.from("alarms").insert([
+        {
+          symbol: symbolUpper,
+          price,
+          condition,
+          is_active: true,
+          triggered: false,
+          color: DEFAULT_ALARM_COLOR,
+          width: drawWidth,
+          dash: drawDash,
+        },
+      ]);
+      await loadAllAlarms();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateMoved = async (
+    id: string,
+    type: "line" | "alarm",
+    price: number
+  ) => {
+    if (type === "line") {
+      await supabase.from("chart_lines").update({ price }).eq("id", id);
+      await loadAllLines();
+    } else {
+      await supabase.from("alarms").update({ price }).eq("id", id);
+      await loadAllAlarms();
+    }
+  };
+
+  const deleteLine = async (id: string) => {
+    await supabase.from("chart_lines").delete().eq("id", id);
+    await loadAllLines();
+  };
+
+  const deleteAlarm = async (id: string) => {
+    await supabase.from("alarms").delete().eq("id", id);
+    await loadAllAlarms();
+  };
+
+  const convertLineToAlarm = async (line: ChartLine) => {
+    setSaving(true);
+    try {
+      await supabase.from("alarms").insert([
+        {
+          symbol: line.symbol,
+          price: line.price,
+          condition: "cross",
+          is_active: true,
+          triggered: false,
+          color: line.color || DEFAULT_ALARM_COLOR,
+          note: line.note,
+          width: line.width,
+          dash: line.dash,
+        },
+      ]);
+      await supabase.from("chart_lines").delete().eq("id", line.id);
+      await loadAllLines();
+      await loadAllAlarms();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateAlarmCondition = async (
+    id: string,
+    c: "above" | "below" | "cross"
+  ) => {
+    await supabase.from("alarms").update({ condition: c }).eq("id", id);
+    await loadAllAlarms();
+  };
+
+  const updateLineMeta = async (
+    id: string,
+    patch: Partial<ChartLine>
+  ) => {
+    await supabase.from("chart_lines").update(patch).eq("id", id);
+    await loadAllLines();
+  };
+
+  const updateAlarmMeta = async (id: string, patch: Partial<Alarm>) => {
+    await supabase.from("alarms").update(patch).eq("id", id);
+    await loadAllAlarms();
+  };
+
+  const saveNote = async () => {
+    if (!editingNoteId || !editingNoteType) return;
+    if (editingNoteType === "line") {
+      await updateLineMeta(editingNoteId, { note: noteDraft });
+    } else {
+      await updateAlarmMeta(editingNoteId, { note: noteDraft });
+    }
+    setEditingNoteId(null);
+    setEditingNoteType(null);
+    setNoteDraft("");
+  };
+
+  const goToSymbol = (sym: string) => {
+    setSymbol(sym.toUpperCase());
+  };
+
+  const startMove = (id: string, type: "line" | "alarm") => {
+    setMovingId(id);
+    setMovingType(type);
+    setMode("move");
+  };
+
+  // ---------- JSX ----------
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-        <h1 className="text-2xl font-bold">Live Chart</h1>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={requestNotifPermission}
-            className={`px-3 py-2 rounded-lg text-sm ${
-              notifEnabled ? "bg-green-700" : "bg-gray-800"
-            }`}
-          >
-            {notifEnabled ? "🔔 On" : "🔔 Notify"}
-          </button>
-          <select
-            value={timeZone}
-            onChange={(e) => setTimeZone(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white"
-          >
-            {TIMEZONES.map((z) => (
-              <option key={z.value} value={z.value}>
-                {z.label}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
-            value={symbol}
-            onChange={(e) =>
-              setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))
-            }
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white w-32"
-            placeholder="BTCUSDT"
-          />
-          <Link
-            href="/alerts"
-            className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm"
-          >
-            Alerts
-          </Link>
-        </div>
-      </div>
-
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {favTfButtons.map((tf) => (
-          <button
-            key={tf.value}
-            onClick={() => setIntervalTf(tf.value)}
-            className={`px-3 py-1.5 rounded text-sm ${
-              interval === tf.value
-                ? "bg-orange-500 text-white"
-                : "bg-gray-800 text-gray-300"
-            }`}
-          >
-            {tf.label}
-          </button>
-        ))}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setTfMenuOpen(!tfMenuOpen)}
-            className="px-3 py-1.5 rounded text-sm bg-gray-800 border border-gray-600"
-          >
-            ⏱ TF ▾
-          </button>
-          {tfMenuOpen && (
-            <div className="absolute top-full left-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[220px] p-3 shadow-xl">
-              <p className="text-xs text-gray-400 mb-2">Star = quick button</p>
-              <div className="grid grid-cols-3 gap-2">
-                {ALL_TIMEFRAMES.map((tf) => (
-                  <div key={tf.value} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => toggleFavTf(tf.value)}
-                      className="text-yellow-400 text-sm"
-                    >
-                      {favTfs.includes(tf.value) ? "★" : "☆"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIntervalTf(tf.value);
-                        setTfMenuOpen(false);
-                      }}
-                      className={`flex-1 px-2 py-1 rounded text-sm ${
-                        interval === tf.value ? "bg-orange-500" : "bg-gray-800"
-                      }`}
-                    >
-                      {tf.label}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setMode(mode === "draw" ? "none" : "draw")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "draw" ? "bg-orange-500" : "bg-gray-800"
-          }`}
-        >
-          ✏️ Line
-        </button>
-        <button
-          onClick={() => setMode(mode === "ray" ? "none" : "ray")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "ray" ? "bg-orange-500" : "bg-gray-800"
-          }`}
-        >
-          → Ray
-        </button>
-        {(mode === "draw" || mode === "ray") && (
-          <>
+    <div className="min-h-screen bg-[#0a0a0a] text-white">
+      <div className="max-w-[1600px] mx-auto px-3 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h1 className="text-2xl font-bold">Live Chart</h1>
+          <div className="flex items-center gap-2">
+            <select
+              value={timeZone}
+              onChange={(e) => setTimeZone(e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
+            >
+              {TIMEZONES.map((tz) => (
+                <option key={tz.value} value={tz.value}>
+                  {tz.label}
+                </option>
+              ))}
+            </select>
             <input
-              type="color"
-              value={drawColor}
-              onChange={(e) => setDrawColor(e.target.value)}
-              className="w-9 h-9 rounded cursor-pointer"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              onBlur={() => setSymbol((s) => s.trim().toUpperCase())}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm w-32"
             />
-            <div className="flex gap-1 items-center bg-gray-800 rounded-lg px-2 py-1">
+          </div>
+        </div>
+
+        {/* Timeframes — RIGHT side */}
+        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+          {favTfButtons.map((tf) => (
+            <button
+              key={tf.value}
+              type="button"
+              onClick={() => setIntervalTf(tf.value)}
+              className={`px-3 py-1.5 rounded text-sm ${
+                interval === tf.value
+                  ? "bg-orange-500 text-white"
+                  : "bg-gray-800 text-gray-300"
+              }`}
+            >
+              {tf.label}
+            </button>
+          ))}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setTfMenuOpen(!tfMenuOpen)}
+              className="px-3 py-1.5 rounded text-sm bg-gray-800 border border-gray-600"
+            >
+              ⏱ TF ▾
+            </button>
+            {tfMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[220px] p-3 shadow-xl">
+                <p className="text-xs text-gray-400 mb-2">Star = quick button</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {ALL_TIMEFRAMES.map((tf) => (
+                    <div key={tf.value} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleFavTf(tf.value)}
+                        className="text-yellow-400 text-sm"
+                      >
+                        {favTfs.includes(tf.value) ? "★" : "☆"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIntervalTf(tf.value);
+                          setTfMenuOpen(false);
+                        }}
+                        className={`flex-1 px-2 py-1 rounded text-sm ${
+                          interval === tf.value ? "bg-orange-500" : "bg-gray-800"
+                        }`}
+                      >
+                        {tf.label}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Tools */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "draw" ? "none" : "draw");
+              clearPreview();
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm ${
+              mode === "draw" ? "bg-orange-500 text-white" : "bg-gray-800"
+            }`}
+          >
+            ✏ Line
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "ray" ? "none" : "ray");
+              clearPreview();
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm ${
+              mode === "ray" ? "bg-orange-500 text-white" : "bg-gray-800"
+            }`}
+          >
+            → Ray
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "alarm" ? "none" : "alarm");
+              clearPreview();
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm ${
+              mode === "alarm" ? "bg-orange-500 text-white" : "bg-gray-800"
+            }`}
+          >
+            🔔 Alarm
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
+            className="px-3 py-1.5 rounded-lg text-sm bg-gray-800"
+          >
+            ▦ Indicators
+          </button>
+
+          {(mode === "draw" || mode === "ray" || mode === "alarm") && (
+            <>
+              <input
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="w-8 h-8 rounded cursor-pointer bg-transparent"
+                title="Color"
+              />
               {LINE_WIDTHS.map((w) => (
                 <button
                   key={w}
@@ -1791,692 +1602,659 @@ export default function DashboardPage() {
                     drawWidth === w ? "bg-orange-500" : "bg-gray-700"
                   }`}
                 >
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: 16,
-                      height: w * 2,
-                      background: "#fff",
-                      borderRadius: 1,
-                    }}
-                  />
+                  {w}px
                 </button>
               ))}
-            </div>
-          </>
-        )}
-        <button
-          onClick={() => setMode(mode === "alarm" ? "none" : "alarm")}
-          className={`px-3 py-2 rounded-lg text-sm ${
-            mode === "alarm" ? "bg-blue-600" : "bg-gray-800"
-          }`}
-        >
-          🔔 Alarm
-        </button>
-        <div className="relative">
-          <button
-            onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-            className="px-3 py-2 rounded-lg text-sm bg-gray-800"
-          >
-            📊 Indicators
-          </button>
-          {showIndicatorMenu && (
-            <div className="absolute top-full left-0 mt-2 bg-gray-900 border border-gray-700 rounded-xl z-50 min-w-[180px] py-2 shadow-xl">
               <button
-                onClick={() => {
-                  setShowSMA(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                3SMA
-              </button>
-              <button
-                onClick={() => {
-                  setShowPivot(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Pivot
-              </button>
-              <button
-                onClick={() => {
-                  setShowTrend(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Trend Line
-              </button>
-              <button
-                onClick={() => {
-                  setShowRSI(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                RSI
-              </button>
-              <button
-                onClick={() => {
-                  setShowDMI(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                DMI
-              </button>
-              <button
-                onClick={() => {
-                  setShowVol(true);
-                  setShowIndicatorMenu(false);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-800 text-sm"
-              >
-                Volume
-              </button>
-            </div>
-          )}
-        </div>
-        {mode === "alarm" && (
-          <select
-            value={condition}
-            onChange={(e) => setCondition(e.target.value as any)}
-            className="bg-gray-800 rounded-lg px-2 py-2 text-sm"
-          >
-            <option value="above">Above</option>
-            <option value="below">Below</option>
-            <option value="cross">Cross</option>
-          </select>
-        )}
-      </div>
-
-      {smaSettings && showSMA && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          {[
-            {
-              label: "SMA1",
-              str: sma1Str,
-              setStr: setSma1Str,
-              setVal: setSma1,
-              col: smaColor1,
-              setCol: setSmaColor1,
-              cur: sma1,
-            },
-            {
-              label: "SMA2",
-              str: sma2Str,
-              setStr: setSma2Str,
-              setVal: setSma2,
-              col: smaColor2,
-              setCol: setSmaColor2,
-              cur: sma2,
-            },
-            {
-              label: "SMA3",
-              str: sma3Str,
-              setStr: setSma3Str,
-              setVal: setSma3,
-              col: smaColor3,
-              setCol: setSmaColor3,
-              cur: sma3,
-            },
-          ].map((row) => (
-            <div key={row.label} className="flex flex-wrap items-center gap-3">
-              <span className="w-12">{row.label}</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={row.str}
-                onChange={(e) => row.setStr(e.target.value.replace(/[^\d]/g, ""))}
-                onBlur={() => {
-                  const n = parseInt(row.str, 10);
-                  if (!isNaN(n) && n >= 1) {
-                    row.setVal(n);
-                    row.setStr(String(n));
-                  } else row.setStr(String(row.cur));
-                }}
-                className="w-20 bg-gray-800 rounded px-2 py-1.5 text-white"
-              />
-              <input
-                type="color"
-                value={row.col}
-                onChange={(e) => row.setCol(e.target.value)}
-                className="w-10 h-8 rounded"
-              />
-            </div>
-          ))}
-          <button type="button" onClick={() => setSmaSettings(false)} className="text-orange-400">
-            Close
-          </button>
-        </div>
-      )}
-
-      {pivotSettings && showPivot && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <div className="flex flex-wrap gap-2 items-center">
-            <span>TF:</span>
-            {PIVOT_TFS.map((tf) => (
-              <button
-                key={tf.value}
                 type="button"
-                onClick={() => setPivotTf(tf.value)}
-                className={`px-2 py-1 rounded ${
-                  pivotTf === tf.value ? "bg-orange-500" : "bg-gray-800"
+                onClick={() => setDrawDash("solid")}
+                className={`px-2 py-1 rounded text-xs ${
+                  drawDash === "solid" ? "bg-orange-500" : "bg-gray-700"
+                }`}
+                title="Solid"
+              >
+                ——
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrawDash("dashed")}
+                className={`px-2 py-1 rounded text-xs ${
+                  drawDash === "dashed" ? "bg-orange-500" : "bg-gray-700"
+                }`}
+                title="Dashed"
+              >
+                - - -
+              </button>
+              {mode === "alarm" && (
+                <select
+                  value={condition}
+                  onChange={(e) =>
+                    setCondition(e.target.value as "above" | "below" | "cross")
+                  }
+                  className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm"
+                >
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                  <option value="cross">Cross</option>
+                </select>
+              )}
+            </>
+          )}
+
+          {mode === "move" && (
+            <span className="text-sm text-yellow-400">
+              Click chart to place new price…
+            </span>
+          )}
+          {saving && <span className="text-xs text-gray-400">Saving…</span>}
+        </div>
+
+        {showIndicatorMenu && (
+          <div className="mb-3 flex flex-wrap gap-2 p-3 bg-gray-900 border border-gray-800 rounded-xl">
+            {[
+              { k: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
+              { k: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
+              { k: "trend", label: "Trend", on: showTrend, set: setShowTrend },
+              { k: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
+              { k: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
+              { k: "vol", label: "Vol", on: showVol, set: setShowVol },
+            ].map((x) => (
+              <button
+                key={x.k}
+                type="button"
+                onClick={() => x.set(!x.on)}
+                className={`px-3 py-1.5 rounded text-sm ${
+                  x.on ? "bg-orange-500 text-white" : "bg-gray-800"
                 }`}
               >
-                {tf.label}
+                {x.label}
               </button>
             ))}
           </div>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={pivotFib}
-              onChange={(e) => setPivotFib(e.target.checked)}
-            />{" "}
-            R4/S4
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={pivotHistory}
-              onChange={(e) => setPivotHistory(e.target.checked)}
-            />{" "}
-            Previous periods
-          </label>
-          {pivotHistory && (
-            <select
-              value={pivotHistCount}
-              onChange={(e) => setPivotHistCount(Number(e.target.value))}
-              className="bg-gray-800 rounded px-2 py-1"
-            >
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={3}>3</option>
-            </select>
-          )}
-          <button type="button" onClick={() => setPivotSettings(false)} className="text-orange-400">
-            Close
-          </button>
-        </div>
-      )}
+        )}
 
-      {trendSettings && showTrend && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input
-            type="text"
-            inputMode="numeric"
-            value={trendPeriodStr}
-            onChange={(e) => {
-              const v = e.target.value.replace(/[^\d]/g, "");
-              setTrendPeriodStr(v);
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 5) setTrendPeriod(n);
-            }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5"
-          />
-          <div className="flex gap-3">
-            <label className="flex items-center gap-1">
-              Up{" "}
-              <input
-                type="color"
-                value={trendUpColor}
-                onChange={(e) => setTrendUpColor(e.target.value)}
-                className="w-8 h-7 rounded"
+        {/* Chart + side list */}
+        <div className="relative flex gap-0">
+          <div
+            className={`transition-all duration-300 ease-in-out ${
+              showSideWl ? "flex-1" : "w-full"
+            }`}
+          >
+            <div className="relative bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+              <div
+                ref={chartContainerRef}
+                className="w-full"
+                style={{ height: 700 }}
               />
-            </label>
-            <label className="flex items-center gap-1">
-              Down{" "}
-              <input
-                type="color"
-                value={trendDownColor}
-                onChange={(e) => setTrendDownColor(e.target.value)}
-                className="w-8 h-7 rounded"
-              />
-            </label>
-          </div>
-          <button type="button" onClick={() => setTrendSettings(false)} className="text-orange-400">
-            Close
-          </button>
-        </div>
-      )}
 
-      {rsiSettings && showRSI && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input
-            type="text"
-            inputMode="numeric"
-            value={rsiPeriodStr}
-            onChange={(e) => {
-              const v = e.target.value.replace(/[^\d]/g, "");
-              setRsiPeriodStr(v);
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 2) setRsiPeriod(n);
-            }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5"
-          />
-          <input
-            type="color"
-            value={rsiColor}
-            onChange={(e) => setRsiColor(e.target.value)}
-            className="w-10 h-8 rounded"
-          />
-          <label className="flex items-center gap-2">
-            Height{" "}
-            <input
-              type="range"
-              min={10}
-              max={35}
-              value={rsiHeight}
-              onChange={(e) => setRsiHeight(Number(e.target.value))}
-              className="w-28"
-            />
-            {rsiHeight}%
-          </label>
-          <button type="button" onClick={() => setRsiSettings(false)} className="text-orange-400">
-            Close
-          </button>
-        </div>
-      )}
+              {/* Indicators top-left TV style */}
+              <div className="absolute top-3 left-3 z-30 flex flex-col gap-1 pointer-events-auto">
+                {showSMA && (
+                  <IndChip
+                    label="3SMA"
+                    visible={smaVisible}
+                    onToggleVisible={() => setSmaVisible(!smaVisible)}
+                    onSettings={() => setSmaSettings(true)}
+                    onRemove={() => {
+                      setShowSMA(false);
+                      removeSMA();
+                    }}
+                  />
+                )}
+                {showPivot && (
+                  <IndChip
+                    label="Pivot"
+                    visible={pivotVisible}
+                    onToggleVisible={() => setPivotVisible(!pivotVisible)}
+                    onSettings={() => setPivotSettings(true)}
+                    onRemove={() => {
+                      setShowPivot(false);
+                      removePivot();
+                    }}
+                  />
+                )}
+                {showTrend && (
+                  <IndChip
+                    label="Trend"
+                    visible={trendVisible}
+                    onToggleVisible={() => setTrendVisible(!trendVisible)}
+                    onSettings={() => setTrendSettings(true)}
+                    onRemove={() => {
+                      setShowTrend(false);
+                      removeTrend();
+                    }}
+                  />
+                )}
+                {showRSI && (
+                  <IndChip
+                    label="RSI"
+                    visible={rsiVisible}
+                    onToggleVisible={() => setRsiVisible(!rsiVisible)}
+                    onSettings={() => setRsiSettings(true)}
+                    onRemove={() => {
+                      setShowRSI(false);
+                      removeRSI();
+                    }}
+                  />
+                )}
+                {showDMI && (
+                  <IndChip
+                    label="DMI"
+                    visible={dmiVisible}
+                    onToggleVisible={() => setDmiVisible(!dmiVisible)}
+                    onSettings={() => setDmiSettings(true)}
+                    onRemove={() => {
+                      setShowDMI(false);
+                      removeDMI();
+                    }}
+                  />
+                )}
+                {showVol && (
+                  <IndChip
+                    label="Vol"
+                    visible={volVisible}
+                    onToggleVisible={() => {
+                      const next = !volVisible;
+                      setVolVisible(next);
+                      if (volumeSeriesRef.current) {
+                        volumeSeriesRef.current.applyOptions({ visible: next });
+                      }
+                    }}
+                    onRemove={() => {
+                      setShowVol(false);
+                      if (volumeSeriesRef.current) {
+                        volumeSeriesRef.current.applyOptions({ visible: false });
+                      }
+                    }}
+                  />
+                )}
+              </div>
 
-      {dmiSettings && showDMI && (
-        <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2 text-sm">
-          <input
-            type="text"
-            inputMode="numeric"
-            value={dmiPeriodStr}
-            onChange={(e) => {
-              const v = e.target.value.replace(/[^\d]/g, "");
-              setDmiPeriodStr(v);
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 2) setDmiPeriod(n);
-            }}
-            className="w-16 bg-gray-800 rounded px-2 py-1.5"
-          />
-          <div className="flex gap-3">
-            <label className="flex items-center gap-1">
-              +DI{" "}
-              <input
-                type="color"
-                value={dmiPlusColor}
-                onChange={(e) => setDmiPlusColor(e.target.value)}
-                className="w-8 h-7 rounded"
-              />
-            </label>
-            <label className="flex items-center gap-1">
-              −DI{" "}
-              <input
-                type="color"
-                value={dmiMinusColor}
-                onChange={(e) => setDmiMinusColor(e.target.value)}
-                className="w-8 h-7 rounded"
-              />
-            </label>
-            <label className="flex items-center gap-1">
-              ADX{" "}
-              <input
-                type="color"
-                value={dmiAdxColor}
-                onChange={(e) => setDmiAdxColor(e.target.value)}
-                className="w-8 h-7 rounded"
-              />
-            </label>
-          </div>
-          <label className="flex items-center gap-2">
-            Height{" "}
-            <input
-              type="range"
-              min={10}
-              max={35}
-              value={dmiHeight}
-              onChange={(e) => setDmiHeight(Number(e.target.value))}
-              className="w-28"
-            />
-            {dmiHeight}%
-          </label>
-          <button type="button" onClick={() => setDmiSettings(false)} className="text-orange-400">
-            Close
-          </button>
-        </div>
-      )}
-
-      {/* Chart + side watchlist */}
-      <div className="relative flex items-stretch">
-        <div
-          className="min-w-0 transition-all duration-300 ease-in-out"
-          style={{ width: showSideWl ? "calc(100% - 11.75rem)" : "100%" }}
-        >
-          <div className="relative">
-            <div
-              ref={chartContainerRef}
-              className="bg-gray-900 border border-gray-800 rounded-xl"
-              style={{ height: "700px", touchAction: "none" }}
-            />
-
-            {/* Indicators on chart — top LEFT */}
-            <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 pointer-events-auto">
-              {showSMA && (
-                <IndChip
-                  label="3SMA"
-                  visible={smaVisible}
-                  onToggleVisible={() => setSmaVisible(!smaVisible)}
-                  onSettings={() => setSmaSettings(!smaSettings)}
-                  onRemove={() => {
-                    setShowSMA(false);
-                    removeSMA();
-                    setSmaSettings(false);
-                  }}
-                />
-              )}
-              {showPivot && (
-                <IndChip
-                  label="Pivot"
-                  visible={pivotVisible}
-                  onToggleVisible={() => setPivotVisible(!pivotVisible)}
-                  onSettings={() => setPivotSettings(!pivotSettings)}
-                  onRemove={() => {
-                    setShowPivot(false);
-                    removePivot();
-                    setPivotSettings(false);
-                  }}
-                />
-              )}
-              {showTrend && (
-                <IndChip
-                  label="Trend"
-                  visible={trendVisible}
-                  onToggleVisible={() => setTrendVisible(!trendVisible)}
-                  onSettings={() => setTrendSettings(!trendSettings)}
-                  onRemove={() => {
-                    setShowTrend(false);
-                    removeTrend();
-                    setTrendSettings(false);
-                  }}
-                />
-              )}
-              {showRSI && (
-                <IndChip
-                  label="RSI"
-                  visible={rsiVisible}
-                  onToggleVisible={() => setRsiVisible(!rsiVisible)}
-                  onSettings={() => setRsiSettings(!rsiSettings)}
-                  onRemove={() => {
-                    setShowRSI(false);
-                    removeRSI();
-                    setRsiSettings(false);
-                  }}
-                />
-              )}
-              {showDMI && (
-                <IndChip
-                  label="DMI"
-                  visible={dmiVisible}
-                  onToggleVisible={() => setDmiVisible(!dmiVisible)}
-                  onSettings={() => setDmiSettings(!dmiSettings)}
-                  onRemove={() => {
-                    setShowDMI(false);
-                    removeDMI();
-                    setDmiSettings(false);
-                  }}
-                />
-              )}
-              {showVol && (
-                <IndChip
-                  label="Vol"
-                  visible={volVisible}
-                  onToggleVisible={() => setVolVisible(!volVisible)}
-                  onRemove={() => {
-                    setShowVol(false);
-                    removeVol();
-                  }}
-                />
+              {!showSideWl && (
+                <button
+                  type="button"
+                  onClick={() => setShowSideWl(true)}
+                  className="absolute top-3 right-3 z-30 bg-gray-900 border border-gray-700 px-3 py-1 rounded-lg text-xs hover:bg-gray-800"
+                >
+                  » List
+                </button>
               )}
             </div>
+          </div>
 
-            {!showSideWl && (
+          {/* Side watchlist — only symbols with alarms */}
+          <div
+            className={`overflow-hidden transition-all duration-300 ease-in-out ${
+              showSideWl ? "w-44 ml-3 opacity-100" : "w-0 ml-0 opacity-0"
+            }`}
+          >
+            <div className="w-44 h-[700px] bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden flex flex-col">
+              <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-400 flex justify-between items-center">
+                <span>With alarms</span>
+                <button
+                  type="button"
+                  onClick={() => setShowSideWl(false)}
+                  className="text-red-400 hover:text-red-300"
+                >
+                  « Hide
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                {alarmSymbols.length === 0 ? (
+                  <div className="text-center text-gray-600 py-8 text-xs">
+                    No active alarms
+                  </div>
+                ) : (
+                  alarmSymbols.map((sym) => {
+                    const aCnt = alarmCountBySym[sym] || 0;
+                    const lCnt = lineCountBySym[sym] || 0;
+                    return (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => goToSymbol(sym)}
+                        className={`w-full flex items-center gap-2 px-2 py-2 rounded-xl text-left transition-all ${
+                          symbolUpper === sym
+                            ? "bg-orange-500/20 border border-orange-400"
+                            : "hover:bg-gray-800 border border-transparent"
+                        }`}
+                      >
+                        <CoinIcon symbol={sym} />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-xs truncate">{sym}</div>
+                          <div className="text-[10px] text-gray-500 flex gap-1 flex-wrap">
+                            {aCnt > 0 && (
+                              <span className="text-blue-400">{aCnt} alarm</span>
+                            )}
+                            {lCnt > 0 && (
+                              <span className="text-orange-400">{lCnt} line</span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom lists — current symbol only */}
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <h3 className="text-sm text-green-400 mb-2">
+              Alarms — {symbolUpper} ({currentAlarms.length})
+            </h3>
+            <div className="space-y-2">
+              {currentAlarms.map((a) => (
+                <div
+                  key={a.id}
+                  className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">
+                      {getConditionSymbol(a.condition)} {formatPrice(a.price)}
+                    </span>
+                    {a.note && (
+                      <span className="text-gray-500 text-xs">{a.note}</span>
+                    )}
+                    <div className="flex-1" />
+                    <input
+                      type="color"
+                      value={a.color || DEFAULT_ALARM_COLOR}
+                      onChange={(e) =>
+                        updateAlarmMeta(a.id, { color: e.target.value })
+                      }
+                      className="w-6 h-6 rounded cursor-pointer bg-transparent"
+                    />
+                    <select
+                      value={a.condition}
+                      onChange={(e) =>
+                        updateAlarmCondition(
+                          a.id,
+                          e.target.value as "above" | "below" | "cross"
+                        )
+                      }
+                      className="bg-gray-800 rounded px-1 py-0.5 text-xs"
+                    >
+                      <option value="above">Above</option>
+                      <option value="below">Below</option>
+                      <option value="cross">Cross</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateAlarmMeta(a.id, {
+                          dash: a.dash === "dashed" ? "solid" : "dashed",
+                        })
+                      }
+                      className="text-xs px-1.5 py-0.5 bg-gray-800 rounded"
+                      title="Line style"
+                    >
+                      {a.dash === "dashed" ? "- - -" : "——"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingNoteId(a.id);
+                        setEditingNoteType("alarm");
+                        setNoteDraft(a.note || "");
+                      }}
+                      className="text-xs text-gray-400"
+                    >
+                      Note
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startMove(a.id, "alarm")}
+                      className="text-xs text-blue-400"
+                    >
+                      Move
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteAlarm(a.id)}
+                      className="text-xs text-red-400"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  {editingNoteId === a.id && editingNoteType === "alarm" && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                        placeholder="Note..."
+                      />
+                      <button
+                        type="button"
+                        onClick={saveNote}
+                        className="text-green-400 text-sm"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNoteId(null);
+                          setEditingNoteType(null);
+                        }}
+                        className="text-gray-500 text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!currentAlarms.length && (
+                <p className="text-gray-500 text-sm">No alarms for this symbol</p>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm text-orange-400 mb-2">
+              Lines — {symbolUpper} ({currentLines.length})
+            </h3>
+            <div className="space-y-2">
+              {currentLines.map((l) => (
+                <div
+                  key={l.id}
+                  className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">{formatPrice(l.price)}</span>
+                    {l.note && (
+                      <span className="text-gray-500 text-xs">{l.note}</span>
+                    )}
+                    <div className="flex-1" />
+                    <input
+                      type="color"
+                      value={l.color || DEFAULT_LINE_COLOR}
+                      onChange={(e) =>
+                        updateLineMeta(l.id, { color: e.target.value })
+                      }
+                      className="w-6 h-6 rounded cursor-pointer bg-transparent"
+                    />
+                    <select
+                      value={String(l.width || 2)}
+                      onChange={(e) =>
+                        updateLineMeta(l.id, {
+                          width: parseInt(e.target.value, 10),
+                        })
+                      }
+                      className="bg-gray-800 rounded px-1 py-0.5 text-xs"
+                    >
+                      <option value="1">W1</option>
+                      <option value="2">W2</option>
+                      <option value="3">W3</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateLineMeta(l.id, {
+                          dash: l.dash === "dashed" ? "solid" : "dashed",
+                        })
+                      }
+                      className="text-xs px-1.5 py-0.5 bg-gray-800 rounded"
+                      title="Line style"
+                    >
+                      {l.dash === "dashed" ? "- - -" : "——"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => convertLineToAlarm(l)}
+                      className="text-xs text-blue-400"
+                    >
+                      Alarm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingNoteId(l.id);
+                        setEditingNoteType("line");
+                        setNoteDraft(l.note || "");
+                      }}
+                      className="text-xs text-gray-400"
+                    >
+                      Note
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startMove(l.id, "line")}
+                      className="text-xs text-blue-400"
+                    >
+                      Move
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteLine(l.id)}
+                      className="text-xs text-red-400"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  {editingNoteId === l.id && editingNoteType === "line" && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                        placeholder="Note..."
+                      />
+                      <button
+                        type="button"
+                        onClick={saveNote}
+                        className="text-green-400 text-sm"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNoteId(null);
+                          setEditingNoteType(null);
+                        }}
+                        className="text-gray-500 text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!currentLines.length && (
+                <p className="text-gray-500 text-sm">No lines for this symbol</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Settings modals (simple) */}
+        {smaSettings && (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
+              <h4 className="font-bold">3SMA Settings</h4>
+              {[
+                [sma1Str, setSma1Str, setSma1, smaColor1, setSmaColor1],
+                [sma2Str, setSma2Str, setSma2, smaColor2, setSmaColor2],
+                [sma3Str, setSma3Str, setSma3, smaColor3, setSmaColor3],
+              ].map((row: any, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  <span className="text-xs w-8">#{i + 1}</span>
+                  <input
+                    value={row[0]}
+                    onChange={(e) => row[1](e.target.value)}
+                    onBlur={() => {
+                      const n = parseInt(row[0], 10);
+                      if (!Number.isNaN(n) && n > 0) row[2](n);
+                    }}
+                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="color"
+                    value={row[3]}
+                    onChange={(e) => row[4](e.target.value)}
+                    className="w-8 h-8"
+                  />
+                </div>
+              ))}
               <button
                 type="button"
-                onClick={() => setShowSideWl(true)}
-                className="absolute top-2 right-2 z-20 bg-gray-900/90 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-300 hover:text-white shadow-lg"
+                onClick={() => {
+                  setSmaSettings(false);
+                  loadCandles();
+                }}
+                className="w-full bg-orange-500 rounded py-2 text-sm"
               >
-                » List
+                Done
               </button>
-            )}
-          </div>
-        </div>
-
-        {/* Side panel */}
-        <div
-          className={`overflow-hidden transition-all duration-300 ease-in-out ${
-            showSideWl ? "w-44 ml-3 opacity-100" : "w-0 ml-0 opacity-0"
-          }`}
-        >
-          <div
-            className="bg-gray-900 border border-gray-800 rounded-xl h-full flex flex-col overflow-hidden"
-            style={{ minHeight: 700, width: "11rem" }}
-          >
-            <button
-              type="button"
-              onClick={() => setShowSideWl(false)}
-              className="px-2 py-2 text-xs text-gray-400 hover:text-white border-b border-gray-800 flex items-center justify-center gap-1"
-            >
-              « Hide
-            </button>
-            <div className="overflow-y-auto flex-1 p-1.5 space-y-1">
-              <div className="text-[10px] text-gray-500 px-1 mb-1">With alarms</div>
-              {alarmSymbols.length === 0 && (
-                <p className="text-[11px] text-gray-600 px-1">No alarms</p>
-              )}
-              {alarmSymbols.map((sym) => {
-                const aCnt = alarmCountBySym[sym] || 0;
-                const lCnt = lineCountBySym[sym] || 0;
-                return (
-                  <button
-                    key={sym}
-                    type="button"
-                    onClick={() => setSymbol(sym)}
-                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center gap-2 ${
-                      symbolUpper === sym
-                        ? "bg-orange-500/20 text-orange-300 border border-orange-500/40"
-                        : "text-gray-300 hover:bg-gray-800"
-                    }`}
-                  >
-                    <CoinIcon symbol={sym} />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate">{sym}</div>
-                      <div className="text-[10px] text-gray-500">
-                        {aCnt > 0 && (
-                          <span className="text-blue-400">{aCnt} alarm</span>
-                        )}
-                        {aCnt > 0 && lCnt > 0 && <span> · </span>}
-                        {lCnt > 0 && (
-                          <span className="text-orange-400">{lCnt} line</span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
             </div>
           </div>
-        </div>
-      </div>
+        )}
 
-      {/* Bottom lists — only current symbol */}
-      <div className="mt-6 grid md:grid-cols-2 gap-6">
-        <div>
-          <h2 className="text-green-400 font-semibold mb-3">
-            Alarms — {symbol} ({currentAlarms.length})
-          </h2>
-          {currentAlarms.map((a) => (
-            <div key={a.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>
-                  {getConditionSymbol(a.condition)} {a.price}
-                  {a.note ? (
-                    <span className="text-gray-500 ml-2"> · {a.note}</span>
-                  ) : null}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="color"
-                    value={a.color || DEFAULT_ALARM_COLOR}
-                    onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                    className="w-7 h-7 rounded cursor-pointer"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => startEditNote(a.id, "alarm", a.note)}
-                    className="text-gray-400"
-                  >
-                    📝
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => cycleCondition(a)}
-                    className="text-gray-300"
-                  >
-                    {getConditionLabel(a.condition)}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => startMove(a.id, "alarm", a.price)}
-                    className="text-blue-400"
-                  >
-                    Move
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteAlarm(a.id)}
-                    className="text-red-400"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-              {editingNoteId === a.id && editingNoteType === "alarm" && (
-                <div className="mt-2 flex gap-2">
-                  <input
-                    value={noteDraft}
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
-                    placeholder="Note..."
-                  />
-                  <button type="button" onClick={saveNote} className="text-green-400 text-sm">
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingNoteId(null);
-                      setEditingNoteType(null);
-                    }}
-                    className="text-gray-500 text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
+        {rsiSettings && (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
+              <h4 className="font-bold">RSI Settings</h4>
+              <input
+                value={rsiPeriodStr}
+                onChange={(e) => setRsiPeriodStr(e.target.value)}
+                onBlur={() => {
+                  const n = parseInt(rsiPeriodStr, 10);
+                  if (!Number.isNaN(n) && n > 1) setRsiPeriod(n);
+                }}
+                className="w-full bg-gray-800 rounded px-2 py-1 text-sm"
+                placeholder="Period"
+              />
+              <input
+                type="color"
+                value={rsiColor}
+                onChange={(e) => setRsiColor(e.target.value)}
+                className="w-10 h-10"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setRsiSettings(false);
+                  loadCandles();
+                }}
+                className="w-full bg-orange-500 rounded py-2 text-sm"
+              >
+                Done
+              </button>
             </div>
-          ))}
-          {!currentAlarms.length && (
-            <p className="text-gray-500 text-sm">No alarms for this symbol</p>
-          )}
-        </div>
+          </div>
+        )}
 
-        <div>
-          <h2 className="text-orange-400 font-semibold mb-3">
-            Lines — {symbol} ({currentLines.length})
-          </h2>
-          {currentLines.map((l) => (
-            <div key={l.id} className="bg-gray-900 rounded-lg px-3 py-2 mb-2 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>
-                  {l.price}{" "}
-                  {l.style === "ray" ? (
-                    <span className="text-gray-500">(ray)</span>
-                  ) : null}
-                  {l.note ? (
-                    <span className="text-gray-500 ml-2"> · {l.note}</span>
-                  ) : null}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="color"
-                    value={l.color || DEFAULT_LINE_COLOR}
-                    onChange={(e) => updateLineColor(l.id, e.target.value)}
-                    className="w-7 h-7 rounded cursor-pointer"
-                  />
-                  <select
-                    value={l.width || 2}
-                    onChange={(e) => updateLineWidth(l.id, Number(e.target.value))}
-                    className="bg-gray-800 rounded px-1 py-0.5 text-xs"
-                  >
-                    <option value={1}>W1</option>
-                    <option value={2}>W2</option>
-                    <option value={3}>W3</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => startEditNote(l.id, "line", l.note)}
-                    className="text-gray-400"
-                  >
-                    📝
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => convertLineToAlarm(l)}
-                    className="text-green-400"
-                  >
-                    Alarm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => startMove(l.id, "line", l.price)}
-                    className="text-blue-400"
-                  >
-                    Move
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteLine(l.id)}
-                    className="text-red-400"
-                  >
-                    Delete
-                  </button>
-                </div>
+        {dmiSettings && (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
+              <h4 className="font-bold">DMI Settings</h4>
+              <input
+                value={dmiPeriodStr}
+                onChange={(e) => setDmiPeriodStr(e.target.value)}
+                onBlur={() => {
+                  const n = parseInt(dmiPeriodStr, 10);
+                  if (!Number.isNaN(n) && n > 1) setDmiPeriod(n);
+                }}
+                className="w-full bg-gray-800 rounded px-2 py-1 text-sm"
+                placeholder="Period"
+              />
+              <div className="flex gap-2">
+                <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-10 h-10" title="+DI" />
+                <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-10 h-10" title="-DI" />
+                <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-10 h-10" title="ADX" />
               </div>
-              {editingNoteId === l.id && editingNoteType === "line" && (
-                <div className="mt-2 flex gap-2">
-                  <input
-                    value={noteDraft}
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                    className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm"
-                    placeholder="Note..."
-                  />
-                  <button type="button" onClick={saveNote} className="text-green-400 text-sm">
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingNoteId(null);
-                      setEditingNoteType(null);
-                    }}
-                    className="text-gray-500 text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setDmiSettings(false);
+                  loadCandles();
+                }}
+                className="w-full bg-orange-500 rounded py-2 text-sm"
+              >
+                Done
+              </button>
             </div>
-          ))}
-          {!currentLines.length && (
-            <p className="text-gray-500 text-sm">No lines for this symbol</p>
-          )}
-        </div>
+          </div>
+        )}
+
+        {pivotSettings && (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
+              <h4 className="font-bold">Pivot Settings</h4>
+              <select
+                value={pivotTf}
+                onChange={(e) => setPivotTf(e.target.value)}
+                className="w-full bg-gray-800 rounded px-2 py-1 text-sm"
+              >
+                {PIVOT_TFS.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={pivotFib}
+                  onChange={(e) => setPivotFib(e.target.checked)}
+                />
+                Fib R3/S3
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setPivotSettings(false);
+                  loadCandles();
+                }}
+                className="w-full bg-orange-500 rounded py-2 text-sm"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+
+        {trendSettings && (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-full max-w-sm space-y-3">
+              <h4 className="font-bold">Trend Settings</h4>
+              <input
+                value={trendPeriodStr}
+                onChange={(e) => setTrendPeriodStr(e.target.value)}
+                onBlur={() => {
+                  const n = parseInt(trendPeriodStr, 10);
+                  if (!Number.isNaN(n) && n > 2) setTrendPeriod(n);
+                }}
+                className="w-full bg-gray-800 rounded px-2 py-1 text-sm"
+                placeholder="Period"
+              />
+              <div className="flex gap-2">
+                <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-10 h-10" />
+                <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-10 h-10" />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTrendSettings(false);
+                  loadCandles();
+                }}
+                className="w-full bg-orange-500 rounded py-2 text-sm"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+
+        <p className="text-center text-xs text-gray-600 mt-8">
+          © 2026 Alarm Chert
+        </p>
       </div>
     </div>
   );
