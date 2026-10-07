@@ -350,6 +350,7 @@ export default function DashboardPage() {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
+  const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
@@ -390,7 +391,6 @@ export default function DashboardPage() {
   const [dragOverSym, setDragOverSym] = useState<string | null>(null);
   const [lastBarTime, setLastBarTime] = useState<number | null>(null);
   const [lastBarClose, setLastBarClose] = useState<number | null>(null);
-  const [lastPriceY, setLastPriceY] = useState<number | null>(null);
   const tfMenuRef = useRef<HTMLDivElement>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
@@ -576,8 +576,14 @@ export default function DashboardPage() {
       previewLineRef.current = null;
     }
     setPreviewPrice(null);
-  }, []);  const destroyChart = useCallback(() => {
+  }, []);
+
+  const destroyChart = useCallback(() => {
     clearPreview();
+    if (lastPriceLineRef.current && seriesRef.current) {
+      try { seriesRef.current.removePriceLine(lastPriceLineRef.current); } catch {}
+      lastPriceLineRef.current = null;
+    }
     alarmLinesRef.current.clear();
     chartLinesRef.current.clear();
     smaSeriesRef.current = null;
@@ -592,6 +598,33 @@ export default function DashboardPage() {
       chartRef.current = null;
     }
   }, [clearPreview]);
+
+  /** Last price + time on the native price axis (TradingView-style, stays fixed while scrolling) */
+  const applyLastPriceLabel = useCallback(() => {
+    const series = seriesRef.current;
+    const candles = candlesRef.current;
+    if (!series || !candles.length) return;
+    const last = candles[candles.length - 1];
+    if (!last || last.close == null || last.time == null) return;
+    const up = last.close >= last.open;
+    const color = up ? "#26a69a" : "#ef5350";
+    const withSec = ["1", "5"].includes(String(intervalRef.current));
+    const clock = formatBarClock(Number(last.time), timeZoneRef.current, withSec);
+    try {
+      if (lastPriceLineRef.current) {
+        try { series.removePriceLine(lastPriceLineRef.current); } catch {}
+        lastPriceLineRef.current = null;
+      }
+      lastPriceLineRef.current = series.createPriceLine({
+        price: Number(last.close),
+        color,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: clock,
+      });
+    } catch {}
+  }, []);
 
   const renderAllLinesAndAlarms = useCallback(() => {
     const series = seriesRef.current;
@@ -1080,11 +1113,13 @@ export default function DashboardPage() {
 
       renderAllLinesAndAlarms();
       rebuildIndicators();
+      // Native axis label for last price + bar time (does not float on scroll)
+      applyLastPriceLabel();
       setStatusMsg("");
     } catch (e: any) {
       setStatusMsg(e?.message || "Load error");
     }
-  }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview]);
+  }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
   useEffect(() => {
     loadCandles();
@@ -1147,31 +1182,10 @@ export default function DashboardPage() {
     };
   }, [tfMenuOpen]);
 
-  // Align price+time badge with real last price Y from the chart series
+  // Refresh last-price axis label when timezone changes (time text reformatted)
   useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      if (!alive) return;
-      const series = seriesRef.current;
-      if (!series || lastBarClose == null) {
-        setLastPriceY(null);
-        return;
-      }
-      try {
-        const y = series.priceToCoordinate(lastBarClose);
-        if (typeof y === "number" && !Number.isNaN(y)) setLastPriceY(y);
-        else setLastPriceY(null);
-      } catch {
-        setLastPriceY(null);
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 250);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [lastBarClose, symbol, interval, showSideWl]);
+    applyLastPriceLabel();
+  }, [timeZone, applyLastPriceLabel]);
 
   useEffect(() => {
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
@@ -1691,32 +1705,6 @@ export default function DashboardPage() {
           {saving && (
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/70 text-orange-300 text-sm px-3 py-1 rounded-full z-20">
               Saving...
-            </div>
-          )}
-
-          {/* Last price + bar time — follows real chart price (like TradingView) */}
-          {lastBarTime != null && lastPriceY != null && lastPriceY >= 0 && (
-            <div
-              className="absolute z-20 pointer-events-none select-none"
-              style={{
-                right: 0,
-                top: Math.max(2, lastPriceY - 16),
-                transition: "top 0.12s ease-out",
-              }}
-              title="Last price & time"
-            >
-              <div className="bg-[#26a69a] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-l shadow-md text-right min-w-[58px]">
-                <div className="font-semibold text-[11px] tabular-nums">
-                  {lastBarClose != null ? formatPrice(lastBarClose) : ""}
-                </div>
-                <div className="opacity-95 tabular-nums text-[10px]">
-                  {formatBarClock(
-                    lastBarTime,
-                    timeZone,
-                    ["1", "5"].includes(String(interval))
-                  )}
-                </div>
-              </div>
             </div>
           )}
 
