@@ -260,11 +260,23 @@ function formatInTz(
   }
 }
 
+function toUnixSec(time: unknown): number {
+  if (typeof time === "number" && !Number.isNaN(time)) return time;
+  if (time && typeof time === "object") {
+    const o = time as { timestamp?: number; year?: number; month?: number; day?: number };
+    if (typeof o.timestamp === "number") return o.timestamp;
+    if (o.year != null && o.month != null && o.day != null) {
+      return Math.floor(Date.UTC(o.year, o.month - 1, o.day) / 1000);
+    }
+  }
+  return 0;
+}
+
 function makeLocalization(tz: string) {
   return {
     locale: "en-US",
-    timeFormatter: (time: number) => {
-      const t = typeof time === "number" ? time : 0;
+    timeFormatter: (time: unknown) => {
+      const t = toUnixSec(time);
       return formatInTz(t, tz, {
         day: "2-digit",
         month: "short",
@@ -278,8 +290,8 @@ function makeLocalization(tz: string) {
 
 function makeTickMarkFormatter(tz: string) {
   // TickMarkType: Year=0, Month=1, DayOfMonth=2, Time=3, TimeWithSeconds=4
-  return (time: number, tickMarkType: number) => {
-    const t = typeof time === "number" ? time : 0;
+  return (time: unknown, tickMarkType: number, _locale?: string) => {
+    const t = toUnixSec(time);
     if (tickMarkType <= 0) {
       return formatInTz(t, tz, { year: "numeric" });
     }
@@ -909,7 +921,6 @@ export default function DashboardPage() {
         rightPriceScale: {
           borderColor: "#2a2e39",
           scaleMargins: { top: 0.05, bottom: 0.05 },
-          entireTextOnly: false,
         },
         timeScale: {
           borderColor: "#2a2e39",
@@ -920,10 +931,9 @@ export default function DashboardPage() {
           minBarSpacing: 3,
           fixLeftEdge: false,
           fixRightEdge: false,
-          lockVisibleTimeRangeOnResize: true,
           tickMarkFormatter: makeTickMarkFormatter(tz) as any,
         },
-        localization: makeLocalization(tz),
+        localization: makeLocalization(tz) as any,
         width: container.clientWidth,
         height: container.clientHeight || 640,
       });
@@ -1108,12 +1118,12 @@ export default function DashboardPage() {
     const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
     try {
       chart.applyOptions({
-        localization: makeLocalization(timeZone),
+        localization: makeLocalization(timeZone) as any,
         timeScale: {
           secondsVisible: isIntraday,
           tickMarkFormatter: makeTickMarkFormatter(timeZone) as any,
         },
-      });
+      } as any);
     } catch {}
   }, [timeZone]);
 
@@ -1132,7 +1142,9 @@ export default function DashboardPage() {
 
   // Keep last-price badge aligned with the actual price on the Y axis
   useEffect(() => {
+    let alive = true;
     const updateY = () => {
+      if (!alive) return;
       const series = seriesRef.current;
       if (!series || lastBarClose == null) {
         setLastPriceY(null);
@@ -1140,22 +1152,17 @@ export default function DashboardPage() {
       }
       try {
         const y = series.priceToCoordinate(lastBarClose);
-        setLastPriceY(y != null && !Number.isNaN(y) ? y : null);
+        if (typeof y === "number" && !Number.isNaN(y)) setLastPriceY(y);
+        else setLastPriceY(null);
       } catch {
         setLastPriceY(null);
       }
     };
     updateY();
-    const chart = chartRef.current;
-    if (!chart) return;
-    const ts = chart.timeScale();
-    const unsubRange = ts.subscribeVisibleLogicalRangeChange(() => updateY());
-    const unsubCross = chart.subscribeCrosshairMove(() => updateY());
-    // also refresh after layout ticks
-    const id = window.setInterval(updateY, 500);
+    // Interval only — avoid subscribe* return values (often typed as void → Vercel TS error)
+    const id = window.setInterval(updateY, 300);
     return () => {
-      try { unsubRange?.(); } catch {}
-      try { unsubCross?.(); } catch {}
+      alive = false;
       window.clearInterval(id);
     };
   }, [lastBarClose, symbol, interval, showSideWl, showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
