@@ -238,6 +238,76 @@ function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
 }
 
+/** Format unix seconds in a given IANA timezone */
+function formatInTz(
+  unixSec: number,
+  tz: string,
+  opts: Intl.DateTimeFormatOptions
+): string {
+  try {
+    return new Date(unixSec * 1000).toLocaleString("en-GB", {
+      timeZone: tz,
+      hour12: false,
+      ...opts,
+    });
+  } catch {
+    return new Date(unixSec * 1000).toLocaleString("en-GB", {
+      hour12: false,
+      ...opts,
+    });
+  }
+}
+
+function makeLocalization(tz: string) {
+  return {
+    locale: "en-US",
+    timeFormatter: (time: number) => {
+      const t = typeof time === "number" ? time : 0;
+      return formatInTz(t, tz, {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    },
+  };
+}
+
+function makeTickMarkFormatter(tz: string) {
+  // TickMarkType: Year=0, Month=1, DayOfMonth=2, Time=3, TimeWithSeconds=4
+  return (time: number, tickMarkType: number) => {
+    const t = typeof time === "number" ? time : 0;
+    if (tickMarkType <= 0) {
+      return formatInTz(t, tz, { year: "numeric" });
+    }
+    if (tickMarkType === 1) {
+      return formatInTz(t, tz, { month: "short", year: "2-digit" });
+    }
+    if (tickMarkType === 2) {
+      return formatInTz(t, tz, { day: "2-digit", month: "short" });
+    }
+    if (tickMarkType === 4) {
+      return formatInTz(t, tz, {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    }
+    return formatInTz(t, tz, { hour: "2-digit", minute: "2-digit" });
+  };
+}
+
+function formatBarClock(unixSec: number, tz: string, withSeconds: boolean) {
+  return formatInTz(
+    unixSec,
+    tz,
+    withSeconds
+      ? { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+      : { hour: "2-digit", minute: "2-digit" }
+  );
+}
+
 function CoinIcon({ symbol }: { symbol: string }) {
   const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
   return (
@@ -311,11 +381,13 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("cross");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
-  const [showSideWl, setShowSideWl] = useState(true);
+  const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
   const [draggingSym, setDraggingSym] = useState<string | null>(null);
   const [dragOverSym, setDragOverSym] = useState<string | null>(null);
+  const [lastBarTime, setLastBarTime] = useState<number | null>(null);
+  const [lastBarClose, setLastBarClose] = useState<number | null>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
@@ -381,6 +453,7 @@ export default function DashboardPage() {
   const drawDashRef = useRef(drawDash);
   const symbolRef = useRef(symbol);
   const intervalRef = useRef(interval);
+  const timeZoneRef = useRef(timeZone);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
@@ -391,9 +464,10 @@ export default function DashboardPage() {
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
   useEffect(() => { symbolRef.current = symbol; localStorage.setItem("chart_symbol", symbol); }, [symbol]);
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
-  useEffect(() => { saveLS("chart_tz", timeZone); }, [timeZone]);
+  useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
+  useEffect(() => { saveLS("show_side_wl", showSideWl); }, [showSideWl]);
 
   useEffect(() => {
     saveLS("ind_sma", showSMA); saveLS("vis_sma", smaVisible);
@@ -815,7 +889,12 @@ export default function DashboardPage() {
 
       candlesRef.current = candles;
       const lastClose = candles[candles.length - 1]?.close || 1;
+      const lastTime = candles[candles.length - 1]?.time ?? null;
+      setLastBarClose(lastClose);
+      setLastBarTime(lastTime);
       const { precision, minMove } = getPrecision(lastClose);
+      const tz = timeZoneRef.current;
+      const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
 
       const chart = createChart(container, {
         layout: { background: { color: "#0b0e11" }, textColor: "#d1d5db", fontSize: 11 },
@@ -824,9 +903,24 @@ export default function DashboardPage() {
           horzLines: { color: "rgba(42,46,57,0.5)" },
         },
         crosshair: { mode: CrosshairMode.Normal },
-        rightPriceScale: { borderColor: "#2a2e39", scaleMargins: { top: 0.05, bottom: 0.05 } },
-        timeScale: { borderColor: "#2a2e39", timeVisible: true, secondsVisible: false, rightOffset: 5 },
-        localization: { locale: "en-US" },
+        rightPriceScale: {
+          borderColor: "#2a2e39",
+          scaleMargins: { top: 0.05, bottom: 0.05 },
+          entireTextOnly: false,
+        },
+        timeScale: {
+          borderColor: "#2a2e39",
+          timeVisible: true,
+          secondsVisible: isIntraday,
+          rightOffset: 18,
+          barSpacing: 7,
+          minBarSpacing: 3,
+          fixLeftEdge: false,
+          fixRightEdge: false,
+          lockVisibleTimeRangeOnResize: true,
+          tickMarkFormatter: makeTickMarkFormatter(tz) as any,
+        },
+        localization: makeLocalization(tz),
         width: container.clientWidth,
         height: container.clientHeight || 640,
       });
@@ -836,10 +930,26 @@ export default function DashboardPage() {
         borderUpColor: "#22c55e", borderDownColor: "#ef4444",
         wickUpColor: "#22c55e", wickDownColor: "#ef4444",
         priceFormat: { type: "price", precision, minMove },
+        lastValueVisible: true,
+        priceLineVisible: true,
       });
       series.setData(candles as any);
       seriesRef.current = series;
+      // Leave space on the right so time axis labels are fully visible (like TradingView)
       chart.timeScale().fitContent();
+      try {
+        chart.timeScale().scrollToRealTime();
+      } catch {}
+      // Extra right padding via visible logical range
+      try {
+        const lr = chart.timeScale().getVisibleLogicalRange();
+        if (lr) {
+          chart.timeScale().setVisibleLogicalRange({
+            from: lr.from,
+            to: lr.to + 8,
+          });
+        }
+      } catch {}
 
       chart.subscribeCrosshairMove((param) => {
         if (modeRef.current === "none" || modeRef.current === "move") return;
@@ -987,6 +1097,35 @@ export default function DashboardPage() {
       destroyChart();
     };
   }, [symbol, interval]);
+
+  // Apply timezone change live (without full reload)
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
+    try {
+      chart.applyOptions({
+        localization: makeLocalization(timeZone),
+        timeScale: {
+          secondsVisible: isIntraday,
+          tickMarkFormatter: makeTickMarkFormatter(timeZone) as any,
+        },
+      });
+    } catch {}
+  }, [timeZone]);
+
+  // Resize chart when side list is shown/hidden
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight || 640,
+        });
+      }
+    }, 50);
+    return () => clearTimeout(t);
+  }, [showSideWl]);
 
   useEffect(() => {
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
@@ -1164,34 +1303,16 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
-      {/* فیکس ۱: هدر مثل قبلی — عنوان چپ، کنترل‌ها راست */}
+      {/* Header — title left, controls right */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
         <div className="flex-1" />
-        <select
-          value={timeZone}
-          onChange={(e) => setTimeZone(e.target.value)}
-          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
-        >
-          {TIMEZONES.map((z) => (
-            <option key={z.value} value={z.value}>{z.label}</option>
-          ))}
-        </select>
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
           onKeyDown={(e) => e.key === "Enter" && loadCandles()}
           className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm w-28 font-mono"
         />
-        {!showSideWl && (
-          <button
-            type="button"
-            onClick={() => setShowSideWl(true)}
-            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
-          >
-            Show list
-          </button>
-        )}
         <div className="flex items-center gap-1">
           {favTfButtons.map((t) => (
             <button
@@ -1511,6 +1632,56 @@ export default function DashboardPage() {
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/70 text-orange-300 text-sm px-3 py-1 rounded-full z-20">
               Saving...
             </div>
+          )}
+
+          {/* Last bar clock next to fixed price (TradingView-style) */}
+          {lastBarTime != null && (
+            <div
+              className="absolute right-1 z-20 pointer-events-none select-none"
+              style={{ top: "42%" }}
+              title="Last bar time"
+            >
+              <div className="bg-[#2962FF] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-sm shadow text-right min-w-[52px]">
+                <div className="font-semibold text-[11px]">
+                  {lastBarClose != null ? formatPrice(lastBarClose) : ""}
+                </div>
+                <div className="opacity-95">
+                  {formatBarClock(
+                    lastBarTime,
+                    timeZone,
+                    ["1", "5"].includes(String(interval))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Timezone selector under price scale (bottom-right of chart) */}
+          <div className="absolute bottom-1 right-1 z-20">
+            <select
+              value={timeZone}
+              onChange={(e) => setTimeZone(e.target.value)}
+              className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[10px] text-gray-200 cursor-pointer shadow"
+              title="Chart timezone"
+            >
+              {TIMEZONES.map((z) => (
+                <option key={z.value} value={z.value}>
+                  {z.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Floating Show list when side panel is hidden */}
+          {!showSideWl && (
+            <button
+              type="button"
+              onClick={() => setShowSideWl(true)}
+              className="absolute top-2 right-2 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300"
+              title="Show alarm list"
+            >
+              Show list »
+            </button>
           )}
         </div>
 
