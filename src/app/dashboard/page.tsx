@@ -35,6 +35,8 @@ interface Alarm {
   last_price?: number | null;
   width?: number | null;
   dash?: string | null;
+  triggered_at?: string | null;
+  created_at?: string | null;
 }
 
 interface WatchList {
@@ -215,29 +217,66 @@ function findPivots(candles: any[], leftRight: number) {
   return { highs, lows };
 }
 
+/** Desktop gets a longer multi-tone; mobile a short beep */
 function playAlarmBeep() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.frequency.value = 880;
-    o.type = "sine";
-    g.gain.setValueAtTime(0.25, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-    o.start();
-    o.stop(ctx.currentTime + 0.4);
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const notes = isMobile ? [880] : [660, 880, 1100, 880, 1320];
+    const gap = isMobile ? 0.35 : 0.28;
+    notes.forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.type = isMobile ? "sine" : "square";
+      o.frequency.value = freq;
+      const t0 = ctx.currentTime + i * gap;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(isMobile ? 0.28 : 0.18, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + gap * 0.85);
+      o.start(t0);
+      o.stop(t0 + gap);
+    });
   } catch {}
 }
 
 function showLocalNotification(title: string, body: string) {
   try {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification(title, { body, icon: "/icon-192.png", tag: "alarm-chert" });
+      new Notification(title, { body, icon: "/icon-192.png", tag: "alarm-chert-" + Date.now() });
     }
   } catch {}
   playAlarmBeep();
+}
+
+function formatRelativeTime(iso: string | null | undefined) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return "";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
+function formatAlarmDate(iso: string | null | undefined) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
 
 /** Convert VAPID public key (base64url) to Uint8Array for pushManager.subscribe */
@@ -1450,22 +1489,43 @@ export default function DashboardPage() {
     return null;
   }, [parseKlineRows, applyLastPriceLabel]);
 
-  /** Mark alarm triggered in DB + local state (removes line from chart via currentAlarms filter) */
+  /**
+   * Local hit: notify immediately + mark triggered + ask server to send Telegram & Web Push.
+   * (Previously client marked triggered without notifying Telegram → missed messages.)
+   */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
+    const nowIso = new Date().toISOString();
     setAlarms((p) =>
       p.map((x) =>
-        x.id === a.id ? { ...x, triggered: true, is_active: false, last_price: price } : x
+        x.id === a.id
+          ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
+          : x
       )
     );
     try {
       await supabase
         .from("alarms")
-        .update({ triggered: true, is_active: false, last_price: price })
+        .update({
+          triggered: true,
+          is_active: false,
+          last_price: price,
+          triggered_at: nowIso,
+        })
         .eq("id", a.id);
     } catch {}
+
     if (!notifiedAlarmsRef.current.has(a.id)) {
       notifiedAlarmsRef.current.add(a.id);
       showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}  now ${price}`);
+    }
+
+    // Ask Edge Function to send Telegram + Web Push for this alarm (even though already marked)
+    try {
+      await supabase.functions.invoke("check-alarms", {
+        body: { notify_alarm_id: a.id, price },
+      });
+    } catch (e) {
+      console.warn("notify invoke failed", e);
     }
   }, []);
 
@@ -1689,27 +1749,41 @@ export default function DashboardPage() {
     else setStatusMsg("Push setup failed");
   };
 
+  const disablePushNotifications = async () => {
+    try {
+      if ("serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          const endpoint = sub.endpoint;
+          await sub.unsubscribe();
+          try {
+            await supabase.from("push_subscriptions").delete().eq("endpoint", endpoint);
+          } catch {}
+        }
+      }
+    } catch {}
+    setPushStatus("idle");
+    setStatusMsg("Push notifications disabled");
+  };
+
+  const historyAlarms = useMemo(() => {
+    return alarms
+      .filter((a) => a.symbol.toUpperCase() === symbolUpper && a.triggered)
+      .sort((a, b) => {
+        const ta = new Date(a.triggered_at || a.created_at || 0).getTime();
+        const tb = new Date(b.triggered_at || b.created_at || 0).getTime();
+        return tb - ta;
+      })
+      .slice(0, 30);
+  }, [alarms, symbolUpper]);
+
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
       {/* Header — title left, controls right */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
         <div className="flex-1" />
-        {pushStatus !== "ok" && (
-          <button
-            type="button"
-            onClick={enablePushNotifications}
-            className="px-2.5 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium"
-            title="Enable notifications when app is closed (iPad / Android PWA)"
-          >
-            🔔 Enable Push
-          </button>
-        )}
-        {pushStatus === "ok" && (
-          <span className="px-2 py-1 text-[10px] rounded-lg bg-green-900/50 text-green-400 border border-green-800">
-            🔔 Push on
-          </span>
-        )}
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -1773,6 +1847,26 @@ export default function DashboardPage() {
           </div>
         </div>
         {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
+        {/* Single Push toggle — top right of chart controls */}
+        {pushStatus === "ok" ? (
+          <button
+            type="button"
+            onClick={disablePushNotifications}
+            className="ml-auto px-2.5 py-1.5 text-xs rounded-lg bg-green-700/80 hover:bg-red-600 text-white font-medium border border-green-500"
+            title="Click to disable push notifications"
+          >
+            🔔 On
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={enablePushNotifications}
+            className="ml-auto px-2.5 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-blue-600 text-gray-200 font-medium border border-gray-600"
+            title="Enable notifications when app is closed"
+          >
+            🔔 Off
+          </button>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -2177,8 +2271,8 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Bottom lists */}
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Bottom lists: active alarms | lines | history */}
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
             Alarms — {symbolUpper} ({currentAlarms.length})
@@ -2306,6 +2400,48 @@ export default function DashboardPage() {
               </div>
             ))}
             {!currentLines.length && <p className="text-gray-600 text-sm">No lines</p>}
+          </div>
+        </div>
+
+        {/* Alarm history for current symbol */}
+        <div>
+          <h3 className="text-sm font-medium text-purple-400 mb-2">
+            History — {symbolUpper} ({historyAlarms.length})
+          </h3>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {historyAlarms.map((a) => {
+              const when = a.triggered_at || a.created_at;
+              return (
+                <div
+                  key={a.id}
+                  className="bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="font-mono font-medium"
+                      style={{ color: a.color || DEFAULT_ALARM_COLOR }}
+                    >
+                      {getConditionSymbol(a.condition)} {formatPrice(a.price)}
+                    </span>
+                    {a.last_price != null && (
+                      <span className="text-gray-500 text-xs">
+                        hit @ {formatPrice(a.last_price)}
+                      </span>
+                    )}
+                    <span className="ml-auto text-[11px] text-purple-300 tabular-nums">
+                      {formatRelativeTime(when)}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    {formatAlarmDate(when)}
+                    {a.note ? ` · ${a.note}` : ""}
+                  </div>
+                </div>
+              );
+            })}
+            {!historyAlarms.length && (
+              <p className="text-gray-600 text-sm">No triggered alarms yet</p>
+            )}
           </div>
         </div>
       </div>
