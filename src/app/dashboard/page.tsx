@@ -861,11 +861,12 @@ export default function DashboardPage() {
         const color = isMoving ? "#f59e0b" : a.color || DEFAULT_ALARM_COLOR;
         const width = isMoving ? 3 : ((a.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
+        // Only show note text on the line; if no note → empty title (no "Alarm ≈ price")
         const title = isMoving
           ? "MOVING"
           : a.note
-          ? `${getConditionSymbol(a.condition)} ${a.note}`
-          : `Alarm ${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
+          ? String(a.note)
+          : "";
         const pl = series.createPriceLine({
           price: a.price, color, lineWidth: width, lineStyle: style,
           axisLabelVisible: true, title,
@@ -1847,26 +1848,6 @@ export default function DashboardPage() {
           </div>
         </div>
         {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
-        {/* Single Push toggle — top right of chart controls */}
-        {pushStatus === "ok" ? (
-          <button
-            type="button"
-            onClick={disablePushNotifications}
-            className="ml-auto px-2.5 py-1.5 text-xs rounded-lg bg-green-700/80 hover:bg-red-600 text-white font-medium border border-green-500"
-            title="Click to disable push notifications"
-          >
-            🔔 On
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={enablePushNotifications}
-            className="ml-auto px-2.5 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-blue-600 text-gray-200 font-medium border border-gray-600"
-            title="Enable notifications when app is closed"
-          >
-            🔔 Off
-          </button>
-        )}
       </div>
 
       <div className="flex gap-2">
@@ -2405,34 +2386,56 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <h3 className="text-sm font-medium text-purple-400 mb-2">
-            History — {symbolUpper} ({historyAlarms.length})
-          </h3>
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-sm font-medium text-gray-400">
+              History — {symbolUpper} ({historyAlarms.length})
+            </h3>
+            {historyAlarms.length > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const ids = historyAlarms.map((a) => a.id);
+                  setAlarms((prev) => prev.filter((a) => !ids.includes(a.id)));
+                  try {
+                    await supabase.from("alarms").delete().in("id", ids);
+                  } catch {}
+                }}
+                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50"
+              >
+                Delete all
+              </button>
+            )}
+          </div>
           <div className="space-y-1.5 max-h-72 overflow-y-auto">
             {historyAlarms.map((a) => {
               const when = a.triggered_at || a.created_at;
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                  className="bg-gray-950 border border-gray-800/80 rounded-lg px-3 py-2 text-sm"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className="font-mono font-medium"
-                      style={{ color: a.color || DEFAULT_ALARM_COLOR }}
-                    >
+                    <span className="font-mono font-medium text-gray-400">
                       {getConditionSymbol(a.condition)} {formatPrice(a.price)}
                     </span>
-                    {a.last_price != null && (
-                      <span className="text-gray-500 text-xs">
-                        hit @ {formatPrice(a.last_price)}
-                      </span>
-                    )}
-                    <span className="ml-auto text-[11px] text-purple-300 tabular-nums">
+                    <span className="ml-auto text-[11px] text-gray-500 tabular-nums">
                       {formatRelativeTime(when)}
                     </span>
+                    <button
+                      type="button"
+                      title="Delete from history"
+                      onClick={async () => {
+                        setAlarms((prev) => prev.filter((x) => x.id !== a.id));
+                        try {
+                          await supabase.from("alarms").delete().eq("id", a.id);
+                        } catch {}
+                      }}
+                      className="text-gray-600 hover:text-red-400 text-xs leading-none px-1"
+                    >
+                      ×
+                    </button>
                   </div>
-                  <div className="text-[11px] text-gray-500 mt-0.5">
+                  <div className="text-[11px] text-gray-600 mt-0.5">
                     {formatAlarmDate(when)}
                     {a.note ? ` · ${a.note}` : ""}
                   </div>
