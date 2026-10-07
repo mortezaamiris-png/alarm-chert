@@ -240,6 +240,92 @@ function showLocalNotification(title: string, body: string) {
   playAlarmBeep();
 }
 
+/** Convert VAPID public key (base64url) to Uint8Array for pushManager.subscribe */
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Register service worker + subscribe to Web Push (works when PWA is closed on iOS 16.4+).
+ * Saves subscription to Supabase table `push_subscriptions`.
+ */
+async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error"> {
+  if (typeof window === "undefined") return "unsupported";
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return "unsupported";
+  }
+
+  const vapid =
+    (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_VAPID_PUBLIC_KEY) ||
+    (typeof window !== "undefined" && (window as any).__VAPID_PUBLIC_KEY) ||
+    "";
+
+  if (!vapid) return "no-key";
+
+  try {
+    // Register SW at site root (file must live in /public/sw.js)
+    const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== "granted") return "denied";
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapid),
+      });
+    }
+
+    const json = sub.toJSON();
+    const endpoint = json.endpoint || "";
+    const p256dh = json.keys?.p256dh || "";
+    const auth = json.keys?.auth || "";
+    if (!endpoint || !p256dh || !auth) return "error";
+
+    // Upsert subscription so the server can send pushes when alarms fire
+    const { data: existing } = await supabase
+      .from("push_subscriptions")
+      .select("id")
+      .eq("endpoint", endpoint)
+      .maybeSingle();
+
+    if (existing?.id) {
+      await supabase
+        .from("push_subscriptions")
+        .update({
+          p256dh,
+          auth,
+          user_agent: navigator.userAgent,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+    } else {
+      await supabase.from("push_subscriptions").insert([
+        {
+          endpoint,
+          p256dh,
+          auth,
+          user_agent: navigator.userAgent,
+        },
+      ]);
+    }
+    return "ok";
+  } catch (e) {
+    console.warn("Push subscribe failed", e);
+    return "error";
+  }
+}
+
 function getConditionSymbol(c: string) {
   return c === "above" ? "≥" : c === "below" ? "≤" : "≈";
 }
@@ -414,6 +500,8 @@ export default function DashboardPage() {
   const [sideViewId, setSideViewId] = useState<string>(() =>
     loadLS("side_view_id", SIDE_VIEW_ALARMS)
   );
+  /** pushStatus: idle | ok | denied | unsupported | no-key | error */
+  const [pushStatus, setPushStatus] = useState<string>("idle");
   const tfMenuRef = useRef<HTMLDivElement>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
@@ -1572,12 +1660,52 @@ export default function DashboardPage() {
 
   const goToSymbol = (sym: string) => setSymbol(sym);
 
+  // Auto-register push if permission already granted (e.g. returning user on iPad PWA)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("Notification" in window)) {
+      setPushStatus("unsupported");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      ensurePushSubscription().then(setPushStatus);
+    } else if (Notification.permission === "denied") {
+      setPushStatus("denied");
+    }
+  }, []);
+
+  const enablePushNotifications = async () => {
+    setPushStatus("idle");
+    const result = await ensurePushSubscription();
+    setPushStatus(result);
+    if (result === "ok") setStatusMsg("Push notifications enabled");
+    else if (result === "denied") setStatusMsg("Notification permission denied");
+    else if (result === "no-key") setStatusMsg("Missing VAPID key — see setup");
+    else if (result === "unsupported") setStatusMsg("Push not supported on this browser");
+    else setStatusMsg("Push setup failed");
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
       {/* Header — title left, controls right */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
         <div className="flex-1" />
+        {pushStatus !== "ok" && (
+          <button
+            type="button"
+            onClick={enablePushNotifications}
+            className="px-2.5 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium"
+            title="Enable notifications when app is closed (iPad / Android PWA)"
+          >
+            🔔 Enable Push
+          </button>
+        )}
+        {pushStatus === "ok" && (
+          <span className="px-2 py-1 text-[10px] rounded-lg bg-green-900/50 text-green-400 border border-green-800">
+            🔔 Push on
+          </span>
+        )}
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
