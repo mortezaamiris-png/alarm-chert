@@ -63,6 +63,8 @@ const TIMEZONES = [
   { label: "UTC", value: "UTC" },
   { label: "London", value: "Europe/London" },
   { label: "New York", value: "America/New_York" },
+  { label: "Japan", value: "Asia/Tokyo" },
+  { label: "Sydney", value: "Australia/Sydney" },
 ];
 
 const DEFAULT_ALARM_COLOR = "#3b82f6";
@@ -388,6 +390,7 @@ export default function DashboardPage() {
   const [dragOverSym, setDragOverSym] = useState<string | null>(null);
   const [lastBarTime, setLastBarTime] = useState<number | null>(null);
   const [lastBarClose, setLastBarClose] = useState<number | null>(null);
+  const [lastPriceY, setLastPriceY] = useState<number | null>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
@@ -1127,6 +1130,36 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl]);
 
+  // Keep last-price badge aligned with the actual price on the Y axis
+  useEffect(() => {
+    const updateY = () => {
+      const series = seriesRef.current;
+      if (!series || lastBarClose == null) {
+        setLastPriceY(null);
+        return;
+      }
+      try {
+        const y = series.priceToCoordinate(lastBarClose);
+        setLastPriceY(y != null && !Number.isNaN(y) ? y : null);
+      } catch {
+        setLastPriceY(null);
+      }
+    };
+    updateY();
+    const chart = chartRef.current;
+    if (!chart) return;
+    const ts = chart.timeScale();
+    const unsubRange = ts.subscribeVisibleLogicalRangeChange(() => updateY());
+    const unsubCross = chart.subscribeCrosshairMove(() => updateY());
+    // also refresh after layout ticks
+    const id = window.setInterval(updateY, 500);
+    return () => {
+      try { unsubRange?.(); } catch {}
+      try { unsubCross?.(); } catch {}
+      window.clearInterval(id);
+    };
+  }, [lastBarClose, symbol, interval, showSideWl, showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
+
   useEffect(() => {
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
   }, [currentLines, currentAlarms, movingId, movingType, renderAllLinesAndAlarms]);
@@ -1329,9 +1362,11 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={() => setTfMenuOpen((v) => !v)}
-            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700"
+            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-1"
+            title="Timeframes"
           >
-            TF ▾
+            <span aria-hidden>🕐</span>
+            <span>TF ▾</span>
           </button>
         </div>
         {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
@@ -1634,18 +1669,18 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Last bar clock next to fixed price (TradingView-style) */}
-          {lastBarTime != null && (
+          {/* Last bar price+time badge — follows price on Y axis (TradingView-style) */}
+          {lastBarTime != null && lastPriceY != null && lastPriceY >= 0 && (
             <div
-              className="absolute right-1 z-20 pointer-events-none select-none"
-              style={{ top: "42%" }}
-              title="Last bar time"
+              className="absolute right-0 z-20 pointer-events-none select-none transition-[top] duration-150 ease-out"
+              style={{ top: Math.max(4, lastPriceY - 18), transform: "translateY(0)" }}
+              title="Last bar price & time"
             >
-              <div className="bg-[#2962FF] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-sm shadow text-right min-w-[52px]">
+              <div className="bg-[#2962FF] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-l-sm shadow text-right min-w-[56px]">
                 <div className="font-semibold text-[11px]">
                   {lastBarClose != null ? formatPrice(lastBarClose) : ""}
                 </div>
-                <div className="opacity-95">
+                <div className="opacity-95 tabular-nums">
                   {formatBarClock(
                     lastBarTime,
                     timeZone,
@@ -1657,11 +1692,12 @@ export default function DashboardPage() {
           )}
 
           {/* Timezone selector under price scale (bottom-right of chart) */}
-          <div className="absolute bottom-1 right-1 z-20">
+          <div className="absolute bottom-1 right-1 z-20 flex items-center gap-1">
+            <span className="text-[11px] opacity-70" aria-hidden>🕐</span>
             <select
               value={timeZone}
               onChange={(e) => setTimeZone(e.target.value)}
-              className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[10px] text-gray-200 cursor-pointer shadow"
+              className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[10px] text-gray-200 cursor-pointer shadow transition-colors hover:border-orange-500/60 focus:outline-none focus:border-orange-500"
               title="Chart timezone"
             >
               {TIMEZONES.map((z) => (
