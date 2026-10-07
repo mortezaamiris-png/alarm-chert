@@ -37,6 +37,24 @@ interface Alarm {
   dash?: string | null;
 }
 
+interface WatchList {
+  id: string;
+  name: string;
+  created_at?: string;
+}
+
+interface WatchItem {
+  id: string;
+  list_id: string;
+  symbol: string;
+  note?: string | null;
+  sort_order?: number | null;
+  created_at?: string;
+}
+
+/** Built-in side-panel view: symbols that currently have active alarms */
+const SIDE_VIEW_ALARMS = "__alarms__";
+
 type ToolMode = "none" | "draw" | "ray" | "alarm" | "move";
 
 const ALL_TIMEFRAMES = [
@@ -391,6 +409,11 @@ export default function DashboardPage() {
   const [dragOverSym, setDragOverSym] = useState<string | null>(null);
   const [lastBarTime, setLastBarTime] = useState<number | null>(null);
   const [lastBarClose, setLastBarClose] = useState<number | null>(null);
+  const [watchLists, setWatchLists] = useState<WatchList[]>([]);
+  const [watchItems, setWatchItems] = useState<WatchItem[]>([]);
+  const [sideViewId, setSideViewId] = useState<string>(() =>
+    loadLS("side_view_id", SIDE_VIEW_ALARMS)
+  );
   const tfMenuRef = useRef<HTMLDivElement>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
@@ -472,6 +495,15 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
   useEffect(() => { saveLS("show_side_wl", showSideWl); }, [showSideWl]);
+  useEffect(() => { saveLS("side_view_id", sideViewId); }, [sideViewId]);
+
+  // If selected watchlist was deleted, fall back to alarms view
+  useEffect(() => {
+    if (sideViewId === SIDE_VIEW_ALARMS) return;
+    if (watchLists.length && !watchLists.some((l) => l.id === sideViewId)) {
+      setSideViewId(SIDE_VIEW_ALARMS);
+    }
+  }, [watchLists, sideViewId]);
 
   useEffect(() => {
     saveLS("ind_sma", showSMA); saveLS("vis_sma", smaVisible);
@@ -546,6 +578,20 @@ export default function DashboardPage() {
     const rest = alarmSymbolsRaw.filter((s) => !ordered.includes(s)).sort();
     return [...ordered, ...rest];
   }, [alarmSymbolsRaw, sideOrder]);
+
+  /** Symbols shown in the right side panel (alarms view or selected watchlist) */
+  const sidePanelSymbols = useMemo(() => {
+    if (sideViewId === SIDE_VIEW_ALARMS) return alarmSymbols;
+    const listItems = watchItems
+      .filter((i) => i.list_id === sideViewId)
+      .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+    return listItems.map((i) => i.symbol.toUpperCase());
+  }, [sideViewId, alarmSymbols, watchItems]);
+
+  const sideViewLabel = useMemo(() => {
+    if (sideViewId === SIDE_VIEW_ALARMS) return "With alarms";
+    return watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist";
+  }, [sideViewId, watchLists]);
 
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
@@ -1208,7 +1254,44 @@ export default function DashboardPage() {
       if (a) setAlarms(a as Alarm[]);
       const { data: l } = await supabase.from("chart_lines").select("*").order("created_at", { ascending: false });
       if (l) setLines(l as ChartLine[]);
+      // Load all watchlists + items for the side panel
+      const { data: wl } = await supabase
+        .from("watchlist_lists")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (wl) setWatchLists(wl as WatchList[]);
+      const { data: wi } = await supabase
+        .from("watchlist_items")
+        .select("*")
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("created_at", { ascending: true });
+      if (wi) setWatchItems(wi as WatchItem[]);
     })();
+  }, []);
+
+  // Refresh watchlist items periodically (in case user edits on Watchlist page)
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const { data: wl } = await supabase
+          .from("watchlist_lists")
+          .select("*")
+          .order("created_at", { ascending: true });
+        if (alive && wl) setWatchLists(wl as WatchList[]);
+        const { data: wi } = await supabase
+          .from("watchlist_items")
+          .select("*")
+          .order("sort_order", { ascending: true, nullsFirst: false })
+          .order("created_at", { ascending: true });
+        if (alive && wi) setWatchItems(wi as WatchItem[]);
+      } catch {}
+    };
+    const id = window.setInterval(refresh, 15000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
   /** Parse kline API rows into candle objects */
@@ -1866,39 +1949,53 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div className="w-44 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
-            <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between">
-              <span className="text-xs text-gray-400">With alarms</span>
-              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white">
+          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+            <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
+              <select
+                value={sideViewId}
+                onChange={(e) => setSideViewId(e.target.value)}
+                className="flex-1 min-w-0 bg-transparent text-xs text-gray-300 outline-none cursor-pointer truncate"
+                title={sideViewLabel}
+              >
+                <option value={SIDE_VIEW_ALARMS}>With alarms</option>
+                {watchLists.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white shrink-0">
                 « Hide
               </button>
             </div>
             <div className="overflow-y-auto flex-1 p-1.5">
-              {alarmSymbols.map((sym) => {
+              {sidePanelSymbols.map((sym) => {
                 const isDrag = draggingSym === sym;
                 const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
+                const canDrag = sideViewId === SIDE_VIEW_ALARMS;
                 return (
                   <div key={sym}>
-                    {isOver && (
+                    {isOver && canDrag && (
                       <div className="h-10 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
                     )}
                     <div
                       data-sym={sym}
                       onPointerDown={(e) => {
+                        if (!canDrag) return;
                         e.preventDefault();
                         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
                         setDraggingSym(sym);
                         setDragOverSym(null);
                       }}
                       onPointerMove={(e) => {
-                        if (!draggingSym) return;
+                        if (!canDrag || !draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const row = el?.closest?.("[data-sym]") as HTMLElement | null;
                         const target = row?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym(target);
                       }}
                       onPointerUp={() => {
-                        if (draggingSym && dragOverSym && draggingSym !== dragOverSym) {
+                        if (canDrag && draggingSym && dragOverSym && draggingSym !== dragOverSym) {
                           setSideOrder((prev) => {
                             const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== draggingSym);
                             const idx = base.indexOf(dragOverSym);
@@ -1913,14 +2010,16 @@ export default function DashboardPage() {
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`flex items-center gap-1.5 px-1.5 py-1.5 mb-1 rounded-lg cursor-grab active:cursor-grabbing text-xs select-none transition-all duration-150 ${
+                      className={`flex items-center gap-1.5 px-1.5 py-1.5 mb-1 rounded-lg text-xs select-none transition-all duration-150 ${
+                        canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+                      } ${
                         isDrag
                           ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg"
                           : symbolUpper === sym
                           ? "bg-orange-500/20 border border-orange-500/50"
                           : "hover:bg-gray-800 border border-transparent"
                       }`}
-                      style={{ touchAction: "none" }}
+                      style={{ touchAction: canDrag ? "none" : "auto" }}
                     >
                       <CoinIcon symbol={sym} />
                       <div className="min-w-0 flex-1">
@@ -1934,8 +2033,12 @@ export default function DashboardPage() {
                   </div>
                 );
               })}
-              {!alarmSymbols.length && (
-                <p className="text-gray-600 text-xs text-center py-4">No active alarms</p>
+              {!sidePanelSymbols.length && (
+                <p className="text-gray-600 text-xs text-center py-4">
+                  {sideViewId === SIDE_VIEW_ALARMS
+                    ? "No active alarms"
+                    : "Empty list — add symbols on Watchlist page"}
+                </p>
               )}
             </div>
           </div>
