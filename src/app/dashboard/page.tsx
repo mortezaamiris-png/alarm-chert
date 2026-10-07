@@ -254,6 +254,10 @@ function urlBase64ToUint8Array(base64String: string) {
  * Register service worker + subscribe to Web Push (works when PWA is closed on iOS 16.4+).
  * Saves subscription to Supabase table `push_subscriptions`.
  */
+/** Public VAPID key (safe in client). Must match VAPID_PRIVATE_KEY on server/Supabase. */
+const VAPID_PUBLIC_KEY_FALLBACK =
+  "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
+
 async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error"> {
   if (typeof window === "undefined") return "unsupported";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
@@ -263,7 +267,7 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
   const vapid =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_VAPID_PUBLIC_KEY) ||
     (typeof window !== "undefined" && (window as any).__VAPID_PUBLIC_KEY) ||
-    "";
+    VAPID_PUBLIC_KEY_FALLBACK;
 
   if (!vapid) return "no-key";
 
