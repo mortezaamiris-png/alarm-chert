@@ -260,23 +260,11 @@ function formatInTz(
   }
 }
 
-function toUnixSec(time: unknown): number {
-  if (typeof time === "number" && !Number.isNaN(time)) return time;
-  if (time && typeof time === "object") {
-    const o = time as { timestamp?: number; year?: number; month?: number; day?: number };
-    if (typeof o.timestamp === "number") return o.timestamp;
-    if (o.year != null && o.month != null && o.day != null) {
-      return Math.floor(Date.UTC(o.year, o.month - 1, o.day) / 1000);
-    }
-  }
-  return 0;
-}
-
 function makeLocalization(tz: string) {
   return {
     locale: "en-US",
-    timeFormatter: (time: unknown) => {
-      const t = toUnixSec(time);
+    timeFormatter: (time: number) => {
+      const t = typeof time === "number" ? time : 0;
       return formatInTz(t, tz, {
         day: "2-digit",
         month: "short",
@@ -290,8 +278,8 @@ function makeLocalization(tz: string) {
 
 function makeTickMarkFormatter(tz: string) {
   // TickMarkType: Year=0, Month=1, DayOfMonth=2, Time=3, TimeWithSeconds=4
-  return (time: unknown, tickMarkType: number, _locale?: string) => {
-    const t = toUnixSec(time);
+  return (time: number, tickMarkType: number) => {
+    const t = typeof time === "number" ? time : 0;
     if (tickMarkType <= 0) {
       return formatInTz(t, tz, { year: "numeric" });
     }
@@ -403,6 +391,7 @@ export default function DashboardPage() {
   const [lastBarTime, setLastBarTime] = useState<number | null>(null);
   const [lastBarClose, setLastBarClose] = useState<number | null>(null);
   const [lastPriceY, setLastPriceY] = useState<number | null>(null);
+  const tfMenuRef = useRef<HTMLDivElement>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
@@ -921,6 +910,7 @@ export default function DashboardPage() {
         rightPriceScale: {
           borderColor: "#2a2e39",
           scaleMargins: { top: 0.05, bottom: 0.05 },
+          entireTextOnly: false,
         },
         timeScale: {
           borderColor: "#2a2e39",
@@ -931,9 +921,10 @@ export default function DashboardPage() {
           minBarSpacing: 3,
           fixLeftEdge: false,
           fixRightEdge: false,
+          lockVisibleTimeRangeOnResize: true,
           tickMarkFormatter: makeTickMarkFormatter(tz) as any,
         },
-        localization: makeLocalization(tz) as any,
+        localization: makeLocalization(tz),
         width: container.clientWidth,
         height: container.clientHeight || 640,
       });
@@ -943,7 +934,8 @@ export default function DashboardPage() {
         borderUpColor: "#22c55e", borderDownColor: "#ef4444",
         wickUpColor: "#22c55e", wickDownColor: "#ef4444",
         priceFormat: { type: "price", precision, minMove },
-        lastValueVisible: true,
+        // Hide default last-value label; we render TradingView-style price+time badge ourselves
+        lastValueVisible: false,
         priceLineVisible: true,
       });
       series.setData(candles as any);
@@ -1118,12 +1110,12 @@ export default function DashboardPage() {
     const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
     try {
       chart.applyOptions({
-        localization: makeLocalization(timeZone) as any,
+        localization: makeLocalization(timeZone),
         timeScale: {
           secondsVisible: isIntraday,
           tickMarkFormatter: makeTickMarkFormatter(timeZone) as any,
         },
-      } as any);
+      });
     } catch {}
   }, [timeZone]);
 
@@ -1140,10 +1132,25 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl]);
 
-  // Keep last-price badge aligned with the actual price on the Y axis
+  // Close TF/Time menu when clicking outside
+  useEffect(() => {
+    if (!tfMenuOpen) return;
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      const el = tfMenuRef.current;
+      if (el && !el.contains(e.target as Node)) setTfMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [tfMenuOpen]);
+
+  // Align price+time badge with real last price Y from the chart series
   useEffect(() => {
     let alive = true;
-    const updateY = () => {
+    const tick = () => {
       if (!alive) return;
       const series = seriesRef.current;
       if (!series || lastBarClose == null) {
@@ -1158,14 +1165,13 @@ export default function DashboardPage() {
         setLastPriceY(null);
       }
     };
-    updateY();
-    // Interval only — avoid subscribe* return values (often typed as void → Vercel TS error)
-    const id = window.setInterval(updateY, 300);
+    tick();
+    const id = window.setInterval(tick, 250);
     return () => {
       alive = false;
       window.clearInterval(id);
     };
-  }, [lastBarClose, symbol, interval, showSideWl, showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
+  }, [lastBarClose, symbol, interval, showSideWl]);
 
   useEffect(() => {
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
@@ -1366,39 +1372,51 @@ export default function DashboardPage() {
               {t.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setTfMenuOpen((v) => !v)}
-            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-1"
-            title="Timeframes"
-          >
-            <span aria-hidden>🕐</span>
-            <span>TF ▾</span>
-          </button>
+          <div className="relative" ref={tfMenuRef}>
+            <button
+              type="button"
+              onClick={() => setTfMenuOpen((v) => !v)}
+              className={`px-2 py-1 text-xs rounded inline-flex items-center gap-1 transition-all duration-200 ${
+                tfMenuOpen
+                  ? "bg-orange-500 text-black shadow-md scale-105"
+                  : "bg-gray-800 hover:bg-gray-700 text-gray-200"
+              }`}
+              title="Timeframes"
+            >
+              <span aria-hidden className="text-sm leading-none">🕐</span>
+              <span>Time</span>
+              <span className={`transition-transform duration-200 ${tfMenuOpen ? "rotate-180" : ""}`}>▾</span>
+            </button>
+            {tfMenuOpen && (
+              <div
+                className="absolute z-50 top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl min-w-[140px] animate-in fade-in zoom-in-95 duration-150"
+                style={{
+                  animation: "tfPop 0.15s ease-out",
+                }}
+              >
+                <style>{`@keyframes tfPop{from{opacity:0;transform:translateY(-6px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}`}</style>
+                {ALL_TIMEFRAMES.map((t) => (
+                  <div key={t.value} className="flex items-center gap-2 py-1">
+                    <button
+                      type="button"
+                      onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
+                      className={`flex-1 text-left px-2 py-1 rounded text-sm transition-colors ${
+                        interval === t.value ? "bg-orange-500/30 text-orange-200" : "hover:bg-gray-800"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                    <button type="button" onClick={() => toggleFavTf(t.value)} className="text-yellow-400 text-sm">
+                      {favTfs.includes(t.value) ? "★" : "☆"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
       </div>
-
-      {tfMenuOpen && (
-        <div className="absolute z-50 top-16 right-4 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl">
-          {ALL_TIMEFRAMES.map((t) => (
-            <div key={t.value} className="flex items-center gap-2 py-1">
-              <button
-                type="button"
-                onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
-                className={`flex-1 text-left px-2 py-1 rounded text-sm ${
-                  interval === t.value ? "bg-orange-500/30" : "hover:bg-gray-800"
-                }`}
-              >
-                {t.label}
-              </button>
-              <button type="button" onClick={() => toggleFavTf(t.value)} className="text-yellow-400 text-sm">
-                {favTfs.includes(t.value) ? "★" : "☆"}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="flex gap-2">
         {/* Left tools */}
@@ -1676,18 +1694,22 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Last bar price+time badge — follows price on Y axis (TradingView-style) */}
+          {/* Last price + bar time — follows real chart price (like TradingView) */}
           {lastBarTime != null && lastPriceY != null && lastPriceY >= 0 && (
             <div
-              className="absolute right-0 z-20 pointer-events-none select-none transition-[top] duration-150 ease-out"
-              style={{ top: Math.max(4, lastPriceY - 18), transform: "translateY(0)" }}
-              title="Last bar price & time"
+              className="absolute z-20 pointer-events-none select-none"
+              style={{
+                right: 0,
+                top: Math.max(2, lastPriceY - 16),
+                transition: "top 0.12s ease-out",
+              }}
+              title="Last price & time"
             >
-              <div className="bg-[#2962FF] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-l-sm shadow text-right min-w-[56px]">
-                <div className="font-semibold text-[11px]">
+              <div className="bg-[#26a69a] text-white text-[10px] font-mono leading-tight px-1.5 py-0.5 rounded-l shadow-md text-right min-w-[58px]">
+                <div className="font-semibold text-[11px] tabular-nums">
                   {lastBarClose != null ? formatPrice(lastBarClose) : ""}
                 </div>
-                <div className="opacity-95 tabular-nums">
+                <div className="opacity-95 tabular-nums text-[10px]">
                   {formatBarClock(
                     lastBarTime,
                     timeZone,
@@ -1699,12 +1721,11 @@ export default function DashboardPage() {
           )}
 
           {/* Timezone selector under price scale (bottom-right of chart) */}
-          <div className="absolute bottom-1 right-1 z-20 flex items-center gap-1">
-            <span className="text-[11px] opacity-70" aria-hidden>🕐</span>
+          <div className="absolute bottom-1 right-1 z-20">
             <select
               value={timeZone}
               onChange={(e) => setTimeZone(e.target.value)}
-              className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[10px] text-gray-200 cursor-pointer shadow transition-colors hover:border-orange-500/60 focus:outline-none focus:border-orange-500"
+              className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[10px] text-gray-200 cursor-pointer shadow"
               title="Chart timezone"
             >
               {TIMEZONES.map((z) => (
