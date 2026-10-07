@@ -1211,51 +1211,176 @@ export default function DashboardPage() {
     })();
   }, []);
 
+  /** Parse kline API rows into candle objects */
+  const parseKlineRows = useCallback((rows: any[]) => {
+    return rows
+      .map((r: any) => {
+        const time = Math.floor(
+          Number(r.time || r[0] || r.openTime || r.t) /
+            (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+        );
+        return {
+          time,
+          open: parseFloat(r.open ?? r[1]),
+          high: parseFloat(r.high ?? r[2]),
+          low: parseFloat(r.low ?? r[3]),
+          close: parseFloat(r.close ?? r[4]),
+          volume: parseFloat(r.volume ?? r[5] ?? 0),
+        };
+      })
+      .filter((c: any) => c.time && !Number.isNaN(c.close))
+      .sort((a: any, b: any) => a.time - b.time);
+  }, []);
+
+  /** Live candle update without destroying the chart */
+  const refreshLiveCandles = useCallback(async () => {
+    const series = seriesRef.current;
+    if (!series) return;
+    try {
+      const res = await fetch(
+        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=5`
+      );
+      const raw = await res.json();
+      const rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+      if (!rows.length) return;
+      const fresh = parseKlineRows(rows);
+      if (!fresh.length) return;
+
+      const candles = candlesRef.current;
+      for (const c of fresh) {
+        const idx = candles.findIndex((x: any) => x.time === c.time);
+        if (idx >= 0) candles[idx] = c;
+        else if (!candles.length || c.time > candles[candles.length - 1].time) candles.push(c);
+        try {
+          series.update(c as any);
+        } catch {
+          // if update fails (e.g. time gap), ignore; full reload on TF change handles it
+        }
+      }
+      candlesRef.current = candles;
+
+      const last = candles[candles.length - 1];
+      if (last) {
+        setLastBarClose(last.close);
+        setLastBarTime(last.time);
+        applyLastPriceLabel();
+        // feed price into alarm cross check
+        const sym = symbolRef.current.toUpperCase();
+        const prev = prevPricesRef.current[sym];
+        prevPricesRef.current[sym] = last.close;
+        // also use high/low for more accurate cross detection on current bar
+        return { last, prev, high: last.high, low: last.low };
+      }
+    } catch {}
+    return null;
+  }, [parseKlineRows, applyLastPriceLabel]);
+
+  /** Mark alarm triggered in DB + local state (removes line from chart via currentAlarms filter) */
+  const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
+    setAlarms((p) =>
+      p.map((x) =>
+        x.id === a.id ? { ...x, triggered: true, is_active: false, last_price: price } : x
+      )
+    );
+    try {
+      await supabase
+        .from("alarms")
+        .update({ triggered: true, is_active: false, last_price: price })
+        .eq("id", a.id);
+    } catch {}
+    if (!notifiedAlarmsRef.current.has(a.id)) {
+      notifiedAlarmsRef.current.add(a.id);
+      showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}  now ${price}`);
+    }
+  }, []);
+
+  // Sync alarms from DB (Telegram / server triggers) + price cross + live candles
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       if (!alive) return;
       try {
-        const { data } = await supabase.from("alarms").select("*").eq("is_active", true);
-        if (!data) return;
-        const stillActive = data.filter((a: any) => !a.triggered);
-        const justTriggered = data.filter((a: any) => a.triggered);
-        if (justTriggered.length) {
-          const ids = new Set(justTriggered.map((a: any) => a.id));
-          setAlarms((prev) =>
-            prev.map((a) => (ids.has(a.id) ? { ...a, triggered: true, is_active: false } : a))
-          );
-          justTriggered.forEach((a: any) => {
-            if (!notifiedAlarmsRef.current.has(a.id)) {
-              notifiedAlarmsRef.current.add(a.id);
-              showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}`);
+        // 1) Sync ALL recent alarms from DB so Telegram-triggered ones clear on chart
+        const { data: allAlarms } = await supabase
+          .from("alarms")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(200);
+        if (allAlarms && alive) {
+          setAlarms((prev) => {
+            const byId = new Map(allAlarms.map((a: any) => [a.id, a as Alarm]));
+            // merge: prefer DB state for is_active / triggered
+            const merged = prev.map((local) => {
+              const db = byId.get(local.id);
+              if (!db) return local;
+              if (db.triggered && !local.triggered) {
+                if (!notifiedAlarmsRef.current.has(local.id)) {
+                  notifiedAlarmsRef.current.add(local.id);
+                  showLocalNotification(`${db.symbol}`, `Alarm hit @ ${db.price}`);
+                }
+              }
+              return {
+                ...local,
+                ...db,
+                triggered: !!db.triggered,
+                is_active: !!db.is_active && !db.triggered,
+              };
+            });
+            // add any new alarms from DB not in local
+            for (const db of allAlarms as Alarm[]) {
+              if (!merged.some((m) => m.id === db.id)) merged.push(db);
             }
+            return merged;
           });
         }
-        const symbols = [...new Set(stillActive.map((a: any) => a.symbol))];
+
+        // 2) Live candle for current symbol (no full chart rebuild)
+        const live = await refreshLiveCandles();
+
+        // 3) Cross-check active alarms vs ticker / last candle
+        const { data: activeRows } = await supabase
+          .from("alarms")
+          .select("*")
+          .eq("is_active", true)
+          .eq("triggered", false);
+        const stillActive = (activeRows || []) as Alarm[];
+        const symbols = [...new Set(stillActive.map((a) => a.symbol.toUpperCase()))];
+
         for (const sym of symbols) {
           try {
-            const res = await fetch(`/api/ticker?symbol=${sym}`);
-            const j = await res.json();
-            const price = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
+            let price = 0;
+            let high = 0;
+            let low = 0;
+            if (sym === symbolRef.current.toUpperCase() && live?.last) {
+              price = live.last.close;
+              high = live.high;
+              low = live.low;
+            } else {
+              const res = await fetch(`/api/ticker?symbol=${sym}`);
+              const j = await res.json();
+              price = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
+              high = price;
+              low = price;
+            }
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
             prevPricesRef.current[sym] = price;
-            for (const a of stillActive.filter((x: any) => x.symbol === sym)) {
-              if (didCross(a.condition, a.price, prev, price)) {
-                setAlarms((p) =>
-                  p.map((x) =>
-                    x.id === a.id ? { ...x, triggered: true, is_active: false, last_price: price } : x
-                  )
-                );
-                await supabase
-                  .from("alarms")
-                  .update({ triggered: true, is_active: false, last_price: price })
-                  .eq("id", a.id);
-                if (!notifiedAlarmsRef.current.has(a.id)) {
-                  notifiedAlarmsRef.current.add(a.id);
-                  showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}  now ${price}`);
-                }
+
+            for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
+              // cross on close OR candle wicked through the level
+              const hitClose = didCross(a.condition, a.price, prev, price);
+              const hitWick =
+                a.condition === "above" || a.condition === "cross"
+                  ? high >= a.price && (prev == null || prev < a.price || low <= a.price)
+                  : a.condition === "below"
+                  ? low <= a.price && (prev == null || prev > a.price || high >= a.price)
+                  : false;
+              const hitCrossWick =
+                a.condition === "cross" &&
+                ((high >= a.price && low <= a.price) || hitClose);
+
+              if (hitClose || (a.condition === "cross" ? hitCrossWick : hitWick)) {
+                await triggerAlarmLocal(a, price);
               }
             }
           } catch {}
@@ -1263,9 +1388,12 @@ export default function DashboardPage() {
       } catch {}
     };
     tick();
-    const id = window.setInterval(tick, 3000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [refreshLiveCandles, triggerAlarmLocal]);
 
   const deleteAlarm = async (id: string) => {
     setAlarms((prev) => prev.filter((a) => a.id !== id));
