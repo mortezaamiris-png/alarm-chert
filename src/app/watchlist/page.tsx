@@ -122,12 +122,36 @@ function CoinIcon({ symbol, size = 28 }: { symbol: string; size?: number }) {
   );
 }
 
-function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
+function MiniChart({
+  symbol,
+  interval,
+  pct,
+}: {
+  symbol: string;
+  interval: string;
+  pct?: number | null;
+}) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!ref.current) return;
     ref.current.innerHTML = "";
+
+    // green if up, red if down, orange if unknown
+    const isUp = pct != null && !Number.isNaN(pct) && pct >= 0;
+    const isDown = pct != null && !Number.isNaN(pct) && pct < 0;
+    const lineColor = isUp ? "#22c55e" : isDown ? "#ef4444" : "#f97316";
+    const topColor = isUp
+      ? "rgba(34,197,94,0.35)"
+      : isDown
+      ? "rgba(239,68,68,0.35)"
+      : "rgba(249,115,22,0.35)";
+    const bottomColor = isUp
+      ? "rgba(34,197,94,0.02)"
+      : isDown
+      ? "rgba(239,68,68,0.02)"
+      : "rgba(249,115,22,0.02)";
+
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth || 160,
       height: 80,
@@ -140,9 +164,9 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
       handleScale: false,
     });
     const series = chart.addAreaSeries({
-      lineColor: "#f97316",
-      topColor: "rgba(249,115,22,0.35)",
-      bottomColor: "rgba(249,115,22,0.02)",
+      lineColor,
+      topColor,
+      bottomColor,
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
@@ -169,7 +193,7 @@ function MiniChart({ symbol, interval }: { symbol: string; interval: string }) {
     return () => {
       chart.remove();
     };
-  }, [symbol, interval]);
+  }, [symbol, interval, pct]);
 
   return <div ref={ref} className="w-full h-20 pointer-events-none" />;
 }
@@ -795,7 +819,19 @@ export default function WatchlistPage() {
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h1 className="text-2xl font-bold">Watchlist</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">Watchlist</h1>
+          {!showSearch && (
+            <button
+              type="button"
+              onClick={() => setShowSearch(true)}
+              className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
+              title="Search symbols"
+            >
+              🔍
+            </button>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -914,16 +950,8 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      <div className="mb-6 relative">
-        {!showSearch ? (
-          <button
-            type="button"
-            onClick={() => setShowSearch(true)}
-            className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
-          >
-            🔍
-          </button>
-        ) : (
+      {showSearch && (
+        <div className="mb-6 relative">
           <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-xl">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
               <span className="text-gray-500">🔍</span>
@@ -1022,8 +1050,8 @@ export default function WatchlistPage() {
               })}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {!activeListId && (
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
@@ -1051,77 +1079,85 @@ export default function WatchlistPage() {
                 style={{ WebkitUserSelect: "none", userSelect: "none" }}
               >
                 <div className="flex items-center justify-between mb-1 gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
                     <CoinIcon symbol={item.symbol} size={26} />
-                    <div className="min-w-0">
-                      <div className="font-semibold text-sm truncate">{item.symbol}</div>
-                      <PriceBlock sym={item.symbol} />
-                    </div>
+                    <div className="font-semibold text-sm truncate">{item.symbol}</div>
                   </div>
-                  <div className="relative" data-menu-root>
-                    <div
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const row = (e.currentTarget as HTMLElement).closest(
-                          "[data-item-id]"
-                        ) as HTMLElement;
-                        let dragged = false;
-                        const timer = setTimeout(() => {
-                          dragged = true;
-                          if (row) startDrag(item.id, e.clientX, e.clientY, row);
-                        }, 140);
-                        const onUp = () => {
-                          clearTimeout(timer);
-                          if (!dragged) {
-                            setListMenuId(null);
-                            setMenuItemId((prev) => (prev === item.id ? null : item.id));
-                          }
-                          window.removeEventListener("pointerup", onUp);
-                        };
-                        window.addEventListener("pointerup", onUp);
-                      }}
-                      className="w-9 h-9 flex items-center justify-center text-gray-500 text-lg cursor-grab touch-none"
-                      style={{ touchAction: "none" }}
-                    >
-                      ⋮⋮
-                    </div>
-                    {menuItemId === item.id && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <PriceBlock sym={item.symbol} />
+                    <div className="relative" data-menu-root>
                       <div
-                        className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
-                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const row = (e.currentTarget as HTMLElement).closest(
+                            "[data-item-id]"
+                          ) as HTMLElement;
+                          let dragged = false;
+                          const timer = setTimeout(() => {
+                            dragged = true;
+                            if (row) startDrag(item.id, e.clientX, e.clientY, row);
+                          }, 140);
+                          const onUp = () => {
+                            clearTimeout(timer);
+                            if (!dragged) {
+                              setListMenuId(null);
+                              setMenuItemId((prev) =>
+                                prev === item.id ? null : item.id
+                              );
+                            }
+                            window.removeEventListener("pointerup", onUp);
+                          };
+                          window.addEventListener("pointerup", onUp);
+                        }}
+                        className="w-8 h-8 flex items-center justify-center text-gray-500 text-lg cursor-grab touch-none"
+                        style={{ touchAction: "none" }}
                       >
-                        <button
-                          type="button"
-                          onClick={() => deleteItem(item.id)}
-                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            goChart(item.symbol);
-                            setMenuItemId(null);
-                          }}
-                          className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
-                        >
-                          Open chart
-                        </button>
+                        ⋮⋮
                       </div>
-                    )}
+                      {menuItemId === item.id && (
+                        <div
+                          className="absolute right-0 top-full mt-1 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[110px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => deleteItem(item.id)}
+                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              goChart(item.symbol);
+                              setMenuItemId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                          >
+                            Open chart
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {draggingId !== item.id && (
-                  <MiniChart symbol={item.symbol} interval={interval} />
+                  <MiniChart
+                    symbol={item.symbol}
+                    interval={interval}
+                    pct={pcts[item.symbol]}
+                  />
                 )}
-                <button
-                  type="button"
-                  onClick={() => goChart(item.symbol)}
-                  className="text-orange-400 text-xs hover:underline mt-2"
-                >
-                  Chart
-                </button>
+                <div className="flex justify-end mt-1">
+                  <button
+                    type="button"
+                    onClick={() => goChart(item.symbol)}
+                    className="text-orange-400 text-xs hover:underline"
+                  >
+                    Chart
+                  </button>
+                </div>
               </div>
             </div>
           ))}
