@@ -524,8 +524,14 @@ export default function DashboardPage() {
   const [widthMenuKey, setWidthMenuKey] = useState<string | null>(null);
   /** open dash/style menu: "alarm:id" | "line:id" | null */
   const [dashMenuKey, setDashMenuKey] = useState<string | null>(null);
+  /** open color menu: "alarm:id" | "line:id" | null */
+  const [colorMenuKey, setColorMenuKey] = useState<string | null>(null);
   const tzMenuRef = useRef<HTMLDivElement | null>(null);
   const sideMenuRef = useRef<HTMLDivElement | null>(null);
+  const COLOR_PRESETS = [
+    "#f97316", "#22c55e", "#3b82f6", "#ef4444", "#eab308",
+    "#a855f7", "#06b6d4", "#ec4899", "#ffffff", "#94a3b8",
+  ];
   const [favTfs, setFavTfs] = useState<string[]>(() =>
     loadLS("fav_tfs", ["1", "5", "15", "60", "240", "D"])
   );
@@ -2549,8 +2555,54 @@ export default function DashboardPage() {
                   </span>
                   {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    <input type="color" value={l.color || DEFAULT_LINE_COLOR}
-                      onChange={(e) => updateLineColor(l.id, e.target.value)} className="w-6 h-6 rounded cursor-pointer" />
+                    {/* Color menu — same pop effect */}
+                    <div className="relative" data-color-menu={`line:${l.id}`}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setColorMenuKey((k) => (k === `line:${l.id}` ? null : `line:${l.id}`))
+                        }
+                        className={`w-6 h-6 rounded border-2 transition-all duration-150 ${
+                          colorMenuKey === `line:${l.id}` ? "border-white scale-110" : "border-gray-600"
+                        }`}
+                        style={{ backgroundColor: l.color || DEFAULT_LINE_COLOR }}
+                        title="Color"
+                      />
+                      {colorMenuKey === `line:${l.id}` && (
+                        <div
+                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl z-50"
+                          style={{ animation: "tfPop 0.15s ease-out" }}
+                        >
+                          <div className="grid grid-cols-5 gap-1.5 mb-2">
+                            {COLOR_PRESETS.map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => {
+                                  updateLineColor(l.id, c);
+                                  setColorMenuKey(null);
+                                }}
+                                className={`w-6 h-6 rounded-full border-2 transition ${
+                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
+                                    ? "border-white scale-110"
+                                    : "border-transparent hover:border-gray-400"
+                                }`}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+                          </div>
+                          <label className="flex items-center gap-2 text-[10px] text-gray-400 cursor-pointer">
+                            <span>Custom</span>
+                            <input
+                              type="color"
+                              value={l.color || DEFAULT_LINE_COLOR}
+                              onChange={(e) => updateLineColor(l.id, e.target.value)}
+                              className="w-7 h-6 rounded cursor-pointer bg-transparent border-0"
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
                     {/* Width menu — same pop effect */}
                     <div className="relative" data-width-menu={`line:${l.id}`}>
                       <button
