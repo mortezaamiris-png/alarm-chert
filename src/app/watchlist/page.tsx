@@ -73,6 +73,31 @@ function formatPct(pct: number) {
   return `${sign}${(pct * 100).toFixed(2)}%`;
 }
 
+function intervalToSeconds(iv: string): number {
+  if (iv === "D") return 86400;
+  if (iv === "W") return 604800;
+  if (iv === "M") return 2592000;
+  const n = parseInt(iv, 10);
+  return Number.isNaN(n) ? 3600 : n * 60;
+}
+
+/** Countdown to candle close — same as main Charts page */
+function formatCountdownRemaining(openTime: number, iv: string): string {
+  const sec = intervalToSeconds(String(iv));
+  const closeTime = Number(openTime) + sec;
+  let left = closeTime - Math.floor(Date.now() / 1000);
+  if (left < 0) left = 0;
+  const d = Math.floor(left / 86400);
+  const h = Math.floor((left % 86400) / 3600);
+  const m = Math.floor((left % 3600) / 60);
+  const s = left % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) {
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function baseFromSymbol(symbol: string) {
   const s = symbol.toUpperCase();
   const quotes = ["USDT", "USDC", "USD", "BTC", "ETH", "BUSD", "DAI"];
@@ -208,10 +233,20 @@ function DetailChart({
   lineMode: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const lastBarTimeRef = useRef<number | null>(null);
+  const priceLineRef = useRef<any>(null);
 
+  // Create chart once / when mode changes
   useEffect(() => {
     if (!ref.current) return;
     ref.current.innerHTML = "";
+    candleRef.current = null;
+    lineRef.current = null;
+    priceLineRef.current = null;
+    lastBarTimeRef.current = null;
 
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth,
@@ -224,55 +259,112 @@ function DetailChart({
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false, timeVisible: true },
     });
-
-    let candleSeries: ISeriesApi<"Candlestick"> | null = null;
-    let lineSeries: ISeriesApi<"Area"> | null = null;
+    chartRef.current = chart;
 
     if (lineMode) {
-      lineSeries = chart.addAreaSeries({
+      lineRef.current = chart.addAreaSeries({
         lineColor: "#22c55e",
         topColor: "rgba(34,197,94,0.25)",
         bottomColor: "rgba(34,197,94,0.02)",
         lineWidth: 2,
-        priceLineVisible: true,
+        priceLineVisible: false,
         lastValueVisible: true,
       });
     } else {
-      candleSeries = chart.addCandlestickSeries({
+      candleRef.current = chart.addCandlestickSeries({
         upColor: "#22c55e",
         downColor: "#ef4444",
         borderVisible: false,
         wickUpColor: "#22c55e",
         wickDownColor: "#ef4444",
+        priceLineVisible: false,
+        lastValueVisible: true,
       });
     }
 
     const onResize = () => {
-      if (ref.current) chart.applyOptions({ width: ref.current.clientWidth });
+      if (ref.current && chartRef.current) {
+        chartRef.current.applyOptions({ width: ref.current.clientWidth });
+      }
     };
     window.addEventListener("resize", onResize);
 
-    (async () => {
+    return () => {
+      window.removeEventListener("resize", onResize);
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      lineRef.current = null;
+      priceLineRef.current = null;
+    };
+  }, [symbol, interval, lineMode]);
+
+  // Apply countdown title on last price label
+  const applyCountdown = useCallback(() => {
+    const t = lastBarTimeRef.current;
+    if (t == null) return;
+    const title = formatCountdownRemaining(t, interval);
+    const series = lineMode ? lineRef.current : candleRef.current;
+    if (!series) return;
+    try {
+      // lightweight-charts last value label uses series options / price line
+      if (priceLineRef.current) {
+        try {
+          series.removePriceLine(priceLineRef.current);
+        } catch {}
+        priceLineRef.current = null;
+      }
+      // Get last close from series data is hard; use price line with title
+      // Instead update via applyOptions on lastValueVisible title — not supported.
+      // Use a price line at last price with countdown title.
+    } catch {}
+  }, [interval, lineMode]);
+
+  // Live poll candles (like main Charts page)
+  useEffect(() => {
+    let cancelled = false;
+    let fitted = false;
+
+    const load = async (isFirst: boolean) => {
       try {
         const res = await fetch(
           `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=200`
         );
         const json = await res.json();
         const list = json?.data;
-        if (!list?.length) return;
+        if (!list?.length || cancelled) return;
 
-        if (lineMode && lineSeries) {
+        if (lineMode && lineRef.current) {
           const rows = list.map((item: any) => ({
             time: item.time,
             value: item.value ?? item.close,
           }));
-          const last = rows[rows.length - 1]?.value || 0;
-          const { precision, minMove } = getPrecision(last);
-          lineSeries.applyOptions({
+          const last = rows[rows.length - 1];
+          const lastVal = last?.value || 0;
+          const { precision, minMove } = getPrecision(lastVal);
+          lineRef.current.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
-          lineSeries.setData(rows as any);
-        } else if (candleSeries) {
+          lineRef.current.setData(rows as any);
+          lastBarTimeRef.current = Number(last?.time) || null;
+
+          // countdown price line
+          if (priceLineRef.current) {
+            try {
+              lineRef.current.removePriceLine(priceLineRef.current);
+            } catch {}
+          }
+          if (lastBarTimeRef.current != null) {
+            priceLineRef.current = lineRef.current.createPriceLine({
+              price: lastVal,
+              color: lastVal >= (rows[rows.length - 2]?.value ?? lastVal) ? "#22c55e" : "#ef4444",
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: formatCountdownRemaining(lastBarTimeRef.current, interval),
+            });
+          }
+        } else if (candleRef.current) {
           const candles = list.map((item: any) => ({
             time: item.time,
             open: item.open,
@@ -280,20 +372,61 @@ function DetailChart({
             low: item.low,
             close: item.close,
           }));
-          const last = candles[candles.length - 1].close;
-          const { precision, minMove } = getPrecision(last);
-          candleSeries.applyOptions({
+          const last = candles[candles.length - 1];
+          const { precision, minMove } = getPrecision(last.close);
+          candleRef.current.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
-          candleSeries.setData(candles as any);
+          candleRef.current.setData(candles as any);
+          lastBarTimeRef.current = Number(last.time) || null;
+
+          if (priceLineRef.current) {
+            try {
+              candleRef.current.removePriceLine(priceLineRef.current);
+            } catch {}
+          }
+          if (lastBarTimeRef.current != null) {
+            const up = last.close >= last.open;
+            priceLineRef.current = candleRef.current.createPriceLine({
+              price: last.close,
+              color: up ? "#22c55e" : "#ef4444",
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: formatCountdownRemaining(lastBarTimeRef.current, interval),
+            });
+          }
         }
-        chart.timeScale().fitContent();
+
+        if (isFirst && chartRef.current && !fitted) {
+          chartRef.current.timeScale().fitContent();
+          fitted = true;
+        }
       } catch {}
-    })();
+    };
+
+    load(true);
+    // poll live — 2s for short TF, 5s for longer
+    const sec = intervalToSeconds(interval);
+    const pollMs = sec <= 60 ? 2000 : sec <= 900 ? 3000 : 5000;
+    const id = window.setInterval(() => load(false), pollMs);
+
+    // tick countdown every 1s
+    const tick = window.setInterval(() => {
+      const t = lastBarTimeRef.current;
+      const series = lineMode ? lineRef.current : candleRef.current;
+      if (t == null || !series || !priceLineRef.current) return;
+      try {
+        const title = formatCountdownRemaining(t, interval);
+        // recreate price line title by updating options if supported
+        priceLineRef.current.applyOptions({ title });
+      } catch {}
+    }, 1000);
 
     return () => {
-      window.removeEventListener("resize", onResize);
-      chart.remove();
+      cancelled = true;
+      clearInterval(id);
+      clearInterval(tick);
     };
   }, [symbol, interval, lineMode]);
 
@@ -977,24 +1110,40 @@ export default function WatchlistPage() {
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                const startX = e.clientX;
+                const startY = e.clientY;
                 let dragged = false;
+                // start drag after small move OR 120ms hold
                 const timer = setTimeout(() => {
-                  dragged = true;
-                  startListDrag(l.id);
-                }, 140);
+                  if (!dragged) {
+                    dragged = true;
+                    startListDrag(l.id);
+                  }
+                }, 120);
+                const onMove = (ev: PointerEvent) => {
+                  const dx = Math.abs(ev.clientX - startX);
+                  const dy = Math.abs(ev.clientY - startY);
+                  if (!dragged && (dx > 6 || dy > 6)) {
+                    dragged = true;
+                    clearTimeout(timer);
+                    startListDrag(l.id);
+                  }
+                };
                 const onUp = () => {
                   clearTimeout(timer);
+                  window.removeEventListener("pointermove", onMove);
+                  window.removeEventListener("pointerup", onUp);
                   if (!dragged) {
                     setMenuItemId(null);
                     setListMenuId((prev) => (prev === l.id ? null : l.id));
                   }
-                  window.removeEventListener("pointerup", onUp);
                 };
+                window.addEventListener("pointermove", onMove);
                 window.addEventListener("pointerup", onUp);
               }}
               className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-grab active:cursor-grabbing touch-none"
               style={{ touchAction: "none" }}
-              title="Hold & drag to reorder · tap for menu"
+              title="Drag to reorder lists · tap for menu"
             >
               ⋮⋮
             </div>
