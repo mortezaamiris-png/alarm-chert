@@ -559,6 +559,7 @@ export default function DashboardPage() {
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [highlightAlarmId, setHighlightAlarmId] = useState<string | null>(null);
   const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -657,6 +658,19 @@ export default function DashboardPage() {
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
   useEffect(() => { symbolRef.current = symbol; localStorage.setItem("chart_symbol", symbol); }, [symbol]);
+  // Highlight a specific alarm line when navigating from Alerts page
+  useEffect(() => {
+    try {
+      const hid = localStorage.getItem("chart_highlight_alarm_id");
+      if (hid) {
+        setHighlightAlarmId(hid);
+        localStorage.removeItem("chart_highlight_alarm_id");
+        const t = setTimeout(() => setHighlightAlarmId(null), 10000);
+        return () => clearTimeout(t);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
@@ -894,23 +908,30 @@ export default function DashboardPage() {
     currentAlarms.forEach((a) => {
       try {
         const isMoving = movingId === a.id && movingType === "alarm";
-        const color = isMoving ? "#f59e0b" : a.color || DEFAULT_ALARM_COLOR;
-        const width = isMoving ? 3 : ((a.width as 1 | 2 | 3) || 2);
+        const isHL = highlightAlarmId === a.id;
+        const color = isMoving
+          ? "#f59e0b"
+          : isHL
+          ? "#ffffff"
+          : a.color || DEFAULT_ALARM_COLOR;
+        const width = (isMoving || isHL ? 4 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3 | 4;
         const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
-        // Only show note text on the line; if no note → empty title (no "Alarm ≈ price")
         const title = isMoving
           ? "MOVING"
+          : isHL
+          ? "◀ SELECTED"
           : a.note
           ? String(a.note)
           : "";
         const pl = series.createPriceLine({
-          price: a.price, color, lineWidth: width, lineStyle: style,
+          price: a.price, color, lineWidth: (width > 3 ? 3 : width) as 1 | 2 | 3,
+          lineStyle: style,
           axisLabelVisible: true, title,
         });
         alarmLinesRef.current.set(`alarm-${a.id}`, pl);
       } catch {}
     });
-  }, [currentLines, currentAlarms, movingId, movingType]);
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
