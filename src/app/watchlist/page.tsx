@@ -658,14 +658,33 @@ export default function WatchlistPage() {
     setSearching(true);
     searchTimer.current = setTimeout(() => {
       const up = q.toUpperCase().replace(/[^A-Z0-9.]/g, "");
+      const exOrder: Record<string, number> = {
+        BINANCE: 0,
+        BYBIT: 1,
+        BITUNIX: 2,
+        LBANK: 3,
+      };
       const hits = allSymbols
         .filter(
           (s) =>
             s.symbol.includes(up) ||
-            (s.baseCoin || "").includes(up) ||
-            (s.quoteCoin || "").includes(up)
+            (s.baseCoin || "").toUpperCase().includes(up) ||
+            (s.quoteCoin || "").toUpperCase().includes(up)
         )
-        .slice(0, 25);
+        .sort((a, b) => {
+          // exact symbol first
+          const ae = a.symbol === up ? 0 : a.symbol.startsWith(up) ? 1 : 2;
+          const be = b.symbol === up ? 0 : b.symbol.startsWith(up) ? 1 : 2;
+          if (ae !== be) return ae - be;
+          // same symbol: Spot before Futures, then exchange order
+          if (a.symbol === b.symbol) {
+            if (a.market !== b.market) return a.market === "Spot" ? -1 : 1;
+            return (exOrder[a.exchange || ""] ?? 9) - (exOrder[b.exchange || ""] ?? 9);
+          }
+          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+          return 0;
+        })
+        .slice(0, 40);
       setSearchHits(hits);
       setSearching(false);
     }, 180);
@@ -898,17 +917,34 @@ export default function WatchlistPage() {
     setListDropTargetId(null);
   };
 
-  const addSymbol = async (sym: string) => {
+  /** exchange is stored in note as __ex:BINANCE so each exchange can be added separately */
+  const EX_PREFIX = "__ex:";
+  const itemExchange = (item: WatchItem) =>
+    item.note && item.note.startsWith(EX_PREFIX) ? item.note.slice(EX_PREFIX.length) : null;
+
+  const findItem = (sym: string, exchange?: string) => {
+    const symbol = sym.toUpperCase();
+    return items.find((i) => {
+      if (i.symbol !== symbol) return false;
+      if (!exchange) return true;
+      const ex = itemExchange(i);
+      // legacy rows (no exchange note) match any single add
+      if (!ex) return true;
+      return ex === exchange;
+    });
+  };
+
+  const addSymbol = async (sym: string, exchange?: string) => {
     if (!activeListId) return;
     const symbol = sym.toUpperCase();
-    if (items.some((i) => i.symbol === symbol)) return;
+    if (findItem(symbol, exchange)) return;
     setSaving(true);
     try {
       const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
       const payload: any = {
         list_id: activeListId,
         symbol,
-        note: null,
+        note: exchange ? `${EX_PREFIX}${exchange}` : null,
         sort_order: maxOrder + 1,
       };
       let { data, error } = await supabase
@@ -927,7 +963,7 @@ export default function WatchlistPage() {
         return;
       }
       setItems((prev) => [...prev, data]);
-      setJustAdded(symbol);
+      setJustAdded(`${symbol}@${exchange || ""}`);
       setTimeout(() => setJustAdded(null), 1200);
       if (!selectedSymbol) setSelectedSymbol(symbol);
     } finally {
@@ -935,24 +971,22 @@ export default function WatchlistPage() {
     }
   };
 
-  const removeSymbol = async (sym: string) => {
-    const symbol = sym.toUpperCase();
-    const found = items.find((i) => i.symbol === symbol);
+  const removeSymbol = async (sym: string, exchange?: string) => {
+    const found = findItem(sym, exchange);
     if (!found) return;
     setSaving(true);
     try {
       await supabase.from("watchlist_items").delete().eq("id", found.id);
       setItems((prev) => prev.filter((i) => i.id !== found.id));
-      if (selectedSymbol === symbol) setSelectedSymbol(null);
+      if (selectedSymbol === sym.toUpperCase()) setSelectedSymbol(null);
     } finally {
       setSaving(false);
     }
   };
 
-  const toggleSymbol = async (sym: string) => {
-    const symbol = sym.toUpperCase();
-    if (items.some((i) => i.symbol === symbol)) await removeSymbol(symbol);
-    else await addSymbol(symbol);
+  const toggleSymbol = async (sym: string, exchange?: string) => {
+    if (findItem(sym, exchange)) await removeSymbol(sym, exchange);
+    else await addSymbol(sym, exchange);
   };
 
   const deleteItem = async (id: string) => {
@@ -967,7 +1001,7 @@ export default function WatchlistPage() {
   };
 
   const draggingItem = items.find((i) => i.id === draggingId);
-  const inList = (sym: string) => items.some((i) => i.symbol === sym);
+  const inList = (sym: string, exchange?: string) => !!findItem(sym, exchange);
 
   const PriceBlock = ({ sym }: { sym: string }) => {
     const p = prices[sym];
@@ -1256,8 +1290,8 @@ export default function WatchlistPage() {
                 <p className="text-gray-500 text-sm p-4">No results</p>
               )}
               {searchHits.map((hit) => {
-                const added = inList(hit.symbol);
-                const flash = justAdded === hit.symbol;
+                const added = inList(hit.symbol, hit.exchange);
+                const flash = justAdded === `${hit.symbol}@${hit.exchange || ""}`;
                 const p = prices[hit.symbol];
                 const pct = pcts[hit.symbol];
                 return (
@@ -1311,7 +1345,7 @@ export default function WatchlistPage() {
                     <button
                       type="button"
                       disabled={saving}
-                      onClick={() => toggleSymbol(hit.symbol)}
+                      onClick={() => toggleSymbol(hit.symbol, hit.exchange)}
                       title={added ? "Remove from list" : "Add to list"}
                       className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${
                         added || flash
