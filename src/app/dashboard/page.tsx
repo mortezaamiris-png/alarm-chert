@@ -545,6 +545,8 @@ export default function DashboardPage() {
   const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
   const [tfMenuOpen, setTfMenuOpen] = useState(false);
   const [tzMenuOpen, setTzMenuOpen] = useState(false);
+  /** open custom popover key e.g. alarm-w-<id>, line-d-<id>, alarm-c-<id> */
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [favTfs, setFavTfs] = useState<string[]>(() =>
     loadLS("fav_tfs", ["1", "5", "15", "60", "240", "D"])
   );
@@ -1373,13 +1375,18 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl]);
 
-  // Close TF / timezone menus when clicking outside
+  // Close TF / timezone / list menus when clicking outside
   useEffect(() => {
-    if (!tfMenuOpen && !tzMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       if (tfMenuOpen && tfMenuRef.current && !tfMenuRef.current.contains(t)) setTfMenuOpen(false);
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
+      // list popovers: close if click is outside any [data-menu] element
+      if (openMenu) {
+        const el = (e.target as HTMLElement)?.closest?.("[data-menu]");
+        if (!el) setOpenMenu(null);
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
@@ -1387,7 +1394,7 @@ export default function DashboardPage() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("touchstart", onDown);
     };
-  }, [tfMenuOpen, tzMenuOpen]);
+  }, [tfMenuOpen, tzMenuOpen, openMenu]);
 
   // Refresh last-price axis label when timezone / TF changes
   useEffect(() => {
@@ -1818,6 +1825,13 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
+      <style>{`
+        @keyframes tfPop{from{opacity:0;transform:translateY(-8px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+        input[type="color"]{-webkit-appearance:none;appearance:none;border:none;padding:0;background:transparent;cursor:pointer}
+        input[type="color"]::-webkit-color-swatch-wrapper{padding:0;border-radius:9999px}
+        input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
+        input[type="color"]::-moz-color-swatch{border:none;border-radius:9999px}
+      `}</style>
       {/* Header — title left, controls right */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
@@ -1844,38 +1858,41 @@ export default function DashboardPage() {
           <div className="relative" ref={tfMenuRef}>
             <button
               type="button"
-              onClick={() => setTfMenuOpen((v) => !v)}
-              className={`px-2 py-1 text-xs rounded inline-flex items-center gap-1 transition-all duration-200 ${
+              onClick={() => { setTfMenuOpen((v) => !v); setTzMenuOpen(false); setOpenMenu(null); }}
+              className={`px-3 py-1.5 text-xs rounded-xl inline-flex items-center gap-1.5 border transition-all duration-200 ${
                 tfMenuOpen
-                  ? "bg-orange-500 text-black shadow-md scale-105"
-                  : "bg-gray-800 hover:bg-gray-700 text-gray-200"
+                  ? "bg-orange-500 text-black border-orange-400 shadow-lg shadow-orange-500/40 scale-105 ring-2 ring-orange-400/40"
+                  : "bg-gray-900 text-gray-100 border-gray-500 hover:bg-gray-800 hover:border-orange-500/60 shadow-md"
               }`}
               title="Timeframes"
             >
               <span aria-hidden className="text-sm leading-none">🕐</span>
-              <span>Time</span>
-              <span className={`transition-transform duration-200 ${tfMenuOpen ? "rotate-180" : ""}`}>▾</span>
+              <span className="font-semibold tracking-wide">Time</span>
+              <span className={`transition-transform duration-200 inline-block ${tfMenuOpen ? "rotate-180" : ""}`}>▾</span>
             </button>
             {tfMenuOpen && (
               <div
-                className="absolute z-50 top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl min-w-[140px] animate-in fade-in zoom-in-95 duration-150"
-                style={{
-                  animation: "tfPop 0.15s ease-out",
-                }}
+                className="absolute z-50 top-full right-0 mt-2 bg-gray-950/98 border border-gray-600 rounded-2xl p-2 shadow-2xl shadow-black/60 min-w-[168px] backdrop-blur-md"
+                style={{ animation: "tfPop 0.18s ease-out" }}
               >
-                <style>{`@keyframes tfPop{from{opacity:0;transform:translateY(-6px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}`}</style>
                 {ALL_TIMEFRAMES.map((t) => (
-                  <div key={t.value} className="flex items-center gap-2 py-1">
+                  <div key={t.value} className="flex items-center gap-0.5">
                     <button
                       type="button"
                       onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
-                      className={`flex-1 text-left px-2 py-1 rounded text-sm transition-colors ${
-                        interval === t.value ? "bg-orange-500/30 text-orange-200" : "hover:bg-gray-800"
+                      className={`flex-1 text-left px-3 py-2 rounded-xl text-sm transition-colors ${
+                        interval === t.value
+                          ? "bg-orange-500/30 text-orange-200 font-semibold"
+                          : "hover:bg-gray-800 text-gray-200"
                       }`}
                     >
-                      {t.label}
+                      {interval === t.value ? "✓ " : ""}{t.label}
                     </button>
-                    <button type="button" onClick={() => toggleFavTf(t.value)} className="text-yellow-400 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => toggleFavTf(t.value)}
+                      className="w-8 h-8 flex items-center justify-center text-yellow-400 text-sm rounded-xl hover:bg-gray-800"
+                    >
                       {favTfs.includes(t.value) ? "★" : "☆"}
                     </button>
                   </div>
@@ -1993,13 +2010,14 @@ export default function DashboardPage() {
           {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
           {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
             <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
-              <input
-                type="color"
-                value={drawColor}
-                onChange={(e) => setDrawColor(e.target.value)}
-                className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-                title="Color"
-              />
+              <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                <input
+                  type="color"
+                  value={drawColor}
+                  onChange={(e) => setDrawColor(e.target.value)}
+                  className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                />
+              </div>
               <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
                   <button
@@ -2054,7 +2072,9 @@ export default function DashboardPage() {
                   <input value={row.str} onChange={(e) => row.setStr(e.target.value)}
                     onBlur={() => { const n = parseInt(row.str, 10); if (!Number.isNaN(n) && n > 0) row.set(n); }}
                     className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-                  <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="w-6 h-6" />
+                  <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                    <input type="color" value={row.col} onChange={(e) => row.setCol(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                  </div>
                 </div>
               ))}
               <button type="button" onClick={() => setSmaSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
@@ -2099,11 +2119,15 @@ export default function DashboardPage() {
               </div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-14">Up</span>
-                <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={trendUpColor} onChange={(e) => setTrendUpColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-14">Down</span>
-                <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <button type="button" onClick={() => setTrendSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
             </div>
@@ -2123,7 +2147,9 @@ export default function DashboardPage() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs w-12">Color</span>
-                <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={rsiColor} onChange={(e) => setRsiColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <button type="button" onClick={() => setRsiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
             </div>
@@ -2143,15 +2169,21 @@ export default function DashboardPage() {
               </div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-12">+DI</span>
-                <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={dmiPlusColor} onChange={(e) => setDmiPlusColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-12">-DI</span>
-                <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={dmiMinusColor} onChange={(e) => setDmiMinusColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs w-12">ADX</span>
-                <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="w-6 h-6" />
+                <div className="relative w-6 h-6 rounded-full overflow-hidden border border-gray-500 shrink-0">
+                  <input type="color" value={dmiAdxColor} onChange={(e) => setDmiAdxColor(e.target.value)} className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                </div>
               </div>
               <button type="button" onClick={() => setDmiSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
             </div>
@@ -2163,25 +2195,25 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
+          {/* Timezone — same polished popover as Time (desktop + iPad) */}
           <div className="absolute bottom-1 right-1 z-20" ref={tzMenuRef}>
             <button
               type="button"
-              onClick={() => setTzMenuOpen((v) => !v)}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] shadow transition-all duration-200 ${
+              onClick={() => { setTzMenuOpen((v) => !v); setTfMenuOpen(false); setOpenMenu(null); }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold shadow-md transition-all duration-200 ${
                 tzMenuOpen
-                  ? "bg-orange-500 text-black border-orange-400 scale-105"
-                  : "bg-gray-900/95 text-gray-200 border-gray-600 hover:bg-gray-800"
+                  ? "bg-orange-500 text-black border-orange-400 shadow-lg shadow-orange-500/40 scale-105 ring-2 ring-orange-400/40"
+                  : "bg-gray-900/95 text-gray-100 border-gray-500 hover:bg-gray-800 hover:border-orange-500/60"
               }`}
               title="Chart timezone"
             >
               <span>{TIMEZONES.find((z) => z.value === timeZone)?.label || "UTC"}</span>
-              <span className={`transition-transform duration-200 ${tzMenuOpen ? "rotate-180" : ""}`}>▾</span>
+              <span className={`transition-transform duration-200 inline-block ${tzMenuOpen ? "rotate-180" : ""}`}>▾</span>
             </button>
             {tzMenuOpen && (
               <div
-                className="absolute right-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[130px]"
-                style={{ animation: "tfPop 0.15s ease-out" }}
+                className="absolute right-0 bottom-full mb-2 z-50 bg-gray-950/98 border border-gray-600 rounded-2xl py-1.5 shadow-2xl shadow-black/60 min-w-[148px] backdrop-blur-md"
+                style={{ animation: "tfPop 0.18s ease-out" }}
               >
                 {TIMEZONES.map((z) => (
                   <button
@@ -2191,11 +2223,11 @@ export default function DashboardPage() {
                       setTimeZone(z.value);
                       setTzMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${
-                      timeZone === z.value ? "text-orange-300" : "text-gray-200"
+                    className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 rounded-xl mx-0 hover:bg-gray-800 transition-colors ${
+                      timeZone === z.value ? "bg-orange-500/25 text-orange-200 font-semibold" : "text-gray-200"
                     }`}
                   >
-                    <span className="w-3 text-orange-400">{timeZone === z.value ? "✓" : ""}</span>
+                    <span className="w-4 text-center text-orange-400">{timeZone === z.value ? "✓" : ""}</span>
                     <span>{z.label}</span>
                   </button>
                 ))}
@@ -2328,37 +2360,96 @@ export default function DashboardPage() {
                   </span>
                   {a.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{a.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    <select
-                      value={a.condition}
-                      onChange={(e) => updateAlarmCondition(a.id, e.target.value as any)}
-                      className="bg-gray-800 rounded px-1.5 py-0.5 text-xs"
-                    >
-                      <option value="above">Above</option>
-                      <option value="below">Below</option>
-                      <option value="cross">Cross</option>
-                    </select>
-                    <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
-                      onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                      className="w-7 h-7 rounded cursor-pointer bg-transparent border border-gray-600 shadow" title="Color" />
-                    <select
-                      value={String(a.width || 2)}
-                      onChange={(e) => updateAlarmWidth(a.id, parseInt(e.target.value, 10) as 1 | 2 | 3)}
-                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
-                      title="Width"
-                    >
-                      <option value="1">W1</option>
-                      <option value="2">W2</option>
-                      <option value="3">W3</option>
-                    </select>
-                    <select
-                      value={a.dash === "dashed" ? "dashed" : "solid"}
-                      onChange={(e) => updateAlarmDash(a.id, e.target.value)}
-                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
-                      title="Style"
-                    >
-                      <option value="solid">—— Solid</option>
-                      <option value="dashed">- - Dash</option>
-                    </select>
+                    {/* Condition popover */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `a-cond-${a.id}` ? null : `a-cond-${a.id}`)}
+                        className={`px-2 py-1 rounded-lg border text-[11px] transition-all ${
+                          openMenu === `a-cond-${a.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900 border-gray-600 text-gray-200 hover:border-gray-500"
+                        }`}
+                      >
+                        {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
+                      </button>
+                      {openMenu === `a-cond-${a.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[100px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                          {(["cross", "above", "below"] as const).map((c) => (
+                            <button key={c} type="button"
+                              onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{a.condition === c ? "✓" : ""}</span>
+                              {c === "cross" ? "Cross" : c === "above" ? "Above" : "Below"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Round color */}
+                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                      <input
+                        type="color"
+                        value={a.color || DEFAULT_ALARM_COLOR}
+                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                      />
+                    </div>
+                    {/* Width popover */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `a-w-${a.id}` ? null : `a-w-${a.id}`)}
+                        className={`px-2 py-1 rounded-lg border text-[11px] transition-all ${
+                          openMenu === `a-w-${a.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900 border-gray-600 text-gray-200 hover:border-gray-500"
+                        }`}
+                      >
+                        W{a.width || 2} ▾
+                      </button>
+                      {openMenu === `a-w-${a.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                          {LINE_WIDTHS.map((w) => (
+                            <button key={w} type="button"
+                              onClick={() => { updateAlarmWidth(a.id, w); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
+                              W{w}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Dash popover */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `a-d-${a.id}` ? null : `a-d-${a.id}`)}
+                        className={`px-2 py-1 rounded-lg border text-[11px] transition-all ${
+                          openMenu === `a-d-${a.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900 border-gray-600 text-gray-200 hover:border-gray-500"
+                        }`}
+                      >
+                        {a.dash === "dashed" ? "- -" : "——"} ▾
+                      </button>
+                      {openMenu === `a-d-${a.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                          {(["solid", "dashed"] as const).map((d) => (
+                            <button key={d} type="button"
+                              onClick={() => { updateAlarmDash(a.id, d); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
+                              {d === "solid" ? "—— Solid" : "- - Dash"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
                       className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
@@ -2404,28 +2495,69 @@ export default function DashboardPage() {
                   </span>
                   {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    <input type="color" value={l.color || DEFAULT_LINE_COLOR}
-                      onChange={(e) => updateLineColor(l.id, e.target.value)}
-                      className="w-7 h-7 rounded cursor-pointer bg-transparent border border-gray-600 shadow" title="Color" />
-                    <select
-                      value={String(l.width || 2)}
-                      onChange={(e) => updateLineWidth(l.id, parseInt(e.target.value, 10) as 1 | 2 | 3)}
-                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
-                      title="Width"
-                    >
-                      <option value="1">W1</option>
-                      <option value="2">W2</option>
-                      <option value="3">W3</option>
-                    </select>
-                    <select
-                      value={(l.dash || l.style) === "dashed" ? "dashed" : "solid"}
-                      onChange={(e) => updateLineDash(l.id, e.target.value)}
-                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
-                      title="Style"
-                    >
-                      <option value="solid">—— Solid</option>
-                      <option value="dashed">- - Dash</option>
-                    </select>
+                    {/* Round color */}
+                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                      <input
+                        type="color"
+                        value={l.color || DEFAULT_LINE_COLOR}
+                        onChange={(e) => updateLineColor(l.id, e.target.value)}
+                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                      />
+                    </div>
+                    {/* Width popover */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `l-w-${l.id}` ? null : `l-w-${l.id}`)}
+                        className={`px-2 py-1 rounded-lg border text-[11px] transition-all ${
+                          openMenu === `l-w-${l.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900 border-gray-600 text-gray-200 hover:border-gray-500"
+                        }`}
+                      >
+                        W{l.width || 2} ▾
+                      </button>
+                      {openMenu === `l-w-${l.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                          {LINE_WIDTHS.map((w) => (
+                            <button key={w} type="button"
+                              onClick={() => { updateLineWidth(l.id, w); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
+                              W{w}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Dash popover */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `l-d-${l.id}` ? null : `l-d-${l.id}`)}
+                        className={`px-2 py-1 rounded-lg border text-[11px] transition-all ${
+                          openMenu === `l-d-${l.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900 border-gray-600 text-gray-200 hover:border-gray-500"
+                        }`}
+                      >
+                        {(l.dash || l.style) === "dashed" ? "- -" : "——"} ▾
+                      </button>
+                      {openMenu === `l-d-${l.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                          {(["solid", "dashed"] as const).map((d) => (
+                            <button key={d} type="button"
+                              onClick={() => { updateLineDash(l.id, d); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
+                              {d === "solid" ? "—— Solid" : "- - Dash"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
                       className="text-xs text-gray-400 hover:text-white px-1">Note</button>
