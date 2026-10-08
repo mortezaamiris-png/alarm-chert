@@ -24,7 +24,7 @@ interface SearchHit {
   symbol: string;
   baseCoin?: string;
   quoteCoin?: string;
-  market: "Spot" | "Futures" | "Index";
+  market: "Spot" | "Futures";
   exchange?: string;
 }
 
@@ -517,23 +517,12 @@ export default function WatchlistPage() {
       } catch {}
       // minimal offline fallback
       setAllSymbols(
-        [
-          "BTCUSDT",
-          "ETHUSDT",
-          "BNBUSDT",
-          "SOLUSDT",
-          "BTC.D",
-          "USDT.D",
-          "TOTAL2",
-          "TOTAL3",
-          "OTHERS.D",
-        ].map((s) => ({
+        ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].map((s) => ({
           symbol: s,
-          baseCoin: s.replace("USDT", "").replace(".D", ""),
-          quoteCoin: s.includes(".D") || s.startsWith("TOTAL") ? "IDX" : "USDT",
-          market: (s.includes(".D") || s.startsWith("TOTAL")
-            ? "Index"
-            : "Spot") as SearchHit["market"],
+          baseCoin: s.replace("USDT", ""),
+          quoteCoin: "USDT",
+          market: "Spot" as const,
+          exchange: "BINANCE",
         }))
       );
     })();
@@ -1273,7 +1262,7 @@ export default function WatchlistPage() {
                 const pct = pcts[hit.symbol];
                 return (
                   <div
-                    key={`${hit.market}-${hit.symbol}`}
+                    key={`${hit.exchange || "X"}-${hit.market}-${hit.symbol}`}
                     className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
                   >
                     <CoinIcon symbol={hit.symbol} size={28} />
@@ -1284,15 +1273,13 @@ export default function WatchlistPage() {
                           className={`text-[10px] px-1.5 py-0.5 rounded ${
                             hit.market === "Spot"
                               ? "bg-blue-900/60 text-blue-300"
-                              : hit.market === "Index"
-                              ? "bg-amber-900/60 text-amber-300"
                               : "bg-purple-900/60 text-purple-300"
                           }`}
                         >
                           {hit.market}
                         </span>
                         {hit.exchange && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-orange-300 border border-gray-700">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-orange-300 border border-gray-700 font-medium">
                             {hit.exchange}
                           </span>
                         )}
