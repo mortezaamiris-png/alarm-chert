@@ -44,7 +44,7 @@ async function safeJson(url: string, timeoutMs = 8000): Promise<any | null> {
 
 async function fromBinance(): Promise<Hit[]> {
   const [spot, fut] = await Promise.all([
-    safeJson("https://api.binance.com/api/v3/exchangeInfo"),
+    safeJson("https://data-api.binance.vision/api/v3/exchangeInfo"),
     safeJson("https://fapi.binance.com/fapi/v1/exchangeInfo"),
   ]);
   const out: Hit[] = [];
