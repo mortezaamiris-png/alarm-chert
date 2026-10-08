@@ -934,25 +934,45 @@ export default function DashboardPage() {
           ? `Diag ${formatPrice(l.price)}`
           : `Line ${formatPrice(l.price)}`;
         if (isDiagonalLine(l)) {
-          // True diagonal / trend line: two points, extend into future
+          // True diagonal: two anchors + smooth extension (never two points past last bar → avoids vertical kink)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
           const sp = Number(l.price);
           const ep = Number(l.end_price);
-          const futureT = lastTime + extend;
-          const futureP = projectedPriceOnDiag(st, sp, et, ep, futureT);
+          const t0 = Math.min(st, et);
+          const t1 = Math.max(st, et);
+          const v0 = st <= et ? sp : ep;
+          const v1 = st <= et ? ep : sp;
+          const extendTo = lastTime + extend;
+          const noteClean = l.note && !String(l.note).startsWith("__diag:") ? String(l.note) : null;
+          const diagTitle = isMoving ? "MOVING" : noteClean || "Diag";
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
-            title: isMoving ? "MOVING" : (l.note ? String(l.note) : "Diag"),
+            title: diagTitle,
           });
-          const t0 = Math.min(st, et);
-          const t1 = Math.max(st, et);
-          ls.setData([
-            { time: t0 as any, value: st <= et ? sp : ep },
-            { time: t1 as any, value: st <= et ? ep : sp },
-            { time: futureT as any, value: futureP },
-          ].sort((a, b) => (a.time as number) - (b.time as number)));
+          const dataPts: { time: any; value: number }[] = [{ time: t0 as any, value: v0 }];
+          if (t1 <= lastTime) {
+            // End is on the chart — draw to end, then extend along slope
+            dataPts.push({ time: t1 as any, value: v1 });
+            if (extendTo > t1) {
+              dataPts.push({
+                time: extendTo as any,
+                value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
+              });
+            }
+          } else {
+            // End is in the future — only one point past last bar (prevents vertical collapse on right edge)
+            dataPts.push({
+              time: lastTime as any,
+              value: projectedPriceOnDiag(st, sp, et, ep, lastTime),
+            });
+            dataPts.push({
+              time: extendTo as any,
+              value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
+            });
+          }
+          ls.setData(dataPts);
           chartLinesRef.current.set(l.id, ls);
         } else if (l.start_time != null) {
           // Horizontal ray from start_time
@@ -990,12 +1010,13 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
+        const noteCleanA = a.note && !String(a.note).startsWith("__diag:") ? String(a.note) : null;
         const title = isMoving
           ? "MOVING"
           : isHL
           ? "◀ SELECTED"
-          : a.note
-          ? String(a.note)
+          : noteCleanA
+          ? noteCleanA
           : isDiagonalLine(a)
           ? "Diag 🔔"
           : "";
@@ -1005,23 +1026,39 @@ export default function DashboardPage() {
           const et = Number(a.end_time);
           const sp = Number(a.price);
           const ep = Number(a.end_price);
-          const futureT = lastTime + extend;
-          const futureP = projectedPriceOnDiag(st, sp, et, ep, futureT);
+          const t0 = Math.min(st, et);
+          const t1 = Math.max(st, et);
+          const v0 = st <= et ? sp : ep;
+          const v1 = st <= et ? ep : sp;
+          const extendTo = lastTime + extend;
           const nowP = projectedPriceOnDiag(st, sp, et, ep, lastTime);
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
             title: title || "Diag 🔔",
           });
-          const t0 = Math.min(st, et);
-          const t1 = Math.max(st, et);
-          ls.setData([
-            { time: t0 as any, value: st <= et ? sp : ep },
-            { time: t1 as any, value: st <= et ? ep : sp },
-            { time: futureT as any, value: futureP },
-          ].sort((x, y) => (x.time as number) - (y.time as number)));
+          const dataPts: { time: any; value: number }[] = [{ time: t0 as any, value: v0 }];
+          if (t1 <= lastTime) {
+            dataPts.push({ time: t1 as any, value: v1 });
+            if (extendTo > t1) {
+              dataPts.push({
+                time: extendTo as any,
+                value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
+              });
+            }
+          } else {
+            dataPts.push({
+              time: lastTime as any,
+              value: nowP,
+            });
+            dataPts.push({
+              time: extendTo as any,
+              value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
+            });
+          }
+          ls.setData(dataPts);
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-          // Also show current projected level on price axis
+          // Current projected level on price axis
           const pl = series.createPriceLine({
             price: nowP, color, lineWidth: 1,
             lineStyle: LineStyle.Dashed,
