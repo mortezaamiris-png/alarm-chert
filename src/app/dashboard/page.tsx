@@ -562,6 +562,8 @@ export default function DashboardPage() {
   const previewLineRef = useRef<IPriceLine | null>(null);
   /** Temporary line series while drawing diagonal (start → cursor) */
   const previewDiagSeriesRef = useRef<any>(null);
+  /** AbortController to remove pointer listeners on chart rebuild */
+  const pointerAbortRef = useRef<AbortController | null>(null);
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
@@ -856,11 +858,20 @@ export default function DashboardPage() {
       previewDiagSeriesRef.current = null;
     }
     try { seriesRef.current?.setMarkers([]); } catch {}
+    // Restore chart pan/zoom after drawing
+    try {
+      chartRef.current?.applyOptions({
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+        handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+      });
+    } catch {}
     setPreviewPrice(null);
   }, []);
 
   const destroyChart = useCallback(() => {
     clearPreview();
+    try { pointerAbortRef.current?.abort(); } catch {}
+    pointerAbortRef.current = null;
     if (lastPriceLineRef.current && seriesRef.current) {
       try { seriesRef.current.removePriceLine(lastPriceLineRef.current); } catch {}
       lastPriceLineRef.current = null;
@@ -1399,82 +1410,94 @@ export default function DashboardPage() {
         return candles.length ? candles[candles.length - 1].time : null;
       };
 
-      let lastPreviewUi = 0;
+      /** Update rubber-band diagonal preview (start → current). No React state — no freeze. */
+      const updateDiagPreview = (tCursor: number, price: number) => {
+        const start = diagStartRef.current;
+        if (!start || tCursor == null || Number.isNaN(price)) return;
+        const t0 = Math.min(start.time, tCursor);
+        const t1 = Math.max(start.time, tCursor);
+        if (t1 === t0) return;
+        const v0 = start.time <= tCursor ? start.price : price;
+        const v1 = start.time <= tCursor ? price : start.price;
+        try {
+          if (!previewDiagSeriesRef.current) {
+            previewDiagSeriesRef.current = chart.addLineSeries({
+              color: drawColorRef.current,
+              lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+              lineStyle: LineStyle.Dashed,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: true,
+            });
+          }
+          previewDiagSeriesRef.current.setData([
+            { time: t0 as any, value: v0 },
+            { time: t1 as any, value: v1 },
+          ]);
+        } catch {}
+      };
+
+      const lockChartInteraction = (lock: boolean) => {
+        try {
+          chart.applyOptions({
+            handleScroll: lock
+              ? { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false }
+              : { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+            handleScale: lock
+              ? { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false }
+              : { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+          });
+        } catch {}
+      };
+
+      // Pointer move on container — works for mouse AND touch (iPad)
+      try { pointerAbortRef.current?.abort(); } catch {}
+      pointerAbortRef.current = new AbortController();
+      const onPointerMove = (e: PointerEvent) => {
+        if (modeRef.current !== "diag" || !diagStartRef.current) return;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+        const price = series.coordinateToPrice(y);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) {
+              tCursor = candles[candles.length - 1].time + Math.round(logical - (candles.length - 1)) * barSec;
+            } else if (logical < 0) {
+              tCursor = candles[0].time + Math.round(logical) * barSec;
+            } else {
+              const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+              tCursor = candles[idx].time;
+            }
+          }
+        } catch {}
+        if (tCursor == null) return;
+        updateDiagPreview(tCursor, price);
+      };
+      container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
+
       chart.subscribeCrosshairMove((param) => {
         if (modeRef.current === "none" || modeRef.current === "move") return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
 
-        // Throttle React state (was freezing the page on every pixel)
-        const now = Date.now();
-        if (now - lastPreviewUi > 100) {
-          lastPreviewUi = now;
-          setPreviewPrice(price);
-        }
-
-        const upsertPriceLine = (p: number, title: string) => {
-          try {
-            if (previewLineRef.current) {
-              previewLineRef.current.applyOptions({
-                price: p,
-                color: drawColorRef.current,
-                lineWidth: 1,
-                lineStyle: LineStyle.Dashed,
-                title,
-              });
-            } else {
-              previewLineRef.current = series.createPriceLine({
-                price: p,
-                color: drawColorRef.current,
-                lineWidth: 1,
-                lineStyle: LineStyle.Dashed,
-                axisLabelVisible: true,
-                title,
-              });
-            }
-          } catch {}
-        };
-
+        // Diag mode: only rubber-band diagonal — NO horizontal price line, NO setState
         if (modeRef.current === "diag") {
-          const start = diagStartRef.current;
-          if (start) {
+          if (diagStartRef.current) {
             const tCursor = resolveTime(param);
-            if (tCursor == null) return;
-            const t0 = Math.min(start.time, tCursor);
-            const t1 = Math.max(start.time, tCursor);
-            const v0 = start.time <= tCursor ? start.price : price;
-            const v1 = start.time <= tCursor ? price : start.price;
-            try {
-              if (!previewDiagSeriesRef.current) {
-                previewDiagSeriesRef.current = chart.addLineSeries({
-                  color: drawColorRef.current,
-                  lineWidth: drawWidthRef.current,
-                  lineStyle: LineStyle.Dashed,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: true,
-                });
-              }
-              if (t1 !== t0) {
-                previewDiagSeriesRef.current.setData([
-                  { time: t0 as any, value: v0 },
-                  { time: t1 as any, value: v1 },
-                ]);
-              }
-            } catch {}
-            upsertPriceLine(price, "②");
-          } else {
-            if (previewDiagSeriesRef.current) {
-              try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
-              previewDiagSeriesRef.current = null;
-            }
-            upsertPriceLine(price, "①");
+            if (tCursor != null) updateDiagPreview(tCursor, price);
           }
           return;
         }
 
-        // Horizontal tools — update in place (no remove/recreate every frame)
+        // Horizontal tools only — throttle UI + update price line in place
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
           previewDiagSeriesRef.current = null;
@@ -1543,22 +1566,16 @@ export default function DashboardPage() {
           }
           const start = diagStartRef.current;
           if (!start) {
-            // ① First point fixed — visible circle marker + axis label
+            // ① First point fixed — circle + lock scroll so drag draws diagonal not pans chart
             setDiagStart({ time: t, price: fp });
-            setStatusMsg("① set — now tap ② second point");
+            setStatusMsg("① set — drag to ② then tap");
+            lockChartInteraction(true);
             try {
+              // Remove any horizontal preview line (we only want diagonal)
               if (previewLineRef.current) {
                 try { series.removePriceLine(previewLineRef.current); } catch {}
+                previewLineRef.current = null;
               }
-              previewLineRef.current = series.createPriceLine({
-                price: fp,
-                color: drawColorRef.current,
-                lineWidth: 2,
-                lineStyle: LineStyle.Dashed,
-                axisLabelVisible: true,
-                title: "● ①",
-              });
-              // Circle on the bar
               try {
                 series.setMarkers([
                   {
@@ -1571,11 +1588,10 @@ export default function DashboardPage() {
                   },
                 ]);
               } catch {}
-              // Seed preview series so a dot is visible even with one point
               if (!previewDiagSeriesRef.current) {
                 previewDiagSeriesRef.current = chart.addLineSeries({
                   color: drawColorRef.current,
-                  lineWidth: drawWidthRef.current,
+                  lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
                   lineStyle: LineStyle.Dashed,
                   priceLineVisible: false,
                   lastValueVisible: false,
@@ -1598,7 +1614,7 @@ export default function DashboardPage() {
           // ② Second point — save segment (no extension)
           clickLockRef.current = true;
           setSaving(true);
-          // Clear drawing markers
+          lockChartInteraction(false);
           try { series.setMarkers([]); } catch {}
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
