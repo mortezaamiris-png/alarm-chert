@@ -159,9 +159,14 @@ export default function AlertsPage() {
     }
   };
 
-  const goToChart = (sym: string) => {
+  const goToChart = (sym: string, alertId?: string) => {
     try {
       localStorage.setItem("chart_symbol", sym.toUpperCase().split("@")[0]);
+      if (alertId) {
+        localStorage.setItem("chart_highlight_alarm_id", alertId);
+      } else {
+        localStorage.removeItem("chart_highlight_alarm_id");
+      }
     } catch {}
     router.push("/dashboard");
   };
@@ -348,7 +353,7 @@ export default function AlertsPage() {
                           type="button"
                           title="Delete"
                           onClick={() => softDeactivate(alert.id)}
-                          className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-950/40 text-xs leading-none opacity-70 group-hover:opacity-100"
+                          className="absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center text-red-500 hover:text-red-400 hover:bg-red-950/50 text-base leading-none font-bold"
                         >
                           ×
                         </button>
@@ -361,10 +366,15 @@ export default function AlertsPage() {
                         />
                         <div className="min-w-0 flex-1 pr-5">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-orange-400 font-medium text-sm">
+                            <button
+                              type="button"
+                              onClick={() => goToChart(sym, alert.id)}
+                              className="text-orange-400 font-medium text-sm hover:text-orange-300 hover:underline"
+                              title="Open on chart"
+                            >
                               {getConditionSymbol(alert.condition)}{" "}
                               {formatPrice(alert.price)}
-                            </span>
+                            </button>
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
                               {getConditionLabel(alert.condition)}
                             </span>
@@ -418,27 +428,6 @@ export default function AlertsPage() {
             </div>
           </div>
 
-          {/* symbol chips for filter */}
-          {historyAlerts.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {Array.from(new Set(historyAlerts.map((a) => a.symbol.toUpperCase())))
-                .sort()
-                .map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setFilterSym(filterSym === s ? null : s)}
-                    className={`text-[11px] px-2 py-0.5 rounded-full border ${
-                      filterSym === s
-                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                        : "border-gray-700 text-gray-400 hover:border-gray-500"
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
-            </div>
-          )}
 
           {filteredHistory.length === 0 ? (
             <div className="text-center text-gray-600 py-10 border border-dashed border-gray-800 rounded-xl text-sm">
@@ -458,7 +447,7 @@ export default function AlertsPage() {
                       type="button"
                       title="Delete"
                       onClick={() => deleteAlert(alert.id)}
-                      className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full flex items-center justify-center text-gray-600 hover:text-red-400 hover:bg-red-950/40 text-xs leading-none opacity-60 group-hover:opacity-100"
+                      className="absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center text-red-500 hover:text-red-400 hover:bg-red-950/50 text-base leading-none font-bold"
                     >
                       ×
                     </button>
@@ -467,15 +456,20 @@ export default function AlertsPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => goToChart(alert.symbol)}
+                          onClick={() => goToChart(alert.symbol, alert.id)}
                           className="font-medium text-sm text-white hover:text-orange-400"
                         >
                           {alert.symbol}
                         </button>
-                        <span className="text-gray-400 text-sm">
+                        <button
+                          type="button"
+                          onClick={() => goToChart(alert.symbol, alert.id)}
+                          className="text-orange-400 text-sm hover:text-orange-300 hover:underline"
+                          title="Open on chart"
+                        >
                           {getConditionSymbol(alert.condition)}{" "}
                           {formatPrice(alert.price)}
-                        </span>
+                        </button>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-500">
                           {getConditionLabel(alert.condition)}
                         </span>
