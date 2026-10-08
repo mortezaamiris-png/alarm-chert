@@ -160,6 +160,80 @@ async function fromBitunix(): Promise<Hit[]> {
   return out;
 }
 
+
+async function fromOKX(): Promise<Hit[]> {
+  // Spot + SWAP (USDT perpetual)
+  const [spot, swap] = await Promise.all([
+    safeJson("https://www.okx.com/api/v5/public/instruments?instType=SPOT"),
+    safeJson("https://www.okx.com/api/v5/public/instruments?instType=SWAP"),
+  ]);
+  const out: Hit[] = [];
+  for (const x of spot?.data || []) {
+    if (x.state !== "live") continue;
+    const base = (x.baseCcy || "").toUpperCase();
+    const quote = (x.quoteCcy || "").toUpperCase();
+    if (quote !== "USDT" && quote !== "USDC") continue;
+    out.push({
+      symbol: `${base}${quote}`,
+      baseCoin: base,
+      quoteCoin: quote,
+      market: "Spot",
+      exchange: "OKX",
+    });
+  }
+  for (const x of swap?.data || []) {
+    if (x.state !== "live") continue;
+    // instId like BTC-USDT-SWAP
+    const parts = String(x.instId || "").split("-");
+    if (parts.length < 2) continue;
+    const base = parts[0].toUpperCase();
+    const quote = parts[1].toUpperCase();
+    if (quote !== "USDT" && quote !== "USDC") continue;
+    out.push({
+      symbol: `${base}${quote}`,
+      baseCoin: base,
+      quoteCoin: quote,
+      market: "Futures",
+      exchange: "OKX",
+    });
+  }
+  return out;
+}
+
+async function fromBitget(): Promise<Hit[]> {
+  const [spot, mix] = await Promise.all([
+    safeJson("https://api.bitget.com/api/v2/spot/public/symbols"),
+    safeJson("https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"),
+  ]);
+  const out: Hit[] = [];
+  for (const x of spot?.data || []) {
+    if (x.status && String(x.status).toLowerCase() !== "online") continue;
+    const base = (x.baseCoin || "").toUpperCase();
+    const quote = (x.quoteCoin || "").toUpperCase();
+    if (quote !== "USDT" && quote !== "USDC") continue;
+    out.push({
+      symbol: `${base}${quote}`,
+      baseCoin: base,
+      quoteCoin: quote,
+      market: "Spot",
+      exchange: "BITGET",
+    });
+  }
+  for (const x of mix?.data || []) {
+    const base = (x.baseCoin || "").toUpperCase();
+    const quote = (x.quoteCoin || "USDT").toUpperCase();
+    if (!base) continue;
+    out.push({
+      symbol: `${base}${quote}`,
+      baseCoin: base,
+      quoteCoin: quote,
+      market: "Futures",
+      exchange: "BITGET",
+    });
+  }
+  return out;
+}
+
 export async function GET() {
   try {
     const results = await Promise.allSettled([
@@ -167,15 +241,19 @@ export async function GET() {
       fromBybit(),
       fromLBank(),
       fromBitunix(),
+      fromOKX(),
+      fromBitget(),
     ]);
 
     const binance = results[0].status === "fulfilled" ? results[0].value : [];
     const bybit = results[1].status === "fulfilled" ? results[1].value : [];
     const lbank = results[2].status === "fulfilled" ? results[2].value : [];
     const bitunix = results[3].status === "fulfilled" ? results[3].value : [];
+    const okx = results[4].status === "fulfilled" ? results[4].value : [];
+    const bitget = results[5].status === "fulfilled" ? results[5].value : [];
 
-    // هر صرافی جدا — بدون ادغام
-    const data = [...binance, ...bybit, ...lbank, ...bitunix];
+    // هر صرافی جدا — Spot + Futures
+    const data = [...binance, ...bybit, ...lbank, ...bitunix, ...okx, ...bitget];
 
     return NextResponse.json({
       ok: true,
@@ -185,6 +263,8 @@ export async function GET() {
         bybit: bybit.length,
         lbank: lbank.length,
         bitunix: bitunix.length,
+        okx: okx.length,
+        bitget: bitget.length,
       },
       data,
     });
