@@ -457,6 +457,32 @@ function formatBarClock(unixSec: number, tz: string, withSeconds: boolean) {
   );
 }
 
+/** Interval value → seconds (Bybit open-time based candles) */
+function intervalToSeconds(iv: string): number {
+  if (iv === "D") return 86400;
+  if (iv === "W") return 604800;
+  if (iv === "M") return 2592000;
+  const n = parseInt(iv, 10);
+  return Number.isNaN(n) ? 3600 : n * 60;
+}
+
+/** Remaining time until current candle closes — counts DOWN like TradingView */
+function formatCountdownRemaining(openTime: number, iv: string): string {
+  const sec = intervalToSeconds(String(iv));
+  const closeTime = Number(openTime) + sec;
+  let left = closeTime - Math.floor(Date.now() / 1000);
+  if (left < 0) left = 0;
+  const d = Math.floor(left / 86400);
+  const h = Math.floor((left % 86400) / 3600);
+  const m = Math.floor((left % 3600) / 60);
+  const s = left % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) {
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function CoinIcon({ symbol }: { symbol: string }) {
   const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
   return (
@@ -519,19 +545,6 @@ export default function DashboardPage() {
   const [timeZone, setTimeZone] = useState(() => loadLS("chart_tz", "Asia/Tehran"));
   const [tfMenuOpen, setTfMenuOpen] = useState(false);
   const [tzMenuOpen, setTzMenuOpen] = useState(false);
-  const [sideMenuOpen, setSideMenuOpen] = useState(false);
-  /** open width menu: "alarm:id" | "line:id" | null */
-  const [widthMenuKey, setWidthMenuKey] = useState<string | null>(null);
-  /** open dash/style menu: "alarm:id" | "line:id" | null */
-  const [dashMenuKey, setDashMenuKey] = useState<string | null>(null);
-  /** open color menu: "alarm:id" | "line:id" | null */
-  const [colorMenuKey, setColorMenuKey] = useState<string | null>(null);
-  const tzMenuRef = useRef<HTMLDivElement | null>(null);
-  const sideMenuRef = useRef<HTMLDivElement | null>(null);
-  const COLOR_PRESETS = [
-    "#f97316", "#22c55e", "#3b82f6", "#ef4444", "#eab308",
-    "#a855f7", "#06b6d4", "#ec4899", "#ffffff", "#94a3b8",
-  ];
   const [favTfs, setFavTfs] = useState<string[]>(() =>
     loadLS("fav_tfs", ["1", "5", "15", "60", "240", "D"])
   );
@@ -560,6 +573,7 @@ export default function DashboardPage() {
   /** pushStatus: idle | ok | denied | unsupported | no-key | error */
   const [pushStatus, setPushStatus] = useState<string>("idle");
   const tfMenuRef = useRef<HTMLDivElement>(null);
+  const tzMenuRef = useRef<HTMLDivElement>(null);
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
@@ -799,8 +813,8 @@ export default function DashboardPage() {
     if (!last || last.close == null || last.time == null) return;
     const up = last.close >= last.open;
     const color = up ? "#26a69a" : "#ef5350";
-    const withSec = ["1", "5"].includes(String(intervalRef.current));
-    const clock = formatBarClock(Number(last.time), timeZoneRef.current, withSec);
+    // Countdown remaining until candle close (TradingView style)
+    const title = formatCountdownRemaining(Number(last.time), String(intervalRef.current));
     try {
       if (lastPriceLineRef.current) {
         try { series.removePriceLine(lastPriceLineRef.current); } catch {}
@@ -812,7 +826,7 @@ export default function DashboardPage() {
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: clock,
+        title,
       });
     } catch {}
   }, []);
@@ -1359,26 +1373,13 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl]);
 
-  // Close popup menus when clicking outside
+  // Close TF / timezone menus when clicking outside
   useEffect(() => {
-    if (!tfMenuOpen && !tzMenuOpen && !sideMenuOpen && !widthMenuKey && !dashMenuKey && !colorMenuKey) return;
+    if (!tfMenuOpen && !tzMenuOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       if (tfMenuOpen && tfMenuRef.current && !tfMenuRef.current.contains(t)) setTfMenuOpen(false);
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
-      if (sideMenuOpen && sideMenuRef.current && !sideMenuRef.current.contains(t)) setSideMenuOpen(false);
-      if (widthMenuKey) {
-        const el = document.querySelector(`[data-width-menu="${widthMenuKey}"]`);
-        if (el && !el.contains(t)) setWidthMenuKey(null);
-      }
-      if (dashMenuKey) {
-        const el = document.querySelector(`[data-dash-menu="${dashMenuKey}"]`);
-        if (el && !el.contains(t)) setDashMenuKey(null);
-      }
-      if (colorMenuKey) {
-        const el = document.querySelector(`[data-color-menu="${colorMenuKey}"]`);
-        if (el && !el.contains(t)) setColorMenuKey(null);
-      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
@@ -1386,12 +1387,20 @@ export default function DashboardPage() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("touchstart", onDown);
     };
-  }, [tfMenuOpen, tzMenuOpen, sideMenuOpen, widthMenuKey, dashMenuKey, colorMenuKey]);
+  }, [tfMenuOpen, tzMenuOpen]);
 
-  // Refresh last-price axis label when timezone changes (time text reformatted)
+  // Refresh last-price axis label when timezone / TF changes
   useEffect(() => {
     applyLastPriceLabel();
-  }, [timeZone, applyLastPriceLabel]);
+  }, [timeZone, interval, applyLastPriceLabel]);
+
+  // Tick countdown every second (counts DOWN like TradingView)
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      applyLastPriceLabel();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [applyLastPriceLabel, symbol, interval]);
 
   useEffect(() => {
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
@@ -2154,27 +2163,26 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Timezone selector — same pop effect as Time menu */}
+          {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
           <div className="absolute bottom-1 right-1 z-20" ref={tzMenuRef}>
             <button
               type="button"
               onClick={() => setTzMenuOpen((v) => !v)}
-              className={`px-2 py-0.5 text-[10px] rounded border inline-flex items-center gap-1 shadow transition-all duration-200 ${
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] shadow transition-all duration-200 ${
                 tzMenuOpen
                   ? "bg-orange-500 text-black border-orange-400 scale-105"
-                  : "bg-gray-900/95 text-gray-200 border-gray-600 hover:border-gray-400"
+                  : "bg-gray-900/95 text-gray-200 border-gray-600 hover:bg-gray-800"
               }`}
               title="Chart timezone"
             >
-              {TIMEZONES.find((z) => z.value === timeZone)?.label || "TZ"}
+              <span>{TIMEZONES.find((z) => z.value === timeZone)?.label || "UTC"}</span>
               <span className={`transition-transform duration-200 ${tzMenuOpen ? "rotate-180" : ""}`}>▾</span>
             </button>
             {tzMenuOpen && (
               <div
-                className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-1.5 shadow-xl min-w-[120px] z-50"
+                className="absolute right-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[130px]"
                 style={{ animation: "tfPop 0.15s ease-out" }}
               >
-                <style>{`@keyframes tfPop{from{opacity:0;transform:translateY(6px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}`}</style>
                 {TIMEZONES.map((z) => (
                   <button
                     key={z.value}
@@ -2183,14 +2191,12 @@ export default function DashboardPage() {
                       setTimeZone(z.value);
                       setTzMenuOpen(false);
                     }}
-                    className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                      timeZone === z.value
-                        ? "bg-orange-500/30 text-orange-200"
-                        : "text-gray-300 hover:bg-gray-800"
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${
+                      timeZone === z.value ? "text-orange-300" : "text-gray-200"
                     }`}
                   >
-                    {timeZone === z.value ? "✓ " : ""}
-                    {z.label}
+                    <span className="w-3 text-orange-400">{timeZone === z.value ? "✓" : ""}</span>
+                    <span>{z.label}</span>
                   </button>
                 ))}
               </div>
@@ -2213,58 +2219,19 @@ export default function DashboardPage() {
         {showSideWl && (
           <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
-              <div className="relative flex-1 min-w-0" ref={sideMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setSideMenuOpen((v) => !v)}
-                  className={`w-full text-left text-xs truncate px-1 py-0.5 rounded inline-flex items-center gap-1 transition-all duration-200 ${
-                    sideMenuOpen ? "bg-gray-800 text-white" : "text-gray-300 hover:text-white"
-                  }`}
-                  title={sideViewLabel}
-                >
-                  <span className="truncate flex-1">{sideViewLabel}</span>
-                  <span className={`shrink-0 transition-transform duration-200 ${sideMenuOpen ? "rotate-180" : ""}`}>▾</span>
-                </button>
-                {sideMenuOpen && (
-                  <div
-                    className="absolute top-full left-0 right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg p-1.5 shadow-xl z-50"
-                    style={{ animation: "tfPop 0.15s ease-out" }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSideViewId(SIDE_VIEW_ALARMS);
-                        setSideMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
-                        sideViewId === SIDE_VIEW_ALARMS
-                          ? "bg-orange-500/30 text-orange-200"
-                          : "text-gray-300 hover:bg-gray-800"
-                      }`}
-                    >
-                      {sideViewId === SIDE_VIEW_ALARMS ? "✓ " : ""}With alarms
-                    </button>
-                    {watchLists.map((l) => (
-                      <button
-                        key={l.id}
-                        type="button"
-                        onClick={() => {
-                          setSideViewId(l.id);
-                          setSideMenuOpen(false);
-                        }}
-                        className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
-                          sideViewId === l.id
-                            ? "bg-orange-500/30 text-orange-200"
-                            : "text-gray-300 hover:bg-gray-800"
-                        }`}
-                      >
-                        {sideViewId === l.id ? "✓ " : ""}
-                        {l.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <select
+                value={sideViewId}
+                onChange={(e) => setSideViewId(e.target.value)}
+                className="flex-1 min-w-0 bg-transparent text-xs text-gray-300 outline-none cursor-pointer truncate"
+                title={sideViewLabel}
+              >
+                <option value={SIDE_VIEW_ALARMS}>With alarms</option>
+                {watchLists.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
               <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white shrink-0">
                 « Hide
               </button>
@@ -2370,148 +2337,30 @@ export default function DashboardPage() {
                       <option value="below">Below</option>
                       <option value="cross">Cross</option>
                     </select>
-                    {/* Color menu — same pop effect */}
-                    <div className="relative" data-color-menu={`alarm:${a.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setColorMenuKey((k) => (k === `alarm:${a.id}` ? null : `alarm:${a.id}`))
-                        }
-                        className={`w-6 h-6 rounded border-2 transition-all duration-150 ${
-                          colorMenuKey === `alarm:${a.id}` ? "border-white scale-110" : "border-gray-600"
-                        }`}
-                        style={{ backgroundColor: a.color || DEFAULT_ALARM_COLOR }}
-                        title="Color"
-                      />
-                      {colorMenuKey === `alarm:${a.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl z-50"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          <div className="grid grid-cols-5 gap-1.5 mb-2">
-                            {COLOR_PRESETS.map((c) => (
-                              <button
-                                key={c}
-                                type="button"
-                                onClick={() => {
-                                  updateAlarmColor(a.id, c);
-                                  setColorMenuKey(null);
-                                }}
-                                className={`w-6 h-6 rounded-full border-2 transition ${
-                                  (a.color || DEFAULT_ALARM_COLOR).toLowerCase() === c.toLowerCase()
-                                    ? "border-white scale-110"
-                                    : "border-transparent hover:border-gray-400"
-                                }`}
-                                style={{ backgroundColor: c }}
-                              />
-                            ))}
-                          </div>
-                          <label className="flex items-center gap-2 text-[10px] text-gray-400 cursor-pointer">
-                            <span>Custom</span>
-                            <input
-                              type="color"
-                              value={a.color || DEFAULT_ALARM_COLOR}
-                              onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                              className="w-7 h-6 rounded cursor-pointer bg-transparent border-0"
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                    {/* Width menu — same pop effect */}
-                    <div className="relative" data-width-menu={`alarm:${a.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWidthMenuKey((k) => (k === `alarm:${a.id}` ? null : `alarm:${a.id}`))
-                        }
-                        className={`px-1.5 py-0.5 rounded text-[10px] inline-flex items-center gap-0.5 transition-all duration-150 ${
-                          widthMenuKey === `alarm:${a.id}`
-                            ? "bg-orange-500 text-white scale-105"
-                            : "bg-gray-800 text-gray-300"
-                        }`}
-                      >
-                        W{a.width || 2}
-                        <span className={`transition-transform duration-150 ${widthMenuKey === `alarm:${a.id}` ? "rotate-180" : ""}`}>▾</span>
-                      </button>
-                      {widthMenuKey === `alarm:${a.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-1 shadow-xl z-50 min-w-[72px]"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          {LINE_WIDTHS.map((w) => (
-                            <button
-                              key={w}
-                              type="button"
-                              onClick={() => {
-                                updateAlarmWidth(a.id, w);
-                                setWidthMenuKey(null);
-                              }}
-                              className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                                (a.width || 2) === w
-                                  ? "bg-orange-500/30 text-orange-200"
-                                  : "text-gray-300 hover:bg-gray-800"
-                              }`}
-                            >
-                              {(a.width || 2) === w ? "✓ " : ""}W{w}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="relative" data-dash-menu={`alarm:${a.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDashMenuKey((k) => (k === `alarm:${a.id}` ? null : `alarm:${a.id}`))
-                        }
-                        className={`px-1.5 py-0.5 rounded text-[10px] inline-flex items-center gap-0.5 transition-all duration-150 ${
-                          dashMenuKey === `alarm:${a.id}`
-                            ? "bg-orange-500 text-white scale-105"
-                            : "bg-gray-800 text-gray-300"
-                        }`}
-                      >
-                        {a.dash === "dashed" ? "- -" : "——"}
-                        <span className={`transition-transform duration-150 ${dashMenuKey === `alarm:${a.id}` ? "rotate-180" : ""}`}>▾</span>
-                      </button>
-                      {dashMenuKey === `alarm:${a.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-1 shadow-xl z-50 min-w-[100px]"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateAlarmDash(a.id, "solid");
-                              setDashMenuKey(null);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                              a.dash !== "dashed"
-                                ? "bg-orange-500/30 text-orange-200"
-                                : "text-gray-300 hover:bg-gray-800"
-                            }`}
-                          >
-                            {a.dash !== "dashed" ? "✓ " : ""}—— Solid
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateAlarmDash(a.id, "dashed");
-                              setDashMenuKey(null);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                              a.dash === "dashed"
-                                ? "bg-orange-500/30 text-orange-200"
-                                : "text-gray-300 hover:bg-gray-800"
-                            }`}
-                          >
-                            {a.dash === "dashed" ? "✓ " : ""}- - Dashed
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                    <input type="color" value={a.color || DEFAULT_ALARM_COLOR}
+                      onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                      className="w-7 h-7 rounded cursor-pointer bg-transparent border border-gray-600 shadow" title="Color" />
+                    <select
+                      value={String(a.width || 2)}
+                      onChange={(e) => updateAlarmWidth(a.id, parseInt(e.target.value, 10) as 1 | 2 | 3)}
+                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
+                      title="Width"
+                    >
+                      <option value="1">W1</option>
+                      <option value="2">W2</option>
+                      <option value="3">W3</option>
+                    </select>
+                    <select
+                      value={a.dash === "dashed" ? "dashed" : "solid"}
+                      onChange={(e) => updateAlarmDash(a.id, e.target.value)}
+                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
+                      title="Style"
+                    >
+                      <option value="solid">—— Solid</option>
+                      <option value="dashed">- - Dash</option>
+                    </select>
                     <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
-                      className="text-xs text-gray-400 hover:text-white">Note</button>
+                      className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
                       type="button"
                       onClick={() => {
@@ -2520,11 +2369,11 @@ export default function DashboardPage() {
                         setMovingType("alarm");
                         setStatusMsg("Click on chart to move alarm");
                       }}
-                      className="text-xs text-blue-400"
+                      className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
                     >
                       Move
                     </button>
-                    <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400">Delete</button>
+                    <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400 px-1">Delete</button>
                   </div>
                 </div>
                 {editingNoteId === a.id && editingNoteType === "alarm" && (
@@ -2555,149 +2404,31 @@ export default function DashboardPage() {
                   </span>
                   {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    {/* Color menu — same pop effect */}
-                    <div className="relative" data-color-menu={`line:${l.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setColorMenuKey((k) => (k === `line:${l.id}` ? null : `line:${l.id}`))
-                        }
-                        className={`w-6 h-6 rounded border-2 transition-all duration-150 ${
-                          colorMenuKey === `line:${l.id}` ? "border-white scale-110" : "border-gray-600"
-                        }`}
-                        style={{ backgroundColor: l.color || DEFAULT_LINE_COLOR }}
-                        title="Color"
-                      />
-                      {colorMenuKey === `line:${l.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl z-50"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          <div className="grid grid-cols-5 gap-1.5 mb-2">
-                            {COLOR_PRESETS.map((c) => (
-                              <button
-                                key={c}
-                                type="button"
-                                onClick={() => {
-                                  updateLineColor(l.id, c);
-                                  setColorMenuKey(null);
-                                }}
-                                className={`w-6 h-6 rounded-full border-2 transition ${
-                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
-                                    ? "border-white scale-110"
-                                    : "border-transparent hover:border-gray-400"
-                                }`}
-                                style={{ backgroundColor: c }}
-                              />
-                            ))}
-                          </div>
-                          <label className="flex items-center gap-2 text-[10px] text-gray-400 cursor-pointer">
-                            <span>Custom</span>
-                            <input
-                              type="color"
-                              value={l.color || DEFAULT_LINE_COLOR}
-                              onChange={(e) => updateLineColor(l.id, e.target.value)}
-                              className="w-7 h-6 rounded cursor-pointer bg-transparent border-0"
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                    {/* Width menu — same pop effect */}
-                    <div className="relative" data-width-menu={`line:${l.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWidthMenuKey((k) => (k === `line:${l.id}` ? null : `line:${l.id}`))
-                        }
-                        className={`px-1.5 py-0.5 rounded text-[10px] inline-flex items-center gap-0.5 transition-all duration-150 ${
-                          widthMenuKey === `line:${l.id}`
-                            ? "bg-orange-500 text-white scale-105"
-                            : "bg-gray-800 text-gray-300"
-                        }`}
-                      >
-                        W{l.width || 2}
-                        <span className={`transition-transform duration-150 ${widthMenuKey === `line:${l.id}` ? "rotate-180" : ""}`}>▾</span>
-                      </button>
-                      {widthMenuKey === `line:${l.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-1 shadow-xl z-50 min-w-[72px]"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          {LINE_WIDTHS.map((w) => (
-                            <button
-                              key={w}
-                              type="button"
-                              onClick={() => {
-                                updateLineWidth(l.id, w);
-                                setWidthMenuKey(null);
-                              }}
-                              className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                                (l.width || 2) === w
-                                  ? "bg-orange-500/30 text-orange-200"
-                                  : "text-gray-300 hover:bg-gray-800"
-                              }`}
-                            >
-                              {(l.width || 2) === w ? "✓ " : ""}W{w}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="relative" data-dash-menu={`line:${l.id}`}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDashMenuKey((k) => (k === `line:${l.id}` ? null : `line:${l.id}`))
-                        }
-                        className={`px-1.5 py-0.5 rounded text-[10px] inline-flex items-center gap-0.5 transition-all duration-150 ${
-                          dashMenuKey === `line:${l.id}`
-                            ? "bg-orange-500 text-white scale-105"
-                            : "bg-gray-800 text-gray-300"
-                        }`}
-                      >
-                        {(l.dash || l.style) === "dashed" ? "- -" : "——"}
-                        <span className={`transition-transform duration-150 ${dashMenuKey === `line:${l.id}` ? "rotate-180" : ""}`}>▾</span>
-                      </button>
-                      {dashMenuKey === `line:${l.id}` && (
-                        <div
-                          className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg p-1 shadow-xl z-50 min-w-[100px]"
-                          style={{ animation: "tfPop 0.15s ease-out" }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateLineDash(l.id, "solid");
-                              setDashMenuKey(null);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                              (l.dash || l.style) !== "dashed"
-                                ? "bg-orange-500/30 text-orange-200"
-                                : "text-gray-300 hover:bg-gray-800"
-                            }`}
-                          >
-                            {(l.dash || l.style) !== "dashed" ? "✓ " : ""}—— Solid
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateLineDash(l.id, "dashed");
-                              setDashMenuKey(null);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
-                              (l.dash || l.style) === "dashed"
-                                ? "bg-orange-500/30 text-orange-200"
-                                : "text-gray-300 hover:bg-gray-800"
-                            }`}
-                          >
-                            {(l.dash || l.style) === "dashed" ? "✓ " : ""}- - Dashed
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400">Alarm</button>
+                    <input type="color" value={l.color || DEFAULT_LINE_COLOR}
+                      onChange={(e) => updateLineColor(l.id, e.target.value)}
+                      className="w-7 h-7 rounded cursor-pointer bg-transparent border border-gray-600 shadow" title="Color" />
+                    <select
+                      value={String(l.width || 2)}
+                      onChange={(e) => updateLineWidth(l.id, parseInt(e.target.value, 10) as 1 | 2 | 3)}
+                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
+                      title="Width"
+                    >
+                      <option value="1">W1</option>
+                      <option value="2">W2</option>
+                      <option value="3">W3</option>
+                    </select>
+                    <select
+                      value={(l.dash || l.style) === "dashed" ? "dashed" : "solid"}
+                      onChange={(e) => updateLineDash(l.id, e.target.value)}
+                      className="bg-gray-900/95 border border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-200 cursor-pointer shadow"
+                      title="Style"
+                    >
+                      <option value="solid">—— Solid</option>
+                      <option value="dashed">- - Dash</option>
+                    </select>
+                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
-                      className="text-xs text-gray-400 hover:text-white">Note</button>
+                      className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
                       type="button"
                       onClick={() => {
@@ -2706,11 +2437,11 @@ export default function DashboardPage() {
                         setMovingType("line");
                         setStatusMsg("Click on chart to move line");
                       }}
-                      className="text-xs text-blue-400"
+                      className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
                     >
                       Move
                     </button>
-                    <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400">Delete</button>
+                    <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400 px-1">Delete</button>
                   </div>
                 </div>
                 {editingNoteId === l.id && editingNoteType === "line" && (
