@@ -857,13 +857,17 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
-    try { seriesRef.current?.setMarkers([]); } catch {}
-    // Restore chart pan/zoom after drawing
+    // Restore chart pan/zoom + page scroll after drawing
     try {
       chartRef.current?.applyOptions({
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
         handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
       });
+    } catch {}
+    try {
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
     } catch {}
     setPreviewPrice(null);
   }, []);
@@ -1448,13 +1452,28 @@ export default function DashboardPage() {
               : { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
           });
         } catch {}
+        // Stop page scroll while drawing (critical on iPad Safari)
+        try {
+          container.style.touchAction = lock ? "none" : "";
+          document.body.style.overflow = lock ? "hidden" : "";
+          document.documentElement.style.overflow = lock ? "hidden" : "";
+        } catch {}
       };
 
       // Pointer move on container — works for mouse AND touch (iPad)
       try { pointerAbortRef.current?.abort(); } catch {}
       pointerAbortRef.current = new AbortController();
+      // Block page scroll while drawing diagonal
+      const onTouchMoveBlock = (e: TouchEvent) => {
+        if (modeRef.current === "diag" && diagStartRef.current) {
+          e.preventDefault();
+        }
+      };
+      container.addEventListener("touchmove", onTouchMoveBlock, { passive: false, signal: pointerAbortRef.current.signal });
       const onPointerMove = (e: PointerEvent) => {
         if (modeRef.current !== "diag" || !diagStartRef.current) return;
+        // Prevent browser from treating this as scroll/pan
+        try { e.preventDefault(); } catch {}
         const rect = container.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -1576,18 +1595,6 @@ export default function DashboardPage() {
                 try { series.removePriceLine(previewLineRef.current); } catch {}
                 previewLineRef.current = null;
               }
-              try {
-                series.setMarkers([
-                  {
-                    time: t as any,
-                    position: "inBar",
-                    color: drawColorRef.current,
-                    shape: "circle",
-                    size: 3,
-                    text: "①",
-                  },
-                ]);
-              } catch {}
               if (!previewDiagSeriesRef.current) {
                 previewDiagSeriesRef.current = chart.addLineSeries({
                   color: drawColorRef.current,
@@ -1615,7 +1622,6 @@ export default function DashboardPage() {
           clickLockRef.current = true;
           setSaving(true);
           lockChartInteraction(false);
-          try { series.setMarkers([]); } catch {}
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: start.price,
