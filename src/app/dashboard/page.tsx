@@ -2737,4 +2737,4 @@ export default function DashboardPage() {
       <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
     </div>
   );
-}v
+}
