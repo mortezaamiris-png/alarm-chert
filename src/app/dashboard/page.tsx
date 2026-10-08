@@ -1831,7 +1831,14 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
       <style>{`
-        @keyframes tfPop{from{opacity:0;transform:translateY(6px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+        @keyframes tfPop{
+          from{opacity:0;transform:translateY(8px) scale(0.92);filter:blur(2px)}
+          to{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}
+        }
+        @keyframes tfPopOut{
+          from{opacity:1;transform:translateY(0) scale(1)}
+          to{opacity:0;transform:translateY(6px) scale(0.94)}
+        }
         input[type="color"]{-webkit-appearance:none;appearance:none;border:none;padding:0;background:transparent;cursor:pointer}
         input[type="color"]::-webkit-color-swatch-wrapper{padding:0;border-radius:9999px}
         input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
@@ -1877,8 +1884,8 @@ export default function DashboardPage() {
             </button>
             {tfMenuOpen && (
               <div
-                className="absolute z-50 top-full right-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[160px]"
-                style={{ animation: "tfPop 0.15s ease-out" }}
+                className="absolute z-50 top-full right-0 mt-1.5 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[160px]"
+                style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}
               >
                 {ALL_TIMEFRAMES.map((t) => (
                   <div key={t.value} className="flex items-center">
@@ -2202,8 +2209,8 @@ export default function DashboardPage() {
             </button>
             {tzMenuOpen && (
               <div
-                className="absolute right-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[130px]"
-                style={{ animation: "tfPop 0.15s ease-out" }}
+                className="absolute right-0 bottom-full mb-1.5 z-50 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[130px]"
+                style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}
               >
                 {TIMEZONES.map((z) => (
                   <button
@@ -2364,7 +2371,7 @@ export default function DashboardPage() {
                         {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
                       </button>
                       {openMenu === `a-cond-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[100px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[100px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
                           {(["cross", "above", "below"] as const).map((c) => (
                             <button key={c} type="button"
                               onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
@@ -2400,7 +2407,7 @@ export default function DashboardPage() {
                         W{a.width || 2} ▾
                       </button>
                       {openMenu === `a-w-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[80px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateAlarmWidth(a.id, w); setOpenMenu(null); }}
@@ -2427,7 +2434,7 @@ export default function DashboardPage() {
                         {a.dash === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `a-d-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[110px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateAlarmDash(a.id, d); setOpenMenu(null); }}
@@ -2508,7 +2515,7 @@ export default function DashboardPage() {
                         W{l.width || 2} ▾
                       </button>
                       {openMenu === `l-w-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[80px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateLineWidth(l.id, w); setOpenMenu(null); }}
@@ -2535,7 +2542,7 @@ export default function DashboardPage() {
                         {(l.dash || l.style) === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `l-d-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[110px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateLineDash(l.id, d); setOpenMenu(null); }}
