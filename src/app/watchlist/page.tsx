@@ -462,10 +462,13 @@ export default function WatchlistPage() {
   const [listMenuId, setListMenuId] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<string | null>(null);
 
-  /** Drag-reorder for list tabs (⋮⋮) */
+  /** Drag-reorder for list tabs (⋮⋮) — lift + gap like symbol rows */
   const [draggingListId, setDraggingListId] = useState<string | null>(null);
   const [listDropTargetId, setListDropTargetId] = useState<string | null>(null);
+  const [listFloatPos, setListFloatPos] = useState<{ x: number; y: number } | null>(null);
+  const [listFloatSize, setListFloatSize] = useState<{ w: number; h: number }>({ w: 100, h: 36 });
   const listDragIdRef = useRef<string | null>(null);
+  const listOffsetRef = useRef({ x: 0, y: 0 });
   const listsRef = useRef<WatchList[]>([]);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -679,10 +682,16 @@ export default function WatchlistPage() {
       if (t.closest("[data-menu-root]")) return;
       setMenuItemId(null);
       setListMenuId(null);
+      // close search when tapping anywhere outside search box / search button
+      if (showSearch && !t.closest("[data-search-root]")) {
+        setShowSearch(false);
+        setSearchQuery("");
+        setSearchHits([]);
+      }
     };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
-  }, []);
+  }, [showSearch]);
 
   const runSearch = (q: string) => {
     setSearchQuery(q);
@@ -781,8 +790,12 @@ export default function WatchlistPage() {
         }
         return;
       }
-      // List-tab drag
+      // List-tab drag — floating chip follows finger
       if (listDragIdRef.current) {
+        setListFloatPos({
+          x: clientX - listOffsetRef.current.x,
+          y: clientY - listOffsetRef.current.y,
+        });
         const el = document.elementFromPoint(clientX, clientY);
         if (!el) return;
         const tab = (el as HTMLElement).closest("[data-list-id]") as HTMLElement | null;
@@ -908,14 +921,24 @@ export default function WatchlistPage() {
     listDragIdRef.current = null;
     setDraggingListId(null);
     setListDropTargetId(null);
+    setListFloatPos(null);
     if (!id) return;
     const order = listsRef.current.map((l) => l.id);
     saveLS("wl_list_order", order);
   };
 
-  const startListDrag = (id: string) => {
+  const startListDrag = (
+    id: string,
+    clientX: number,
+    clientY: number,
+    el: HTMLElement
+  ) => {
     setMenuItemId(null);
     setListMenuId(null);
+    const rect = el.getBoundingClientRect();
+    listOffsetRef.current = { x: clientX - rect.left, y: clientY - rect.top };
+    setListFloatSize({ w: rect.width, h: Math.max(rect.height, 32) });
+    setListFloatPos({ x: rect.left, y: rect.top });
     listDragIdRef.current = id;
     setDraggingListId(id);
     setListDropTargetId(null);
@@ -1040,13 +1063,31 @@ export default function WatchlistPage() {
         </div>
       )}
 
+      {draggingListId && listFloatPos && (
+        <div
+          className="fixed z-[9999] pointer-events-none rounded-full border-2 border-orange-500 bg-gray-900 px-3 py-1.5 shadow-2xl"
+          style={{
+            left: listFloatPos.x,
+            top: listFloatPos.y,
+            width: listFloatSize.w,
+            minHeight: listFloatSize.h,
+            transform: "scale(1.08) rotate(-2deg)",
+            boxShadow: "0 10px 32px rgba(249,115,22,0.4)",
+          }}
+        >
+          <div className="flex items-center justify-center h-full text-sm font-medium text-orange-300">
+            {lists.find((x) => x.id === draggingListId)?.name || "…"}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">Watchlist</h1>
           {!showSearch && (
             <button
               type="button"
-              onClick={() => setShowSearch(true)}
+              onClick={() => setShowSearch(true)} data-search-root
               className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
               title="Search symbols"
             >
@@ -1078,14 +1119,20 @@ export default function WatchlistPage() {
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
+          <div key={l.id} className="flex items-center gap-0">
+            {draggingListId &&
+              listDropTargetId === l.id &&
+              draggingListId !== l.id && (
+                <div
+                  className="rounded-full border-2 border-dashed border-orange-500/70 bg-orange-500/10 shrink-0"
+                  style={{ width: listFloatSize.w, height: listFloatSize.h }}
+                />
+              )}
           <div
-            key={l.id}
             data-list-id={l.id}
             className={`relative flex items-center select-none transition-all duration-150 ${
               draggingListId === l.id
-                ? "opacity-40 scale-95"
-                : listDropTargetId === l.id && draggingListId
-                ? "ring-2 ring-orange-500/60 rounded-full"
+                ? "opacity-20 scale-90"
                 : ""
             }`}
             data-menu-root
@@ -1114,19 +1161,22 @@ export default function WatchlistPage() {
                 const startY = e.clientY;
                 let dragged = false;
                 // start drag after small move OR 120ms hold
+                const chip = (e.currentTarget as HTMLElement).closest(
+                  "[data-list-id]"
+                ) as HTMLElement;
                 const timer = setTimeout(() => {
-                  if (!dragged) {
+                  if (!dragged && chip) {
                     dragged = true;
-                    startListDrag(l.id);
+                    startListDrag(l.id, startX, startY, chip);
                   }
                 }, 120);
                 const onMove = (ev: PointerEvent) => {
                   const dx = Math.abs(ev.clientX - startX);
                   const dy = Math.abs(ev.clientY - startY);
-                  if (!dragged && (dx > 6 || dy > 6)) {
+                  if (!dragged && chip && (dx > 6 || dy > 6)) {
                     dragged = true;
                     clearTimeout(timer);
-                    startListDrag(l.id);
+                    startListDrag(l.id, startX, startY, chip);
                   }
                 };
                 const onUp = () => {
@@ -1164,6 +1214,7 @@ export default function WatchlistPage() {
                 </button>
               </div>
             )}
+          </div>
           </div>
         ))}
         <button
@@ -1214,7 +1265,10 @@ export default function WatchlistPage() {
       )}
 
       {showSearch && (
-        <div className="mb-6 relative">
+        <div
+          className="mb-6 relative"
+          data-search-root
+        >
           <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-xl">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
               <span className="text-gray-500">🔍</span>
