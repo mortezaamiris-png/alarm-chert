@@ -560,6 +560,8 @@ export default function DashboardPage() {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
+  /** Temporary line series while drawing diagonal (start → cursor) */
+  const previewDiagSeriesRef = useRef<any>(null);
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
@@ -849,6 +851,10 @@ export default function DashboardPage() {
       try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
       previewLineRef.current = null;
     }
+    if (previewDiagSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
+      previewDiagSeriesRef.current = null;
+    }
     setPreviewPrice(null);
   }, []);
 
@@ -866,6 +872,7 @@ export default function DashboardPage() {
     pivotSeriesRef.current = [];
     trendSeriesRef.current = [];
     volumeSeriesRef.current = null;
+    previewDiagSeriesRef.current = null;
     seriesRef.current = null;
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
@@ -934,7 +941,7 @@ export default function DashboardPage() {
           ? `Diag ${formatPrice(l.price)}`
           : `Line ${formatPrice(l.price)}`;
         if (isDiagonalLine(l)) {
-          // TradingView-style: draw A→B exactly, then extend only ~15 bars (fits rightOffset, no vertical kink)
+          // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
           const sp = Number(l.price);
@@ -943,9 +950,6 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const barSec = intervalToSeconds(String(intervalRef.current));
-          // modest ray extension (~15 bars) — matches rightOffset so no vertical squash
-          const extendTo = Math.max(t1, lastTime) + barSec * 15;
           const noteClean = l.note && !String(l.note).startsWith("__diag:") ? String(l.note) : null;
           const diagTitle = isMoving ? "MOVING" : noteClean || "Diag";
           const ls: any = chart.addLineSeries({
@@ -953,20 +957,18 @@ export default function DashboardPage() {
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
             title: diagTitle,
           });
-          // Always include both user anchors (clamped into a drawable range)
-          const dataPts: { time: any; value: number }[] = [];
-          dataPts.push({ time: t0 as any, value: v0 });
           if (t1 > t0) {
-            dataPts.push({ time: t1 as any, value: v1 });
+            ls.setData([
+              { time: t0 as any, value: v0 },
+              { time: t1 as any, value: v1 },
+            ]);
+          } else {
+            // same bar — tiny horizontal segment so it still shows
+            ls.setData([
+              { time: t0 as any, value: v0 },
+              { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
+            ]);
           }
-          // Extend along the same slope a little past the end (ray)
-          if (extendTo > t1 + barSec) {
-            dataPts.push({
-              time: extendTo as any,
-              value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
-            });
-          }
-          ls.setData(dataPts);
           chartLinesRef.current.set(l.id, ls);
         } else if (l.start_time != null) {
           // Horizontal ray from start_time
@@ -1024,28 +1026,26 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const barSec = intervalToSeconds(String(intervalRef.current));
-          const extendTo = Math.max(t1, lastTime) + barSec * 15;
           const nowP = projectedPriceOnDiag(st, sp, et, ep, lastTime);
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
             title: title || "Diag 🔔",
           });
-          const dataPts: { time: any; value: number }[] = [];
-          dataPts.push({ time: t0 as any, value: v0 });
+          // Segment only A→B (no visual extension)
           if (t1 > t0) {
-            dataPts.push({ time: t1 as any, value: v1 });
+            ls.setData([
+              { time: t0 as any, value: v0 },
+              { time: t1 as any, value: v1 },
+            ]);
+          } else {
+            ls.setData([
+              { time: t0 as any, value: v0 },
+              { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
+            ]);
           }
-          if (extendTo > t1 + barSec) {
-            dataPts.push({
-              time: extendTo as any,
-              value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
-            });
-          }
-          ls.setData(dataPts);
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-          // Current projected level on price axis (for alarm tracking)
+          // Projected level at "now" on price axis (alarm tracking)
           const pl = series.createPriceLine({
             price: nowP, color, lineWidth: 1,
             lineStyle: LineStyle.Dashed,
@@ -1376,41 +1376,89 @@ export default function DashboardPage() {
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
         setPreviewPrice(price);
+
+        // Clear previous previews
         if (previewLineRef.current) {
           try { series.removePriceLine(previewLineRef.current); } catch {}
           previewLineRef.current = null;
         }
-        // Diagonal preview: after first click, show horizontal at cursor (line drawn on second click)
-        // For horizontal tools keep price line preview
-        if (modeRef.current === "diag" && diagStartRef.current) {
-          previewLineRef.current = series.createPriceLine({
-            price,
-            color: drawColorRef.current,
-            lineWidth: drawWidthRef.current,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: "end",
-          });
-        } else if (modeRef.current !== "diag") {
-          previewLineRef.current = series.createPriceLine({
-            price,
-            color: drawColorRef.current,
-            lineWidth: drawWidthRef.current,
-            lineStyle: toLineStyle(drawDashRef.current),
-            axisLabelVisible: true,
-            title: "",
-          });
-        } else {
-          // first point of diag — show start level
-          previewLineRef.current = series.createPriceLine({
-            price,
-            color: drawColorRef.current,
-            lineWidth: drawWidthRef.current,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: "start",
-          });
+
+        if (modeRef.current === "diag") {
+          const start = diagStartRef.current;
+          if (start) {
+            // After 1st point: live preview segment start → cursor
+            const tCursor =
+              param.time != null
+                ? Number(param.time)
+                : candlesRef.current[candlesRef.current.length - 1]?.time;
+            if (tCursor == null || Number.isNaN(tCursor)) return;
+            const t0 = Math.min(start.time, tCursor);
+            const t1 = Math.max(start.time, tCursor);
+            const v0 = start.time <= tCursor ? start.price : price;
+            const v1 = start.time <= tCursor ? price : start.price;
+            try {
+              if (!previewDiagSeriesRef.current) {
+                previewDiagSeriesRef.current = chart.addLineSeries({
+                  color: drawColorRef.current,
+                  lineWidth: drawWidthRef.current,
+                  lineStyle: LineStyle.Dashed,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                });
+              } else {
+                previewDiagSeriesRef.current.applyOptions({
+                  color: drawColorRef.current,
+                  lineWidth: drawWidthRef.current,
+                });
+              }
+              if (t1 > t0) {
+                previewDiagSeriesRef.current.setData([
+                  { time: t0 as any, value: v0 },
+                  { time: t1 as any, value: v1 },
+                ]);
+              }
+            } catch {}
+            // Also mark end price on axis
+            previewLineRef.current = series.createPriceLine({
+              price,
+              color: drawColorRef.current,
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: "②",
+            });
+          } else {
+            // Before 1st point: show start level under cursor
+            if (previewDiagSeriesRef.current) {
+              try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
+              previewDiagSeriesRef.current = null;
+            }
+            previewLineRef.current = series.createPriceLine({
+              price,
+              color: drawColorRef.current,
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: "①",
+            });
+          }
+          return;
         }
+
+        // Horizontal tools (draw / ray / alarm)
+        if (previewDiagSeriesRef.current) {
+          try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
+          previewDiagSeriesRef.current = null;
+        }
+        previewLineRef.current = series.createPriceLine({
+          price,
+          color: drawColorRef.current,
+          lineWidth: drawWidthRef.current,
+          lineStyle: toLineStyle(drawDashRef.current),
+          axisLabelVisible: true,
+          title: "",
+        });
       });
 
       chart.subscribeClick(async (param) => {
@@ -1455,8 +1503,23 @@ export default function DashboardPage() {
           if (t == null || Number.isNaN(t)) return;
           const start = diagStartRef.current;
           if (!start) {
+            // ① First point fixed
             setDiagStart({ time: t, price: fp });
-            setStatusMsg("Click second point for diagonal");
+            setStatusMsg("① set — click ② second point");
+            // Mark start on axis
+            try {
+              if (previewLineRef.current) {
+                try { series.removePriceLine(previewLineRef.current); } catch {}
+              }
+              previewLineRef.current = series.createPriceLine({
+                price: fp,
+                color: drawColorRef.current,
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: "①",
+              });
+            } catch {}
             return;
           }
           // Need two distinct times (at least 1 bar apart)
@@ -1464,7 +1527,7 @@ export default function DashboardPage() {
           if (Math.abs(endT - start.time) < 1) {
             endT = start.time + intervalToSeconds(String(intervalRef.current));
           }
-          // Second click — save diagonal line
+          // ② Second point — save segment (no extension)
           clickLockRef.current = true;
           setSaving(true);
           const base: any = {
@@ -1519,7 +1582,7 @@ export default function DashboardPage() {
               }
             }
             setLines((prev) => [saved, ...prev]);
-            setStatusMsg("Diagonal line saved — use Alarm to convert");
+            setStatusMsg("Diag saved (A→B) — Alarm to convert");
           } else setStatusMsg("Save failed");
           setDiagStart(null);
           setSaving(false);
@@ -2454,7 +2517,7 @@ export default function DashboardPage() {
               )}
               {mode === "diag" && (
                 <span className="text-xs text-amber-400">
-                  {diagStart ? "Click 2nd point" : "Click 1st point"}
+                  {diagStart ? "② second point" : "① first point"}
                 </span>
               )}
               {mode === "move" && (
