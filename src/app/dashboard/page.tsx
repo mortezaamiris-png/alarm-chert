@@ -20,6 +20,9 @@ interface ChartLine {
   width?: number | null;
   style?: string | null;
   start_time?: number | null;
+  /** Diagonal / trend line end point (unix sec). When set with end_price → slanted line. */
+  end_time?: number | null;
+  end_price?: number | null;
   dash?: string | null;
 }
 
@@ -37,6 +40,10 @@ interface Alarm {
   dash?: string | null;
   triggered_at?: string | null;
   created_at?: string | null;
+  /** Diagonal alarm: start_time + price is first point; end_time + end_price is second. */
+  start_time?: number | null;
+  end_time?: number | null;
+  end_price?: number | null;
 }
 
 interface WatchList {
@@ -57,7 +64,30 @@ interface WatchItem {
 /** Built-in side-panel view: symbols that currently have active alarms */
 const SIDE_VIEW_ALARMS = "__alarms__";
 
-type ToolMode = "none" | "draw" | "ray" | "alarm" | "move";
+type ToolMode = "none" | "draw" | "ray" | "diag" | "alarm" | "move";
+
+/** Project price on a diagonal line at unix time t (extends beyond end). */
+function projectedPriceOnDiag(
+  startTime: number,
+  startPrice: number,
+  endTime: number,
+  endPrice: number,
+  t: number
+): number {
+  const dt = endTime - startTime;
+  if (Math.abs(dt) < 1e-9) return startPrice;
+  const slope = (endPrice - startPrice) / dt;
+  return startPrice + slope * (t - startTime);
+}
+
+function isDiagonalLine(l: { start_time?: number | null; end_time?: number | null; end_price?: number | null }) {
+  return (
+    l.start_time != null &&
+    l.end_time != null &&
+    l.end_price != null &&
+    Number(l.end_time) !== Number(l.start_time)
+  );
+}
 
 const ALL_TIMEFRAMES = [
   { label: "1m", value: "1" },
@@ -563,6 +593,8 @@ export default function DashboardPage() {
   const [highlightPrice, setHighlightPrice] = useState<number | null>(null);
   const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
+  /** First click of diagonal tool: { time, price } */
+  const [diagStart, setDiagStart] = useState<{ time: number; price: number } | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [movingType, setMovingType] = useState<"line" | "alarm" | null>(null);
   const [condition, setCondition] = useState<"above" | "below" | "cross">("cross");
@@ -650,11 +682,16 @@ export default function DashboardPage() {
   const symbolRef = useRef(symbol);
   const intervalRef = useRef(interval);
   const timeZoneRef = useRef(timeZone);
+  const diagStartRef = useRef(diagStart);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { movingIdRef.current = movingId; }, [movingId]);
   useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
+  useEffect(() => { diagStartRef.current = diagStart; }, [diagStart]);
+  useEffect(() => {
+    if (mode !== "diag") setDiagStart(null);
+  }, [mode]);
   useEffect(() => { drawColorRef.current = drawColor; saveLS("draw_color", drawColor); }, [drawColor]);
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
@@ -893,8 +930,32 @@ export default function DashboardPage() {
           ? "MOVING"
           : l.note
           ? `L ${l.note}`
+          : isDiagonalLine(l)
+          ? `Diag ${formatPrice(l.price)}`
           : `Line ${formatPrice(l.price)}`;
-        if (l.start_time != null) {
+        if (isDiagonalLine(l)) {
+          // True diagonal / trend line: two points, extend into future
+          const st = Number(l.start_time);
+          const et = Number(l.end_time);
+          const sp = Number(l.price);
+          const ep = Number(l.end_price);
+          const futureT = lastTime + extend;
+          const futureP = projectedPriceOnDiag(st, sp, et, ep, futureT);
+          const ls: any = chart.addLineSeries({
+            color, lineWidth: width, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            title: isMoving ? "MOVING" : (l.note ? String(l.note) : "Diag"),
+          });
+          const t0 = Math.min(st, et);
+          const t1 = Math.max(st, et);
+          ls.setData([
+            { time: t0 as any, value: st <= et ? sp : ep },
+            { time: t1 as any, value: st <= et ? ep : sp },
+            { time: futureT as any, value: futureP },
+          ].sort((a, b) => (a.time as number) - (b.time as number)));
+          chartLinesRef.current.set(l.id, ls);
+        } else if (l.start_time != null) {
+          // Horizontal ray from start_time
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
@@ -914,7 +975,7 @@ export default function DashboardPage() {
       } catch {}
     });
 
-    // فیکس ۳: نوت الارم روی چارت
+    // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
     currentAlarms.forEach((a) => {
       try {
@@ -925,7 +986,7 @@ export default function DashboardPage() {
         const color = isMoving
           ? "#f59e0b"
           : isHL
-          ? "#eab308" // yellow
+          ? "#eab308"
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
@@ -935,13 +996,46 @@ export default function DashboardPage() {
           ? "◀ SELECTED"
           : a.note
           ? String(a.note)
+          : isDiagonalLine(a)
+          ? "Diag 🔔"
           : "";
-        const pl = series.createPriceLine({
-          price: a.price, color, lineWidth: width,
-          lineStyle: style,
-          axisLabelVisible: true, title,
-        });
-        alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+
+        if (isDiagonalLine(a)) {
+          const st = Number(a.start_time);
+          const et = Number(a.end_time);
+          const sp = Number(a.price);
+          const ep = Number(a.end_price);
+          const futureT = lastTime + extend;
+          const futureP = projectedPriceOnDiag(st, sp, et, ep, futureT);
+          const nowP = projectedPriceOnDiag(st, sp, et, ep, lastTime);
+          const ls: any = chart.addLineSeries({
+            color, lineWidth: width, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            title: title || "Diag 🔔",
+          });
+          const t0 = Math.min(st, et);
+          const t1 = Math.max(st, et);
+          ls.setData([
+            { time: t0 as any, value: st <= et ? sp : ep },
+            { time: t1 as any, value: st <= et ? ep : sp },
+            { time: futureT as any, value: futureP },
+          ].sort((x, y) => (x.time as number) - (y.time as number)));
+          chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
+          // Also show current projected level on price axis
+          const pl = series.createPriceLine({
+            price: nowP, color, lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true, title: title || "↗",
+          });
+          alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+        } else {
+          const pl = series.createPriceLine({
+            price: a.price, color, lineWidth: width,
+            lineStyle: style,
+            axisLabelVisible: true, title,
+          });
+          alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+        }
       } catch {}
     });
 
@@ -1260,15 +1354,39 @@ export default function DashboardPage() {
         setPreviewPrice(price);
         if (previewLineRef.current) {
           try { series.removePriceLine(previewLineRef.current); } catch {}
+          previewLineRef.current = null;
         }
-        previewLineRef.current = series.createPriceLine({
-          price,
-          color: drawColorRef.current,
-          lineWidth: drawWidthRef.current,
-          lineStyle: toLineStyle(drawDashRef.current),
-          axisLabelVisible: true,
-          title: "",
-        });
+        // Diagonal preview: after first click, show horizontal at cursor (line drawn on second click)
+        // For horizontal tools keep price line preview
+        if (modeRef.current === "diag" && diagStartRef.current) {
+          previewLineRef.current = series.createPriceLine({
+            price,
+            color: drawColorRef.current,
+            lineWidth: drawWidthRef.current,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: "end",
+          });
+        } else if (modeRef.current !== "diag") {
+          previewLineRef.current = series.createPriceLine({
+            price,
+            color: drawColorRef.current,
+            lineWidth: drawWidthRef.current,
+            lineStyle: toLineStyle(drawDashRef.current),
+            axisLabelVisible: true,
+            title: "",
+          });
+        } else {
+          // first point of diag — show start level
+          previewLineRef.current = series.createPriceLine({
+            price,
+            color: drawColorRef.current,
+            lineWidth: drawWidthRef.current,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: "start",
+          });
+        }
       });
 
       chart.subscribeClick(async (param) => {
@@ -1300,6 +1418,84 @@ export default function DashboardPage() {
           setMovingType(null);
           setMode("none");
           clearPreview();
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Diagonal / trend line: two clicks → save as line (or as alarm if condition panel says so)
+        if (m === "diag") {
+          const t =
+            param.time != null
+              ? Number(param.time)
+              : candlesRef.current[candlesRef.current.length - 1]?.time;
+          if (t == null || Number.isNaN(t)) return;
+          const start = diagStartRef.current;
+          if (!start) {
+            setDiagStart({ time: t, price: fp });
+            setStatusMsg("Click second point for diagonal");
+            return;
+          }
+          // Second click — save diagonal line
+          clickLockRef.current = true;
+          setSaving(true);
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: start.price,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+            start_time: start.time,
+            end_time: t,
+            end_price: fp,
+          };
+          let payload = { ...base };
+          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+          if (error) {
+            // Schema may lack end_time / end_price — store meta in note as fallback
+            payload = {
+              symbol: base.symbol,
+              price: base.price,
+              color: base.color,
+              width: base.width,
+              dash: base.dash,
+              start_time: base.start_time,
+              note: `__diag:${base.end_time}:${base.end_price}`,
+            };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
+          if (error) {
+            payload = {
+              symbol: base.symbol,
+              price: base.price,
+              color: base.color,
+              start_time: base.start_time,
+              note: `__diag:${base.end_time}:${base.end_price}`,
+            };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
+          if (!error && data) {
+            const saved: ChartLine = {
+              ...(data as ChartLine),
+              color: (data as any).color || base.color,
+              end_time: (data as any).end_time ?? base.end_time,
+              end_price: (data as any).end_price ?? base.end_price,
+              start_time: (data as any).start_time ?? base.start_time,
+            };
+            // Parse note fallback if columns missing
+            if (!isDiagonalLine(saved) && saved.note?.startsWith("__diag:")) {
+              const parts = saved.note.split(":");
+              if (parts.length >= 3) {
+                saved.end_time = Number(parts[1]);
+                saved.end_price = Number(parts[2]);
+              }
+            }
+            setLines((prev) => [saved, ...prev]);
+            setStatusMsg("Diagonal line saved — use Alarm to convert");
+          } else setStatusMsg("Save failed");
+          setDiagStart(null);
+          setSaving(false);
+          clearPreview();
+          setMode("none");
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -1481,9 +1677,45 @@ export default function DashboardPage() {
   useEffect(() => {
     (async () => {
       const { data: a } = await supabase.from("alarms").select("*").order("created_at", { ascending: false });
-      if (a) setAlarms(a as Alarm[]);
+      if (a) {
+        setAlarms(
+          (a as Alarm[]).map((row) => {
+            if (isDiagonalLine(row)) return row;
+            if (row.note?.startsWith("__diag:")) {
+              const body = row.note.replace(/^__diag:/, "").split("|")[0];
+              const parts = body.split(":");
+              if (parts.length >= 3) {
+                return {
+                  ...row,
+                  start_time: Number(parts[0]),
+                  end_time: Number(parts[1]),
+                  end_price: Number(parts[2]),
+                };
+              }
+            }
+            return row;
+          })
+        );
+      }
       const { data: l } = await supabase.from("chart_lines").select("*").order("created_at", { ascending: false });
-      if (l) setLines(l as ChartLine[]);
+      if (l) {
+        setLines(
+          (l as ChartLine[]).map((row) => {
+            if (isDiagonalLine(row)) return row;
+            if (row.note?.startsWith("__diag:")) {
+              const parts = row.note.split(":");
+              if (parts.length >= 3) {
+                return {
+                  ...row,
+                  end_time: Number(parts[1]),
+                  end_price: Number(parts[2]),
+                };
+              }
+            }
+            return row;
+          })
+        );
+      }
       // Load all watchlists + items for the side panel
       const { data: wl } = await supabase
         .from("watchlist_lists")
@@ -1641,8 +1873,24 @@ export default function DashboardPage() {
           .order("created_at", { ascending: false })
           .limit(200);
         if (allAlarms && alive) {
+          const normalizeAlarm = (row: Alarm): Alarm => {
+            if (isDiagonalLine(row)) return row;
+            if (row.note?.startsWith("__diag:")) {
+              const body = row.note.replace(/^__diag:/, "").split("|")[0];
+              const parts = body.split(":");
+              if (parts.length >= 3) {
+                return {
+                  ...row,
+                  start_time: Number(parts[0]),
+                  end_time: Number(parts[1]),
+                  end_price: Number(parts[2]),
+                };
+              }
+            }
+            return row;
+          };
           setAlarms((prev) => {
-            const byId = new Map(allAlarms.map((a: any) => [a.id, a as Alarm]));
+            const byId = new Map(allAlarms.map((a: any) => [a.id, normalizeAlarm(a as Alarm)]));
             // merge: prefer DB state for is_active / triggered
             const merged = prev.map((local) => {
               const db = byId.get(local.id);
@@ -1656,13 +1904,18 @@ export default function DashboardPage() {
               return {
                 ...local,
                 ...db,
+                // keep local diagonal geometry if DB row stripped columns
+                start_time: db.start_time ?? local.start_time,
+                end_time: db.end_time ?? local.end_time,
+                end_price: db.end_price ?? local.end_price,
                 triggered: !!db.triggered,
                 is_active: !!db.is_active && !db.triggered,
               };
             });
             // add any new alarms from DB not in local
             for (const db of allAlarms as Alarm[]) {
-              if (!merged.some((m) => m.id === db.id)) merged.push(db);
+              const n = normalizeAlarm(db);
+              if (!merged.some((m) => m.id === n.id)) merged.push(n);
             }
             return merged;
           });
@@ -1701,17 +1954,28 @@ export default function DashboardPage() {
             prevPricesRef.current[sym] = price;
 
             for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
-              // cross on close OR candle wicked through the level
-              const hitClose = didCross(a.condition, a.price, prev, price);
+              // Diagonal alarm: project price at "now" from the two endpoints
+              let target = a.price;
+              if (isDiagonalLine(a)) {
+                const nowT = Math.floor(Date.now() / 1000);
+                target = projectedPriceOnDiag(
+                  Number(a.start_time),
+                  Number(a.price),
+                  Number(a.end_time),
+                  Number(a.end_price),
+                  nowT
+                );
+              }
+              const hitClose = didCross(a.condition, target, prev, price);
               const hitWick =
                 a.condition === "above" || a.condition === "cross"
-                  ? high >= a.price && (prev == null || prev < a.price || low <= a.price)
+                  ? high >= target && (prev == null || prev < target || low <= target)
                   : a.condition === "below"
-                  ? low <= a.price && (prev == null || prev > a.price || high >= a.price)
+                  ? low <= target && (prev == null || prev > target || high >= target)
                   : false;
               const hitCrossWick =
                 a.condition === "cross" &&
-                ((high >= a.price && low <= a.price) || hitClose);
+                ((high >= target && low <= target) || hitClose);
 
               if (hitClose || (a.condition === "cross" ? hitCrossWick : hitWick)) {
                 await triggerAlarmLocal(a, price);
@@ -1769,6 +2033,21 @@ export default function DashboardPage() {
   const convertLineToAlarm = async (line: ChartLine) => {
     try {
       const chosenColor = line.color || DEFAULT_LINE_COLOR;
+      // Resolve diagonal endpoints (columns or note fallback)
+      let startTime = line.start_time ?? null;
+      let endTime = line.end_time ?? null;
+      let endPrice = line.end_price ?? null;
+      if ((!endTime || endPrice == null) && line.note?.startsWith("__diag:")) {
+        const parts = line.note.split(":");
+        if (parts.length >= 3) {
+          endTime = Number(parts[1]);
+          endPrice = Number(parts[2]);
+        }
+      }
+      const isDiag = startTime != null && endTime != null && endPrice != null;
+      const noteClean =
+        line.note && !line.note.startsWith("__diag:") ? line.note : isDiag ? "Diag" : line.note || null;
+
       const payload: any = {
         symbol: line.symbol,
         price: line.price,
@@ -1778,13 +2057,28 @@ export default function DashboardPage() {
         color: chosenColor,
         width: line.width || 2,
         dash: line.dash || "solid",
-        note: line.note || null,
+        note: noteClean,
       };
+      if (isDiag) {
+        payload.start_time = startTime;
+        payload.end_time = endTime;
+        payload.end_price = endPrice;
+      }
       let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+      if (error && isDiag) {
+        // DB may lack diagonal columns — encode in note
+        const fallbackNote = `__diag:${startTime}:${endTime}:${endPrice}${noteClean && noteClean !== "Diag" ? "|" + noteClean : ""}`;
+        payload.note = fallbackNote;
+        delete payload.start_time;
+        delete payload.end_time;
+        delete payload.end_price;
+        ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
+      }
       if (error) {
         const minimal = {
           symbol: line.symbol, price: line.price, condition: "cross",
           is_active: true, triggered: false,
+          note: isDiag ? `__diag:${startTime}:${endTime}:${endPrice}` : noteClean,
         };
         ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
       }
@@ -1792,17 +2086,29 @@ export default function DashboardPage() {
         setStatusMsg("Convert failed");
         return;
       }
-      const saved = {
+      const saved: Alarm = {
         ...(data as Alarm),
         color: (data as any).color || chosenColor,
         width: (data as any).width || payload.width,
         dash: (data as any).dash || payload.dash,
         note: (data as any).note || payload.note,
+        start_time: (data as any).start_time ?? (isDiag ? startTime : null),
+        end_time: (data as any).end_time ?? (isDiag ? endTime : null),
+        end_price: (data as any).end_price ?? (isDiag ? endPrice : null),
       };
+      // Parse note-encoded diagonal if columns missing
+      if (!isDiagonalLine(saved) && saved.note?.startsWith("__diag:")) {
+        const parts = saved.note.replace(/^__diag:/, "").split("|")[0].split(":");
+        if (parts.length >= 3) {
+          saved.start_time = Number(parts[0]);
+          saved.end_time = Number(parts[1]);
+          saved.end_price = Number(parts[2]);
+        }
+      }
       setAlarms((prev) => [saved, ...prev]);
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
-      setStatusMsg("Converted to alarm");
+      setStatusMsg(isDiag ? "Diagonal alarm active" : "Converted to alarm");
     } catch {
       setStatusMsg("Convert error");
     }
@@ -1973,17 +2279,19 @@ export default function DashboardPage() {
             [
               { mode: "draw" as ToolMode, icon: "✏️", label: "Line" },
               { mode: "ray" as ToolMode, icon: "➡️", label: "Ray" },
+              { mode: "diag" as ToolMode, icon: "📈", label: "Diag" },
               { mode: "alarm" as ToolMode, icon: "🔔", label: "Alarm" },
             ] as const
           ).map((t) => (
             <button
               key={t.mode}
               type="button"
-              title={t.label}
+              title={t.mode === "diag" ? "Diagonal / trend line (2 clicks)" : t.label}
               onClick={() => {
                 setMode(mode === t.mode ? "none" : t.mode);
                 setMovingId(null);
                 setMovingType(null);
+                if (t.mode !== "diag") setDiagStart(null);
               }}
               className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
                 mode === t.mode
@@ -2070,7 +2378,7 @@ export default function DashboardPage() {
           )}
 
           {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
-          {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
+          {(mode === "draw" || mode === "ray" || mode === "diag" || mode === "alarm" || mode === "move") && (
             <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
               <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
                 <input
@@ -2114,6 +2422,11 @@ export default function DashboardPage() {
               )}
               {previewPrice != null && (
                 <span className="text-xs text-orange-300 font-mono">{formatPrice(previewPrice)}</span>
+              )}
+              {mode === "diag" && (
+                <span className="text-xs text-amber-400">
+                  {diagStart ? "Click 2nd point" : "Click 1st point"}
+                </span>
               )}
               {mode === "move" && (
                 <span className="text-xs text-amber-400">Click chart</span>
@@ -2409,9 +2722,16 @@ export default function DashboardPage() {
               <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
-                    {getConditionSymbol(a.condition)} {formatPrice(a.price)}
+                    {isDiagonalLine(a)
+                      ? `${getConditionSymbol(a.condition)} ↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
+                      : `${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`}
                   </span>
-                  {a.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{a.note}</span>}
+                  {isDiagonalLine(a) && (
+                    <span className="text-[10px] text-blue-400/80 shrink-0">Diag</span>
+                  )}
+                  {a.note && !a.note.startsWith("__diag:") && (
+                    <span className="text-gray-500 text-xs truncate max-w-[70px]">{a.note}</span>
+                  )}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
                     {/* Condition — same dark popover as timezone */}
                     <div className="relative" data-menu>
@@ -2559,9 +2879,16 @@ export default function DashboardPage() {
               <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
-                    {formatPrice(l.price)}
+                    {isDiagonalLine(l)
+                      ? `↗ ${formatPrice(l.price)}→${formatPrice(Number(l.end_price))}`
+                      : formatPrice(l.price)}
                   </span>
-                  {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
+                  {isDiagonalLine(l) && (
+                    <span className="text-[10px] text-orange-400/80 shrink-0">Diag</span>
+                  )}
+                  {l.note && !l.note.startsWith("__diag:") && (
+                    <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>
+                  )}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
                     {/* Round color */}
                     <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
