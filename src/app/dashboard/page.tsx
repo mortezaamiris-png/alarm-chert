@@ -934,7 +934,7 @@ export default function DashboardPage() {
           ? `Diag ${formatPrice(l.price)}`
           : `Line ${formatPrice(l.price)}`;
         if (isDiagonalLine(l)) {
-          // True diagonal: two anchors + smooth extension (never two points past last bar → avoids vertical kink)
+          // TradingView-style: draw A→B exactly, then extend only ~15 bars (fits rightOffset, no vertical kink)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
           const sp = Number(l.price);
@@ -943,30 +943,24 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const extendTo = lastTime + extend;
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          // modest ray extension (~15 bars) — matches rightOffset so no vertical squash
+          const extendTo = Math.max(t1, lastTime) + barSec * 15;
           const noteClean = l.note && !String(l.note).startsWith("__diag:") ? String(l.note) : null;
           const diagTitle = isMoving ? "MOVING" : noteClean || "Diag";
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
             title: diagTitle,
           });
-          const dataPts: { time: any; value: number }[] = [{ time: t0 as any, value: v0 }];
-          if (t1 <= lastTime) {
-            // End is on the chart — draw to end, then extend along slope
+          // Always include both user anchors (clamped into a drawable range)
+          const dataPts: { time: any; value: number }[] = [];
+          dataPts.push({ time: t0 as any, value: v0 });
+          if (t1 > t0) {
             dataPts.push({ time: t1 as any, value: v1 });
-            if (extendTo > t1) {
-              dataPts.push({
-                time: extendTo as any,
-                value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
-              });
-            }
-          } else {
-            // End is in the future — only one point past last bar (prevents vertical collapse on right edge)
-            dataPts.push({
-              time: lastTime as any,
-              value: projectedPriceOnDiag(st, sp, et, ep, lastTime),
-            });
+          }
+          // Extend along the same slope a little past the end (ray)
+          if (extendTo > t1 + barSec) {
             dataPts.push({
               time: extendTo as any,
               value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
@@ -1030,27 +1024,20 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const extendTo = lastTime + extend;
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const extendTo = Math.max(t1, lastTime) + barSec * 15;
           const nowP = projectedPriceOnDiag(st, sp, et, ep, lastTime);
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
             title: title || "Diag 🔔",
           });
-          const dataPts: { time: any; value: number }[] = [{ time: t0 as any, value: v0 }];
-          if (t1 <= lastTime) {
+          const dataPts: { time: any; value: number }[] = [];
+          dataPts.push({ time: t0 as any, value: v0 });
+          if (t1 > t0) {
             dataPts.push({ time: t1 as any, value: v1 });
-            if (extendTo > t1) {
-              dataPts.push({
-                time: extendTo as any,
-                value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
-              });
-            }
-          } else {
-            dataPts.push({
-              time: lastTime as any,
-              value: nowP,
-            });
+          }
+          if (extendTo > t1 + barSec) {
             dataPts.push({
               time: extendTo as any,
               value: projectedPriceOnDiag(st, sp, et, ep, extendTo),
@@ -1058,7 +1045,7 @@ export default function DashboardPage() {
           }
           ls.setData(dataPts);
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-          // Current projected level on price axis
+          // Current projected level on price axis (for alarm tracking)
           const pl = series.createPriceLine({
             price: nowP, color, lineWidth: 1,
             lineStyle: LineStyle.Dashed,
@@ -1472,6 +1459,11 @@ export default function DashboardPage() {
             setStatusMsg("Click second point for diagonal");
             return;
           }
+          // Need two distinct times (at least 1 bar apart)
+          let endT = t;
+          if (Math.abs(endT - start.time) < 1) {
+            endT = start.time + intervalToSeconds(String(intervalRef.current));
+          }
           // Second click — save diagonal line
           clickLockRef.current = true;
           setSaving(true);
@@ -1482,7 +1474,7 @@ export default function DashboardPage() {
             width: drawWidthRef.current,
             dash: drawDashRef.current,
             start_time: start.time,
-            end_time: t,
+            end_time: endT,
             end_price: fp,
           };
           let payload = { ...base };
