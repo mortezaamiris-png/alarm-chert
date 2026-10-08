@@ -1409,7 +1409,12 @@ export default function WatchlistPage() {
                 <div className="flex items-center justify-between mb-1 gap-2">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     <CoinIcon symbol={bareSymbol(item.symbol)} size={26} />
-                    <div className="font-semibold text-sm truncate">{bareSymbol(item.symbol)}{storedExchange(item.symbol) ? ` · ${storedExchange(item.symbol)}` : ""}</div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm truncate">{bareSymbol(item.symbol)}</div>
+                      {storedExchange(item.symbol) && (
+                        <div className="text-[10px] text-gray-500 truncate leading-tight">{storedExchange(item.symbol)}</div>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <PriceBlock sym={item.symbol} />
@@ -1587,7 +1592,12 @@ export default function WatchlistPage() {
                       }}
                       className="flex-1 min-w-0 text-left py-3"
                     >
-                      <div className="font-medium text-sm truncate">{bareSymbol(item.symbol)}{storedExchange(item.symbol) ? ` · ${storedExchange(item.symbol)}` : ""}</div>
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm truncate">{bareSymbol(item.symbol)}</div>
+                        {storedExchange(item.symbol) && (
+                          <div className="text-[10px] text-gray-500 truncate leading-tight">{storedExchange(item.symbol)}</div>
+                        )}
+                      </div>
                       {item.note && (
                         <div className="text-gray-500 text-xs truncate">{item.note}</div>
                       )}
