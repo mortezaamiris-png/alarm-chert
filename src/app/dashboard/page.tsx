@@ -2014,31 +2014,13 @@ export default function DashboardPage() {
           {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
           {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
             <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
-              <div className="relative" data-menu>
-                <button
-                  type="button"
-                  onClick={() => setOpenMenu(openMenu === "draw-color" ? null : "draw-color")}
-                  className={`w-8 h-8 rounded-full border-2 shadow shrink-0 ${
-                    openMenu === "draw-color" ? "border-white scale-110" : "border-gray-500"
-                  }`}
-                  style={{ background: drawColor }}
-                  title="Color"
+              <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                <input
+                  type="color"
+                  value={drawColor}
+                  onChange={(e) => setDrawColor(e.target.value)}
+                  className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                 />
-                {openMenu === "draw-color" && (
-                  <div className="absolute z-50 bottom-full mb-1 left-0 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl" style={{ animation: "tfPop 0.15s ease-out" }}>
-                    <div className="grid grid-cols-5 gap-1.5">
-                      {PRESET_COLORS.map((c) => (
-                        <button key={c} type="button"
-                          onClick={() => { setDrawColor(c); setOpenMenu(null); }}
-                          className={`w-6 h-6 rounded-full border-2 ${
-                            drawColor.toLowerCase() === c.toLowerCase() ? "border-white scale-110" : "border-transparent"
-                          }`}
-                          style={{ background: c }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
               <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
@@ -2395,32 +2377,14 @@ export default function DashboardPage() {
                         </div>
                       )}
                     </div>
-                    {/* Color round + palette popover */}
-                    <div className="relative" data-menu>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenu(openMenu === `a-c-${a.id}` ? null : `a-c-${a.id}`)}
-                        className={`w-7 h-7 rounded-full border-2 shadow shrink-0 ${
-                          openMenu === `a-c-${a.id}` ? "border-white scale-110" : "border-gray-500"
-                        }`}
-                        style={{ background: a.color || DEFAULT_ALARM_COLOR }}
-                        title="Color"
+                    {/* Round color */}
+                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                      <input
+                        type="color"
+                        value={a.color || DEFAULT_ALARM_COLOR}
+                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                       />
-                      {openMenu === `a-c-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl" style={{ animation: "tfPop 0.15s ease-out" }}>
-                          <div className="grid grid-cols-5 gap-1.5">
-                            {PRESET_COLORS.map((c) => (
-                              <button key={c} type="button"
-                                onClick={() => { updateAlarmColor(a.id, c); setOpenMenu(null); }}
-                                className={`w-6 h-6 rounded-full border-2 ${
-                                  (a.color || DEFAULT_ALARM_COLOR).toLowerCase() === c.toLowerCase() ? "border-white scale-110" : "border-transparent"
-                                }`}
-                                style={{ background: c }}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                     {/* Width popover */}
                     <div className="relative" data-menu>
@@ -2521,32 +2485,14 @@ export default function DashboardPage() {
                   </span>
                   {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    {/* Color round + palette */}
-                    <div className="relative" data-menu>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenu(openMenu === `l-c-${l.id}` ? null : `l-c-${l.id}`)}
-                        className={`w-7 h-7 rounded-full border-2 shadow shrink-0 ${
-                          openMenu === `l-c-${l.id}` ? "border-white scale-110" : "border-gray-500"
-                        }`}
-                        style={{ background: l.color || DEFAULT_LINE_COLOR }}
-                        title="Color"
+                    {/* Round color */}
+                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                      <input
+                        type="color"
+                        value={l.color || DEFAULT_LINE_COLOR}
+                        onChange={(e) => updateLineColor(l.id, e.target.value)}
+                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                       />
-                      {openMenu === `l-c-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-700 rounded-lg p-2 shadow-xl" style={{ animation: "tfPop 0.15s ease-out" }}>
-                          <div className="grid grid-cols-5 gap-1.5">
-                            {PRESET_COLORS.map((c) => (
-                              <button key={c} type="button"
-                                onClick={() => { updateLineColor(l.id, c); setOpenMenu(null); }}
-                                className={`w-6 h-6 rounded-full border-2 ${
-                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase() ? "border-white scale-110" : "border-transparent"
-                                }`}
-                                style={{ background: c }}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                     {/* Width */}
                     <div className="relative" data-menu>
