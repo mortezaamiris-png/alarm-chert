@@ -1,7 +1,6 @@
 /**
- * app/api/symbols/route.ts
- * Server-side only — Vercel IP (not Iran) → Binance / Bybit / LBank / Bitunix
- * + market indices: BTC.D, USDT.D, TOTAL2, TOTAL3, OTHERS.D
+ * src/app/api/symbols/route.ts
+ * Server-side symbol list: Binance (vision ticker) + Bybit + LBank + Bitunix + indices
  */
 import { NextResponse } from "next/server";
 
@@ -14,7 +13,7 @@ type Hit = {
   baseCoin?: string;
   quoteCoin?: string;
   market: "Spot" | "Futures" | "Index";
-  exchange?: string;
+  exchange: string;
 };
 
 const INDEX_SYMBOLS: Hit[] = [
@@ -25,48 +24,51 @@ const INDEX_SYMBOLS: Hit[] = [
   { symbol: "TOTAL3", baseCoin: "TOTAL3", quoteCoin: "USD", market: "Index", exchange: "GLOBAL" },
 ];
 
-async function safeJson(url: string, timeoutMs = 8000): Promise<any | null> {
+async function safeJson(url: string, timeoutMs = 12000): Promise<any | null> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(url, {
       signal: ctrl.signal,
       headers: { Accept: "application/json", "User-Agent": "AlarmChert/1.0" },
-      next: { revalidate: 300 },
+      cache: "no-store",
     });
     clearTimeout(t);
     if (!res.ok) return null;
-    return await res.json();
+    const text = await res.text();
+    if (!text || text.startsWith("<!")) return null;
+    return JSON.parse(text);
   } catch {
     return null;
   }
 }
 
-async function fromBinance(): Promise<Hit[]> {
-  const [spot, fut] = await Promise.all([
-    safeJson("https://data-api.binance.vision/api/v3/exchangeInfo"),
-    safeJson("https://fapi.binance.com/fapi/v1/exchangeInfo"),
-  ]);
-  const out: Hit[] = [];
-  for (const s of spot?.symbols || []) {
-    if (s.status !== "TRADING") continue;
-    if (s.quoteAsset !== "USDT" && s.quoteAsset !== "USDC") continue;
-    out.push({
-      symbol: s.symbol,
-      baseCoin: s.baseAsset,
-      quoteCoin: s.quoteAsset,
-      market: "Spot",
-      exchange: "BINANCE",
-    });
+function splitBaseQuote(sym: string): { base: string; quote: string } {
+  const s = sym.toUpperCase();
+  for (const q of ["USDT", "USDC", "USD", "BTC", "ETH", "BUSD"]) {
+    if (s.endsWith(q) && s.length > q.length) {
+      return { base: s.slice(0, -q.length), quote: q };
+    }
   }
-  for (const s of fut?.symbols || []) {
-    if (s.status !== "TRADING") continue;
-    if (s.quoteAsset !== "USDT") continue;
+  return { base: s, quote: "" };
+}
+
+/** Binance via lightweight ticker/price (~150KB) — NOT full exchangeInfo (17MB) */
+async function fromBinance(): Promise<Hit[]> {
+  const data = await safeJson("https://data-api.binance.vision/api/v3/ticker/price");
+  if (!Array.isArray(data)) return [];
+  const out: Hit[] = [];
+  for (const row of data) {
+    const symbol = String(row.symbol || "").toUpperCase();
+    if (!symbol.endsWith("USDT") && !symbol.endsWith("USDC")) continue;
+    // skip leveraged tokens etc.
+    if (symbol.includes("UP") || symbol.includes("DOWN") || symbol.includes("BULL") || symbol.includes("BEAR")) continue;
+    const { base, quote } = splitBaseQuote(symbol);
     out.push({
-      symbol: s.symbol,
-      baseCoin: s.baseAsset,
-      quoteCoin: s.quoteAsset,
-      market: "Futures",
+      symbol,
+      baseCoin: base,
+      quoteCoin: quote,
+      market: "Spot",
       exchange: "BINANCE",
     });
   }
@@ -85,7 +87,7 @@ async function fromBybit(): Promise<Hit[]> {
   const out: Hit[] = [];
   for (const x of spot?.result?.list || []) {
     out.push({
-      symbol: x.symbol,
+      symbol: String(x.symbol).toUpperCase(),
       baseCoin: x.baseCoin,
       quoteCoin: x.quoteCoin,
       market: "Spot",
@@ -94,7 +96,7 @@ async function fromBybit(): Promise<Hit[]> {
   }
   for (const x of fut?.result?.list || []) {
     out.push({
-      symbol: x.symbol,
+      symbol: String(x.symbol).toUpperCase(),
       baseCoin: x.baseCoin,
       quoteCoin: x.quoteCoin,
       market: "Futures",
@@ -105,7 +107,6 @@ async function fromBybit(): Promise<Hit[]> {
 }
 
 async function fromLBank(): Promise<Hit[]> {
-  // https://api.lbkex.com/v1/currencyPairs.do  → ["btc_usdt", ...]
   const data = await safeJson("https://api.lbkex.com/v1/currencyPairs.do");
   const pairs: string[] = Array.isArray(data) ? data : data?.data || [];
   const out: Hit[] = [];
@@ -126,17 +127,15 @@ async function fromLBank(): Promise<Hit[]> {
 }
 
 async function fromBitunix(): Promise<Hit[]> {
-  // Spot pairs
+  const out: Hit[] = [];
   const spot = await safeJson(
     "https://api.bitunix.com/api/spot/v1/common/coin_pair/list"
   );
-  const out: Hit[] = [];
   for (const x of spot?.data || []) {
     if (x.isOpen === "0" || x.isOpen === 0) continue;
     const base = (x.base || "").toUpperCase();
     const quote = (x.quote || "").toUpperCase();
-    if (!base || !quote) continue;
-    if (quote !== "USDT" && quote !== "USDC") continue;
+    if (!base || (quote !== "USDT" && quote !== "USDC")) continue;
     out.push({
       symbol: `${base}${quote}`,
       baseCoin: base,
@@ -145,13 +144,12 @@ async function fromBitunix(): Promise<Hit[]> {
       exchange: "BITUNIX",
     });
   }
-  // Futures
   const fut = await safeJson(
     "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
   );
   for (const x of fut?.data || []) {
     if (x.symbolStatus && x.symbolStatus !== "OPEN") continue;
-    const sym = (x.symbol || "").toUpperCase();
+    const sym = String(x.symbol || "").toUpperCase();
     if (!sym) continue;
     out.push({
       symbol: sym,
@@ -164,19 +162,36 @@ async function fromBitunix(): Promise<Hit[]> {
   return out;
 }
 
-function mergeHits(lists: Hit[][]): Hit[] {
-  const seen = new Set<string>();
-  const out: Hit[] = [];
-  // Prefer Binance > Bybit > LBank > Bitunix for same symbol
-  for (const list of lists) {
-    for (const h of list) {
+/**
+ * Merge: keep one row per symbol, prefer BINANCE > BYBIT > LBANK > BITUNIX
+ * Also attach allExchanges string for UI if needed later
+ */
+function mergeHits(lists: { name: string; hits: Hit[] }[]): Hit[] {
+  const map = new Map<string, Hit & { exchanges: string[] }>();
+  const order = ["BINANCE", "BYBIT", "LBANK", "BITUNIX"];
+  for (const { hits } of lists) {
+    for (const h of hits) {
       const key = h.symbol.toUpperCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...h, symbol: key });
+      const prev = map.get(key);
+      if (!prev) {
+        map.set(key, { ...h, symbol: key, exchanges: [h.exchange] });
+      } else {
+        if (!prev.exchanges.includes(h.exchange)) prev.exchanges.push(h.exchange);
+        // upgrade primary exchange by priority
+        const prevRank = order.indexOf(prev.exchange);
+        const newRank = order.indexOf(h.exchange);
+        if (newRank >= 0 && (prevRank < 0 || newRank < prevRank)) {
+          prev.exchange = h.exchange;
+          prev.market = h.market;
+        }
+      }
     }
   }
-  return out;
+  return Array.from(map.values()).map(({ exchanges, ...h }) => ({
+    ...h,
+    // encode all exchanges in a field the UI can show
+    exchange: exchanges.length > 1 ? exchanges.join("+") : h.exchange,
+  }));
 }
 
 export async function GET() {
@@ -188,19 +203,21 @@ export async function GET() {
       fromBitunix(),
     ]);
 
-    const lists: Hit[][] = results.map((r) =>
-      r.status === "fulfilled" ? r.value : []
-    );
+    const named = [
+      { name: "binance", hits: results[0].status === "fulfilled" ? results[0].value : [] },
+      { name: "bybit", hits: results[1].status === "fulfilled" ? results[1].value : [] },
+      { name: "lbank", hits: results[2].status === "fulfilled" ? results[2].value : [] },
+      { name: "bitunix", hits: results[3].status === "fulfilled" ? results[3].value : [] },
+    ];
+
     const sources = {
-      binance: lists[0].length,
-      bybit: lists[1].length,
-      lbank: lists[2].length,
-      bitunix: lists[3].length,
+      binance: named[0].hits.length,
+      bybit: named[1].hits.length,
+      lbank: named[2].hits.length,
+      bitunix: named[3].hits.length,
     };
 
-    const merged = mergeHits(lists);
-
-    // Always include market indices at the top of search results
+    const merged = mergeHits(named);
     const withIndex = [...INDEX_SYMBOLS, ...merged];
 
     return NextResponse.json({
@@ -211,11 +228,7 @@ export async function GET() {
     });
   } catch (e: any) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: String(e?.message || e),
-        data: INDEX_SYMBOLS,
-      },
+      { ok: false, error: String(e?.message || e), data: INDEX_SYMBOLS },
       { status: 200 }
     );
   }
