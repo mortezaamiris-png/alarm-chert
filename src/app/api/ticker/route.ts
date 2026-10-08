@@ -73,7 +73,7 @@ async function fromBinance(symbols: string[]): Promise<Record<string, Row>> {
   const out: Record<string, Row> = {};
   // 24hr ticker all then filter (efficient for many symbols)
   const [spot, fut] = await Promise.all([
-    safeFetch("https://api.binance.com/api/v3/ticker/24hr"),
+    safeFetch("https://data-api.binance.vision/api/v3/ticker/24hr"),
     safeFetch("https://fapi.binance.com/fapi/v1/ticker/24hr"),
   ]);
   const want = new Set(symbols);
