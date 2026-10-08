@@ -1832,12 +1832,9 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
       <style>{`
         @keyframes tfPop{
-          from{opacity:0;transform:translateY(8px) scale(0.92);filter:blur(2px)}
-          to{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}
-        }
-        @keyframes tfPopOut{
-          from{opacity:1;transform:translateY(0) scale(1)}
-          to{opacity:0;transform:translateY(6px) scale(0.94)}
+          0%{opacity:0;transform:translateY(10px) scale(0.85)}
+          60%{opacity:1;transform:translateY(-2px) scale(1.02)}
+          100%{opacity:1;transform:translateY(0) scale(1)}
         }
         input[type="color"]{-webkit-appearance:none;appearance:none;border:none;padding:0;background:transparent;cursor:pointer}
         input[type="color"]::-webkit-color-swatch-wrapper{padding:0;border-radius:9999px}
@@ -1874,7 +1871,7 @@ export default function DashboardPage() {
               className={`px-2.5 py-1.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
                 tfMenuOpen
                   ? "bg-orange-500 text-black border-orange-400 shadow-lg scale-105"
-                  : "bg-gray-900 text-gray-200 border-gray-600 hover:bg-gray-800"
+                  : "bg-gray-900 text-gray-200 border-gray-600 hover:bg-white/10"
               }`}
               title="Timeframes"
             >
@@ -1884,15 +1881,15 @@ export default function DashboardPage() {
             </button>
             {tfMenuOpen && (
               <div
-                className="absolute z-50 top-full right-0 mt-1.5 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[160px]"
-                style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}
+                className="absolute z-50 top-full right-0 mt-1.5 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[160px]"
+                style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}
               >
                 {ALL_TIMEFRAMES.map((t) => (
                   <div key={t.value} className="flex items-center">
                     <button
                       type="button"
                       onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
-                      className={`flex-1 text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${
+                      className={`flex-1 text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
                         interval === t.value ? "text-orange-300" : "text-gray-200"
                       }`}
                     >
@@ -1902,7 +1899,7 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => toggleFavTf(t.value)}
-                      className="w-8 h-8 flex items-center justify-center text-yellow-400 text-sm rounded hover:bg-gray-800"
+                      className="w-8 h-8 flex items-center justify-center text-yellow-400 text-sm rounded hover:bg-white/10"
                     >
                       {favTfs.includes(t.value) ? "★" : "☆"}
                     </button>
@@ -1937,7 +1934,7 @@ export default function DashboardPage() {
               className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
                 mode === t.mode
                   ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
+                  : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10"
               }`}
             >
               <span className="text-sm leading-none">{t.icon}</span>
@@ -1951,7 +1948,7 @@ export default function DashboardPage() {
             className={`w-9 h-9 rounded-lg flex flex-col items-center justify-center text-[10px] border ${
               showIndicatorMenu
                 ? "bg-blue-500/20 border-blue-500 text-blue-300"
-                : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
+                : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10"
             }`}
           >
             <span className="text-sm leading-none">📊</span>
@@ -2009,7 +2006,7 @@ export default function DashboardPage() {
                   type="button"
                   onClick={() => it.set((v: boolean) => !v)}
                   className={`w-full text-left px-2 py-1.5 rounded text-sm mb-0.5 ${
-                    it.on ? "bg-orange-500/20 text-orange-300" : "hover:bg-gray-800"
+                    it.on ? "bg-orange-500/20 text-orange-300" : "hover:bg-white/10"
                   }`}
                 >
                   {it.on ? "✓ " : ""}{it.label}
@@ -2200,7 +2197,7 @@ export default function DashboardPage() {
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] shadow transition-all duration-200 ${
                 tzMenuOpen
                   ? "bg-orange-500 text-black border-orange-400 scale-105"
-                  : "bg-gray-900/95 text-gray-200 border-gray-600 hover:bg-gray-800"
+                  : "bg-gray-900/95 text-gray-200 border-gray-600 hover:bg-white/10"
               }`}
               title="Chart timezone"
             >
@@ -2209,8 +2206,8 @@ export default function DashboardPage() {
             </button>
             {tzMenuOpen && (
               <div
-                className="absolute right-0 bottom-full mb-1.5 z-50 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[130px]"
-                style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}
+                className="absolute right-0 bottom-full mb-1.5 z-50 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[130px]"
+                style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}
               >
                 {TIMEZONES.map((z) => (
                   <button
@@ -2220,7 +2217,7 @@ export default function DashboardPage() {
                       setTimeZone(z.value);
                       setTzMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
                       timeZone === z.value ? "text-orange-300" : "text-gray-200"
                     }`}
                   >
@@ -2314,7 +2311,7 @@ export default function DashboardPage() {
                           ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg"
                           : symbolUpper === sym
                           ? "bg-orange-500/20 border border-orange-500/50"
-                          : "hover:bg-gray-800 border border-transparent"
+                          : "hover:bg-white/10 border border-transparent"
                       }`}
                       style={{ touchAction: canDrag ? "none" : "auto" }}
                     >
@@ -2371,11 +2368,11 @@ export default function DashboardPage() {
                         {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
                       </button>
                       {openMenu === `a-cond-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[100px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
+                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[100px]" style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}>
                           {(["cross", "above", "below"] as const).map((c) => (
                             <button key={c} type="button"
                               onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{a.condition === c ? "✓" : ""}</span>
                               {c === "cross" ? "Cross" : c === "above" ? "Above" : "Below"}
@@ -2407,11 +2404,11 @@ export default function DashboardPage() {
                         W{a.width || 2} ▾
                       </button>
                       {openMenu === `a-w-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[80px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[80px]" style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateAlarmWidth(a.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
                               W{w}
@@ -2434,11 +2431,11 @@ export default function DashboardPage() {
                         {a.dash === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `a-d-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[110px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[110px]" style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateAlarmDash(a.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
                               {d === "solid" ? "—— Solid" : "- - Dash"}
@@ -2515,11 +2512,11 @@ export default function DashboardPage() {
                         W{l.width || 2} ▾
                       </button>
                       {openMenu === `l-w-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[80px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[80px]" style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateLineWidth(l.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
                               W{w}
@@ -2542,11 +2539,11 @@ export default function DashboardPage() {
                         {(l.dash || l.style) === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `l-d-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-gray-900/80 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[110px]" style={{ animation: "tfPop 0.22s cubic-bezier(0.16,1,0.3,1)" }}>
+                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 bg-black/45 border border-white/15 rounded-2xl py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl min-w-[110px]" style={{ animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateLineDash(l.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-800 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
                               {d === "solid" ? "—— Solid" : "- - Dash"}
