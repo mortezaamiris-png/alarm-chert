@@ -329,6 +329,12 @@ export default function WatchlistPage() {
   const [listMenuId, setListMenuId] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<string | null>(null);
 
+  /** Drag-reorder for list tabs (⋮⋮) */
+  const [draggingListId, setDraggingListId] = useState<string | null>(null);
+  const [listDropTargetId, setListDropTargetId] = useState<string | null>(null);
+  const listDragIdRef = useRef<string | null>(null);
+  const listsRef = useRef<WatchList[]>([]);
+
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(null);
   const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 56 });
@@ -343,6 +349,9 @@ export default function WatchlistPage() {
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  useEffect(() => {
+    listsRef.current = lists;
+  }, [lists]);
   useEffect(() => {
     saveLS("wl_tf", interval);
   }, [interval]);
@@ -478,8 +487,26 @@ export default function WatchlistPage() {
       .from("watchlist_lists")
       .select("*")
       .order("created_at", { ascending: true });
-    const rows = data || [];
+    let rows = data || [];
+    // Apply saved tab order (localStorage)
+    try {
+      const order: string[] = loadLS("wl_list_order", []);
+      if (order.length && rows.length) {
+        const map = new Map(rows.map((r) => [r.id, r]));
+        const ordered: WatchList[] = [];
+        for (const id of order) {
+          const r = map.get(id);
+          if (r) {
+            ordered.push(r);
+            map.delete(id);
+          }
+        }
+        for (const r of map.values()) ordered.push(r);
+        rows = ordered;
+      }
+    } catch {}
     setLists(rows);
+    listsRef.current = rows;
     if (!activeListId && rows.length) setActiveListId(rows[0].id);
     if (activeListId && !rows.find((r) => r.id === activeListId) && rows.length) {
       setActiveListId(rows[0].id);
@@ -603,29 +630,44 @@ export default function WatchlistPage() {
 
   useEffect(() => {
     const onMove = (clientX: number, clientY: number) => {
-      if (!dragIdRef.current) return;
-      setFloatPos({
-        x: clientX - offsetRef.current.x,
-        y: clientY - offsetRef.current.y,
-      });
-      autoScroll(clientY);
-      const el = document.elementFromPoint(clientX, clientY);
-      if (!el) return;
-      const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
-      if (!row) return;
-      const targetId = row.getAttribute("data-item-id");
-      if (targetId && targetId !== dragIdRef.current) {
-        setDropTargetId(targetId);
-        reorderById(dragIdRef.current, targetId);
+      // Item drag
+      if (dragIdRef.current) {
+        setFloatPos({
+          x: clientX - offsetRef.current.x,
+          y: clientY - offsetRef.current.y,
+        });
+        autoScroll(clientY);
+        const el = document.elementFromPoint(clientX, clientY);
+        if (!el) return;
+        const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
+        if (!row) return;
+        const targetId = row.getAttribute("data-item-id");
+        if (targetId && targetId !== dragIdRef.current) {
+          setDropTargetId(targetId);
+          reorderById(dragIdRef.current, targetId);
+        }
+        return;
+      }
+      // List-tab drag
+      if (listDragIdRef.current) {
+        const el = document.elementFromPoint(clientX, clientY);
+        if (!el) return;
+        const tab = (el as HTMLElement).closest("[data-list-id]") as HTMLElement | null;
+        if (!tab) return;
+        const targetId = tab.getAttribute("data-list-id");
+        if (targetId && targetId !== listDragIdRef.current) {
+          setListDropTargetId(targetId);
+          reorderListsById(listDragIdRef.current, targetId);
+        }
       }
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (!dragIdRef.current) return;
+      if (!dragIdRef.current && !listDragIdRef.current) return;
       e.preventDefault();
       onMove(e.clientX, e.clientY);
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (!dragIdRef.current) return;
+      if (!dragIdRef.current && !listDragIdRef.current) return;
       if (e.touches[0]) {
         e.preventDefault();
         onMove(e.touches[0].clientX, e.touches[0].clientY);
@@ -633,6 +675,7 @@ export default function WatchlistPage() {
     };
     const onEnd = () => {
       if (dragIdRef.current) finishDrag();
+      if (listDragIdRef.current) finishListDrag();
     };
     document.addEventListener("pointermove", onPointerMove, { passive: false });
     document.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -678,7 +721,15 @@ export default function WatchlistPage() {
         alert(error.message);
         return;
       }
-      setLists((prev) => [...prev, data]);
+      setLists((prev) => {
+        const next = [...prev, data];
+        listsRef.current = next;
+        saveLS(
+          "wl_list_order",
+          next.map((x) => x.id)
+        );
+        return next;
+      });
       setActiveListId(data.id);
       setNewListName("");
       setShowNewList(false);
@@ -696,7 +747,45 @@ export default function WatchlistPage() {
       setActiveListId(null);
       setItems([]);
     }
+    // drop deleted id from saved order
+    try {
+      const order: string[] = loadLS("wl_list_order", []);
+      saveLS(
+        "wl_list_order",
+        order.filter((id) => id !== listId)
+      );
+    } catch {}
     await loadLists();
+  };
+
+  const reorderListsById = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const arr = [...listsRef.current];
+    const fromIdx = arr.findIndex((l) => l.id === fromId);
+    const toIdx = arr.findIndex((l) => l.id === toId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    setLists(arr);
+    listsRef.current = arr;
+  };
+
+  const finishListDrag = () => {
+    const id = listDragIdRef.current;
+    listDragIdRef.current = null;
+    setDraggingListId(null);
+    setListDropTargetId(null);
+    if (!id) return;
+    const order = listsRef.current.map((l) => l.id);
+    saveLS("wl_list_order", order);
+  };
+
+  const startListDrag = (id: string) => {
+    setMenuItemId(null);
+    setListMenuId(null);
+    listDragIdRef.current = id;
+    setDraggingListId(id);
+    setListDropTargetId(null);
   };
 
   const addSymbol = async (sym: string) => {
@@ -856,10 +945,22 @@ export default function WatchlistPage() {
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {lists.map((l) => (
-          <div key={l.id} className="relative flex items-center" data-menu-root>
+          <div
+            key={l.id}
+            data-list-id={l.id}
+            className={`relative flex items-center select-none transition-all duration-150 ${
+              draggingListId === l.id
+                ? "opacity-40 scale-95"
+                : listDropTargetId === l.id && draggingListId
+                ? "ring-2 ring-orange-500/60 rounded-full"
+                : ""
+            }`}
+            data-menu-root
+          >
             <button
               type="button"
               onClick={() => {
+                if (draggingListId) return;
                 setActiveListId(l.id);
                 setListMenuId(null);
                 setMenuItemId(null);
@@ -872,19 +973,32 @@ export default function WatchlistPage() {
             >
               {l.name}
             </button>
-            <button
-              type="button"
-              onClick={(e) => {
+            <div
+              onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setMenuItemId(null);
-                setListMenuId((prev) => (prev === l.id ? null : l.id));
+                let dragged = false;
+                const timer = setTimeout(() => {
+                  dragged = true;
+                  startListDrag(l.id);
+                }, 140);
+                const onUp = () => {
+                  clearTimeout(timer);
+                  if (!dragged) {
+                    setMenuItemId(null);
+                    setListMenuId((prev) => (prev === l.id ? null : l.id));
+                  }
+                  window.removeEventListener("pointerup", onUp);
+                };
+                window.addEventListener("pointerup", onUp);
               }}
-              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none"
+              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-grab active:cursor-grabbing touch-none"
+              style={{ touchAction: "none" }}
+              title="Hold & drag to reorder · tap for menu"
             >
               ⋮⋮
-            </button>
-            {listMenuId === l.id && (
+            </div>
+            {listMenuId === l.id && !draggingListId && (
               <div
                 className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
                 onClick={(e) => e.stopPropagation()}
