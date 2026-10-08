@@ -39,6 +39,22 @@ const TIMEFRAMES = [
 
 type ViewMode = "grid" | "list";
 
+/** DB unique is (list_id, symbol) — encode exchange in symbol: BTCUSDT@BINANCE */
+function storageSymbol(sym: string, exchange?: string) {
+  const s = sym.toUpperCase();
+  if (!exchange) return s;
+  if (s.includes("@")) return s;
+  return `${s}@${exchange.toUpperCase()}`;
+}
+function bareSymbol(stored: string) {
+  return stored.split("@")[0].toUpperCase();
+}
+function storedExchange(stored: string): string | null {
+  const p = stored.split("@");
+  return p.length > 1 ? p[1] : null;
+}
+
+
 function loadLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
@@ -536,7 +552,7 @@ export default function WatchlistPage() {
     const fetchPrices = async () => {
       const symbols = Array.from(
         new Set([
-          ...items.map((i) => i.symbol.toUpperCase()),
+          ...items.map((i) => bareSymbol(i.symbol)),
           ...searchHits.map((h) => h.symbol.toUpperCase()),
         ])
       );
@@ -917,34 +933,27 @@ export default function WatchlistPage() {
     setListDropTargetId(null);
   };
 
-  /** exchange is stored in note as __ex:BINANCE so each exchange can be added separately */
-  const EX_PREFIX = "__ex:";
-  const itemExchange = (item: WatchItem) =>
-    item.note && item.note.startsWith(EX_PREFIX) ? item.note.slice(EX_PREFIX.length) : null;
-
   const findItem = (sym: string, exchange?: string) => {
-    const symbol = sym.toUpperCase();
+    const key = storageSymbol(sym, exchange);
+    // also match legacy rows without @exchange
     return items.find((i) => {
-      if (i.symbol !== symbol) return false;
-      if (!exchange) return true;
-      const ex = itemExchange(i);
-      // legacy rows (no exchange note) match any single add
-      if (!ex) return true;
-      return ex === exchange;
+      if (i.symbol === key) return true;
+      if (!exchange && bareSymbol(i.symbol) === sym.toUpperCase()) return true;
+      return false;
     });
   };
 
   const addSymbol = async (sym: string, exchange?: string) => {
     if (!activeListId) return;
-    const symbol = sym.toUpperCase();
-    if (findItem(symbol, exchange)) return;
+    const symbol = storageSymbol(sym, exchange);
+    if (items.some((i) => i.symbol === symbol)) return;
     setSaving(true);
     try {
       const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
       const payload: any = {
         list_id: activeListId,
         symbol,
-        note: exchange ? `${EX_PREFIX}${exchange}` : null,
+        note: exchange || null,
         sort_order: maxOrder + 1,
       };
       let { data, error } = await supabase
@@ -963,7 +972,7 @@ export default function WatchlistPage() {
         return;
       }
       setItems((prev) => [...prev, data]);
-      setJustAdded(`${symbol}@${exchange || ""}`);
+      setJustAdded(symbol);
       setTimeout(() => setJustAdded(null), 1200);
       if (!selectedSymbol) setSelectedSymbol(symbol);
     } finally {
@@ -978,7 +987,9 @@ export default function WatchlistPage() {
     try {
       await supabase.from("watchlist_items").delete().eq("id", found.id);
       setItems((prev) => prev.filter((i) => i.id !== found.id));
-      if (selectedSymbol === sym.toUpperCase()) setSelectedSymbol(null);
+      if (selectedSymbol && bareSymbol(selectedSymbol) === sym.toUpperCase()) {
+        setSelectedSymbol(null);
+      }
     } finally {
       setSaving(false);
     }
@@ -996,7 +1007,7 @@ export default function WatchlistPage() {
   };
 
   const goChart = (sym: string) => {
-    localStorage.setItem("chart_symbol", sym);
+    localStorage.setItem("chart_symbol", bareSymbol(sym));
     router.push("/dashboard");
   };
 
@@ -1004,8 +1015,9 @@ export default function WatchlistPage() {
   const inList = (sym: string, exchange?: string) => !!findItem(sym, exchange);
 
   const PriceBlock = ({ sym }: { sym: string }) => {
-    const p = prices[sym];
-    const pct = pcts[sym];
+    const key = bareSymbol(sym);
+    const p = prices[key];
+    const pct = pcts[key];
     if (p == null) return <span className="text-xs text-gray-600">—</span>;
     return (
       <div className="text-right">
@@ -1038,13 +1050,13 @@ export default function WatchlistPage() {
           }}
         >
           <div className="flex items-center gap-2.5 px-3 py-3">
-            <CoinIcon symbol={draggingItem.symbol} size={28} />
+            <CoinIcon symbol={bareSymbol(draggingItem.symbol)} size={28} />
             <div className="min-w-0 flex-1 font-semibold text-sm text-white truncate">
-              {draggingItem.symbol}
+              {bareSymbol(draggingItem.symbol)}
             </div>
-            {prices[draggingItem.symbol] != null && (
+            {prices[bareSymbol(draggingItem.symbol)] != null && (
               <span className="text-orange-400 text-xs font-medium">
-                {formatPrice(prices[draggingItem.symbol])}
+                {formatPrice(prices[bareSymbol(draggingItem.symbol)])}
               </span>
             )}
           </div>
@@ -1291,7 +1303,7 @@ export default function WatchlistPage() {
               )}
               {searchHits.map((hit) => {
                 const added = inList(hit.symbol, hit.exchange);
-                const flash = justAdded === `${hit.symbol}@${hit.exchange || ""}`;
+                const flash = justAdded === storageSymbol(hit.symbol, hit.exchange);
                 const p = prices[hit.symbol];
                 const pct = pcts[hit.symbol];
                 return (
@@ -1390,8 +1402,8 @@ export default function WatchlistPage() {
               >
                 <div className="flex items-center justify-between mb-1 gap-2">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <CoinIcon symbol={item.symbol} size={26} />
-                    <div className="font-semibold text-sm truncate">{item.symbol}</div>
+                    <CoinIcon symbol={bareSymbol(item.symbol)} size={26} />
+                    <div className="font-semibold text-sm truncate">{bareSymbol(item.symbol)}{storedExchange(item.symbol) ? ` · ${storedExchange(item.symbol)}` : ""}</div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <PriceBlock sym={item.symbol} />
@@ -1454,9 +1466,9 @@ export default function WatchlistPage() {
                 </div>
                 {draggingId !== item.id && (
                   <MiniChart
-                    symbol={item.symbol}
+                    symbol={bareSymbol(item.symbol)}
                     interval={interval}
-                    pct={pcts[item.symbol]}
+                    pct={pcts[bareSymbol(item.symbol)]}
                   />
                 )}
                 <div className="flex justify-end mt-1">
@@ -1494,7 +1506,7 @@ export default function WatchlistPage() {
                   <div
                     data-item-id={item.id}
                     className={`flex items-center gap-1.5 px-2 border-b border-gray-800/80 select-none transition-all duration-150 ${
-                      selectedSymbol === item.symbol && draggingId !== item.id
+                      bareSymbol(selectedSymbol || "") === bareSymbol(item.symbol) && draggingId !== item.id
                         ? "bg-gray-800 border-l-2 border-l-orange-500"
                         : ""
                     } ${draggingId === item.id ? "opacity-20 scale-[0.98]" : ""}`}
@@ -1560,7 +1572,7 @@ export default function WatchlistPage() {
                       )}
                     </div>
 
-                    <CoinIcon symbol={item.symbol} size={28} />
+                    <CoinIcon symbol={bareSymbol(item.symbol)} size={28} />
 
                     <button
                       type="button"
@@ -1569,7 +1581,7 @@ export default function WatchlistPage() {
                       }}
                       className="flex-1 min-w-0 text-left py-3"
                     >
-                      <div className="font-medium text-sm truncate">{item.symbol}</div>
+                      <div className="font-medium text-sm truncate">{bareSymbol(item.symbol)}{storedExchange(item.symbol) ? ` · ${storedExchange(item.symbol)}` : ""}</div>
                       {item.note && (
                         <div className="text-gray-500 text-xs truncate">{item.note}</div>
                       )}
@@ -1592,8 +1604,8 @@ export default function WatchlistPage() {
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div className="flex items-center gap-3">
-                    <CoinIcon symbol={selectedSymbol} size={32} />
-                    <h2 className="text-lg font-bold">{selectedSymbol}</h2>
+                    <CoinIcon symbol={bareSymbol(selectedSymbol)} size={32} />
+                    <h2 className="text-lg font-bold">{bareSymbol(selectedSymbol)}</h2>
                     <button
                       type="button"
                       onClick={() => goChart(selectedSymbol)}
@@ -1615,7 +1627,7 @@ export default function WatchlistPage() {
 
                 <DetailChart
                   key={`${selectedSymbol}-${interval}-${lineMode}`}
-                  symbol={selectedSymbol}
+                  symbol={bareSymbol(selectedSymbol)}
                   interval={interval}
                   lineMode={lineMode}
                 />
