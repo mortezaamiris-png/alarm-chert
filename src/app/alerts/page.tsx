@@ -159,13 +159,18 @@ export default function AlertsPage() {
     }
   };
 
-  const goToChart = (sym: string, alertId?: string) => {
+  const goToChart = (sym: string, alertId?: string, price?: number) => {
     try {
       localStorage.setItem("chart_symbol", sym.toUpperCase().split("@")[0]);
       if (alertId) {
         localStorage.setItem("chart_highlight_alarm_id", alertId);
       } else {
         localStorage.removeItem("chart_highlight_alarm_id");
+      }
+      if (price != null && !Number.isNaN(price)) {
+        localStorage.setItem("chart_highlight_price", String(price));
+      } else {
+        localStorage.removeItem("chart_highlight_price");
       }
     } catch {}
     router.push("/dashboard");
@@ -368,7 +373,7 @@ export default function AlertsPage() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <button
                               type="button"
-                              onClick={() => goToChart(sym, alert.id)}
+                              onClick={() => goToChart(sym, alert.id, alert.price)}
                               className="text-orange-400 font-medium text-sm hover:text-orange-300 hover:underline"
                               title="Open on chart"
                             >
@@ -456,14 +461,14 @@ export default function AlertsPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => goToChart(alert.symbol, alert.id)}
+                          onClick={() => goToChart(alert.symbol, alert.id, alert.price)}
                           className="font-medium text-sm text-white hover:text-orange-400"
                         >
                           {alert.symbol}
                         </button>
                         <button
                           type="button"
-                          onClick={() => goToChart(alert.symbol, alert.id)}
+                          onClick={() => goToChart(alert.symbol, alert.id, alert.price)}
                           className="text-orange-400 text-sm hover:text-orange-300 hover:underline"
                           title="Open on chart"
                         >
