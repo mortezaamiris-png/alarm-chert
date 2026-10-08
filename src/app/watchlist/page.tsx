@@ -25,6 +25,7 @@ interface SearchHit {
   baseCoin?: string;
   quoteCoin?: string;
   market: "Spot" | "Futures" | "Index";
+  exchange?: string;
 }
 
 const TIMEFRAMES = [
@@ -508,6 +509,7 @@ export default function WatchlistPage() {
               baseCoin: x.baseCoin,
               quoteCoin: x.quoteCoin,
               market: (x.market as SearchHit["market"]) || "Spot",
+              exchange: x.exchange || "",
             }))
           );
           return;
@@ -1289,6 +1291,11 @@ export default function WatchlistPage() {
                         >
                           {hit.market}
                         </span>
+                        {hit.exchange && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-orange-300 border border-gray-700">
+                            {hit.exchange}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500">
                         {hit.baseCoin}/{hit.quoteCoin}
