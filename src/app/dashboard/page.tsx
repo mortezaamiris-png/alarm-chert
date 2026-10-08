@@ -560,6 +560,7 @@ export default function DashboardPage() {
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [highlightAlarmId, setHighlightAlarmId] = useState<string | null>(null);
+  const [highlightPrice, setHighlightPrice] = useState<number | null>(null);
   const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -662,10 +663,19 @@ export default function DashboardPage() {
   useEffect(() => {
     try {
       const hid = localStorage.getItem("chart_highlight_alarm_id");
-      if (hid) {
-        setHighlightAlarmId(hid);
+      const hp = localStorage.getItem("chart_highlight_price");
+      if (hid || hp) {
+        if (hid) setHighlightAlarmId(hid);
+        if (hp) {
+          const n = parseFloat(hp);
+          if (!Number.isNaN(n)) setHighlightPrice(n);
+        }
         localStorage.removeItem("chart_highlight_alarm_id");
-        const t = setTimeout(() => setHighlightAlarmId(null), 10000);
+        localStorage.removeItem("chart_highlight_price");
+        const t = setTimeout(() => {
+          setHighlightAlarmId(null);
+          setHighlightPrice(null);
+        }, 6000);
         return () => clearTimeout(t);
       }
     } catch {}
@@ -905,17 +915,20 @@ export default function DashboardPage() {
     });
 
     // فیکس ۳: نوت الارم روی چارت
+    let hlDrawnOnActive = false;
     currentAlarms.forEach((a) => {
       try {
         const isMoving = movingId === a.id && movingType === "alarm";
-        const isHL = highlightAlarmId === a.id;
+        const isHL = highlightAlarmId === a.id ||
+          (highlightPrice != null && Math.abs(a.price - highlightPrice) < a.price * 1e-9 + 1e-8);
+        if (isHL) hlDrawnOnActive = true;
         const color = isMoving
           ? "#f59e0b"
           : isHL
-          ? "#ffffff"
+          ? "#eab308" // yellow
           : a.color || DEFAULT_ALARM_COLOR;
-        const width = (isMoving || isHL ? 4 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3 | 4;
-        const style = isMoving ? MOVE_STYLE : toLineStyle(a.dash);
+        const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
+        const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -924,14 +937,29 @@ export default function DashboardPage() {
           ? String(a.note)
           : "";
         const pl = series.createPriceLine({
-          price: a.price, color, lineWidth: (width > 3 ? 3 : width) as 1 | 2 | 3,
+          price: a.price, color, lineWidth: width,
           lineStyle: style,
           axisLabelVisible: true, title,
         });
         alarmLinesRef.current.set(`alarm-${a.id}`, pl);
       } catch {}
     });
-  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId]);
+
+    // History / temp highlight: yellow dashed line that auto-clears
+    if (highlightPrice != null && !hlDrawnOnActive) {
+      try {
+        const pl = series.createPriceLine({
+          price: highlightPrice,
+          color: "#eab308",
+          lineWidth: 3,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: "◀ HISTORY",
+        });
+        alarmLinesRef.current.set("highlight-temp", pl);
+      } catch {}
+    }
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -2709,4 +2737,4 @@ export default function DashboardPage() {
       <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
     </div>
   );
-}
+}v
