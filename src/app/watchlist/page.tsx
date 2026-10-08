@@ -854,17 +854,7 @@ export default function WatchlistPage() {
         .select()
         .single();
       if (error) {
-        const msg = String(error.message || error);
-        if (msg.toLowerCase().includes("unique") || msg.toLowerCase().includes("duplicate")) {
-          alert(
-            "این نماد از قبل در لیست است.\n" +
-              "اگر از صرافی دیگر می‌خواهید، مطمئن شوید نسخه جدید deploy شده (نماد به صورت BTCUSDT@EXCHANGE ذخیره می‌شود).\n\n" +
-              "در حال insert: " +
-              symbol
-          );
-        } else {
-          alert(msg);
-        }
+        alert(error.message);
         return;
       }
       setLists((prev) => {
@@ -979,7 +969,12 @@ export default function WatchlistPage() {
         error = r.error;
       }
       if (error) {
-        alert(error.message);
+        const msg = String(error.message || error);
+        if (msg.toLowerCase().includes("unique") || msg.toLowerCase().includes("duplicate")) {
+          alert("این نماد از قبل در لیست است: " + symbol);
+        } else {
+          alert(msg);
+        }
         return;
       }
       setItems((prev) => [...prev, data]);
