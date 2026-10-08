@@ -855,6 +855,7 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
+    try { seriesRef.current?.setMarkers([]); } catch {}
     setPreviewPrice(null);
   }, []);
 
@@ -1370,28 +1371,76 @@ export default function DashboardPage() {
         }
       } catch {}
 
+      /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
+      const resolveTime = (param: any): number | null => {
+        if (param.time != null) {
+          const n = Number(param.time);
+          if (!Number.isNaN(n) && n > 0) return n;
+        }
+        if (!param.point) return null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(param.point.x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) {
+              return candles[candles.length - 1].time + Math.round(logical - (candles.length - 1)) * barSec;
+            }
+            if (logical < 0) {
+              return candles[0].time + Math.round(logical) * barSec;
+            }
+            const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+            return candles[idx].time;
+          }
+          const ct = chart.timeScale().coordinateToTime(param.point.x);
+          if (typeof ct === "number" && !Number.isNaN(ct)) return ct;
+        } catch {}
+        const candles = candlesRef.current;
+        return candles.length ? candles[candles.length - 1].time : null;
+      };
+
+      let lastPreviewUi = 0;
       chart.subscribeCrosshairMove((param) => {
         if (modeRef.current === "none" || modeRef.current === "move") return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
-        setPreviewPrice(price);
 
-        // Clear previous previews
-        if (previewLineRef.current) {
-          try { series.removePriceLine(previewLineRef.current); } catch {}
-          previewLineRef.current = null;
+        // Throttle React state (was freezing the page on every pixel)
+        const now = Date.now();
+        if (now - lastPreviewUi > 100) {
+          lastPreviewUi = now;
+          setPreviewPrice(price);
         }
+
+        const upsertPriceLine = (p: number, title: string) => {
+          try {
+            if (previewLineRef.current) {
+              previewLineRef.current.applyOptions({
+                price: p,
+                color: drawColorRef.current,
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                title,
+              });
+            } else {
+              previewLineRef.current = series.createPriceLine({
+                price: p,
+                color: drawColorRef.current,
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                axisLabelVisible: true,
+                title,
+              });
+            }
+          } catch {}
+        };
 
         if (modeRef.current === "diag") {
           const start = diagStartRef.current;
           if (start) {
-            // After 1st point: live preview segment start → cursor
-            const tCursor =
-              param.time != null
-                ? Number(param.time)
-                : candlesRef.current[candlesRef.current.length - 1]?.time;
-            if (tCursor == null || Number.isNaN(tCursor)) return;
+            const tCursor = resolveTime(param);
+            if (tCursor == null) return;
             const t0 = Math.min(start.time, tCursor);
             const t1 = Math.max(start.time, tCursor);
             const v0 = start.time <= tCursor ? start.price : price;
@@ -1404,61 +1453,52 @@ export default function DashboardPage() {
                   lineStyle: LineStyle.Dashed,
                   priceLineVisible: false,
                   lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                });
-              } else {
-                previewDiagSeriesRef.current.applyOptions({
-                  color: drawColorRef.current,
-                  lineWidth: drawWidthRef.current,
+                  crosshairMarkerVisible: true,
                 });
               }
-              if (t1 > t0) {
+              if (t1 !== t0) {
                 previewDiagSeriesRef.current.setData([
                   { time: t0 as any, value: v0 },
                   { time: t1 as any, value: v1 },
                 ]);
               }
             } catch {}
-            // Also mark end price on axis
-            previewLineRef.current = series.createPriceLine({
-              price,
-              color: drawColorRef.current,
-              lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              axisLabelVisible: true,
-              title: "②",
-            });
+            upsertPriceLine(price, "②");
           } else {
-            // Before 1st point: show start level under cursor
             if (previewDiagSeriesRef.current) {
               try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
               previewDiagSeriesRef.current = null;
             }
-            previewLineRef.current = series.createPriceLine({
-              price,
-              color: drawColorRef.current,
-              lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              axisLabelVisible: true,
-              title: "①",
-            });
+            upsertPriceLine(price, "①");
           }
           return;
         }
 
-        // Horizontal tools (draw / ray / alarm)
+        // Horizontal tools — update in place (no remove/recreate every frame)
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
           previewDiagSeriesRef.current = null;
         }
-        previewLineRef.current = series.createPriceLine({
-          price,
-          color: drawColorRef.current,
-          lineWidth: drawWidthRef.current,
-          lineStyle: toLineStyle(drawDashRef.current),
-          axisLabelVisible: true,
-          title: "",
-        });
+        try {
+          if (previewLineRef.current) {
+            previewLineRef.current.applyOptions({
+              price,
+              color: drawColorRef.current,
+              lineWidth: drawWidthRef.current,
+              lineStyle: toLineStyle(drawDashRef.current),
+              title: "",
+            });
+          } else {
+            previewLineRef.current = series.createPriceLine({
+              price,
+              color: drawColorRef.current,
+              lineWidth: drawWidthRef.current,
+              lineStyle: toLineStyle(drawDashRef.current),
+              axisLabelVisible: true,
+              title: "",
+            });
+          }
+        } catch {}
       });
 
       chart.subscribeClick(async (param) => {
@@ -1494,19 +1534,18 @@ export default function DashboardPage() {
           return;
         }
 
-        // Diagonal / trend line: two clicks → save as line (or as alarm if condition panel says so)
+        // Diagonal / trend line: two clicks → segment A→B (works on empty area too)
         if (m === "diag") {
-          const t =
-            param.time != null
-              ? Number(param.time)
-              : candlesRef.current[candlesRef.current.length - 1]?.time;
-          if (t == null || Number.isNaN(t)) return;
+          const t = resolveTime(param);
+          if (t == null || Number.isNaN(t)) {
+            setStatusMsg("Could not read time — try on chart area");
+            return;
+          }
           const start = diagStartRef.current;
           if (!start) {
-            // ① First point fixed
+            // ① First point fixed — visible circle marker + axis label
             setDiagStart({ time: t, price: fp });
-            setStatusMsg("① set — click ② second point");
-            // Mark start on axis
+            setStatusMsg("① set — now tap ② second point");
             try {
               if (previewLineRef.current) {
                 try { series.removePriceLine(previewLineRef.current); } catch {}
@@ -1514,11 +1553,40 @@ export default function DashboardPage() {
               previewLineRef.current = series.createPriceLine({
                 price: fp,
                 color: drawColorRef.current,
-                lineWidth: 1,
+                lineWidth: 2,
                 lineStyle: LineStyle.Dashed,
                 axisLabelVisible: true,
-                title: "①",
+                title: "● ①",
               });
+              // Circle on the bar
+              try {
+                series.setMarkers([
+                  {
+                    time: t as any,
+                    position: "inBar",
+                    color: drawColorRef.current,
+                    shape: "circle",
+                    size: 3,
+                    text: "①",
+                  },
+                ]);
+              } catch {}
+              // Seed preview series so a dot is visible even with one point
+              if (!previewDiagSeriesRef.current) {
+                previewDiagSeriesRef.current = chart.addLineSeries({
+                  color: drawColorRef.current,
+                  lineWidth: drawWidthRef.current,
+                  lineStyle: LineStyle.Dashed,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: true,
+                });
+              }
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              previewDiagSeriesRef.current.setData([
+                { time: t as any, value: fp },
+                { time: (t + barSec) as any, value: fp },
+              ]);
             } catch {}
             return;
           }
@@ -1530,6 +1598,8 @@ export default function DashboardPage() {
           // ② Second point — save segment (no extension)
           clickLockRef.current = true;
           setSaving(true);
+          // Clear drawing markers
+          try { series.setMarkers([]); } catch {}
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: start.price,
