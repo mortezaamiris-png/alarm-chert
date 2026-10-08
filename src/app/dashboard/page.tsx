@@ -564,6 +564,16 @@ export default function DashboardPage() {
   const previewDiagSeriesRef = useRef<any>(null);
   /** AbortController to remove pointer listeners on chart rebuild */
   const pointerAbortRef = useRef<AbortController | null>(null);
+  /** Two-step move for diagonal lines: edit point A then point B */
+  const moveDiagRef = useRef<{
+    id: string;
+    phase: "a" | "b";
+    pointA: { time: number; price: number };
+    pointB: { time: number; price: number };
+    color: string;
+    width: number;
+    dash: string;
+  } | null>(null);
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
@@ -869,6 +879,7 @@ export default function DashboardPage() {
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     } catch {}
+    moveDiagRef.current = null;
     setPreviewPrice(null);
   }, []);
 
@@ -1465,14 +1476,18 @@ export default function DashboardPage() {
       pointerAbortRef.current = new AbortController();
       // Block page scroll while drawing diagonal
       const onTouchMoveBlock = (e: TouchEvent) => {
-        if (modeRef.current === "diag" && diagStartRef.current) {
+        if (
+          (modeRef.current === "diag" && diagStartRef.current) ||
+          (modeRef.current === "move" && moveDiagRef.current)
+        ) {
           e.preventDefault();
         }
       };
       container.addEventListener("touchmove", onTouchMoveBlock, { passive: false, signal: pointerAbortRef.current.signal });
       const onPointerMove = (e: PointerEvent) => {
-        if (modeRef.current !== "diag" || !diagStartRef.current) return;
-        // Prevent browser from treating this as scroll/pan
+        const isDiagDraw = modeRef.current === "diag" && !!diagStartRef.current;
+        const isDiagMove = modeRef.current === "move" && !!moveDiagRef.current;
+        if (!isDiagDraw && !isDiagMove) return;
         try { e.preventDefault(); } catch {}
         const rect = container.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -1497,7 +1512,37 @@ export default function DashboardPage() {
           }
         } catch {}
         if (tCursor == null) return;
-        updateDiagPreview(tCursor, price);
+
+        if (isDiagDraw) {
+          updateDiagPreview(tCursor, price);
+          return;
+        }
+        // Diagonal move preview: phase a → rubber-band from cursor to pointB
+        // phase b → rubber-band from pointA to cursor
+        const md = moveDiagRef.current!;
+        const a = md.phase === "a" ? { time: tCursor, price } : md.pointA;
+        const b = md.phase === "b" ? { time: tCursor, price } : md.pointB;
+        try {
+          if (!previewDiagSeriesRef.current) {
+            previewDiagSeriesRef.current = chart.addLineSeries({
+              color: md.color,
+              lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
+              lineStyle: LineStyle.Dashed,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: true,
+            });
+          }
+          const t0 = Math.min(a.time, b.time);
+          const t1 = Math.max(a.time, b.time);
+          if (t1 === t0) return;
+          const v0 = a.time <= b.time ? a.price : b.price;
+          const v1 = a.time <= b.time ? b.price : a.price;
+          previewDiagSeriesRef.current.setData([
+            { time: t0 as any, value: v0 },
+            { time: t1 as any, value: v1 },
+          ]);
+        } catch {}
       };
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
@@ -1552,9 +1597,123 @@ export default function DashboardPage() {
         const m = modeRef.current;
 
         if (m === "move" && movingIdRef.current) {
-          clickLockRef.current = true;
           const id = movingIdRef.current;
           const typ = movingTypeRef.current;
+          const md = moveDiagRef.current;
+
+          // ── Diagonal two-step move ──
+          if (md && md.id === id) {
+            const t = resolveTime(param);
+            if (t == null || Number.isNaN(t)) {
+              setStatusMsg("Could not read time — try on chart");
+              return;
+            }
+            if (md.phase === "a") {
+              // Reposition first point; keep B, go to phase b
+              md.pointA = { time: t, price: fp };
+              md.phase = "b";
+              setStatusMsg("② tap new position for second point");
+              // Show dashed preview A→B
+              try {
+                if (!previewDiagSeriesRef.current) {
+                  previewDiagSeriesRef.current = chart.addLineSeries({
+                    color: md.color,
+                    lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
+                    lineStyle: LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: true,
+                  });
+                }
+                const t0 = Math.min(md.pointA.time, md.pointB.time);
+                const t1 = Math.max(md.pointA.time, md.pointB.time);
+                const v0 = md.pointA.time <= md.pointB.time ? md.pointA.price : md.pointB.price;
+                const v1 = md.pointA.time <= md.pointB.time ? md.pointB.price : md.pointA.price;
+                if (t1 !== t0) {
+                  previewDiagSeriesRef.current.setData([
+                    { time: t0 as any, value: v0 },
+                    { time: t1 as any, value: v1 },
+                  ]);
+                }
+              } catch {}
+              lockChartInteraction(true);
+              return;
+            }
+            // phase "b" — set second point and save
+            md.pointB = { time: t, price: fp };
+            clickLockRef.current = true;
+            setSaving(true);
+            lockChartInteraction(false);
+            try {
+              const patch: any = {
+                price: md.pointA.price,
+                start_time: md.pointA.time,
+                end_time: md.pointB.time,
+                end_price: md.pointB.price,
+              };
+              if (typ === "line") {
+                let { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
+                if (error) {
+                  // fallback: encode in note
+                  await supabase.from("chart_lines").update({
+                    price: md.pointA.price,
+                    start_time: md.pointA.time,
+                    note: `__diag:${md.pointB.time}:${md.pointB.price}`,
+                  }).eq("id", id);
+                }
+                setLines((prev) =>
+                  prev.map((l) =>
+                    l.id === id
+                      ? {
+                          ...l,
+                          price: md.pointA.price,
+                          start_time: md.pointA.time,
+                          end_time: md.pointB.time,
+                          end_price: md.pointB.price,
+                        }
+                      : l
+                  )
+                );
+                setStatusMsg("Diagonal moved");
+              } else if (typ === "alarm") {
+                let { error } = await supabase.from("alarms").update(patch).eq("id", id);
+                if (error) {
+                  await supabase.from("alarms").update({
+                    price: md.pointA.price,
+                    start_time: md.pointA.time,
+                    note: `__diag:${md.pointB.time}:${md.pointB.price}`,
+                  }).eq("id", id);
+                }
+                setAlarms((prev) =>
+                  prev.map((a) =>
+                    a.id === id
+                      ? {
+                          ...a,
+                          price: md.pointA.price,
+                          start_time: md.pointA.time,
+                          end_time: md.pointB.time,
+                          end_price: md.pointB.price,
+                        }
+                      : a
+                  )
+                );
+                setStatusMsg("Diagonal alarm moved");
+              }
+            } catch {
+              setStatusMsg("Move failed");
+            }
+            moveDiagRef.current = null;
+            setMovingId(null);
+            setMovingType(null);
+            setMode("none");
+            clearPreview();
+            setSaving(false);
+            setTimeout(() => { clickLockRef.current = false; }, 300);
+            return;
+          }
+
+          // ── Horizontal single-click move ──
+          clickLockRef.current = true;
           try {
             if (typ === "line") {
               await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
@@ -1568,6 +1727,7 @@ export default function DashboardPage() {
           } catch {
             setStatusMsg("Move failed");
           }
+          moveDiagRef.current = null;
           setMovingId(null);
           setMovingType(null);
           setMode("none");
@@ -3030,7 +3190,30 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(a.id);
                         setMovingType("alarm");
-                        setStatusMsg("Click on chart to move alarm");
+                        if (isDiagonalLine(a as any)) {
+                          moveDiagRef.current = {
+                            id: a.id,
+                            phase: "a",
+                            pointA: { time: Number(a.start_time), price: Number(a.price) },
+                            pointB: { time: Number(a.end_time), price: Number(a.end_price) },
+                            color: a.color || DEFAULT_ALARM_COLOR,
+                            width: a.width || 2,
+                            dash: (a.dash || "solid") as string,
+                          };
+                          setStatusMsg("① tap new position for first point");
+                          try {
+                            chartRef.current?.applyOptions({
+                              handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+                              handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false },
+                            });
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
+                            document.body.style.overflow = "hidden";
+                            document.documentElement.style.overflow = "hidden";
+                          } catch {}
+                        } else {
+                          moveDiagRef.current = null;
+                          setStatusMsg("Click on chart to move alarm");
+                        }
                       }}
                       className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
                     >
@@ -3156,7 +3339,30 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
-                        setStatusMsg("Click on chart to move line");
+                        if (isDiagonalLine(l)) {
+                          moveDiagRef.current = {
+                            id: l.id,
+                            phase: "a",
+                            pointA: { time: Number(l.start_time), price: Number(l.price) },
+                            pointB: { time: Number(l.end_time), price: Number(l.end_price) },
+                            color: l.color || DEFAULT_LINE_COLOR,
+                            width: l.width || 2,
+                            dash: (l.dash || l.style || "solid") as string,
+                          };
+                          setStatusMsg("① tap new position for first point");
+                          try {
+                            chartRef.current?.applyOptions({
+                              handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+                              handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false },
+                            });
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
+                            document.body.style.overflow = "hidden";
+                            document.documentElement.style.overflow = "hidden";
+                          } catch {}
+                        } else {
+                          moveDiagRef.current = null;
+                          setStatusMsg("Click on chart to move line");
+                        }
                       }}
                       className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
                     >
