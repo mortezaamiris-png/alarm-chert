@@ -41,10 +41,11 @@ type ViewMode = "grid" | "list";
 
 /** DB unique is (list_id, symbol) — encode exchange in symbol: BTCUSDT@BINANCE */
 function storageSymbol(sym: string, exchange?: string) {
-  const s = sym.toUpperCase();
-  if (!exchange) return s;
-  if (s.includes("@")) return s;
-  return `${s}@${exchange.toUpperCase()}`;
+  const s = String(sym || "").toUpperCase().trim();
+  const bare = s.split("@")[0];
+  const ex = (exchange || (s.includes("@") ? s.split("@")[1] : "") || "").toUpperCase().trim();
+  if (ex) return `${bare}@${ex}`;
+  return bare;
 }
 function bareSymbol(stored: string) {
   return stored.split("@")[0].toUpperCase();
@@ -853,7 +854,17 @@ export default function WatchlistPage() {
         .select()
         .single();
       if (error) {
-        alert(error.message);
+        const msg = String(error.message || error);
+        if (msg.toLowerCase().includes("unique") || msg.toLowerCase().includes("duplicate")) {
+          alert(
+            "این نماد از قبل در لیست است.\n" +
+              "اگر از صرافی دیگر می‌خواهید، مطمئن شوید نسخه جدید deploy شده (نماد به صورت BTCUSDT@EXCHANGE ذخیره می‌شود).\n\n" +
+              "در حال insert: " +
+              symbol
+          );
+        } else {
+          alert(msg);
+        }
         return;
       }
       setLists((prev) => {
