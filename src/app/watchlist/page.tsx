@@ -24,7 +24,7 @@ interface SearchHit {
   symbol: string;
   baseCoin?: string;
   quoteCoin?: string;
-  market: "Spot" | "Futures";
+  market: "Spot" | "Futures" | "Index";
 }
 
 const TIMEFRAMES = [
@@ -495,82 +495,45 @@ export default function WatchlistPage() {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
 
-  // symbols list for search (try bybit via instruments; fail silently)
+  // symbols from server proxy (Binance+Bybit+LBank+Bitunix + indices) — no Iran IP block
   useEffect(() => {
     (async () => {
       try {
-        const [spotRes, futRes] = await Promise.all([
-          fetch(
-            "https://api.bybit.com/v5/market/instruments-info?category=spot&status=Trading&limit=1000"
-          ).catch(() => null),
-          fetch(
-            "https://api.bybit.com/v5/market/instruments-info?category=linear&status=Trading&limit=1000"
-          ).catch(() => null),
-        ]);
-        const spotData = spotRes ? await spotRes.json() : null;
-        const futData = futRes ? await futRes.json() : null;
-        const spot = (spotData?.result?.list || []).map((x: any) => ({
-          symbol: x.symbol as string,
-          baseCoin: x.baseCoin as string,
-          quoteCoin: x.quoteCoin as string,
-          market: "Spot" as const,
-        }));
-        const fut = (futData?.result?.list || []).map((x: any) => ({
-          symbol: x.symbol as string,
-          baseCoin: x.baseCoin as string,
-          quoteCoin: x.quoteCoin as string,
-          market: "Futures" as const,
-        }));
-        const seen = new Set<string>();
-        const merged: SearchHit[] = [];
-        for (const s of [...spot, ...fut]) {
-          if (seen.has(s.symbol)) continue;
-          seen.add(s.symbol);
-          merged.push(s);
-        }
-        if (merged.length) setAllSymbols(merged);
-        else {
-          // fallback common list if bybit blocked in browser
+        const res = await fetch("/api/symbols");
+        const json = await res.json();
+        if (json?.ok && Array.isArray(json.data) && json.data.length) {
           setAllSymbols(
-            [
-              "BTCUSDT",
-              "ETHUSDT",
-              "BNBUSDT",
-              "SOLUSDT",
-              "XRPUSDT",
-              "ADAUSDT",
-              "DOGEUSDT",
-              "AVAXUSDT",
-              "DOTUSDT",
-              "LINKUSDT",
-              "MATICUSDT",
-              "LTCUSDT",
-              "ATOMUSDT",
-              "UNIUSDT",
-              "NEARUSDT",
-              "APTUSDT",
-              "ARBUSDT",
-              "OPUSDT",
-              "SUIUSDT",
-              "INJUSDT",
-            ].map((s) => ({
-              symbol: s,
-              baseCoin: s.replace("USDT", ""),
-              quoteCoin: "USDT",
-              market: "Spot" as const,
+            json.data.map((x: any) => ({
+              symbol: String(x.symbol).toUpperCase(),
+              baseCoin: x.baseCoin,
+              quoteCoin: x.quoteCoin,
+              market: (x.market as SearchHit["market"]) || "Spot",
             }))
           );
+          return;
         }
-      } catch {
-        setAllSymbols(
-          ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].map((s) => ({
-            symbol: s,
-            baseCoin: s.replace("USDT", ""),
-            quoteCoin: "USDT",
-            market: "Spot" as const,
-          }))
-        );
-      }
+      } catch {}
+      // minimal offline fallback
+      setAllSymbols(
+        [
+          "BTCUSDT",
+          "ETHUSDT",
+          "BNBUSDT",
+          "SOLUSDT",
+          "BTC.D",
+          "USDT.D",
+          "TOTAL2",
+          "TOTAL3",
+          "OTHERS.D",
+        ].map((s) => ({
+          symbol: s,
+          baseCoin: s.replace("USDT", "").replace(".D", ""),
+          quoteCoin: s.includes(".D") || s.startsWith("TOTAL") ? "IDX" : "USDT",
+          market: (s.includes(".D") || s.startsWith("TOTAL")
+            ? "Index"
+            : "Spot") as SearchHit["market"],
+        }))
+      );
     })();
   }, []);
 
@@ -1319,6 +1282,8 @@ export default function WatchlistPage() {
                           className={`text-[10px] px-1.5 py-0.5 rounded ${
                             hit.market === "Spot"
                               ? "bg-blue-900/60 text-blue-300"
+                              : hit.market === "Index"
+                              ? "bg-amber-900/60 text-amber-300"
                               : "bg-purple-900/60 text-purple-300"
                           }`}
                         >
