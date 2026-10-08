@@ -92,6 +92,13 @@ const DEFAULT_LINE_COLOR = "#f97316";
 const LINE_WIDTHS = [1, 2, 3] as const;
 const MOVE_STYLE = LineStyle.Dashed;
 
+/** Preset palette for the floating color picker (iOS-style popover) */
+const PRESET_COLORS = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6",
+  "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#f472b6",
+  "#ffffff", "#94a3b8", "#fb923c", "#a3e635", "#38bdf8",
+];
+
 function loadLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
@@ -1872,7 +1879,7 @@ export default function DashboardPage() {
             </button>
             {tfMenuOpen && (
               <div
-                className="absolute z-50 top-full right-0 mt-2 bg-gray-950/98 border border-gray-600 rounded-2xl p-2 shadow-2xl shadow-black/60 min-w-[168px] backdrop-blur-md"
+                className="absolute z-50 top-full right-0 mt-2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl p-2 shadow-2xl backdrop-blur-xl min-w-[168px]"
                 style={{ animation: "tfPop 0.18s ease-out" }}
               >
                 {ALL_TIMEFRAMES.map((t) => (
@@ -2010,13 +2017,38 @@ export default function DashboardPage() {
           {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
           {(mode === "draw" || mode === "ray" || mode === "alarm" || mode === "move") && (
             <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
-              <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                <input
-                  type="color"
-                  value={drawColor}
-                  onChange={(e) => setDrawColor(e.target.value)}
-                  className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+              <div className="relative" data-menu>
+                <button
+                  type="button"
+                  onClick={() => setOpenMenu(openMenu === "draw-color" ? null : "draw-color")}
+                  className={`w-8 h-8 rounded-full border-2 shadow shrink-0 transition-transform ${
+                    openMenu === "draw-color" ? "border-white scale-110" : "border-gray-500"
+                  }`}
+                  style={{ background: drawColor }}
+                  title="Color"
                 />
+                {openMenu === "draw-color" && (
+                  <div
+                    className="absolute z-50 bottom-full mb-1.5 left-0 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl p-2 shadow-2xl backdrop-blur-xl"
+                    style={{ animation: "tfPop 0.15s ease-out" }}
+                  >
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {PRESET_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => { setDrawColor(c); setOpenMenu(null); }}
+                          className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                            drawColor.toLowerCase() === c.toLowerCase()
+                              ? "border-white scale-110"
+                              : "border-transparent hover:scale-105"
+                          }`}
+                          style={{ background: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
@@ -2212,7 +2244,7 @@ export default function DashboardPage() {
             </button>
             {tzMenuOpen && (
               <div
-                className="absolute right-0 bottom-full mb-2 z-50 bg-gray-950/98 border border-gray-600 rounded-2xl py-1.5 shadow-2xl shadow-black/60 min-w-[148px] backdrop-blur-md"
+                className="absolute right-0 bottom-full mb-2 z-50 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[148px]"
                 style={{ animation: "tfPop 0.18s ease-out" }}
               >
                 {TIMEZONES.map((z) => (
@@ -2374,27 +2406,52 @@ export default function DashboardPage() {
                         {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
                       </button>
                       {openMenu === `a-cond-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[100px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
                           {(["cross", "above", "below"] as const).map((c) => (
                             <button key={c} type="button"
                               onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-white/10 flex items-center gap-2 ${a.condition === c ? "text-white font-semibold" : "text-gray-300"}`}
                             >
-                              <span className="w-3 text-orange-400">{a.condition === c ? "✓" : ""}</span>
+                              <span className="w-4 text-center text-orange-400">{a.condition === c ? "✓" : ""}</span>
                               {c === "cross" ? "Cross" : c === "above" ? "Above" : "Below"}
                             </button>
                           ))}
                         </div>
                       )}
                     </div>
-                    {/* Round color */}
-                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                      <input
-                        type="color"
-                        value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
-                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                    {/* Color — floating palette (same effect as W1/W2/W3) */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `a-c-${a.id}` ? null : `a-c-${a.id}`)}
+                        className={`w-7 h-7 rounded-full border-2 shadow shrink-0 transition-transform ${
+                          openMenu === `a-c-${a.id}` ? "border-white scale-110" : "border-gray-500"
+                        }`}
+                        style={{ background: a.color || DEFAULT_ALARM_COLOR }}
+                        title="Color"
                       />
+                      {openMenu === `a-c-${a.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl p-2 shadow-2xl backdrop-blur-xl"
+                          style={{ animation: "tfPop 0.15s ease-out" }}
+                        >
+                          <div className="grid grid-cols-5 gap-1.5">
+                            {PRESET_COLORS.map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => { updateAlarmColor(a.id, c); setOpenMenu(null); }}
+                                className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                                  (a.color || DEFAULT_ALARM_COLOR).toLowerCase() === c.toLowerCase()
+                                    ? "border-white scale-110"
+                                    : "border-transparent hover:scale-105"
+                                }`}
+                                style={{ background: c }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     {/* Width popover */}
                     <div className="relative" data-menu>
@@ -2410,13 +2467,13 @@ export default function DashboardPage() {
                         W{a.width || 2} ▾
                       </button>
                       {openMenu === `a-w-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[88px]" style={{ animation: "tfPop 0.15s ease-out" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateAlarmWidth(a.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-white/10 flex items-center gap-2 ${(a.width || 2) === w ? "text-white font-semibold" : "text-gray-300"}`}
                             >
-                              <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
+                              <span className="w-4 text-center text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
                               W{w}
                             </button>
                           ))}
@@ -2437,13 +2494,13 @@ export default function DashboardPage() {
                         {a.dash === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `a-d-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[120px]" style={{ animation: "tfPop 0.15s ease-out" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateAlarmDash(a.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-white/10 flex items-center gap-2 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-white font-semibold" : "text-gray-300"}`}
                             >
-                              <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
+                              <span className="w-4 text-center text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
                               {d === "solid" ? "—— Solid" : "- - Dash"}
                             </button>
                           ))}
@@ -2495,14 +2552,39 @@ export default function DashboardPage() {
                   </span>
                   {l.note && <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>}
                   <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    {/* Round color */}
-                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                      <input
-                        type="color"
-                        value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => updateLineColor(l.id, e.target.value)}
-                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                    {/* Color — floating palette (same effect as W1/W2/W3) */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenu(openMenu === `l-c-${l.id}` ? null : `l-c-${l.id}`)}
+                        className={`w-7 h-7 rounded-full border-2 shadow shrink-0 transition-transform ${
+                          openMenu === `l-c-${l.id}` ? "border-white scale-110" : "border-gray-500"
+                        }`}
+                        style={{ background: l.color || DEFAULT_LINE_COLOR }}
+                        title="Color"
                       />
+                      {openMenu === `l-c-${l.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl p-2 shadow-2xl backdrop-blur-xl"
+                          style={{ animation: "tfPop 0.15s ease-out" }}
+                        >
+                          <div className="grid grid-cols-5 gap-1.5">
+                            {PRESET_COLORS.map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => { updateLineColor(l.id, c); setOpenMenu(null); }}
+                                className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
+                                    ? "border-white scale-110"
+                                    : "border-transparent hover:scale-105"
+                                }`}
+                                style={{ background: c }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     {/* Width popover */}
                     <div className="relative" data-menu>
@@ -2518,13 +2600,13 @@ export default function DashboardPage() {
                         W{l.width || 2} ▾
                       </button>
                       {openMenu === `l-w-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[80px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[88px]" style={{ animation: "tfPop 0.15s ease-out" }}>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
                               onClick={() => { updateLineWidth(l.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-white/10 flex items-center gap-2 ${(l.width || 2) === w ? "text-white font-semibold" : "text-gray-300"}`}
                             >
-                              <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
+                              <span className="w-4 text-center text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
                               W{w}
                             </button>
                           ))}
@@ -2545,13 +2627,13 @@ export default function DashboardPage() {
                         {(l.dash || l.style) === "dashed" ? "- -" : "——"} ▾
                       </button>
                       {openMenu === `l-d-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 bg-gray-900 border border-gray-600 rounded-xl py-1 shadow-2xl min-w-[110px]" style={{ animation: "tfPop 0.15s ease-out" }}>
+                        <div className="absolute z-50 bottom-full mb-1.5 left-1/2 -translate-x-1/2 bg-[#1c1c1e]/95 border border-white/10 rounded-2xl py-1.5 shadow-2xl backdrop-blur-xl min-w-[120px]" style={{ animation: "tfPop 0.15s ease-out" }}>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
                               onClick={() => { updateLineDash(l.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 flex items-center gap-2 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-white/10 flex items-center gap-2 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-white font-semibold" : "text-gray-300"}`}
                             >
-                              <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
+                              <span className="w-4 text-center text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
                               {d === "solid" ? "—— Solid" : "- - Dash"}
                             </button>
                           ))}
