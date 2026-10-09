@@ -927,7 +927,7 @@ export default function DashboardPage() {
       previewDiagSeriesRef.current = null;
     }
     hideHandles();
-    // Restore chart pan/zoom + page scroll after drawing
+    // Restore chart pan/zoom (never touch page overflow)
     try {
       chartRef.current?.applyOptions({
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
@@ -1417,7 +1417,7 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          rightOffset: 40,
+          rightOffset: 60,
           barSpacing: 7,
           minBarSpacing: 3,
           fixLeftEdge: false,
@@ -1441,17 +1441,21 @@ export default function DashboardPage() {
       });
       series.setData(candles as any);
       seriesRef.current = series;
-      // Leave empty space on the right so user can place diagonal endpoints past last candle
+      // Leave a wide empty strip on the right (future times) like TradingView
+      try {
+        chart.timeScale().applyOptions({ rightOffset: 60 });
+      } catch {}
       chart.timeScale().fitContent();
       try {
         chart.timeScale().scrollToRealTime();
       } catch {}
       try {
         const lr = chart.timeScale().getVisibleLogicalRange();
+        const bars = candles.length;
         if (lr) {
           chart.timeScale().setVisibleLogicalRange({
             from: lr.from,
-            to: lr.to + 30,
+            to: Math.max(lr.to, bars - 1 + 40),
           });
         }
       } catch {}
@@ -1511,22 +1515,26 @@ export default function DashboardPage() {
         } catch {}
       };
 
+      /** Soft chart lock only — NEVER freeze the whole page/app */
       const lockChartInteraction = (lock: boolean) => {
         try {
           chart.applyOptions({
             handleScroll: lock
-              ? { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false }
+              ? { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false }
               : { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
             handleScale: lock
-              ? { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false }
+              ? { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: true, pinch: false }
               : { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
           });
         } catch {}
-        // Stop page scroll while drawing (critical on iPad Safari)
+        // Only block touch-pan on the chart canvas — rest of app stays usable
         try {
           container.style.touchAction = lock ? "none" : "";
-          document.body.style.overflow = lock ? "hidden" : "";
-          document.documentElement.style.overflow = lock ? "hidden" : "";
+        } catch {}
+        // Always clear any leftover full-page locks from older builds
+        try {
+          document.body.style.overflow = "";
+          document.documentElement.style.overflow = "";
         } catch {}
       };
 
@@ -1535,10 +1543,12 @@ export default function DashboardPage() {
       pointerAbortRef.current = new AbortController();
       // Block page scroll while drawing diagonal
       const onTouchMoveBlock = (e: TouchEvent) => {
-        if (
-          (modeRef.current === "diag" && diagStartRef.current) ||
-          (modeRef.current === "move" && moveDiagRef.current)
-        ) {
+        // Only block page scroll while actively drawing / dragging an endpoint
+        const md = moveDiagRef.current;
+        const dragging =
+          (modeRef.current === "diag" && !!diagStartRef.current) ||
+          (modeRef.current === "move" && md && (md.phase === "drag-a" || md.phase === "drag-b"));
+        if (dragging) {
           e.preventDefault();
         }
       };
@@ -1734,6 +1744,8 @@ export default function DashboardPage() {
                   md.phase = "drag-b";
                   setStatusMsg("Move end point — tap new position");
                 }
+                // Soft-lock chart pan only while placing the endpoint
+                lockChartInteraction(true);
               } catch {
                 // On error, treat as confirm/exit
                 moveDiagRef.current = null;
@@ -1807,10 +1819,11 @@ export default function DashboardPage() {
                   )
                 );
               }
-              // Stay in pick mode so user can adjust the other handle
+              // Stay in pick mode so user can adjust the other handle — unlock chart pan
               md.phase = "pick";
+              lockChartInteraction(false);
               refreshHandles();
-              setStatusMsg("Saved — tap handle to edit more, or tap empty chart / ✓ to confirm");
+              setStatusMsg("Saved — tap handle to edit more, or tap empty chart / ✓ Done");
             } catch {
               setStatusMsg("Move failed");
             }
@@ -1857,11 +1870,12 @@ export default function DashboardPage() {
             setDiagStart({ time: t, price: fp });
             setStatusMsg("① set — drag to ② then tap");
             lockChartInteraction(true);
-            // Ensure empty space to the right of last candle so endpoint can go into the future
+            // Ensure empty space to the right of last candle (future times like TradingView)
             try {
+              chart.timeScale().applyOptions({ rightOffset: 60 });
               const lr = chart.timeScale().getVisibleLogicalRange();
               if (lr) {
-                const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
                 if (lr.to < need) {
                   chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
                 }
@@ -3359,20 +3373,22 @@ export default function DashboardPage() {
                           };
                           setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
+                            // Pick phase: keep chart + page fully interactive (no lock)
+                            document.body.style.overflow = "";
+                            document.documentElement.style.overflow = "";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
                             chartRef.current?.applyOptions({
-                              handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
-                              handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false },
+                              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
                             });
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
-                            document.body.style.overflow = "hidden";
-                            document.documentElement.style.overflow = "hidden";
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
                               try {
+                                chart.timeScale().applyOptions({ rightOffset: 60 });
                                 const lr = chart.timeScale().getVisibleLogicalRange();
                                 if (lr) {
-                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
                                   if (lr.to < need) {
                                     chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
                                   }
@@ -3540,21 +3556,22 @@ export default function DashboardPage() {
                           };
                           setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
+                            // Pick phase: keep chart + page fully interactive (no lock)
+                            document.body.style.overflow = "";
+                            document.documentElement.style.overflow = "";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
                             chartRef.current?.applyOptions({
-                              handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
-                              handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: false, pinch: false },
+                              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
                             });
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
-                            document.body.style.overflow = "hidden";
-                            document.documentElement.style.overflow = "hidden";
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
-                              // Ensure empty space past last candle for future endpoints
                               try {
+                                chart.timeScale().applyOptions({ rightOffset: 60 });
                                 const lr = chart.timeScale().getVisibleLogicalRange();
                                 if (lr) {
-                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
                                   if (lr.to < need) {
                                     chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
                                   }
