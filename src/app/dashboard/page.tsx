@@ -740,22 +740,46 @@ export default function DashboardPage() {
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
   useEffect(() => { symbolRef.current = symbol; localStorage.setItem("chart_symbol", symbol); }, [symbol]);
-  // Highlight a specific alarm line when navigating from Alerts page
+  // Highlight a specific alarm when navigating from Alerts page (horizontal or diagonal)
   useEffect(() => {
     try {
       const hid = localStorage.getItem("chart_highlight_alarm_id");
       const hp = localStorage.getItem("chart_highlight_price");
-      if (hid || hp) {
-        if (hid) setHighlightAlarmId(hid);
-        if (hp) {
-          const n = parseFloat(hp);
-          if (!Number.isNaN(n)) setHighlightPrice(n);
+      const hd = localStorage.getItem("chart_highlight_diag");
+      let hasAny = false;
+      if (hid) {
+        setHighlightAlarmId(hid);
+        hasAny = true;
+      }
+      if (hd) {
+        try {
+          const d = JSON.parse(hd);
+          if (d && d.start_time != null && d.end_time != null && d.end_price != null) {
+            setHighlightDiag({
+              start_time: Number(d.start_time),
+              end_time: Number(d.end_time),
+              price: Number(d.price ?? d.start_price ?? 0),
+              end_price: Number(d.end_price),
+            });
+            setHighlightPrice(null);
+            hasAny = true;
+          }
+        } catch {}
+      } else if (hp) {
+        const n = parseFloat(hp);
+        if (!Number.isNaN(n)) {
+          setHighlightPrice(n);
+          hasAny = true;
         }
-        localStorage.removeItem("chart_highlight_alarm_id");
-        localStorage.removeItem("chart_highlight_price");
+      }
+      localStorage.removeItem("chart_highlight_alarm_id");
+      localStorage.removeItem("chart_highlight_price");
+      localStorage.removeItem("chart_highlight_diag");
+      if (hasAny) {
         const t = setTimeout(() => {
           setHighlightAlarmId(null);
           setHighlightPrice(null);
+          setHighlightDiag(null);
         }, 6000);
         return () => clearTimeout(t);
       }
@@ -2888,7 +2912,6 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-        {statusMsg && <span className="text-xs text-gray-400 ml-2">{statusMsg}</span>}
       </div>
 
       <div className="flex gap-2">
