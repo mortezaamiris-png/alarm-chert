@@ -1027,6 +1027,13 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!series || !chart) return;
 
+    // Freeze visible window — adding line series with future times must not scroll the chart
+    let savedRange: { from: number; to: number } | null = null;
+    try {
+      const lr = chart.timeScale().getVisibleLogicalRange();
+      if (lr) savedRange = { from: lr.from, to: lr.to };
+    } catch {}
+
     alarmLinesRef.current.forEach((pl) => {
       try { series.removePriceLine(pl); } catch {}
     });
@@ -1190,6 +1197,13 @@ export default function DashboardPage() {
           title: "◀ HISTORY",
         });
         alarmLinesRef.current.set("highlight-temp", pl);
+      } catch {}
+    }
+
+    // Restore exact visible range so future-endpoint diags don't push the chart right
+    if (savedRange) {
+      try {
+        chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
   }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice]);
@@ -2356,9 +2370,19 @@ export default function DashboardPage() {
       }
       candlesRef.current = candles;
       // New bar consumed one whitespace slot — rebuild trailing future strip
+      // without shifting the user's current view
       if (addedNew) {
         try {
+          const chart = chartRef.current;
+          let lr: { from: number; to: number } | null = null;
+          try {
+            const r = chart?.timeScale().getVisibleLogicalRange();
+            if (r) lr = { from: r.from, to: r.to };
+          } catch {}
           series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+          if (lr && chart) {
+            try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
+          }
         } catch {}
       }
 
