@@ -1427,12 +1427,13 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          rightOffset: 50,
-          barSpacing: 7,
-          minBarSpacing: 3,
+          // Empty bars to the right of last candle (TradingView-style future area)
+          rightOffset: 30,
+          barSpacing: 8,
+          minBarSpacing: 2,
           fixLeftEdge: false,
           fixRightEdge: false,
-          lockVisibleTimeRangeOnResize: true,
+          lockVisibleTimeRangeOnResize: false,
           tickMarkFormatter: makeTickMarkFormatter(tz) as any,
         },
         localization: makeLocalization(tz),
@@ -1451,21 +1452,28 @@ export default function DashboardPage() {
       });
       series.setData(candles as any);
       seriesRef.current = series;
-      // Wide empty strip on the right so future times show (TradingView-style)
-      // Avoid fitContent — it packs bars to the right edge and kills empty space
-      try {
-        chart.timeScale().applyOptions({ rightOffset: 50 });
-        const bars = candles.length;
-        if (bars > 0) {
-          const visibleBars = Math.min(100, bars);
+
+      /** Push last candle left and leave a wide future strip with time labels */
+      const ensureFutureTimeSpace = () => {
+        try {
+          const bars = candlesRef.current.length || candles.length;
+          if (bars < 2) return;
+          chart.timeScale().applyOptions({ rightOffset: 30 });
+          // Show ~70 past bars + ~30 empty future bars (time axis continues)
+          const past = Math.min(70, bars);
           chart.timeScale().setVisibleLogicalRange({
-            from: bars - visibleBars,
-            to: bars - 1 + 35,
+            from: bars - past,
+            to: bars - 1 + 30,
           });
-        }
-      } catch {
-        try { chart.timeScale().fitContent(); } catch {}
-      }
+        } catch {}
+      };
+      ensureFutureTimeSpace();
+      // Re-apply after layout settles (width/height may change once DOM paints)
+      requestAnimationFrame(() => {
+        ensureFutureTimeSpace();
+        setTimeout(ensureFutureTimeSpace, 120);
+        setTimeout(ensureFutureTimeSpace, 400);
+      });
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
       const resolveTime = (param: any): number | null => {
@@ -2129,13 +2137,14 @@ export default function DashboardPage() {
         localization: makeLocalization(timeZone),
         timeScale: {
           secondsVisible: isIntraday,
+          rightOffset: 30,
           tickMarkFormatter: makeTickMarkFormatter(timeZone) as any,
         },
       });
     } catch {}
   }, [timeZone]);
 
-  // Resize chart when side list is shown/hidden
+  // Resize chart when side list is shown/hidden — keep future time strip
   useEffect(() => {
     const t = setTimeout(() => {
       if (chartRef.current && chartContainerRef.current) {
@@ -2143,6 +2152,17 @@ export default function DashboardPage() {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight || 640,
         });
+        try {
+          const bars = candlesRef.current.length;
+          if (bars > 2) {
+            chartRef.current.timeScale().applyOptions({ rightOffset: 30 });
+            const past = Math.min(70, bars);
+            chartRef.current.timeScale().setVisibleLogicalRange({
+              from: bars - past,
+              to: bars - 1 + 30,
+            });
+          }
+        } catch {}
       }
     }, 50);
     return () => clearTimeout(t);
