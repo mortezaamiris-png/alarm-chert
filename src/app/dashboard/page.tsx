@@ -503,8 +503,11 @@ function intervalToSeconds(iv: string): number {
   return Number.isNaN(n) ? 3600 : n * 60;
 }
 
-/** Empty bars after last candle so time axis continues into the future (TradingView-style) */
-const FUTURE_BARS = 40;
+/** Empty bars after last candle so time axis continues into the future (TradingView-style).
+ *  Large buffer so user can scroll/draw far past the last price bar. */
+const FUTURE_BARS = 300;
+/** How many future bars are visible on first load (rest remains scrollable) */
+const FUTURE_VISIBLE = 60;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1469,16 +1472,16 @@ export default function DashboardPage() {
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
       seriesRef.current = series;
 
-      /** Frame last ~80 real bars and show the future whitespace strip on the right */
+      /** Frame last ~70 real bars + a wide visible future strip (more is scrollable) */
       const ensureFutureTimeSpace = () => {
         try {
           const bars = candlesRef.current.length || candles.length; // real bars only
           if (bars < 2) return;
-          chart.timeScale().applyOptions({ rightOffset: 8 });
-          const past = Math.min(80, bars);
+          chart.timeScale().applyOptions({ rightOffset: 4 });
+          const past = Math.min(70, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: bars - past,
-            to: bars - 1 + FUTURE_BARS,
+            to: bars - 1 + FUTURE_VISIBLE,
           });
         } catch {}
       };
@@ -1937,17 +1940,8 @@ export default function DashboardPage() {
             setDiagStart({ time: t, price: fp });
             setStatusMsg("① set — drag to ② then tap");
             lockChartInteraction(true);
-            // Ensure empty space to the right of last candle (future times like TradingView)
-            try {
-              chart.timeScale().applyOptions({ rightOffset: 60 });
-              const lr = chart.timeScale().getVisibleLogicalRange();
-              if (lr) {
-                const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
-                if (lr.to < need) {
-                  chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
-                }
-              }
-            } catch {}
+            // Do NOT change visible range here — whitespace already provides future space;
+            // expanding range on every draw was causing the chart to jump right.
             try {
               // Remove any horizontal preview line (we only want diagonal)
               if (previewLineRef.current) {
@@ -2169,11 +2163,11 @@ export default function DashboardPage() {
         try {
           const bars = candlesRef.current.length;
           if (bars > 2) {
-            chartRef.current.timeScale().applyOptions({ rightOffset: 8 });
-            const past = Math.min(80, bars);
+            chartRef.current.timeScale().applyOptions({ rightOffset: 4 });
+            const past = Math.min(70, bars);
             chartRef.current.timeScale().setVisibleLogicalRange({
               from: bars - past,
-              to: bars - 1 + FUTURE_BARS,
+              to: bars - 1 + FUTURE_VISIBLE,
             });
           }
         } catch {}
@@ -3541,16 +3535,7 @@ export default function DashboardPage() {
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
-                              try {
-                                chart.timeScale().applyOptions({ rightOffset: 60 });
-                                const lr = chart.timeScale().getVisibleLogicalRange();
-                                if (lr) {
-                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
-                                  if (lr.to < need) {
-                                    chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
-                                  }
-                                }
-                              } catch {}
+                              // Keep visible range fixed — no auto-scroll to the right while editing
                               if (previewDiagSeriesRef.current) {
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
@@ -3727,16 +3712,7 @@ export default function DashboardPage() {
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
-                              try {
-                                chart.timeScale().applyOptions({ rightOffset: 60 });
-                                const lr = chart.timeScale().getVisibleLogicalRange();
-                                if (lr) {
-                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 40);
-                                  if (lr.to < need) {
-                                    chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
-                                  }
-                                }
-                              } catch {}
+                              // Keep visible range fixed — no auto-scroll to the right while editing
                               if (previewDiagSeriesRef.current) {
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
