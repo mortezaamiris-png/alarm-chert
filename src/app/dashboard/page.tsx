@@ -737,6 +737,16 @@ export default function DashboardPage() {
     } catch {}
   }, []);
 
+  // Auto-clear history flash line after a few seconds
+  useEffect(() => {
+    if (highlightPrice == null && !highlightAlarmId) return;
+    const t = setTimeout(() => {
+      setHighlightPrice(null);
+      setHighlightAlarmId(null);
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [highlightPrice, highlightAlarmId]);
+
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
@@ -1459,24 +1469,34 @@ export default function DashboardPage() {
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
       const resolveTime = (param: any): number | null => {
-        if (param.time != null) {
-          const n = Number(param.time);
-          if (!Number.isNaN(n) && n > 0) return n;
+        if (!param.point) {
+          if (param.time != null) {
+            const n = Number(param.time);
+            if (!Number.isNaN(n) && n > 0) return n;
+          }
+          return null;
         }
-        if (!param.point) return null;
         try {
-          const logical = chart.timeScale().coordinateToLogical(param.point.x);
           const candles = candlesRef.current;
-          if (logical != null && candles.length) {
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            if (logical > candles.length - 1) {
-              return candles[candles.length - 1].time + Math.round(logical - (candles.length - 1)) * barSec;
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          // Prefer logical coordinate so clicks in the empty RIGHT area (past last candle) work
+          const logical = chart.timeScale().coordinateToLogical(param.point.x);
+          if (logical != null && candles.length && barSec > 0) {
+            const lastIdx = candles.length - 1;
+            if (logical > lastIdx + 0.05) {
+              // Future / empty area past last bar
+              return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
             }
-            if (logical < 0) {
+            if (logical < -0.05) {
               return candles[0].time + Math.round(logical) * barSec;
             }
-            const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+            const idx = Math.max(0, Math.min(lastIdx, Math.round(logical)));
             return candles[idx].time;
+          }
+          // Fallback: library time (only when inside data range)
+          if (param.time != null) {
+            const n = Number(param.time);
+            if (!Number.isNaN(n) && n > 0) return n;
           }
           const ct = chart.timeScale().coordinateToTime(param.point.x);
           if (typeof ct === "number" && !Number.isNaN(ct)) return ct;
@@ -2698,16 +2718,17 @@ export default function DashboardPage() {
         input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
         input[type="color"]::-moz-color-swatch{border:none;border-radius:9999px}
       `}</style>
-      {/* Header — title left, controls right */}
+      {/* Header — Live Chart + symbol search together on the left */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <h1 className="text-lg font-semibold text-gray-200 mr-2">Live Chart</h1>
-        <div className="flex-1" />
+        <h1 className="text-lg font-semibold text-gray-200">Live Chart</h1>
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
           onKeyDown={(e) => e.key === "Enter" && loadCandles()}
           className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm w-28 font-mono"
+          title="Symbol"
         />
+        <div className="flex-1" />
         <div className="flex items-center gap-1">
           {favTfButtons.map((t) => (
             <button
@@ -3750,7 +3771,14 @@ export default function DashboardPage() {
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-950 border border-gray-800/80 rounded-lg px-3 py-2 text-sm"
+                  className="bg-gray-950 border border-gray-800/80 rounded-lg px-3 py-2 text-sm cursor-pointer hover:border-amber-600/50"
+                  onClick={() => {
+                    // Briefly show dashed line at this historical alarm price
+                    setHighlightPrice(a.price);
+                    setHighlightAlarmId(null);
+                    setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                  }}
+                  title="Tap to flash price on chart"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono font-medium text-gray-400">
