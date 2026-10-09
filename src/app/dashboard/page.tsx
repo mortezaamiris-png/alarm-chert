@@ -1441,18 +1441,17 @@ export default function DashboardPage() {
       });
       series.setData(candles as any);
       seriesRef.current = series;
-      // Leave space on the right so time axis labels are fully visible (like TradingView)
+      // Leave empty space on the right so user can place diagonal endpoints past last candle
       chart.timeScale().fitContent();
       try {
         chart.timeScale().scrollToRealTime();
       } catch {}
-      // Extra right padding via visible logical range
       try {
         const lr = chart.timeScale().getVisibleLogicalRange();
         if (lr) {
           chart.timeScale().setVisibleLogicalRange({
             from: lr.from,
-            to: lr.to + 8,
+            to: lr.to + 30,
           });
         }
       } catch {}
@@ -1646,7 +1645,11 @@ export default function DashboardPage() {
       });
 
       chart.subscribeClick(async (param) => {
-        if (clickLockRef.current) return;
+        // Allow confirm-tap during pick phase even if clickLock is briefly set after save
+        if (clickLockRef.current) {
+          const md0 = moveDiagRef.current;
+          if (!(modeRef.current === "move" && md0 && md0.phase === "pick")) return;
+        }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
@@ -1711,7 +1714,8 @@ export default function DashboardPage() {
                 const py = param.point.y;
                 const distA = (xA != null && yA != null) ? Math.hypot(px - xA, py - yA) : 1e9;
                 const distB = (xB != null && yB != null) ? Math.hypot(px - xB, py - yB) : 1e9;
-                const HIT = 64; // px tolerance (finger-friendly on iPad)
+                // Smaller hit radius so empty-chart confirm is easy on desktop; still ok for finger
+                const HIT = 36;
                 // Tap away from both handles → final confirm / exit edit
                 if (distA > HIT && distB > HIT) {
                   moveDiagRef.current = null;
@@ -1853,6 +1857,16 @@ export default function DashboardPage() {
             setDiagStart({ time: t, price: fp });
             setStatusMsg("① set — drag to ② then tap");
             lockChartInteraction(true);
+            // Ensure empty space to the right of last candle so endpoint can go into the future
+            try {
+              const lr = chart.timeScale().getVisibleLogicalRange();
+              if (lr) {
+                const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                if (lr.to < need) {
+                  chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
+                }
+              }
+            } catch {}
             try {
               // Remove any horizontal preview line (we only want diagonal)
               if (previewLineRef.current) {
@@ -2914,7 +2928,7 @@ export default function DashboardPage() {
                     }}
                     className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
                   >
-                    ✓ تأیید
+                    ✓ Done
                   </button>
                 </>
               )}
@@ -3343,7 +3357,7 @@ export default function DashboardPage() {
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
                           };
-                          setStatusMsg("Tap a circle to move — empty chart or ✓ to confirm");
+                          setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
@@ -3355,6 +3369,15 @@ export default function DashboardPage() {
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
+                              try {
+                                const lr = chart.timeScale().getVisibleLogicalRange();
+                                if (lr) {
+                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                                  if (lr.to < need) {
+                                    chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
+                                  }
+                                }
+                              } catch {}
                               if (previewDiagSeriesRef.current) {
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
@@ -3515,7 +3538,7 @@ export default function DashboardPage() {
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
                           };
-                          setStatusMsg("Tap a circle to move — empty chart or ✓ to confirm");
+                          setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
@@ -3524,10 +3547,19 @@ export default function DashboardPage() {
                             if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
                             document.body.style.overflow = "hidden";
                             document.documentElement.style.overflow = "hidden";
-                            // Show dashed segment + circle handles on both ends
                             const chart = chartRef.current;
                             const md = moveDiagRef.current!;
                             if (chart) {
+                              // Ensure empty space past last candle for future endpoints
+                              try {
+                                const lr = chart.timeScale().getVisibleLogicalRange();
+                                if (lr) {
+                                  const need = Math.max(lr.to, (candlesRef.current?.length || 0) - 1 + 25);
+                                  if (lr.to < need) {
+                                    chart.timeScale().setVisibleLogicalRange({ from: lr.from, to: need });
+                                  }
+                                }
+                              } catch {}
                               if (previewDiagSeriesRef.current) {
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
