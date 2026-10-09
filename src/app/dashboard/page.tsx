@@ -564,6 +564,11 @@ export default function DashboardPage() {
   const previewDiagSeriesRef = useRef<any>(null);
   /** AbortController to remove pointer listeners on chart rebuild */
   const pointerAbortRef = useRef<AbortController | null>(null);
+  /** rAF throttle for pointermove (prevents desktop freeze) */
+  const moveRafRef = useRef<number>(0);
+  /** Hollow circle handle DOM nodes (move mode) */
+  const handleAElRef = useRef<HTMLDivElement | null>(null);
+  const handleBElRef = useRef<HTMLDivElement | null>(null);
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
@@ -858,6 +863,60 @@ export default function DashboardPage() {
     });
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
 
+  const hideHandles = useCallback(() => {
+    try {
+      if (handleAElRef.current) handleAElRef.current.style.display = "none";
+      if (handleBElRef.current) handleBElRef.current.style.display = "none";
+    } catch {}
+  }, []);
+
+  /** Position hollow circle handles; supports times beyond last candle */
+  const positionHandles = useCallback((
+    pointA: { time: number; price: number },
+    pointB: { time: number; price: number },
+    active?: "a" | "b" | null
+  ) => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const elA = handleAElRef.current;
+    const elB = handleBElRef.current;
+    if (!chart || !series || !elA || !elB) return;
+    const candles = candlesRef.current;
+    const barSec = intervalToSeconds(String(intervalRef.current));
+    const timeToX = (t: number): number | null => {
+      let x = chart.timeScale().timeToCoordinate(t as any);
+      if (x != null) return x;
+      // Extrapolate past last bar (empty / future area)
+      if (candles.length >= 2 && barSec > 0) {
+        const last = candles[candles.length - 1];
+        const prev = candles[candles.length - 2];
+        const lastX = chart.timeScale().timeToCoordinate(last.time as any);
+        const prevX = chart.timeScale().timeToCoordinate(prev.time as any);
+        if (lastX != null && prevX != null) {
+          const pxPerBar = lastX - prevX;
+          return lastX + ((t - last.time) / barSec) * pxPerBar;
+        }
+      }
+      return null;
+    };
+    const place = (el: HTMLDivElement, pt: { time: number; price: number }, isActive: boolean) => {
+      const x = timeToX(pt.time);
+      const y = series.priceToCoordinate(pt.price);
+      if (x == null || y == null) {
+        el.style.display = "none";
+        return;
+      }
+      el.style.display = "block";
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.borderColor = isActive ? "#f97316" : "#ffffff";
+      el.style.width = isActive ? "18px" : "14px";
+      el.style.height = isActive ? "18px" : "14px";
+    };
+    place(elA, pointA, active === "a");
+    place(elB, pointB, active === "b");
+  }, []);
+
   const clearPreview = useCallback(() => {
     if (previewLineRef.current && seriesRef.current) {
       try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
@@ -867,6 +926,7 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
+    hideHandles();
     // Restore chart pan/zoom + page scroll after drawing
     try {
       chartRef.current?.applyOptions({
@@ -881,7 +941,7 @@ export default function DashboardPage() {
     } catch {}
     moveDiagRef.current = null;
     setPreviewPrice(null);
-  }, []);
+  }, [hideHandles]);
 
   const destroyChart = useCallback(() => {
     clearPreview();
@@ -1357,7 +1417,7 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          rightOffset: 18,
+          rightOffset: 40,
           barSpacing: 7,
           minBarSpacing: 3,
           fixLeftEdge: false,
@@ -1489,93 +1549,74 @@ export default function DashboardPage() {
         const isDiagMove = modeRef.current === "move" && !!moveDiagRef.current;
         if (!isDiagDraw && !isDiagMove) return;
         try { e.preventDefault(); } catch {}
-        const rect = container.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
-        const price = series.coordinateToPrice(y);
-        if (price == null || Number.isNaN(price)) return;
-        let tCursor: number | null = null;
-        try {
-          const logical = chart.timeScale().coordinateToLogical(x);
-          const candles = candlesRef.current;
-          if (logical != null && candles.length) {
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            if (logical > candles.length - 1) {
-              tCursor = candles[candles.length - 1].time + Math.round(logical - (candles.length - 1)) * barSec;
-            } else if (logical < 0) {
-              tCursor = candles[0].time + Math.round(logical) * barSec;
-            } else {
-              const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
-              tCursor = candles[idx].time;
+        // Throttle to one update per animation frame (critical for desktop)
+        if (moveRafRef.current) return;
+        const cx = e.clientX;
+        const cy = e.clientY;
+        moveRafRef.current = requestAnimationFrame(() => {
+          moveRafRef.current = 0;
+          const rect = container.getBoundingClientRect();
+          const x = cx - rect.left;
+          const y = cy - rect.top;
+          if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+          const price = series.coordinateToPrice(y);
+          if (price == null || Number.isNaN(price)) return;
+          let tCursor: number | null = null;
+          try {
+            const logical = chart.timeScale().coordinateToLogical(x);
+            const candles = candlesRef.current;
+            if (logical != null && candles.length) {
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              if (logical > candles.length - 1) {
+                tCursor = candles[candles.length - 1].time + Math.round(logical - (candles.length - 1)) * barSec;
+              } else if (logical < 0) {
+                tCursor = candles[0].time + Math.round(logical) * barSec;
+              } else {
+                const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+                tCursor = candles[idx].time;
+              }
             }
-          }
-        } catch {}
-        if (tCursor == null) return;
+          } catch {}
+          if (tCursor == null) return;
 
-        if (isDiagDraw) {
-          updateDiagPreview(tCursor, price);
-          return;
-        }
-        // Diagonal move preview
-        const md = moveDiagRef.current!;
-        // pick: keep fixed A–B; drag-a/b: rubber-band the active endpoint
-        const a = md.phase === "drag-a" ? { time: tCursor, price } : md.pointA;
-        const b = md.phase === "drag-b" ? { time: tCursor, price } : md.pointB;
-        try {
-          if (!previewDiagSeriesRef.current) {
-            previewDiagSeriesRef.current = chart.addLineSeries({
-              color: md.color,
-              lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
-              lineStyle: LineStyle.Dashed,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-            });
+          if (modeRef.current === "diag" && diagStartRef.current) {
+            updateDiagPreview(tCursor, price);
+            return;
           }
-          if (Math.abs(a.time - b.time) < 1) return;
-          const pts = [
-            { time: a.time as any, value: a.price },
-            { time: b.time as any, value: b.price },
-          ].sort((x, y) => Number(x.time) - Number(y.time));
-          previewDiagSeriesRef.current.setData(pts);
-          // Keep both handles visible; highlight the one being dragged
-          const markers: any[] = [
-            {
-              time: a.time as any,
-              position: "inBar",
-              color: md.phase === "drag-a" ? "#f97316" : "#ffffff",
-              shape: "circle",
-              size: md.phase === "drag-a" ? 5 : 4,
-            },
-            {
-              time: b.time as any,
-              position: "inBar",
-              color: md.phase === "drag-b" ? "#f97316" : "#ffffff",
-              shape: "circle",
-              size: md.phase === "drag-b" ? 5 : 4,
-            },
-          ];
-          markers.sort((x, y) => Number(x.time) - Number(y.time));
-          previewDiagSeriesRef.current.setMarkers(markers);
-        } catch {}
+          const md = moveDiagRef.current;
+          if (!md) return;
+          const a = md.phase === "drag-a" ? { time: tCursor, price } : md.pointA;
+          const b = md.phase === "drag-b" ? { time: tCursor, price } : md.pointB;
+          try {
+            if (!previewDiagSeriesRef.current) {
+              previewDiagSeriesRef.current = chart.addLineSeries({
+                color: md.color,
+                lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
+                lineStyle: LineStyle.Dashed,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+              });
+            }
+            if (Math.abs(a.time - b.time) < 1) return;
+            const pts = [
+              { time: a.time as any, value: a.price },
+              { time: b.time as any, value: b.price },
+            ].sort((p, q) => Number(p.time) - Number(q.time));
+            previewDiagSeriesRef.current.setData(pts);
+            // Hollow CSS handles (no setMarkers — avoids freeze)
+            positionHandles(a, b, md.phase === "drag-a" ? "a" : md.phase === "drag-b" ? "b" : null);
+          } catch {}
+        });
       };
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        if (modeRef.current === "none" || modeRef.current === "move") return;
+        // Diag / move: pointermove handles preview — skip here to avoid double work & desktop freeze
+        if (modeRef.current === "none" || modeRef.current === "move" || modeRef.current === "diag") return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
-
-        // Diag mode: only rubber-band diagonal — NO horizontal price line, NO setState
-        if (modeRef.current === "diag") {
-          if (diagStartRef.current) {
-            const tCursor = resolveTime(param);
-            if (tCursor != null) updateDiagPreview(tCursor, price);
-          }
-          return;
-        }
 
         // Horizontal tools only — throttle UI + update price line in place
         if (previewDiagSeriesRef.current) {
@@ -1638,21 +1679,33 @@ export default function DashboardPage() {
                   { time: md.pointB.time as any, value: md.pointB.price },
                 ].sort((x, y) => Number(x.time) - Number(y.time));
                 previewDiagSeriesRef.current.setData(pts);
-                const markers: any[] = [
-                  { time: md.pointA.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                  { time: md.pointB.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                ];
-                markers.sort((x, y) => Number(x.time) - Number(y.time));
-                previewDiagSeriesRef.current.setMarkers(markers);
+                try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
+                positionHandles(md.pointA, md.pointB, null);
               } catch {}
             };
 
             if (md.phase === "pick") {
-              // Hit-test which endpoint is closer in pixel space
+              // Hit-test which endpoint is closer in pixel space (supports future times)
               try {
-                const xA = chart.timeScale().timeToCoordinate(md.pointA.time as any);
+                const candles = candlesRef.current;
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                const timeToX = (t: number): number | null => {
+                  let x = chart.timeScale().timeToCoordinate(t as any);
+                  if (x != null) return x;
+                  if (candles.length >= 2 && barSec > 0) {
+                    const last = candles[candles.length - 1];
+                    const prev = candles[candles.length - 2];
+                    const lastX = chart.timeScale().timeToCoordinate(last.time as any);
+                    const prevX = chart.timeScale().timeToCoordinate(prev.time as any);
+                    if (lastX != null && prevX != null) {
+                      return lastX + ((t - last.time) / barSec) * (lastX - prevX);
+                    }
+                  }
+                  return null;
+                };
+                const xA = timeToX(md.pointA.time);
                 const yA = series.priceToCoordinate(md.pointA.price);
-                const xB = chart.timeScale().timeToCoordinate(md.pointB.time as any);
+                const xB = timeToX(md.pointB.time);
                 const yB = series.priceToCoordinate(md.pointB.price);
                 const px = param.point.x;
                 const py = param.point.y;
@@ -1795,7 +1848,8 @@ export default function DashboardPage() {
           }
           const start = diagStartRef.current;
           if (!start) {
-            // ① First point fixed — circle + lock scroll so drag draws diagonal not pans chart
+            // ① First point fixed — set ref immediately so pointermove works without waiting for React
+            diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
             setStatusMsg("① set — drag to ② then tap");
             lockChartInteraction(true);
@@ -1886,6 +1940,7 @@ export default function DashboardPage() {
             setLines((prev) => [saved, ...prev]);
             setStatusMsg("Diag saved (A→B) — Alarm to convert");
           } else setStatusMsg("Save failed");
+          diagStartRef.current = null;
           setDiagStart(null);
           setSaving(false);
           clearPreview();
@@ -2719,6 +2774,17 @@ export default function DashboardPage() {
             className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
             style={{ height: 640 }}
           />
+          {/* Hollow circle handles for diagonal Move — overlay on chart */}
+          <div
+            ref={handleAElRef}
+            className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none z-20"
+            style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }}
+          />
+          <div
+            ref={handleBElRef}
+            className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none z-20"
+            style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }}
+          />
 
           <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
             {showSMA && (
@@ -3306,10 +3372,8 @@ export default function DashboardPage() {
                                 { time: md.pointB.time as any, value: md.pointB.price },
                               ].sort((x, y) => Number(x.time) - Number(y.time));
                               previewDiagSeriesRef.current.setData(pts);
-                              previewDiagSeriesRef.current.setMarkers([
-                                { time: md.pointA.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                                { time: md.pointB.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                              ]);
+                              try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
+                              positionHandles(md.pointA, md.pointB, null);
                             }
                           } catch {}
                         } else {
@@ -3481,10 +3545,8 @@ export default function DashboardPage() {
                                 { time: md.pointB.time as any, value: md.pointB.price },
                               ].sort((x, y) => Number(x.time) - Number(y.time));
                               previewDiagSeriesRef.current.setData(pts);
-                              previewDiagSeriesRef.current.setMarkers([
-                                { time: md.pointA.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                                { time: md.pointB.time as any, position: "inBar", color: "#ffffff", shape: "circle", size: 4 },
-                              ]);
+                              try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
+                              positionHandles(md.pointA, md.pointB, null);
                             }
                           } catch {}
                         } else {
