@@ -1417,7 +1417,7 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          rightOffset: 60,
+          rightOffset: 50,
           barSpacing: 7,
           minBarSpacing: 3,
           fixLeftEdge: false,
@@ -1441,24 +1441,21 @@ export default function DashboardPage() {
       });
       series.setData(candles as any);
       seriesRef.current = series;
-      // Leave a wide empty strip on the right (future times) like TradingView
+      // Wide empty strip on the right so future times show (TradingView-style)
+      // Avoid fitContent — it packs bars to the right edge and kills empty space
       try {
-        chart.timeScale().applyOptions({ rightOffset: 60 });
-      } catch {}
-      chart.timeScale().fitContent();
-      try {
-        chart.timeScale().scrollToRealTime();
-      } catch {}
-      try {
-        const lr = chart.timeScale().getVisibleLogicalRange();
+        chart.timeScale().applyOptions({ rightOffset: 50 });
         const bars = candles.length;
-        if (lr) {
+        if (bars > 0) {
+          const visibleBars = Math.min(100, bars);
           chart.timeScale().setVisibleLogicalRange({
-            from: lr.from,
-            to: Math.max(lr.to, bars - 1 + 40),
+            from: bars - visibleBars,
+            to: bars - 1 + 35,
           });
         }
-      } catch {}
+      } catch {
+        try { chart.timeScale().fitContent(); } catch {}
+      }
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
       const resolveTime = (param: any): number | null => {
@@ -1785,6 +1782,9 @@ export default function DashboardPage() {
                 start_time: md.pointA.time,
                 end_time: md.pointB.time,
                 end_price: md.pointB.price,
+                color: md.color,
+                width: md.width,
+                dash: md.dash,
               };
               if (typ === "line") {
                 const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
@@ -1793,12 +1793,25 @@ export default function DashboardPage() {
                     price: md.pointA.price,
                     start_time: md.pointA.time,
                     note: `__diag:${md.pointB.time}:${md.pointB.price}`,
+                    color: md.color,
+                    width: md.width,
+                    dash: md.dash,
                   }).eq("id", id);
                 }
                 setLines((prev) =>
                   prev.map((l) =>
                     l.id === id
-                      ? { ...l, price: md.pointA.price, start_time: md.pointA.time, end_time: md.pointB.time, end_price: md.pointB.price }
+                      ? {
+                          ...l,
+                          price: md.pointA.price,
+                          start_time: md.pointA.time,
+                          end_time: md.pointB.time,
+                          end_price: md.pointB.price,
+                          color: md.color,
+                          width: md.width,
+                          dash: md.dash,
+                          style: md.dash,
+                        }
                       : l
                   )
                 );
@@ -1809,12 +1822,24 @@ export default function DashboardPage() {
                     price: md.pointA.price,
                     start_time: md.pointA.time,
                     note: `__diag:${md.pointB.time}:${md.pointB.price}`,
+                    color: md.color,
+                    width: md.width,
+                    dash: md.dash,
                   }).eq("id", id);
                 }
                 setAlarms((prev) =>
                   prev.map((a) =>
                     a.id === id
-                      ? { ...a, price: md.pointA.price, start_time: md.pointA.time, end_time: md.pointB.time, end_price: md.pointB.price }
+                      ? {
+                          ...a,
+                          price: md.pointA.price,
+                          start_time: md.pointA.time,
+                          end_time: md.pointB.time,
+                          end_price: md.pointB.price,
+                          color: md.color,
+                          width: md.width,
+                          dash: md.dash,
+                        }
                       : a
                   )
                 );
@@ -2872,7 +2897,18 @@ export default function DashboardPage() {
                 <input
                   type="color"
                   value={drawColor}
-                  onChange={(e) => setDrawColor(e.target.value)}
+                  onChange={(e) => {
+                    const c = e.target.value;
+                    setDrawColor(c);
+                    // Live-apply style while editing a diagonal
+                    const md = moveDiagRef.current;
+                    if (mode === "move" && md) {
+                      md.color = c;
+                      try {
+                        previewDiagSeriesRef.current?.applyOptions({ color: c });
+                      } catch {}
+                    }
+                  }}
                   className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                 />
               </div>
@@ -2881,7 +2917,16 @@ export default function DashboardPage() {
                   <button
                     key={w}
                     type="button"
-                    onClick={() => setDrawWidth(w)}
+                    onClick={() => {
+                      setDrawWidth(w);
+                      const md = moveDiagRef.current;
+                      if (mode === "move" && md) {
+                        md.width = w;
+                        try {
+                          previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 });
+                        } catch {}
+                      }
+                    }}
                     className={`w-7 h-7 rounded text-xs ${
                       drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"
                     }`}
@@ -2892,7 +2937,21 @@ export default function DashboardPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setDrawDash((d) => (d === "solid" ? "dashed" : "solid"))}
+                onClick={() => {
+                  setDrawDash((d) => {
+                    const next = d === "solid" ? "dashed" : "solid";
+                    const md = moveDiagRef.current;
+                    if (mode === "move" && md) {
+                      md.dash = next;
+                      try {
+                        previewDiagSeriesRef.current?.applyOptions({
+                          lineStyle: next === "dashed" ? LineStyle.Dashed : LineStyle.Solid,
+                        });
+                      } catch {}
+                    }
+                    return next;
+                  });
+                }}
                 className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300"
               >
                 {drawDash === "solid" ? "——" : "- -"}
@@ -2923,7 +2982,39 @@ export default function DashboardPage() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
+                      // Persist style (color/width/dash) if user only changed appearance
+                      const md = moveDiagRef.current;
+                      const id = movingIdRef.current;
+                      const typ = movingTypeRef.current;
+                      if (md && id) {
+                        try {
+                          const stylePatch: any = {
+                            color: md.color,
+                            width: md.width,
+                            dash: md.dash,
+                            price: md.pointA.price,
+                            start_time: md.pointA.time,
+                            end_time: md.pointB.time,
+                            end_price: md.pointB.price,
+                          };
+                          if (typ === "line") {
+                            await supabase.from("chart_lines").update(stylePatch).eq("id", id);
+                            setLines((prev) =>
+                              prev.map((l) =>
+                                l.id === id
+                                  ? { ...l, ...stylePatch, style: md.dash }
+                                  : l
+                              )
+                            );
+                          } else if (typ === "alarm") {
+                            await supabase.from("alarms").update(stylePatch).eq("id", id);
+                            setAlarms((prev) =>
+                              prev.map((a) => (a.id === id ? { ...a, ...stylePatch } : a))
+                            );
+                          }
+                        } catch {}
+                      }
                       moveDiagRef.current = null;
                       setMovingId(null);
                       setMovingType(null);
@@ -3371,6 +3462,9 @@ export default function DashboardPage() {
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
                           };
+                          setDrawColor(a.color || DEFAULT_ALARM_COLOR);
+                          setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                          setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
                           setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
@@ -3554,6 +3648,9 @@ export default function DashboardPage() {
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
                           };
+                          setDrawColor(l.color || DEFAULT_LINE_COLOR);
+                          setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                          setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
                           setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
