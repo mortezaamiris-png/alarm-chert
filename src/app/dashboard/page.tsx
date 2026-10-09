@@ -628,6 +628,13 @@ export default function DashboardPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [highlightAlarmId, setHighlightAlarmId] = useState<string | null>(null);
   const [highlightPrice, setHighlightPrice] = useState<number | null>(null);
+  /** Temporary dashed diagonal flash from History click */
+  const [highlightDiag, setHighlightDiag] = useState<{
+    start_time: number;
+    end_time: number;
+    price: number;
+    end_price: number;
+  } | null>(null);
   const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
   /** First click of diagonal tool: { time, price } */
@@ -755,15 +762,16 @@ export default function DashboardPage() {
     } catch {}
   }, []);
 
-  // Auto-clear history flash line after a few seconds
+  // Auto-clear history flash (horizontal or diagonal) after a few seconds
   useEffect(() => {
-    if (highlightPrice == null && !highlightAlarmId) return;
+    if (highlightPrice == null && !highlightAlarmId && !highlightDiag) return;
     const t = setTimeout(() => {
       setHighlightPrice(null);
       setHighlightAlarmId(null);
+      setHighlightDiag(null);
     }, 4000);
     return () => clearTimeout(t);
-  }, [highlightPrice, highlightAlarmId]);
+  }, [highlightPrice, highlightAlarmId, highlightDiag]);
 
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
@@ -1178,8 +1186,8 @@ export default function DashboardPage() {
       } catch {}
     });
 
-    // History / temp highlight: yellow dashed line that auto-clears
-    if (highlightPrice != null && !hlDrawnOnActive) {
+    // History / temp highlight: yellow dashed HORIZONTAL line
+    if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag) {
       try {
         const pl = series.createPriceLine({
           price: highlightPrice,
@@ -1193,13 +1201,48 @@ export default function DashboardPage() {
       } catch {}
     }
 
+    // History / temp highlight: yellow dashed DIAGONAL segment
+    if (highlightDiag) {
+      try {
+        const st = Number(highlightDiag.start_time);
+        const et = Number(highlightDiag.end_time);
+        const sp = Number(highlightDiag.price);
+        const ep = Number(highlightDiag.end_price);
+        const t0 = Math.min(st, et);
+        const t1 = Math.max(st, et);
+        const v0 = st <= et ? sp : ep;
+        const v1 = st <= et ? ep : sp;
+        const ls: any = chart.addLineSeries({
+          color: "#eab308",
+          lineWidth: 3,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          title: "◀ HISTORY",
+        });
+        if (t1 > t0) {
+          ls.setData([
+            { time: t0 as any, value: v0 },
+            { time: t1 as any, value: v1 },
+          ]);
+        } else {
+          ls.setData([
+            { time: t0 as any, value: v0 },
+            { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
+          ]);
+        }
+        chartLinesRef.current.set("highlight-diag-temp", ls);
+      } catch {}
+    }
+
     // Restore exact visible range so future-endpoint diags don't push the chart right
     if (savedRange) {
       try {
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
-  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice]);
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -3808,16 +3851,58 @@ export default function DashboardPage() {
                   key={a.id}
                   className="bg-gray-950 border border-gray-800/80 rounded-lg px-3 py-2 text-sm cursor-pointer hover:border-amber-600/50"
                   onClick={() => {
-                    // Briefly show dashed line at this historical alarm price
-                    setHighlightPrice(a.price);
+                    // Resolve diagonal geometry (columns or note fallback)
+                    let st = a.start_time ?? null;
+                    let et = a.end_time ?? null;
+                    let ep = a.end_price ?? null;
+                    if ((!et || ep == null) && a.note?.startsWith("__diag:")) {
+                      const parts = a.note.replace(/^__diag:/, "").split("|")[0].split(":");
+                      if (parts.length >= 3) {
+                        st = Number(parts[0]);
+                        et = Number(parts[1]);
+                        ep = Number(parts[2]);
+                      }
+                    }
+                    const isDiag =
+                      st != null &&
+                      et != null &&
+                      ep != null &&
+                      Number(st) !== Number(et);
                     setHighlightAlarmId(null);
-                    setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                    if (isDiag) {
+                      setHighlightPrice(null);
+                      setHighlightDiag({
+                        start_time: Number(st),
+                        end_time: Number(et),
+                        price: Number(a.price),
+                        end_price: Number(ep),
+                      });
+                      setStatusMsg(`History Diag ${formatPrice(a.price)}→${formatPrice(Number(ep))}`);
+                    } else {
+                      setHighlightDiag(null);
+                      setHighlightPrice(a.price);
+                      setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                    }
                   }}
-                  title="Tap to flash price on chart"
+                  title="Tap to flash line on chart"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono font-medium text-gray-400">
-                      {getConditionSymbol(a.condition)} {formatPrice(a.price)}
+                      {(() => {
+                        let et = a.end_time ?? null;
+                        let ep = a.end_price ?? null;
+                        if ((!et || ep == null) && a.note?.startsWith("__diag:")) {
+                          const parts = a.note.replace(/^__diag:/, "").split("|")[0].split(":");
+                          if (parts.length >= 3) {
+                            et = Number(parts[1]);
+                            ep = Number(parts[2]);
+                          }
+                        }
+                        if (et != null && ep != null && Number(a.start_time) !== Number(et)) {
+                          return `↗ ${formatPrice(a.price)}→${formatPrice(Number(ep))}`;
+                        }
+                        return `${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
+                      })()}
                     </span>
                     <span className="ml-auto text-[11px] text-gray-500 tabular-nums">
                       {formatRelativeTime(when)}
