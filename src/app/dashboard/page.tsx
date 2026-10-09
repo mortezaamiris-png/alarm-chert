@@ -1140,6 +1140,7 @@ export default function DashboardPage() {
           : "";
 
         if (isDiagonalLine(a)) {
+          // Diagonal alarm: ONLY the slanted segment — no horizontal helper line
           const st = Number(a.start_time);
           const et = Number(a.end_time);
           const sp = Number(a.price);
@@ -1148,13 +1149,12 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const nowP = projectedPriceOnDiag(st, sp, et, ep, lastTime);
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
             title: title || "Diag 🔔",
           });
-          // Segment only A→B (no visual extension)
+          // Segment only A→B (hit detection uses projectedPriceOnDiag at runtime)
           if (t1 > t0) {
             ls.setData([
               { time: t0 as any, value: v0 },
@@ -1167,13 +1167,6 @@ export default function DashboardPage() {
             ]);
           }
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-          // Projected level at "now" on price axis (alarm tracking)
-          const pl = series.createPriceLine({
-            price: nowP, color, lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true, title: title || "↗",
-          });
-          alarmLinesRef.current.set(`alarm-${a.id}`, pl);
         } else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
@@ -2785,7 +2778,7 @@ export default function DashboardPage() {
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
           onKeyDown={(e) => e.key === "Enter" && loadCandles()}
-          className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm w-28 font-mono"
+          className="bg-gray-900/90 border border-gray-600 rounded-full px-4 py-1.5 text-sm w-32 font-mono text-center tracking-wide shadow-inner focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/40 transition-colors"
           title="Symbol"
         />
         <div className="flex-1" />
