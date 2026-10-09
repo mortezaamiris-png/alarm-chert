@@ -1658,9 +1658,16 @@ export default function DashboardPage() {
                 const py = param.point.y;
                 const distA = (xA != null && yA != null) ? Math.hypot(px - xA, py - yA) : 1e9;
                 const distB = (xB != null && yB != null) ? Math.hypot(px - xB, py - yB) : 1e9;
-                const HIT = 48; // px tolerance (finger-friendly)
+                const HIT = 64; // px tolerance (finger-friendly on iPad)
+                // Tap away from both handles → final confirm / exit edit
                 if (distA > HIT && distB > HIT) {
-                  setStatusMsg("Tap closer to a circle handle");
+                  moveDiagRef.current = null;
+                  setMovingId(null);
+                  setMovingType(null);
+                  setMode("none");
+                  clearPreview();
+                  lockChartInteraction(false);
+                  setStatusMsg("✓ Confirmed");
                   return;
                 }
                 if (distA <= distB) {
@@ -1671,7 +1678,14 @@ export default function DashboardPage() {
                   setStatusMsg("Move end point — tap new position");
                 }
               } catch {
-                setStatusMsg("Tap closer to a circle handle");
+                // On error, treat as confirm/exit
+                moveDiagRef.current = null;
+                setMovingId(null);
+                setMovingType(null);
+                setMode("none");
+                clearPreview();
+                lockChartInteraction(false);
+                setStatusMsg("✓ Confirmed");
               }
               return;
             }
@@ -1739,7 +1753,7 @@ export default function DashboardPage() {
               // Stay in pick mode so user can adjust the other handle
               md.phase = "pick";
               refreshHandles();
-              setStatusMsg("Saved — tap another handle or change tool to exit");
+              setStatusMsg("Saved — tap handle to edit more, or tap empty chart / ✓ to confirm");
             } catch {
               setStatusMsg("Move failed");
             }
@@ -2809,7 +2823,34 @@ export default function DashboardPage() {
                 </span>
               )}
               {mode === "move" && (
-                <span className="text-xs text-amber-400">Click chart</span>
+                <>
+                  <span className="text-xs text-amber-400">
+                    {moveDiagRef.current ? "Edit handles" : "Click chart"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      moveDiagRef.current = null;
+                      setMovingId(null);
+                      setMovingType(null);
+                      setMode("none");
+                      clearPreview();
+                      try {
+                        chartRef.current?.applyOptions({
+                          handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                          handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                        });
+                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+                        document.body.style.overflow = "";
+                        document.documentElement.style.overflow = "";
+                      } catch {}
+                      setStatusMsg("✓ Confirmed");
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+                  >
+                    ✓ تأیید
+                  </button>
+                </>
               )}
             </div>
           )}
@@ -3236,7 +3277,7 @@ export default function DashboardPage() {
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
                           };
-                          setStatusMsg("Tap a circle handle to move that point");
+                          setStatusMsg("Tap a circle to move — empty chart or ✓ to confirm");
                           try {
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
@@ -3410,7 +3451,7 @@ export default function DashboardPage() {
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
                           };
-                          setStatusMsg("Tap a circle handle to move that point");
+                          setStatusMsg("Tap a circle to move — empty chart or ✓ to confirm");
                           try {
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
