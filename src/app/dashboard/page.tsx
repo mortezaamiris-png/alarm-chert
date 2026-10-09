@@ -503,6 +503,21 @@ function intervalToSeconds(iv: string): number {
   return Number.isNaN(n) ? 3600 : n * 60;
 }
 
+/** Empty bars after last candle so time axis continues into the future (TradingView-style) */
+const FUTURE_BARS = 40;
+function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
+  if (!candles.length) return candles;
+  const barSec = intervalToSeconds(String(interval));
+  if (barSec <= 0) return candles;
+  const lastT = Number(candles[candles.length - 1].time);
+  const out = candles.slice();
+  for (let i = 1; i <= count; i++) {
+    // WhitespaceData: time only — LWC draws empty slot + tick mark
+    out.push({ time: lastT + i * barSec });
+  }
+  return out;
+}
+
 /** Remaining time until current candle closes — counts DOWN like TradingView */
 function formatCountdownRemaining(openTime: number, iv: string): string {
   const sec = intervalToSeconds(String(iv));
@@ -1450,29 +1465,28 @@ export default function DashboardPage() {
         lastValueVisible: false,
         priceLineVisible: true,
       });
-      series.setData(candles as any);
+      // Real candles + trailing whitespace so time labels continue past last bar
+      series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
       seriesRef.current = series;
 
-      /** Push last candle left and leave a wide future strip with time labels */
+      /** Frame last ~80 real bars and show the future whitespace strip on the right */
       const ensureFutureTimeSpace = () => {
         try {
-          const bars = candlesRef.current.length || candles.length;
+          const bars = candlesRef.current.length || candles.length; // real bars only
           if (bars < 2) return;
-          chart.timeScale().applyOptions({ rightOffset: 30 });
-          // Show ~70 past bars + ~30 empty future bars (time axis continues)
-          const past = Math.min(70, bars);
+          chart.timeScale().applyOptions({ rightOffset: 8 });
+          const past = Math.min(80, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: bars - past,
-            to: bars - 1 + 30,
+            to: bars - 1 + FUTURE_BARS,
           });
         } catch {}
       };
       ensureFutureTimeSpace();
-      // Re-apply after layout settles (width/height may change once DOM paints)
       requestAnimationFrame(() => {
         ensureFutureTimeSpace();
-        setTimeout(ensureFutureTimeSpace, 120);
-        setTimeout(ensureFutureTimeSpace, 400);
+        setTimeout(ensureFutureTimeSpace, 150);
+        setTimeout(ensureFutureTimeSpace, 500);
       });
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
@@ -2155,11 +2169,11 @@ export default function DashboardPage() {
         try {
           const bars = candlesRef.current.length;
           if (bars > 2) {
-            chartRef.current.timeScale().applyOptions({ rightOffset: 30 });
-            const past = Math.min(70, bars);
+            chartRef.current.timeScale().applyOptions({ rightOffset: 8 });
+            const past = Math.min(80, bars);
             chartRef.current.timeScale().setVisibleLogicalRange({
               from: bars - past,
-              to: bars - 1 + 30,
+              to: bars - 1 + FUTURE_BARS,
             });
           }
         } catch {}
@@ -2334,17 +2348,25 @@ export default function DashboardPage() {
       if (!fresh.length) return;
 
       const candles = candlesRef.current;
+      let addedNew = false;
       for (const c of fresh) {
         const idx = candles.findIndex((x: any) => x.time === c.time);
-        if (idx >= 0) candles[idx] = c;
-        else if (!candles.length || c.time > candles[candles.length - 1].time) candles.push(c);
-        try {
-          series.update(c as any);
-        } catch {
-          // if update fails (e.g. time gap), ignore; full reload on TF change handles it
+        if (idx >= 0) {
+          candles[idx] = c;
+          try { series.update(c as any); } catch {}
+        } else if (!candles.length || c.time > candles[candles.length - 1].time) {
+          candles.push(c);
+          addedNew = true;
+          try { series.update(c as any); } catch {}
         }
       }
       candlesRef.current = candles;
+      // New bar consumed one whitespace slot — rebuild trailing future strip
+      if (addedNew) {
+        try {
+          series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+        } catch {}
+      }
 
       const last = candles[candles.length - 1];
       if (last) {
