@@ -3441,8 +3441,14 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* فیکس ۲: پنل رنگ/ضخامت — پایین چپ چارت */}
-          {(mode === "draw" || mode === "ray" || mode === "diag" || mode === "alarm" || mode === "move") && (
+          {/* Style panel: color / width / dash — bottom-left of chart */}
+          {(mode === "draw" ||
+            mode === "ray" ||
+            mode === "diag" ||
+            mode === "alarm" ||
+            mode === "alarm-ray" ||
+            mode === "alarm-diag" ||
+            mode === "move") && (
             <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
               <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
                 <input
