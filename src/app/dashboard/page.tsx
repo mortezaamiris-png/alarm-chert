@@ -666,10 +666,13 @@ export default function DashboardPage() {
   const [hideMenuOpen, setHideMenuOpen] = useState(false);
   const [hideLines, setHideLines] = useState(false);
   const [hideIndicators, setHideIndicators] = useState(false);
-  /** Measure tool: first point then live second */
+  const [hideAlarms, setHideAlarms] = useState(false);
+  const [trashMenuOpen, setTrashMenuOpen] = useState(false);
+  /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
   const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
+  const measureDoneRef = useRef(false);
   const measureSeriesRef = useRef<any>(null);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
@@ -1181,7 +1184,9 @@ export default function DashboardPage() {
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
-    currentAlarms.forEach((a) => {
+    if (hideAlarms) {
+      // skip drawing alarms when eye-hide alarms is on
+    } else currentAlarms.forEach((a) => {
       try {
         const isMoving = movingId === a.id && movingType === "alarm";
         const isHL = highlightAlarmId === a.id ||
@@ -1316,7 +1321,7 @@ export default function DashboardPage() {
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
-  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, hideLines]);
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, hideLines, hideAlarms]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -1714,7 +1719,8 @@ export default function DashboardPage() {
         const dragging =
           ((modeRef.current === "diag" || modeRef.current === "alarm-diag") &&
             !!diagStartRef.current) ||
-          (modeRef.current === "move" && md && (md.phase === "drag-a" || md.phase === "drag-b"));
+          (modeRef.current === "move" && md && (md.phase === "drag-a" || md.phase === "drag-b")) ||
+          (modeRef.current === "measure" && !!measureStartRef.current);
         if (dragging) {
           e.preventDefault();
         }
@@ -2341,21 +2347,39 @@ export default function DashboardPage() {
           return;
         }
 
-        // Measure tool: two clicks → show delta box
+        // Measure tool: ① first · ② second · ③ elsewhere clears
         if (m === "measure") {
+          // Third tap (measure already done) → clear
+          if (measureDoneRef.current) {
+            measureStartRef.current = null;
+            measureDoneRef.current = false;
+            setMeasureStart(null);
+            setMeasureEnd(null);
+            if (measureSeriesRef.current) {
+              try { chart.removeSeries(measureSeriesRef.current); } catch {}
+              measureSeriesRef.current = null;
+            }
+            lockChartInteraction(false);
+            setStatusMsg("Measure cleared");
+            return;
+          }
           const t = resolveTime(param);
           if (t == null || Number.isNaN(t)) return;
           if (!measureStartRef.current) {
             measureStartRef.current = { time: t, price: fp };
+            measureDoneRef.current = false;
             setMeasureStart({ time: t, price: fp });
             setMeasureEnd(null);
-            setStatusMsg("Measure: tap second point");
+            lockChartInteraction(true);
+            setStatusMsg("Measure: drag / tap second point");
             return;
           }
-          // Second point — lock result
+          // Second point — lock result; keep line until third tap
           const a = measureStartRef.current;
           const b = { time: t, price: fp };
           setMeasureEnd(b);
+          measureDoneRef.current = true;
+          measureStartRef.current = null; // stop live drag
           try {
             if (!measureSeriesRef.current) {
               measureSeriesRef.current = chart.addLineSeries({
@@ -2373,9 +2397,8 @@ export default function DashboardPage() {
             ].sort((p, q) => Number(p.time) - Number(q.time));
             measureSeriesRef.current.setData(pts);
           } catch {}
-          setStatusMsg("Measure done — tap again to reset");
-          // Reset start so next tap begins new measure
-          measureStartRef.current = null;
+          lockChartInteraction(false);
+          setStatusMsg("Measure done — tap elsewhere to clear");
           return;
         }
 
@@ -2597,7 +2620,8 @@ export default function DashboardPage() {
       trendSettings ||
       rsiSettings ||
       dmiSettings ||
-      hideMenuOpen;
+      hideMenuOpen ||
+      trashMenuOpen;
     if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
@@ -2607,7 +2631,7 @@ export default function DashboardPage() {
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
       }
-      // Indicator list + gear settings + hide menu: close when clicking outside
+      // Indicator list + gear settings + hide/trash menus: close when clicking outside
       if (anyIndPanel && !el.closest?.("[data-ind-panel]")) {
         setShowIndicatorMenu(false);
         setSmaSettings(false);
@@ -2616,6 +2640,7 @@ export default function DashboardPage() {
         setRsiSettings(false);
         setDmiSettings(false);
         setHideMenuOpen(false);
+        setTrashMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -2635,6 +2660,7 @@ export default function DashboardPage() {
     rsiSettings,
     dmiSettings,
     hideMenuOpen,
+    trashMenuOpen,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -3021,9 +3047,7 @@ export default function DashboardPage() {
     await supabase.from("chart_lines").delete().eq("id", id);
   };
   const deleteAllLines = async () => {
-    const list = lines.filter(
-      (l) => l.symbol.toUpperCase() === symbolUpper
-    );
+    const list = lines.filter((l) => l.symbol.toUpperCase() === symbolUpper);
     if (!list.length) return;
     if (!confirm(`Delete all ${list.length} lines on ${symbolUpper}?`)) return;
     const ids = list.map((l) => l.id);
@@ -3031,6 +3055,38 @@ export default function DashboardPage() {
     try {
       await supabase.from("chart_lines").delete().in("id", ids);
     } catch {}
+  };
+  const deleteAllAlarmsOnSymbol = async () => {
+    const list = alarms.filter(
+      (a) => a.symbol.toUpperCase() === symbolUpper && a.is_active && !a.triggered
+    );
+    if (!list.length) return;
+    if (!confirm(`Delete all ${list.length} active alarms on ${symbolUpper}?`)) return;
+    const ids = list.map((a) => a.id);
+    setAlarms((prev) => prev.filter((a) => !ids.includes(a.id)));
+    try {
+      await supabase.from("alarms").delete().in("id", ids);
+    } catch {}
+  };
+  const clearAllIndicators = () => {
+    if (!confirm("Remove all indicators from chart?")) return;
+    setShowSMA(false);
+    setShowPivot(false);
+    setShowTrend(false);
+    setShowRSI(false);
+    setShowDMI(false);
+    setShowVol(false);
+  };
+  const clearMeasure = () => {
+    measureStartRef.current = null;
+    measureDoneRef.current = false;
+    setMeasureStart(null);
+    setMeasureEnd(null);
+    if (measureSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
+      measureSeriesRef.current = null;
+    }
+    lockChartInteraction(false);
   };
   const updateAlarmCondition = async (id: string, condition: Alarm["condition"]) => {
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
@@ -3504,21 +3560,20 @@ export default function DashboardPage() {
               </svg>
             </button>
 
-            {/* Measure (ruler) */}
+            {/* Measure (ruler icon) */}
             <button
               type="button"
               title="Measure"
               onClick={() => {
-                const next = mode === "measure" ? "none" : "measure";
-                setMode(next);
-                measureStartRef.current = null;
-                setMeasureStart(null);
-                setMeasureEnd(null);
-                setDiagStart(null);
-                setAlarmMenuOpen(false);
-                if (measureSeriesRef.current && chartRef.current) {
-                  try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
-                  measureSeriesRef.current = null;
+                if (mode === "measure") {
+                  setMode("none");
+                  clearMeasure();
+                } else {
+                  setMode("measure");
+                  clearMeasure();
+                  setDiagStart(null);
+                  setAlarmMenuOpen(false);
+                  setStatusMsg("Measure: tap first point");
                 }
               }}
               className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
@@ -3527,28 +3582,32 @@ export default function DashboardPage() {
                   : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
               }`}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2 22L22 2" />
-                <path d="M6 18l2-2" />
-                <path d="M10 14l2-2" />
-                <path d="M14 10l2-2" />
-                <path d="M18 6l1-1" />
+              {/* Ruler icon */}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4.5 19.5l15-15" />
+                <path d="M19.5 4.5l.75.75" />
+                <path d="M16.5 7.5l.75.75" />
+                <path d="M13.5 10.5l.75.75" />
+                <path d="M10.5 13.5l.75.75" />
+                <path d="M7.5 16.5l.75.75" />
+                <path d="M5.25 18.75l.75.75" />
+                <rect x="2.5" y="16.5" width="5" height="5" rx="0.5" transform="rotate(-45 5 19)" />
               </svg>
             </button>
 
-            {/* Eye — hide lines / indicators */}
+            {/* Eye — hide lines / alarms / indicators */}
             <div className="relative" data-ind-panel>
               <button
                 type="button"
-                title="Hide drawings"
-                onClick={() => setHideMenuOpen((v) => !v)}
+                title="Hide"
+                onClick={() => { setHideMenuOpen((v) => !v); setTrashMenuOpen(false); }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  hideLines || hideIndicators || hideMenuOpen
+                  hideLines || hideIndicators || hideAlarms || hideMenuOpen
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
               >
-                {hideLines && hideIndicators ? (
+                {hideLines && hideIndicators && hideAlarms ? (
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
                     <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
@@ -3564,14 +3623,12 @@ export default function DashboardPage() {
               {hideMenuOpen && (
                 <div
                   data-ind-panel
-                  className="absolute left-full top-0 ml-1.5 z-30 bg-gray-900/95 border border-gray-600 rounded-xl p-1.5 shadow-xl w-40"
+                  className="absolute left-full top-0 ml-1.5 z-30 bg-gray-900/95 border border-gray-600 rounded-xl p-1.5 shadow-xl w-44"
                   style={{ animation: "tfPop 0.18s cubic-bezier(0.34,1.3,0.64,1)" }}
                 >
                   <button
                     type="button"
-                    onClick={() => {
-                      setHideLines((v) => !v);
-                    }}
+                    onClick={() => setHideLines((v) => !v)}
                     className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 hover:bg-white/10 ${
                       hideLines ? "text-orange-300" : "text-gray-200"
                     }`}
@@ -3581,9 +3638,17 @@ export default function DashboardPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setHideIndicators((v) => !v);
-                    }}
+                    onClick={() => setHideAlarms((v) => !v)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      hideAlarms ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{hideAlarms ? "✓" : ""}</span>
+                    Hide alarms
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHideIndicators((v) => !v)}
                     className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 hover:bg-white/10 ${
                       hideIndicators ? "text-orange-300" : "text-gray-200"
                     }`}
@@ -3595,6 +3660,7 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => {
                       setHideLines(true);
+                      setHideAlarms(true);
                       setHideIndicators(true);
                     }}
                     className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-200 hover:bg-white/10"
@@ -3605,6 +3671,7 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => {
                       setHideLines(false);
+                      setHideAlarms(false);
                       setHideIndicators(false);
                       setHideMenuOpen(false);
                     }}
@@ -3616,18 +3683,53 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Trash — delete all lines on this symbol */}
-            <button
-              type="button"
-              title="Remove all lines"
-              onClick={() => deleteAllLines()}
-              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:bg-red-950/50 hover:border-red-700 hover:text-red-400 transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
+            {/* Trash — choose lines / alarms / indicators */}
+            <div className="relative" data-ind-panel>
+              <button
+                type="button"
+                title="Delete"
+                onClick={() => { setTrashMenuOpen((v) => !v); setHideMenuOpen(false); }}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  trashMenuOpen
+                    ? "bg-red-500/20 border-red-500 text-red-300"
+                    : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-red-950/50 hover:border-red-700 hover:text-red-400"
+                }`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+              {trashMenuOpen && (
+                <div
+                  data-ind-panel
+                  className="absolute left-full top-0 ml-1.5 z-30 bg-gray-900/95 border border-gray-600 rounded-xl p-1.5 shadow-xl w-44"
+                  style={{ animation: "tfPop 0.18s cubic-bezier(0.34,1.3,0.64,1)" }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => { deleteAllLines(); setTrashMenuOpen(false); }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-200 hover:bg-red-950/40 hover:text-red-300"
+                  >
+                    Delete lines
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { deleteAllAlarmsOnSymbol(); setTrashMenuOpen(false); }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-200 hover:bg-red-950/40 hover:text-red-300"
+                  >
+                    Delete alarms
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { clearAllIndicators(); setTrashMenuOpen(false); }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-200 hover:bg-red-950/40 hover:text-red-300"
+                  >
+                    Delete indicators
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
