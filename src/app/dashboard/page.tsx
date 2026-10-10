@@ -1715,6 +1715,41 @@ export default function DashboardPage() {
       // Pointer move on container — works for mouse AND touch (iPad)
       try { pointerAbortRef.current?.abort(); } catch {}
       pointerAbortRef.current = new AbortController();
+      const pSignal = pointerAbortRef.current.signal;
+
+      // Double-click / double-tap on price axis (right edge) → jump to latest bars
+      let lastPriceTapTs = 0;
+      const goToLatest = () => {
+        try {
+          chart.timeScale().scrollToRealTime();
+        } catch {}
+      };
+      const onDblNearPrice = (clientX: number) => {
+        const rect = container.getBoundingClientRect();
+        // Right price scale ~60–80px
+        if (clientX >= rect.right - 80) goToLatest();
+      };
+      container.addEventListener(
+        "dblclick",
+        (e) => onDblNearPrice(e.clientX),
+        { signal: pSignal }
+      );
+      container.addEventListener(
+        "pointerup",
+        (e) => {
+          const rect = container.getBoundingClientRect();
+          if (e.clientX < rect.right - 80) return;
+          const now = Date.now();
+          if (now - lastPriceTapTs < 320) {
+            goToLatest();
+            lastPriceTapTs = 0;
+          } else {
+            lastPriceTapTs = now;
+          }
+        },
+        { signal: pSignal }
+      );
+
       // Block page scroll while drawing diagonal
       const onTouchMoveBlock = (e: TouchEvent) => {
         // Only block page scroll while actively drawing / dragging an endpoint
@@ -2383,7 +2418,21 @@ export default function DashboardPage() {
           return;
         }
 
-        // Measure: ① hollow dot + dashed · ② second → exit mode
+        // If a finished measure is showing, any chart tap clears it
+        if (measureDoneRef.current && measureSeriesRef.current) {
+          measureStartRef.current = null;
+          measureDoneRef.current = false;
+          setMeasureStart(null);
+          setMeasureEnd(null);
+          try { chart.removeSeries(measureSeriesRef.current); } catch {}
+          measureSeriesRef.current = null;
+          if (handleAElRef.current) handleAElRef.current.style.display = "none";
+          if (handleBElRef.current) handleBElRef.current.style.display = "none";
+          if (measureHudRef.current) measureHudRef.current.style.display = "none";
+          return;
+        }
+
+        // Measure: ① hollow dot + dashed · ② second → keep until next tap
         if (m === "measure") {
           const t = resolveTime(param);
           if (t == null || Number.isNaN(t)) return;
@@ -2413,7 +2462,9 @@ export default function DashboardPage() {
           const a = measureStartRef.current;
           const b = { time: t, price: fp };
           setMeasureEnd(b);
-          placeDot(handleBElRef.current, t, fp);
+          // Hide pixel dots after finish (they don't track pan/zoom)
+          if (handleAElRef.current) handleAElRef.current.style.display = "none";
+          if (handleBElRef.current) handleBElRef.current.style.display = "none";
           try {
             if (!measureSeriesRef.current) {
               measureSeriesRef.current = chart.addLineSeries({
@@ -2431,7 +2482,6 @@ export default function DashboardPage() {
             ].sort((p, q) => Number(p.time) - Number(q.time));
             measureSeriesRef.current.setData(pts);
           } catch {}
-          // Final HUD values
           if (measureHudRef.current) {
             const dp = b.price - a.price;
             const pct = (dp / a.price) * 100;
@@ -2447,24 +2497,12 @@ export default function DashboardPage() {
               `<div class="opacity-90 mt-0.5">${bars} bars · ${timeStr}</div>`;
           }
           measureStartRef.current = null;
-          measureDoneRef.current = false;
+          measureDoneRef.current = true; // next chart tap clears
           lockChartInteraction(false);
-          // Exit measure mode without heavy cascade — defer React updates
           requestAnimationFrame(() => {
             setMode("none");
             setStatusMsg("");
           });
-          window.setTimeout(() => {
-            if (measureSeriesRef.current && chartRef.current) {
-              try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
-              measureSeriesRef.current = null;
-            }
-            setMeasureStart(null);
-            setMeasureEnd(null);
-            if (handleAElRef.current) handleAElRef.current.style.display = "none";
-            if (handleBElRef.current) handleBElRef.current.style.display = "none";
-            if (measureHudRef.current) measureHudRef.current.style.display = "none";
-          }, 4000);
           return;
         }
 
@@ -2636,20 +2674,29 @@ export default function DashboardPage() {
     };
   }, [symbol, interval]);
 
-  // Apply timezone change live (without full reload)
+  // Apply timezone change live — preserve visible range (don't jump to empty future)
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
+    let saved: any = null;
+    try {
+      saved = chart.timeScale().getVisibleLogicalRange();
+    } catch {}
     try {
       chart.applyOptions({
         localization: makeLocalization(timeZone),
         timeScale: {
-          secondsVisible: isIntraday,
-          rightOffset: 30,
           tickMarkFormatter: makeTickMarkFormatter(timeZone) as any,
         },
       });
+      // Restore range so chart doesn't jump into empty whitespace
+      if (saved) {
+        requestAnimationFrame(() => {
+          try {
+            chart.timeScale().setVisibleLogicalRange(saved);
+          } catch {}
+        });
+      }
     } catch {}
   }, [timeZone]);
 
