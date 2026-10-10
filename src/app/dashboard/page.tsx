@@ -433,6 +433,37 @@ function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
 }
 
+/** Dense points along a diagonal so LWC never shows visual gaps on higher TFs */
+function denseDiagPoints(
+  t0: number,
+  t1: number,
+  v0: number,
+  v1: number,
+  barSec: number
+): { time: any; value: number }[] {
+  const bs = Math.max(1, barSec || 60);
+  if (t1 <= t0) {
+    return [
+      { time: t0 as any, value: v0 },
+      { time: (t0 + bs) as any, value: v1 },
+    ];
+  }
+  const steps = Math.max(2, Math.min(80, Math.ceil((t1 - t0) / bs) + 1));
+  const pts: { time: any; value: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const tt = t0 + ((t1 - t0) * i) / steps;
+    const vv = v0 + ((v1 - v0) * i) / steps;
+    pts.push({ time: Math.round(tt) as any, value: vv });
+  }
+  // Ensure strictly increasing times (LWC requirement)
+  for (let i = 1; i < pts.length; i++) {
+    if (Number(pts[i].time) <= Number(pts[i - 1].time)) {
+      pts[i].time = (Number(pts[i - 1].time) + 1) as any;
+    }
+  }
+  return pts;
+}
+
 /** Format unix seconds in a given IANA timezone */
 function formatInTz(
   unixSec: number,
@@ -677,6 +708,8 @@ export default function DashboardPage() {
   /** Live measure HUD (DOM-only — avoids React re-render lag) */
   const measureHudRef = useRef<HTMLDivElement | null>(null);
   const measureLastHudTs = useRef(0);
+  /** Keep chart focused on history hit area across re-renders */
+  const historyFocusRef = useRef<{ from: number; to: number } | null>(null);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
@@ -1151,18 +1184,9 @@ export default function DashboardPage() {
             crosshairMarkerVisible: false,
             title: title || "",
           });
-          if (t1 > t0) {
-            ls.setData([
-              { time: t0 as any, value: v0 },
-              { time: t1 as any, value: v1 },
-            ]);
-          } else {
-            // same bar — tiny horizontal segment so it still shows
-            ls.setData([
-              { time: t0 as any, value: v0 },
-              { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
-            ]);
-          }
+          ls.setData(
+            denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
+          );
           chartLinesRef.current.set(l.id, ls);
         } else if (l.start_time != null) {
           // Horizontal ray from start_time → far into future (to price scale edge)
@@ -1240,18 +1264,10 @@ export default function DashboardPage() {
             crosshairMarkerVisible: false,
             title: title || "",
           });
-          // Segment only A→B (hit detection uses projectedPriceOnDiag at runtime)
-          if (t1 > t0) {
-            ls.setData([
-              { time: t0 as any, value: v0 },
-              { time: t1 as any, value: v1 },
-            ]);
-          } else {
-            ls.setData([
-              { time: t0 as any, value: v0 },
-              { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
-            ]);
-          }
+          // Dense points — continuous on any TF (hit detection still uses projectedPriceOnDiag)
+          ls.setData(
+            denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
+          );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
           // Horizontal ray alarm: from start_time → far future (to price scale)
@@ -1313,24 +1329,28 @@ export default function DashboardPage() {
           crosshairMarkerVisible: false,
           title: "◀ HISTORY",
         });
-        // Two endpoints only — LWC draws a continuous segment on any TF
-        if (t1 > t0) {
-          ls.setData([
-            { time: t0 as any, value: v0 },
-            { time: t1 as any, value: v1 },
-          ]);
-        } else {
-          ls.setData([
-            { time: t0 as any, value: v0 },
-            { time: (t0 + intervalToSeconds(String(intervalRef.current))) as any, value: v1 },
-          ]);
-        }
+        ls.setData(
+          denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
+        );
         chartLinesRef.current.set("highlight-diag-temp", ls);
       } catch {}
     }
 
     // Restore exact visible range so future-endpoint diags don't push the chart right
-    if (savedRange) {
+    // BUT if user just tapped History, force-focus that region instead
+    if (historyFocusRef.current) {
+      try {
+        const f = historyFocusRef.current;
+        (chart.timeScale() as any).setVisibleRange({
+          from: f.from as any,
+          to: f.to as any,
+        });
+      } catch {
+        try {
+          chart.timeScale().setVisibleLogicalRange(savedRange as any);
+        } catch {}
+      }
+    } else if (savedRange) {
       try {
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
@@ -4955,25 +4975,39 @@ export default function DashboardPage() {
                             if (!Number.isNaN(n) && n > 0) focusT = n;
                           }
                         } catch {}
-                        const i0 = idxNear(t0 - barSec * 8);
-                        const i1 = idxNear(t1 + barSec * 8);
-                        const iF = idxNear(focusT);
-                        const from = Math.max(0, Math.min(i0, iF) - 5);
-                        const to = Math.min(
-                          candles.length - 1 + FUTURE_VISIBLE,
-                          Math.max(i1, iF) + 15
-                        );
+                        // Time-based window around the hit (works on any TF)
+                        const span = Math.max(t1 - t0, barSec * 12);
+                        const pad = Math.max(span * 0.8, barSec * 20);
+                        const fromT = Math.min(t0, focusT) - pad;
+                        const toT = Math.max(t1, focusT) + pad;
+                        historyFocusRef.current = { from: fromT, to: toT };
                         try {
-                          chart.timeScale().setVisibleLogicalRange({ from, to });
-                        } catch {}
-                        // Fit price around the segment (cast — LWC version variance)
+                          (chart.timeScale() as any).setVisibleRange({
+                            from: fromT as any,
+                            to: toT as any,
+                          });
+                        } catch {
+                          // Fallback: logical indices
+                          const i0 = idxNear(fromT);
+                          const i1 = idxNear(toT);
+                          try {
+                            chart.timeScale().setVisibleLogicalRange({
+                              from: Math.max(0, i0 - 2),
+                              to: Math.min(candles.length - 1 + FUTURE_VISIBLE, i1 + 5),
+                            });
+                          } catch {}
+                        }
+                        // Keep focus locked for a few seconds so live updates / re-renders don't yank away
+                        window.setTimeout(() => {
+                          historyFocusRef.current = null;
+                        }, 5000);
                         try {
                           const pLo = Math.min(Number(a.price), Number(ep));
                           const pHi = Math.max(Number(a.price), Number(ep));
-                          const pad = Math.max((pHi - pLo) * 0.35, pHi * 0.002);
+                          const ppad = Math.max((pHi - pLo) * 0.5, pHi * 0.004);
                           const ps = series?.priceScale() as any;
                           if (ps && typeof ps.setVisibleRange === "function") {
-                            ps.setVisibleRange({ from: pLo - pad, to: pHi + pad });
+                            ps.setVisibleRange({ from: pLo - ppad, to: pHi + ppad });
                           }
                         } catch {}
                       }
@@ -4991,14 +5025,29 @@ export default function DashboardPage() {
                           }
                         } catch {}
                         if (focusT != null) {
-                          const iF = idxNear(focusT);
-                          const from = Math.max(0, iF - 40);
-                          const to = Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20);
+                          const pad = barSec * 40;
+                          const fromT = focusT - pad;
+                          const toT = focusT + pad;
+                          historyFocusRef.current = { from: fromT, to: toT };
                           try {
-                            chart.timeScale().setVisibleLogicalRange({ from, to });
-                          } catch {}
+                            (chart.timeScale() as any).setVisibleRange({
+                              from: fromT as any,
+                              to: toT as any,
+                            });
+                          } catch {
+                            const iF = idxNear(focusT);
+                            try {
+                              chart.timeScale().setVisibleLogicalRange({
+                                from: Math.max(0, iF - 40),
+                                to: Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20),
+                              });
+                            } catch {}
+                          }
+                          window.setTimeout(() => {
+                            historyFocusRef.current = null;
+                          }, 5000);
                         } else {
-                          // No trigger time — frame last bars so price line is visible
+                          historyFocusRef.current = null;
                           try {
                             const bars = candles.length;
                             const past = Math.min(70, bars);
@@ -5010,10 +5059,10 @@ export default function DashboardPage() {
                         }
                         try {
                           const p = Number(a.price);
-                          const pad = Math.abs(p) * 0.01;
+                          const ppad = Math.abs(p) * 0.012;
                           const ps = series?.priceScale() as any;
                           if (ps && typeof ps.setVisibleRange === "function") {
-                            ps.setVisibleRange({ from: p - pad, to: p + pad });
+                            ps.setVisibleRange({ from: p - ppad, to: p + ppad });
                           }
                         } catch {}
                       }
