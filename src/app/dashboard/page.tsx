@@ -2488,7 +2488,7 @@ export default function DashboardPage() {
       }
     }, 50);
     return () => clearTimeout(t);
-  }, [showSideWl]);
+  }, [showSideWl, showToolsPanel]);
 
   // Close TF / timezone / list menus when clicking outside
   useEffect(() => {
@@ -3163,213 +3163,206 @@ export default function DashboardPage() {
       </div>
 
       <div className="flex gap-2">
-        {/* Left tools — collapsible TradingView-style toolbar */}
-        <div className="flex flex-col gap-1 shrink-0">
-          {/* Toggle: show / hide tools panel */}
-          <button
-            type="button"
-            title={showToolsPanel ? "Hide tools" : "Show tools"}
-            onClick={() => setShowToolsPanel((v) => !v)}
-            className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-              showToolsPanel
-                ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10"
-            }`}
-          >
-            {/* Brush / drawing tools icon */}
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 19l7-7 3 3-7 7-3-3z" />
-              <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-              <path d="M2 2l7.586 7.586" />
-              <circle cx="11" cy="11" r="1" fill="currentColor" />
-            </svg>
-          </button>
+        {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
+        {showToolsPanel && (
+          <div className="flex flex-col gap-1 shrink-0">
+            {/* Hide tools — same idea as « Hide on coin list */}
+            <button
+              type="button"
+              title="Hide tools"
+              onClick={() => {
+                setShowToolsPanel(false);
+                setAlarmMenuOpen(false);
+                setShowIndicatorMenu(false);
+                setMode("none");
+                setDiagStart(null);
+              }}
+              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
 
-          {showToolsPanel && (
-            <>
-              {/* Horizontal line (draw) */}
+            {/* Horizontal line (draw) */}
+            <button
+              type="button"
+              title="Horizontal line"
+              onClick={() => {
+                setMode(mode === "draw" ? "none" : "draw");
+                setMovingId(null);
+                setMovingType(null);
+                setDiagStart(null);
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "draw"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="3" y1="12" x2="21" y2="12" />
+              </svg>
+            </button>
+
+            {/* Horizontal ray */}
+            <button
+              type="button"
+              title="Horizontal ray"
+              onClick={() => {
+                setMode(mode === "ray" ? "none" : "ray");
+                setMovingId(null);
+                setMovingType(null);
+                setDiagStart(null);
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "ray"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="12" x2="18" y2="12" />
+                <polyline points="14,8 18,12 14,16" />
+              </svg>
+            </button>
+
+            {/* Trendline / diagonal */}
+            <button
+              type="button"
+              title="Trendline (2 clicks)"
+              onClick={() => {
+                setMode(mode === "diag" ? "none" : "diag");
+                setMovingId(null);
+                setMovingType(null);
+                if (mode === "diag") setDiagStart(null);
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "diag"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="4" y1="18" x2="20" y2="6" />
+                <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+              </svg>
+            </button>
+
+            {/* Alarm — expands to 3 shapes with animation */}
+            <div className="relative">
               <button
                 type="button"
-                title="Horizontal line"
+                title="Alarm"
                 onClick={() => {
-                  setMode(mode === "draw" ? "none" : "draw");
+                  setAlarmMenuOpen((v) => !v);
+                  if (alarmMenuOpen) {
+                    setMode("none");
+                    setDiagStart(null);
+                  }
                   setMovingId(null);
                   setMovingType(null);
-                  setDiagStart(null);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  mode === "draw"
+                  alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="3" y1="12" x2="21" y2="12" />
-                </svg>
-              </button>
-
-              {/* Horizontal ray */}
-              <button
-                type="button"
-                title="Horizontal ray"
-                onClick={() => {
-                  setMode(mode === "ray" ? "none" : "ray");
-                  setMovingId(null);
-                  setMovingType(null);
-                  setDiagStart(null);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  mode === "ray"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="4" y1="12" x2="18" y2="12" />
-                  <polyline points="14,8 18,12 14,16" />
-                </svg>
-              </button>
-
-              {/* Trendline / diagonal */}
-              <button
-                type="button"
-                title="Trendline (2 clicks)"
-                onClick={() => {
-                  setMode(mode === "diag" ? "none" : "diag");
-                  setMovingId(null);
-                  setMovingType(null);
-                  if (mode === "diag") setDiagStart(null);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  mode === "diag"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="4" y1="18" x2="20" y2="6" />
-                  <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                  <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-                </svg>
-              </button>
-
-              {/* Alarm — expands to 3 shapes with animation */}
-              <div className="relative">
-                <button
-                  type="button"
-                  title="Alarm"
-                  onClick={() => {
-                    setAlarmMenuOpen((v) => !v);
-                    if (alarmMenuOpen) {
-                      setMode("none");
-                      setDiagStart(null);
-                    }
-                    setMovingId(null);
-                    setMovingType(null);
-                  }}
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                    alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
-                      ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                      : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                  }`}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                  </svg>
-                </button>
-                {alarmMenuOpen && (
-                  <div
-                    className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
-                    style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
-                  >
-                    {/* Full horizontal alarm */}
-                    <button
-                      type="button"
-                      title="Full line alarm"
-                      onClick={() => {
-                        setMode("alarm");
-                        setAlarmMenuOpen(false);
-                        setDiagStart(null);
-                        setStatusMsg("Tap chart for full-line alarm");
-                      }}
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                        mode === "alarm"
-                          ? "bg-orange-500 text-black border-orange-400"
-                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <line x1="3" y1="12" x2="21" y2="12" />
-                      </svg>
-                    </button>
-                    {/* Half-line / ray alarm */}
-                    <button
-                      type="button"
-                      title="Half-line (ray) alarm"
-                      onClick={() => {
-                        setMode("alarm-ray");
-                        setAlarmMenuOpen(false);
-                        setDiagStart(null);
-                        setStatusMsg("Tap chart for ray alarm");
-                      }}
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                        mode === "alarm-ray"
-                          ? "bg-orange-500 text-black border-orange-400"
-                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="4" y1="12" x2="18" y2="12" />
-                        <polyline points="14,8 18,12 14,16" />
-                      </svg>
-                    </button>
-                    {/* Diagonal alarm */}
-                    <button
-                      type="button"
-                      title="Diagonal alarm"
-                      onClick={() => {
-                        setMode("alarm-diag");
-                        setAlarmMenuOpen(false);
-                        setDiagStart(null);
-                        setStatusMsg("① point then ② for diag alarm");
-                      }}
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                        mode === "alarm-diag"
-                          ? "bg-orange-500 text-black border-orange-400"
-                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <line x1="4" y1="18" x2="20" y2="6" />
-                        <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                        <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-                      </svg>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Indicators */}
-              <button
-                type="button"
-                title="Indicators"
-                onClick={() => setShowIndicatorMenu((v) => !v)}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  showIndicatorMenu
-                    ? "bg-blue-500/20 border-blue-500 text-blue-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="6" y1="20" x2="6" y2="10" />
-                  <line x1="12" y1="20" x2="12" y2="4" />
-                  <line x1="18" y1="20" x2="18" y2="14" />
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                 </svg>
               </button>
-            </>
-          )}
-        </div>
+              {alarmMenuOpen && (
+                <div
+                  className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
+                  style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
+                >
+                  <button
+                    type="button"
+                    title="Full line alarm"
+                    onClick={() => {
+                      setMode("alarm");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("Tap chart for full-line alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm"
+                        ? "bg-orange-500 text-black border-orange-400"
+                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <line x1="3" y1="12" x2="21" y2="12" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Half-line (ray) alarm"
+                    onClick={() => {
+                      setMode("alarm-ray");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("Tap chart for ray alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm-ray"
+                        ? "bg-orange-500 text-black border-orange-400"
+                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="4" y1="12" x2="18" y2="12" />
+                      <polyline points="14,8 18,12 14,16" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Diagonal alarm"
+                    onClick={() => {
+                      setMode("alarm-diag");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("① point then ② for diag alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm-diag"
+                        ? "bg-orange-500 text-black border-orange-400"
+                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <line x1="4" y1="18" x2="20" y2="6" />
+                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                      <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Indicators */}
+            <button
+              type="button"
+              title="Indicators"
+              onClick={() => setShowIndicatorMenu((v) => !v)}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                showIndicatorMenu
+                  ? "bg-blue-500/20 border-blue-500 text-blue-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="20" x2="6" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="18" y1="20" x2="18" y2="14" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         {/* Chart */}
         <div className="flex-1 min-w-0 relative">
@@ -3763,6 +3756,22 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+
+          {/* Floating Show tools when tools panel is hidden (chart wider) */}
+          {!showToolsPanel && (
+            <button
+              type="button"
+              onClick={() => setShowToolsPanel(true)}
+              className="absolute top-2 left-2 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300 inline-flex items-center gap-1.5"
+              title="Show drawing tools"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+              </svg>
+              Tools
+            </button>
+          )}
 
           {/* Floating Show list when side panel is hidden */}
           {!showSideWl && (
