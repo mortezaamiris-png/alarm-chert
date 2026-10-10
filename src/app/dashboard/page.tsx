@@ -1717,12 +1717,25 @@ export default function DashboardPage() {
       pointerAbortRef.current = new AbortController();
       const pSignal = pointerAbortRef.current.signal;
 
-      // Double-click / double-tap on price axis (right edge) → jump to latest bars
+      // Double-click / double-tap on price axis (right edge) → same view as fresh chart open
       let lastPriceTapTs = 0;
       const goToLatest = () => {
         try {
-          chart.timeScale().scrollToRealTime();
-        } catch {}
+          const bars = candlesRef.current.length;
+          if (bars < 2) {
+            chart.timeScale().scrollToRealTime();
+            return;
+          }
+          // Same framing as initial load: last ~70 real bars + future strip
+          chart.timeScale().applyOptions({ rightOffset: 4 });
+          const past = Math.min(70, bars);
+          chart.timeScale().setVisibleLogicalRange({
+            from: bars - past,
+            to: bars - 1 + FUTURE_VISIBLE,
+          });
+        } catch {
+          try { chart.timeScale().scrollToRealTime(); } catch {}
+        }
       };
       const onDblNearPrice = (clientX: number) => {
         const rect = container.getBoundingClientRect();
@@ -1783,6 +1796,18 @@ export default function DashboardPage() {
         const cy = e.clientY;
         moveRafRef.current = requestAnimationFrame(() => {
           moveRafRef.current = 0;
+          // Re-check mode inside rAF — prevents ghost ray/line after mode cleared
+          const modeNow = modeRef.current;
+          if (
+            modeNow !== "diag" &&
+            modeNow !== "alarm-diag" &&
+            modeNow !== "ray" &&
+            modeNow !== "alarm-ray" &&
+            modeNow !== "measure" &&
+            modeNow !== "move"
+          ) {
+            return;
+          }
           const rect = container.getBoundingClientRect();
           const x = cx - rect.left;
           const y = cy - rect.top;
@@ -1806,8 +1831,6 @@ export default function DashboardPage() {
             }
           } catch {}
           if (tCursor == null) return;
-
-          const modeNow = modeRef.current;
 
           // Measure live preview — DOM only (no setState → no lag)
           if (modeNow === "measure" && measureStartRef.current) {
@@ -2554,10 +2577,18 @@ export default function DashboardPage() {
               const n = Number(saved.note.replace("__ray:", ""));
               if (!Number.isNaN(n)) saved.start_time = n;
             }
+            modeRef.current = "none";
+            setMode("none");
+            clearPreview();
             setLines((prev) => [saved, ...prev]);
             setStatusMsg(m === "ray" ? "Ray saved" : "Line saved");
-          } else setStatusMsg("Save failed");
-          setSaving(false); clearPreview(); setMode("none");
+          } else {
+            setStatusMsg("Save failed");
+            modeRef.current = "none";
+            setMode("none");
+            clearPreview();
+          }
+          setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -2602,10 +2633,20 @@ export default function DashboardPage() {
               const n = Number(saved.note.replace("__ray:", ""));
               if (!Number.isNaN(n)) saved.start_time = n;
             }
+            // Drop mode first so pointermove rAF cannot recreate preview
+            modeRef.current = "none";
+            setMode("none");
+            setAlarmMenuOpen(false);
+            clearPreview();
             setAlarms((prev) => [saved, ...prev]);
             setStatusMsg("Ray alarm saved");
-          } else setStatusMsg("Alarm save failed");
-          setSaving(false); clearPreview(); setMode("none"); setAlarmMenuOpen(false);
+          } else {
+            setStatusMsg("Alarm save failed");
+            modeRef.current = "none";
+            setMode("none");
+            clearPreview();
+          }
+          setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -3532,6 +3573,7 @@ export default function DashboardPage() {
               type="button"
               title="Horizontal ray"
               onClick={() => {
+                clearPreview();
                 setMode(mode === "ray" ? "none" : "ray");
                 setMovingId(null);
                 setMovingType(null);
@@ -3625,6 +3667,7 @@ export default function DashboardPage() {
                     type="button"
                     title="Half-line (ray) alarm"
                     onClick={() => {
+                      clearPreview();
                       setMode("alarm-ray");
                       setAlarmMenuOpen(false);
                       setDiagStart(null);
