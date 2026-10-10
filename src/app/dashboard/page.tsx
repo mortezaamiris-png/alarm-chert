@@ -680,6 +680,11 @@ export default function DashboardPage() {
     price: number;
     end_price: number;
   } | null>(null);
+  /** Temporary half-line (ray) flash from History click */
+  const [highlightRay, setHighlightRay] = useState<{
+    start_time: number;
+    price: number;
+  } | null>(null);
   const [mode, setMode] = useState<ToolMode>("none");
   const [previewPrice, setPreviewPrice] = useState<number | null>(null);
   /** First click of diagonal tool: { time, price } */
@@ -852,16 +857,17 @@ export default function DashboardPage() {
     } catch {}
   }, []);
 
-  // Auto-clear history flash (horizontal or diagonal) after a few seconds
+  // Auto-clear history flash (horizontal / ray / diagonal) after a few seconds
   useEffect(() => {
-    if (highlightPrice == null && !highlightAlarmId && !highlightDiag) return;
+    if (highlightPrice == null && !highlightAlarmId && !highlightDiag && !highlightRay) return;
     const t = setTimeout(() => {
       setHighlightPrice(null);
       setHighlightAlarmId(null);
       setHighlightDiag(null);
-    }, 4000);
+      setHighlightRay(null);
+    }, 5000);
     return () => clearTimeout(t);
-  }, [highlightPrice, highlightAlarmId, highlightDiag]);
+  }, [highlightPrice, highlightAlarmId, highlightDiag, highlightRay]);
 
   useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
@@ -1294,8 +1300,8 @@ export default function DashboardPage() {
       } catch {}
     });
 
-    // History / temp highlight: yellow dashed HORIZONTAL line
-    if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag) {
+    // History / temp highlight: yellow dashed HORIZONTAL line (full)
+    if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag && !highlightRay) {
       try {
         const pl = series.createPriceLine({
           price: highlightPrice,
@@ -1306,6 +1312,30 @@ export default function DashboardPage() {
           title: "◀ HISTORY",
         });
         alarmLinesRef.current.set("highlight-temp", pl);
+      } catch {}
+    }
+
+    // History / temp highlight: yellow HALF-LINE (ray) from start_time → future
+    if (highlightRay) {
+      try {
+        const barSec = intervalToSeconds(String(intervalRef.current));
+        const candles = candlesRef.current;
+        const lastT = candles.length ? candles[candles.length - 1].time : highlightRay.start_time;
+        const rayEnd = lastT + FUTURE_BARS * barSec;
+        const ls: any = chart.addLineSeries({
+          color: "#eab308",
+          lineWidth: 3,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          title: "◀ HISTORY",
+        });
+        ls.setData([
+          { time: Number(highlightRay.start_time) as any, value: highlightRay.price },
+          { time: rayEnd as any, value: highlightRay.price },
+        ]);
+        chartLinesRef.current.set("highlight-ray-temp", ls);
       } catch {}
     }
 
@@ -1355,7 +1385,7 @@ export default function DashboardPage() {
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
-  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, hideLines, hideAlarms]);
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, highlightRay, hideLines, hideAlarms]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -1593,7 +1623,13 @@ export default function DashboardPage() {
       const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
 
       const chart = createChart(container, {
-        layout: { background: { color: "#0b0e11" }, textColor: "#d1d5db", fontSize: 11 },
+        layout: {
+          background: { color: "#0b0e11" },
+          textColor: "#d1d5db",
+          fontSize: 11,
+          // Hide default TradingView watermark (library is Apache-2.0)
+          attributionLogo: false as any,
+        },
         grid: {
           vertLines: { color: "rgba(42,46,57,0.5)" },
           horzLines: { color: "rgba(42,46,57,0.5)" },
@@ -5004,6 +5040,7 @@ export default function DashboardPage() {
 
                     if (isDiag) {
                       setHighlightPrice(null);
+                      setHighlightRay(null);
                       setHighlightDiag({
                         start_time: Number(st),
                         end_time: Number(et),
@@ -5060,11 +5097,32 @@ export default function DashboardPage() {
                         } catch {}
                       }
                     } else {
+                      // Resolve ray (half-line) geometry
+                      let rayStart = a.start_time ?? null;
+                      if (rayStart == null && a.note?.startsWith("__ray:")) {
+                        const n = Number(a.note.replace("__ray:", ""));
+                        if (!Number.isNaN(n)) rayStart = n;
+                      }
+                      const isRayHist =
+                        rayStart != null &&
+                        (a.end_time == null || a.end_price == null);
+
                       setHighlightDiag(null);
-                      setHighlightPrice(a.price);
-                      setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                      if (isRayHist) {
+                        setHighlightPrice(null);
+                        setHighlightRay({
+                          start_time: Number(rayStart),
+                          price: Number(a.price),
+                        });
+                        setStatusMsg(`History Ray @ ${formatPrice(a.price)}`);
+                      } else {
+                        setHighlightRay(null);
+                        setHighlightPrice(a.price);
+                        setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                      }
+
                       if (chart && candles.length) {
-                        let focusT: number | null = null;
+                        let focusT: number | null = isRayHist ? Number(rayStart) : null;
                         try {
                           const trig = (a as any).triggered_at || (a as any).updated_at;
                           if (trig) {
