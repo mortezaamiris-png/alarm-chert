@@ -64,7 +64,7 @@ interface WatchItem {
 /** Built-in side-panel view: symbols that currently have active alarms */
 const SIDE_VIEW_ALARMS = "__alarms__";
 
-type ToolMode = "none" | "draw" | "ray" | "diag" | "alarm" | "move";
+type ToolMode = "none" | "draw" | "ray" | "diag" | "alarm" | "alarm-ray" | "alarm-diag" | "move";
 
 /** Project price on a diagonal line at unix time t (extends beyond end). */
 function projectedPriceOnDiag(
@@ -597,6 +597,8 @@ export default function DashboardPage() {
     width: number;
     dash: string;
   } | null>(null);
+  /** True when moving a horizontal ray (origin can shift in time) */
+  const movingRayRef = useRef(false);
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
@@ -646,6 +648,8 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Collapsible left drawing tools panel (TradingView-style) */
   const [showToolsPanel, setShowToolsPanel] = useState(() => loadLS("show_tools_panel", true));
+  /** Alarm sub-menu: full / ray / diag placement */
+  const [alarmMenuOpen, setAlarmMenuOpen] = useState(false);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
@@ -1202,6 +1206,18 @@ export default function DashboardPage() {
             ]);
           }
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
+        } else if (a.start_time != null) {
+          // Horizontal ray alarm: from start_time → future
+          const ls: any = chart.addLineSeries({
+            color, lineWidth: width, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            title: title || "Ray 🔔",
+          });
+          ls.setData([
+            { time: Number(a.start_time) as any, value: a.price },
+            { time: (lastTime + extend) as any, value: a.price },
+          ]);
+          chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
         } else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
@@ -1665,7 +1681,8 @@ export default function DashboardPage() {
         // Only block page scroll while actively drawing / dragging an endpoint
         const md = moveDiagRef.current;
         const dragging =
-          (modeRef.current === "diag" && !!diagStartRef.current) ||
+          ((modeRef.current === "diag" || modeRef.current === "alarm-diag") &&
+            !!diagStartRef.current) ||
           (modeRef.current === "move" && md && (md.phase === "drag-a" || md.phase === "drag-b"));
         if (dragging) {
           e.preventDefault();
@@ -1673,7 +1690,9 @@ export default function DashboardPage() {
       };
       container.addEventListener("touchmove", onTouchMoveBlock, { passive: false, signal: pointerAbortRef.current.signal });
       const onPointerMove = (e: PointerEvent) => {
-        const isDiagDraw = modeRef.current === "diag" && !!diagStartRef.current;
+        const isDiagDraw =
+          (modeRef.current === "diag" || modeRef.current === "alarm-diag") &&
+          !!diagStartRef.current;
         const isDiagMove = modeRef.current === "move" && !!moveDiagRef.current;
         if (!isDiagDraw && !isDiagMove) return;
         try { e.preventDefault(); } catch {}
@@ -1741,12 +1760,56 @@ export default function DashboardPage() {
 
       chart.subscribeCrosshairMove((param) => {
         // Diag / move: pointermove handles preview — skip here to avoid double work & desktop freeze
-        if (modeRef.current === "none" || modeRef.current === "move" || modeRef.current === "diag") return;
+        if (
+          modeRef.current === "none" ||
+          modeRef.current === "move" ||
+          modeRef.current === "diag" ||
+          modeRef.current === "alarm-diag"
+        )
+          return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
 
-        // Horizontal tools only — throttle UI + update price line in place
+        const m = modeRef.current;
+        // Ray / alarm-ray: half-line preview from cursor time → future (not full price line)
+        if (m === "ray" || m === "alarm-ray") {
+          if (previewLineRef.current) {
+            try { series.removePriceLine(previewLineRef.current); } catch {}
+            previewLineRef.current = null;
+          }
+          try {
+            const t0 = resolveTime(param);
+            const candles = candlesRef.current;
+            if (t0 == null || !candles.length) return;
+            const lastT = candles[candles.length - 1].time;
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            const t1 = Math.max(lastT + barSec * 8, t0 + barSec * 4);
+            if (!previewDiagSeriesRef.current) {
+              previewDiagSeriesRef.current = chart.addLineSeries({
+                color: drawColorRef.current,
+                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                lineStyle: toLineStyle(drawDashRef.current),
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+              });
+            } else {
+              previewDiagSeriesRef.current.applyOptions({
+                color: drawColorRef.current,
+                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                lineStyle: toLineStyle(drawDashRef.current),
+              });
+            }
+            previewDiagSeriesRef.current.setData([
+              { time: t0 as any, value: price },
+              { time: t1 as any, value: price },
+            ]);
+          } catch {}
+          return;
+        }
+
+        // Full horizontal (draw / alarm): price line across chart
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
           previewDiagSeriesRef.current = null;
@@ -1983,14 +2046,56 @@ export default function DashboardPage() {
           clickLockRef.current = true;
           try {
             if (typ === "line") {
-              await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
-              setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
-              setStatusMsg("Line moved");
+              // Ray: also move origin (start_time) so user can place it further left/right
+              const isRay = movingRayRef.current;
+              const tMove = resolveTime(param);
+              const patch: any = { price: fp };
+              if (isRay && tMove != null && !Number.isNaN(tMove)) {
+                patch.start_time = tMove;
+              }
+              const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
+              if (error && patch.start_time != null) {
+                await supabase
+                  .from("chart_lines")
+                  .update({ price: fp, note: `__ray:${patch.start_time}` })
+                  .eq("id", id);
+              }
+              setLines((prev) =>
+                prev.map((l) =>
+                  l.id === id
+                    ? {
+                        ...l,
+                        price: fp,
+                        start_time:
+                          isRay && tMove != null ? tMove : l.start_time,
+                      }
+                    : l
+                )
+              );
+              setStatusMsg(isRay ? "Ray moved" : "Line moved");
             } else if (typ === "alarm") {
-              await supabase.from("alarms").update({ price: fp }).eq("id", id);
-              setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
-              setStatusMsg("Alarm moved");
+              const isRayAl = movingRayRef.current;
+              const tMove = resolveTime(param);
+              const patch: any = { price: fp };
+              if (isRayAl && tMove != null && !Number.isNaN(tMove)) {
+                patch.start_time = tMove;
+              }
+              await supabase.from("alarms").update(patch).eq("id", id);
+              setAlarms((prev) =>
+                prev.map((a) =>
+                  a.id === id
+                    ? {
+                        ...a,
+                        price: fp,
+                        start_time:
+                          isRayAl && tMove != null ? tMove : a.start_time,
+                      }
+                    : a
+                )
+              );
+              setStatusMsg(isRayAl ? "Ray alarm moved" : "Alarm moved");
             }
+            movingRayRef.current = false;
           } catch {
             setStatusMsg("Move failed");
           }
@@ -2003,8 +2108,8 @@ export default function DashboardPage() {
           return;
         }
 
-        // Diagonal / trend line: two clicks → segment A→B (works on empty area too)
-        if (m === "diag") {
+        // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
+        if (m === "diag" || m === "alarm-diag") {
           const t = resolveTime(param);
           if (t == null || Number.isNaN(t)) {
             setStatusMsg("Could not read time — try on chart area");
@@ -2062,6 +2167,66 @@ export default function DashboardPage() {
             end_time: endT,
             end_price: fp,
           };
+
+          // Alarm-diag: save into alarms table
+          if (m === "alarm-diag") {
+            const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+            let payload: any = {
+              symbol: base.symbol,
+              price: base.price,
+              condition: conditionRef.current,
+              is_active: true,
+              triggered: false,
+              color: chosenColor,
+              width: base.width,
+              dash: base.dash,
+              start_time: base.start_time,
+              end_time: base.end_time,
+              end_price: base.end_price,
+              note: "Diag",
+            };
+            let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+            if (error) {
+              payload = {
+                symbol: base.symbol,
+                price: base.price,
+                condition: conditionRef.current,
+                is_active: true,
+                triggered: false,
+                color: chosenColor,
+                note: `__diag:${base.start_time}:${base.end_time}:${base.end_price}`,
+              };
+              ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
+            }
+            if (!error && data) {
+              const saved: Alarm = {
+                ...(data as Alarm),
+                color: (data as any).color || chosenColor,
+                start_time: (data as any).start_time ?? base.start_time,
+                end_time: (data as any).end_time ?? base.end_time,
+                end_price: (data as any).end_price ?? base.end_price,
+              };
+              if (!isDiagonalLine(saved) && saved.note?.startsWith("__diag:")) {
+                const parts = saved.note.replace(/^__diag:/, "").split("|")[0].split(":");
+                if (parts.length >= 3) {
+                  saved.start_time = Number(parts[0]);
+                  saved.end_time = Number(parts[1]);
+                  saved.end_price = Number(parts[2]);
+                }
+              }
+              setAlarms((prev) => [saved, ...prev]);
+              setStatusMsg("Diag alarm saved");
+            } else setStatusMsg("Alarm save failed");
+            diagStartRef.current = null;
+            setDiagStart(null);
+            setSaving(false);
+            clearPreview();
+            setMode("none");
+            setAlarmMenuOpen(false);
+            setTimeout(() => { clickLockRef.current = false; }, 300);
+            return;
+          }
+
           let payload = { ...base };
           let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
           if (error) {
@@ -2126,11 +2291,24 @@ export default function DashboardPage() {
             dash: drawDashRef.current,
           };
           if (m === "ray") {
-            const t = param.time ? Number(param.time) : candlesRef.current[candlesRef.current.length - 1]?.time;
-            if (t) base.start_time = t;
+            // Always resolve time from click (works on empty/future area too)
+            const t = resolveTime(param);
+            if (t != null && !Number.isNaN(t)) base.start_time = t;
           }
           let payload = { ...base };
           let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+          if (error && m === "ray" && base.start_time != null) {
+            // Schema may lack start_time — keep it in note fallback
+            payload = {
+              symbol: base.symbol,
+              price: base.price,
+              color: base.color,
+              width: base.width,
+              dash: base.dash,
+              note: `__ray:${base.start_time}`,
+            };
+            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+          }
           if (error) {
             payload = { symbol: base.symbol, price: base.price, color: base.color, width: base.width };
             ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
@@ -2140,10 +2318,68 @@ export default function DashboardPage() {
             ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (!error && data) {
-            setLines((prev) => [{ ...(data as ChartLine), color: (data as any).color || base.color }, ...prev]);
-            setStatusMsg("Line saved");
+            const saved: ChartLine = {
+              ...(data as ChartLine),
+              color: (data as any).color || base.color,
+              // Preserve ray origin even if DB dropped the column
+              start_time: (data as any).start_time ?? base.start_time ?? null,
+            };
+            if (saved.start_time == null && saved.note?.startsWith("__ray:")) {
+              const n = Number(saved.note.replace("__ray:", ""));
+              if (!Number.isNaN(n)) saved.start_time = n;
+            }
+            setLines((prev) => [saved, ...prev]);
+            setStatusMsg(m === "ray" ? "Ray saved" : "Line saved");
           } else setStatusMsg("Save failed");
           setSaving(false); clearPreview(); setMode("none");
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Alarm-ray: horizontal half-line alarm from click time → right
+        if (m === "alarm-ray") {
+          clickLockRef.current = true;
+          setSaving(true);
+          const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+          const t = resolveTime(param);
+          const payload: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            condition: conditionRef.current,
+            is_active: true,
+            triggered: false,
+            color: chosenColor,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+          };
+          if (t != null && !Number.isNaN(t)) payload.start_time = t;
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+          if (error && payload.start_time != null) {
+            payload.note = `__ray:${payload.start_time}`;
+            delete payload.start_time;
+            ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
+          }
+          if (error) {
+            const minimal = {
+              symbol: payload.symbol, price: payload.price, condition: payload.condition,
+              is_active: true, triggered: false,
+            };
+            ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+          }
+          if (!error && data) {
+            const saved: Alarm = {
+              ...(data as Alarm),
+              color: (data as any).color || chosenColor,
+              start_time: (data as any).start_time ?? (t != null ? t : null),
+            };
+            if (saved.start_time == null && saved.note?.startsWith("__ray:")) {
+              const n = Number(saved.note.replace("__ray:", ""));
+              if (!Number.isNaN(n)) saved.start_time = n;
+            }
+            setAlarms((prev) => [saved, ...prev]);
+            setStatusMsg("Ray alarm saved");
+          } else setStatusMsg("Alarm save failed");
+          setSaving(false); clearPreview(); setMode("none"); setAlarmMenuOpen(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -2320,6 +2556,10 @@ export default function DashboardPage() {
                 };
               }
             }
+            if (row.note?.startsWith("__ray:") && row.start_time == null) {
+              const n = Number(row.note.replace("__ray:", ""));
+              if (!Number.isNaN(n)) return { ...row, start_time: n };
+            }
             return row;
           })
         );
@@ -2338,6 +2578,10 @@ export default function DashboardPage() {
                   end_price: Number(parts[2]),
                 };
               }
+            }
+            if (row.note?.startsWith("__ray:") && row.start_time == null) {
+              const n = Number(row.note.replace("__ray:", ""));
+              if (!Number.isNaN(n)) return { ...row, start_time: n };
             }
             return row;
           })
@@ -3008,27 +3252,102 @@ export default function DashboardPage() {
                 </svg>
               </button>
 
-              {/* Alarm */}
-              <button
-                type="button"
-                title="Alarm"
-                onClick={() => {
-                  setMode(mode === "alarm" ? "none" : "alarm");
-                  setMovingId(null);
-                  setMovingType(null);
-                  setDiagStart(null);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  mode === "alarm"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              </button>
+              {/* Alarm — expands to 3 shapes with animation */}
+              <div className="relative">
+                <button
+                  type="button"
+                  title="Alarm"
+                  onClick={() => {
+                    setAlarmMenuOpen((v) => !v);
+                    if (alarmMenuOpen) {
+                      setMode("none");
+                      setDiagStart(null);
+                    }
+                    setMovingId(null);
+                    setMovingType(null);
+                  }}
+                  className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
+                      ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                      : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                  }`}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                </button>
+                {alarmMenuOpen && (
+                  <div
+                    className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
+                    style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
+                  >
+                    {/* Full horizontal alarm */}
+                    <button
+                      type="button"
+                      title="Full line alarm"
+                      onClick={() => {
+                        setMode("alarm");
+                        setAlarmMenuOpen(false);
+                        setDiagStart(null);
+                        setStatusMsg("Tap chart for full-line alarm");
+                      }}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                        mode === "alarm"
+                          ? "bg-orange-500 text-black border-orange-400"
+                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                      }`}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <line x1="3" y1="12" x2="21" y2="12" />
+                      </svg>
+                    </button>
+                    {/* Half-line / ray alarm */}
+                    <button
+                      type="button"
+                      title="Half-line (ray) alarm"
+                      onClick={() => {
+                        setMode("alarm-ray");
+                        setAlarmMenuOpen(false);
+                        setDiagStart(null);
+                        setStatusMsg("Tap chart for ray alarm");
+                      }}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                        mode === "alarm-ray"
+                          ? "bg-orange-500 text-black border-orange-400"
+                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                      }`}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="4" y1="12" x2="18" y2="12" />
+                        <polyline points="14,8 18,12 14,16" />
+                      </svg>
+                    </button>
+                    {/* Diagonal alarm */}
+                    <button
+                      type="button"
+                      title="Diagonal alarm"
+                      onClick={() => {
+                        setMode("alarm-diag");
+                        setAlarmMenuOpen(false);
+                        setDiagStart(null);
+                        setStatusMsg("① point then ② for diag alarm");
+                      }}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                        mode === "alarm-diag"
+                          ? "bg-orange-500 text-black border-orange-400"
+                          : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
+                      }`}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <line x1="4" y1="18" x2="20" y2="6" />
+                        <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                        <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
 
               {/* Indicators */}
               <button
@@ -3683,7 +4002,10 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(a.id);
                         setMovingType("alarm");
+                        movingRayRef.current =
+                          a.start_time != null && !isDiagonalLine(a as any);
                         if (isDiagonalLine(a as any)) {
+                          movingRayRef.current = false;
                           moveDiagRef.current = {
                             id: a.id,
                             phase: "pick",
@@ -3860,7 +4182,11 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Ray = has start_time but is not a full diagonal segment
+                        movingRayRef.current =
+                          l.start_time != null && !isDiagonalLine(l);
                         if (isDiagonalLine(l)) {
+                          movingRayRef.current = false;
                           moveDiagRef.current = {
                             id: l.id,
                             phase: "pick",
