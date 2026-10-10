@@ -3086,7 +3086,16 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
       measureSeriesRef.current = null;
     }
-    lockChartInteraction(false);
+    // Unlock chart scroll/scale (lockChartInteraction lives inside loadCandles)
+    try {
+      chartRef.current?.applyOptions({
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+        handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+      });
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    } catch {}
   };
   const updateAlarmCondition = async (id: string, condition: Alarm["condition"]) => {
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
