@@ -4966,15 +4966,15 @@ export default function DashboardPage() {
                         try {
                           chart.timeScale().setVisibleLogicalRange({ from, to });
                         } catch {}
-                        // Fit price around the segment
+                        // Fit price around the segment (cast — LWC version variance)
                         try {
                           const pLo = Math.min(Number(a.price), Number(ep));
                           const pHi = Math.max(Number(a.price), Number(ep));
                           const pad = Math.max((pHi - pLo) * 0.35, pHi * 0.002);
-                          series?.priceScale()?.setVisibleRange?.({
-                            from: pLo - pad,
-                            to: pHi + pad,
-                          });
+                          const ps = series?.priceScale() as any;
+                          if (ps && typeof ps.setVisibleRange === "function") {
+                            ps.setVisibleRange({ from: pLo - pad, to: pHi + pad });
+                          }
                         } catch {}
                       }
                     } else {
@@ -5011,10 +5011,10 @@ export default function DashboardPage() {
                         try {
                           const p = Number(a.price);
                           const pad = Math.abs(p) * 0.01;
-                          series?.priceScale()?.setVisibleRange?.({
-                            from: p - pad,
-                            to: p + pad,
-                          });
+                          const ps = series?.priceScale() as any;
+                          if (ps && typeof ps.setVisibleRange === "function") {
+                            ps.setVisibleRange({ from: p - pad, to: p + pad });
+                          }
                         } catch {}
                       }
                     }
