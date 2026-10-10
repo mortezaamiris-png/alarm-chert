@@ -1690,13 +1690,16 @@ export default function DashboardPage() {
       };
       container.addEventListener("touchmove", onTouchMoveBlock, { passive: false, signal: pointerAbortRef.current.signal });
       const onPointerMove = (e: PointerEvent) => {
+        const m0 = modeRef.current;
         const isDiagDraw =
-          (modeRef.current === "diag" || modeRef.current === "alarm-diag") &&
-          !!diagStartRef.current;
-        const isDiagMove = modeRef.current === "move" && !!moveDiagRef.current;
-        if (!isDiagDraw && !isDiagMove) return;
-        try { e.preventDefault(); } catch {}
-        // Throttle to one update per animation frame (critical for desktop)
+          (m0 === "diag" || m0 === "alarm-diag") && !!diagStartRef.current;
+        const isDiagMove = m0 === "move" && !!moveDiagRef.current;
+        const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
+        if (!isDiagDraw && !isDiagMove && !isRayPreview) return;
+        if (isDiagDraw || isDiagMove) {
+          try { e.preventDefault(); } catch {}
+        }
+        // Throttle to one update per animation frame (critical — prevents freeze)
         if (moveRafRef.current) return;
         const cx = e.clientX;
         const cy = e.clientY;
@@ -1726,7 +1729,41 @@ export default function DashboardPage() {
           } catch {}
           if (tCursor == null) return;
 
-          if (modeRef.current === "diag" && diagStartRef.current) {
+          const modeNow = modeRef.current;
+
+          // Ray / alarm-ray: half-line preview (throttled)
+          if (modeNow === "ray" || modeNow === "alarm-ray") {
+            try {
+              if (previewLineRef.current) {
+                try { series.removePriceLine(previewLineRef.current); } catch {}
+                previewLineRef.current = null;
+              }
+              const candles = candlesRef.current;
+              if (!candles.length) return;
+              const lastT = candles[candles.length - 1].time;
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              // End must always be strictly after start
+              const t1 = Math.max(lastT + barSec * 20, tCursor + barSec * 4);
+              if (t1 <= tCursor) return;
+              if (!previewDiagSeriesRef.current) {
+                previewDiagSeriesRef.current = chart.addLineSeries({
+                  color: drawColorRef.current,
+                  lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                  lineStyle: LineStyle.Dashed,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                });
+              }
+              previewDiagSeriesRef.current.setData([
+                { time: tCursor as any, value: price },
+                { time: t1 as any, value: price },
+              ]);
+            } catch {}
+            return;
+          }
+
+          if ((modeNow === "diag" || modeNow === "alarm-diag") && diagStartRef.current) {
             updateDiagPreview(tCursor, price);
             return;
           }
@@ -1759,57 +1796,21 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Diag / move: pointermove handles preview — skip here to avoid double work & desktop freeze
+        // Heavy previews (diag / ray / move) handled by throttled pointermove — skip here
         if (
           modeRef.current === "none" ||
           modeRef.current === "move" ||
           modeRef.current === "diag" ||
-          modeRef.current === "alarm-diag"
+          modeRef.current === "alarm-diag" ||
+          modeRef.current === "ray" ||
+          modeRef.current === "alarm-ray"
         )
           return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
 
-        const m = modeRef.current;
-        // Ray / alarm-ray: half-line preview from cursor time → future (not full price line)
-        if (m === "ray" || m === "alarm-ray") {
-          if (previewLineRef.current) {
-            try { series.removePriceLine(previewLineRef.current); } catch {}
-            previewLineRef.current = null;
-          }
-          try {
-            const t0 = resolveTime(param);
-            const candles = candlesRef.current;
-            if (t0 == null || !candles.length) return;
-            const lastT = candles[candles.length - 1].time;
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            const t1 = Math.max(lastT + barSec * 8, t0 + barSec * 4);
-            if (!previewDiagSeriesRef.current) {
-              previewDiagSeriesRef.current = chart.addLineSeries({
-                color: drawColorRef.current,
-                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                lineStyle: toLineStyle(drawDashRef.current),
-                priceLineVisible: false,
-                lastValueVisible: false,
-                crosshairMarkerVisible: false,
-              });
-            } else {
-              previewDiagSeriesRef.current.applyOptions({
-                color: drawColorRef.current,
-                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                lineStyle: toLineStyle(drawDashRef.current),
-              });
-            }
-            previewDiagSeriesRef.current.setData([
-              { time: t0 as any, value: price },
-              { time: t1 as any, value: price },
-            ]);
-          } catch {}
-          return;
-        }
-
-        // Full horizontal (draw / alarm): price line across chart
+        // Full horizontal (draw / alarm): cheap price line update only
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
           previewDiagSeriesRef.current = null;
