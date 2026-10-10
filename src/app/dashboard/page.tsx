@@ -64,7 +64,16 @@ interface WatchItem {
 /** Built-in side-panel view: symbols that currently have active alarms */
 const SIDE_VIEW_ALARMS = "__alarms__";
 
-type ToolMode = "none" | "draw" | "ray" | "diag" | "alarm" | "alarm-ray" | "alarm-diag" | "move";
+type ToolMode =
+  | "none"
+  | "draw"
+  | "ray"
+  | "diag"
+  | "alarm"
+  | "alarm-ray"
+  | "alarm-diag"
+  | "move"
+  | "measure";
 
 /** Project price on a diagonal line at unix time t (extends beyond end). */
 function projectedPriceOnDiag(
@@ -653,6 +662,15 @@ export default function DashboardPage() {
   const [showToolsPanel, setShowToolsPanel] = useState(() => loadLS("show_tools_panel", true));
   /** Alarm sub-menu: full / ray / diag placement */
   const [alarmMenuOpen, setAlarmMenuOpen] = useState(false);
+  /** Eye menu: hide lines / indicators */
+  const [hideMenuOpen, setHideMenuOpen] = useState(false);
+  const [hideLines, setHideLines] = useState(false);
+  const [hideIndicators, setHideIndicators] = useState(false);
+  /** Measure tool: first point then live second */
+  const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
+  const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
+  const measureStartRef = useRef<{ time: number; price: number } | null>(null);
+  const measureSeriesRef = useRef<any>(null);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
@@ -1097,14 +1115,17 @@ export default function DashboardPage() {
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        const title = isMoving
-          ? "MOVING"
-          : l.note
-          ? `L ${l.note}`
-          : isDiagonalLine(l)
-          ? `Diag ${formatPrice(l.price)}`
-          : `Line ${formatPrice(l.price)}`;
-        if (isDiagonalLine(l)) {
+        // Title only when note exists (no "Line xxx" label)
+        const noteClean =
+          l.note &&
+          !String(l.note).startsWith("__diag:") &&
+          !String(l.note).startsWith("__ray:")
+            ? String(l.note)
+            : "";
+        const title = isMoving ? "MOVING" : noteClean;
+        if (hideLines) {
+          // skip drawing lines when eye-hide is on
+        } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
@@ -1114,12 +1135,10 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const noteClean = l.note && !String(l.note).startsWith("__diag:") ? String(l.note) : null;
-          const diagTitle = isMoving ? "MOVING" : noteClean || "Diag";
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-            title: diagTitle,
+            title: title || "",
           });
           if (t1 > t0) {
             ls.setData([
@@ -1135,20 +1154,25 @@ export default function DashboardPage() {
           }
           chartLinesRef.current.set(l.id, ls);
         } else if (l.start_time != null) {
-          // Horizontal ray from start_time
+          // Horizontal ray from start_time → far into future (to price scale edge)
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const rayEnd = lastTime + FUTURE_BARS * barSec;
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            crosshairMarkerVisible: false,
+            title: title || "",
           });
           ls.setData([
             { time: l.start_time as any, value: l.price },
-            { time: (lastTime + extend) as any, value: l.price },
+            { time: rayEnd as any, value: l.price },
           ]);
           chartLinesRef.current.set(l.id, ls);
         } else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
-            axisLabelVisible: true, title,
+            axisLabelVisible: true, title: title || "",
           });
           alarmLinesRef.current.set(`line-${l.id}`, pl);
         }
@@ -1170,16 +1194,18 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA = a.note && !String(a.note).startsWith("__diag:") ? String(a.note) : null;
+        const noteCleanA =
+          a.note &&
+          !String(a.note).startsWith("__diag:") &&
+          !String(a.note).startsWith("__ray:") &&
+          a.note !== "Diag"
+            ? String(a.note)
+            : null;
         const title = isMoving
           ? "MOVING"
           : isHL
           ? "◀ SELECTED"
-          : noteCleanA
-          ? noteCleanA
-          : isDiagonalLine(a)
-          ? "Diag 🔔"
-          : "";
+          : noteCleanA || "";
 
         if (isDiagonalLine(a)) {
           // Diagonal alarm: ONLY the slanted segment — no horizontal helper line
@@ -1194,7 +1220,7 @@ export default function DashboardPage() {
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-            title: title || "Diag 🔔",
+            title: title || "",
           });
           // Segment only A→B (hit detection uses projectedPriceOnDiag at runtime)
           if (t1 > t0) {
@@ -1210,22 +1236,24 @@ export default function DashboardPage() {
           }
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Horizontal ray alarm: from start_time → future
+          // Horizontal ray alarm: from start_time → far future (to price scale)
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const rayEnd = lastTime + FUTURE_BARS * barSec;
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-            title: title || "Ray 🔔",
+            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            title: title || "",
           });
           ls.setData([
             { time: Number(a.start_time) as any, value: a.price },
-            { time: (lastTime + extend) as any, value: a.price },
+            { time: rayEnd as any, value: a.price },
           ]);
           chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
         } else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
             lineStyle: style,
-            axisLabelVisible: true, title,
+            axisLabelVisible: true, title: title || "",
           });
           alarmLinesRef.current.set(`alarm-${a.id}`, pl);
         }
@@ -1288,7 +1316,7 @@ export default function DashboardPage() {
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
-  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag]);
+  }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, hideLines]);
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -1302,7 +1330,7 @@ export default function DashboardPage() {
   }, []);
   const applySMA = useCallback(() => {
     removeSMA();
-    if (!showSMA || !smaVisible || !chartRef.current || !candlesRef.current.length) return;
+    if (!showSMA || !smaVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const c = candlesRef.current;
     const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
@@ -1311,7 +1339,7 @@ export default function DashboardPage() {
     s2.setData(calcSMA(c, sma2) as any);
     s3.setData(calcSMA(c, sma3) as any);
     smaSeriesRef.current = { s1, s2, s3 };
-  }, [showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
+  }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
     if (rsiSeriesRef.current && chartRef.current) {
@@ -1321,7 +1349,7 @@ export default function DashboardPage() {
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
-    if (!showRSI || !rsiVisible || !chartRef.current || !candlesRef.current.length) return;
+    if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const s = chartRef.current.addLineSeries({
       color: rsiColor, lineWidth: 1, priceScaleId: "rsi",
       priceLineVisible: false, lastValueVisible: true,
@@ -1329,7 +1357,7 @@ export default function DashboardPage() {
     s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
     rsiSeriesRef.current = s;
     updateMargins();
-  }, [showRSI, rsiVisible, rsiPeriod, rsiColor, removeRSI, updateMargins]);
+  }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
     if (dmiSeriesRef.current && chartRef.current) {
@@ -1343,7 +1371,7 @@ export default function DashboardPage() {
   }, []);
   const applyDMI = useCallback(() => {
     removeDMI();
-    if (!showDMI || !dmiVisible || !chartRef.current || !candlesRef.current.length) return;
+    if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
     const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
     const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
@@ -1353,7 +1381,7 @@ export default function DashboardPage() {
     adxS.setData(adx as any);
     dmiSeriesRef.current = { plus, minus, adx: adxS };
     updateMargins();
-  }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
+  }, [showDMI, dmiVisible, hideIndicators, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
 
   const removePivot = useCallback(() => {
     pivotSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
@@ -1361,7 +1389,7 @@ export default function DashboardPage() {
   }, []);
   const applyPivot = useCallback(async () => {
     removePivot();
-    if (!showPivot || !pivotVisible || !chartRef.current || !candlesRef.current.length) return;
+    if (!showPivot || !pivotVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     try {
       const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=3`);
       const data = await res.json();
@@ -1401,7 +1429,7 @@ export default function DashboardPage() {
         pivotSeriesRef.current.push(ls);
       });
     } catch {}
-  }, [showPivot, pivotVisible, pivotTf, pivotFib, removePivot]);
+  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, removePivot]);
 
   const removeTrend = useCallback(() => {
     trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
@@ -1409,7 +1437,7 @@ export default function DashboardPage() {
   }, []);
   const applyTrend = useCallback(() => {
     removeTrend();
-    if (!showTrend || !trendVisible || !chartRef.current || !candlesRef.current.length) return;
+    if (!showTrend || !trendVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const candles = candlesRef.current;
     const period = Math.max(4, trendPeriod);
     const maxLines = Math.max(1, Math.min(5, trendMax));
@@ -1458,14 +1486,14 @@ export default function DashboardPage() {
         dnCount++;
       } catch {}
     }
-  }, [showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
+  }, [showTrend, trendVisible, hideIndicators, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
 
   const applyVolume = useCallback(() => {
     if (volumeSeriesRef.current && chartRef.current) {
       try { chartRef.current.removeSeries(volumeSeriesRef.current); } catch {}
       volumeSeriesRef.current = null;
     }
-    if (!showVol || !volVisible || !chartRef.current || !candlesRef.current.length) {
+    if (!showVol || !volVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) {
       updateMargins();
       return;
     }
@@ -1481,7 +1509,7 @@ export default function DashboardPage() {
     );
     volumeSeriesRef.current = vol;
     updateMargins();
-  }, [showVol, volVisible, updateMargins]);
+  }, [showVol, volVisible, hideIndicators, updateMargins]);
 
   const rebuildIndicators = useCallback(() => {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume();
@@ -1698,7 +1726,10 @@ export default function DashboardPage() {
           (m0 === "diag" || m0 === "alarm-diag") && !!diagStartRef.current;
         const isDiagMove = m0 === "move" && !!moveDiagRef.current;
         const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
-        if (!isDiagDraw && !isDiagMove && !isRayPreview) return;
+        const isMeasure =
+          m0 === "measure" && !!measureStartRef.current && !measureEnd;
+        // measureEnd is state — use measureStartRef only for live drag
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -1734,6 +1765,31 @@ export default function DashboardPage() {
 
           const modeNow = modeRef.current;
 
+          // Measure live preview after first point
+          if (modeNow === "measure" && measureStartRef.current) {
+            const a = measureStartRef.current;
+            try {
+              if (!measureSeriesRef.current) {
+                measureSeriesRef.current = chart.addLineSeries({
+                  color: "#60a5fa",
+                  lineWidth: 2,
+                  lineStyle: LineStyle.Dashed,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                });
+              }
+              if (Math.abs(a.time - tCursor) < 1) return;
+              const pts = [
+                { time: a.time as any, value: a.price },
+                { time: tCursor as any, value: price },
+              ].sort((p, q) => Number(p.time) - Number(q.time));
+              measureSeriesRef.current.setData(pts);
+              setMeasureEnd({ time: tCursor, price });
+            } catch {}
+            return;
+          }
+
           // Ray / alarm-ray: half-line preview (throttled)
           if (modeNow === "ray" || modeNow === "alarm-ray") {
             try {
@@ -1745,8 +1801,8 @@ export default function DashboardPage() {
               if (!candles.length) return;
               const lastT = candles[candles.length - 1].time;
               const barSec = intervalToSeconds(String(intervalRef.current));
-              // End must always be strictly after start
-              const t1 = Math.max(lastT + barSec * 20, tCursor + barSec * 4);
+              // End must reach price-scale side (future whitespace)
+              const t1 = Math.max(lastT + FUTURE_BARS * barSec, tCursor + barSec * 4);
               if (t1 <= tCursor) return;
               if (!previewDiagSeriesRef.current) {
                 previewDiagSeriesRef.current = chart.addLineSeries({
@@ -1806,7 +1862,8 @@ export default function DashboardPage() {
           modeRef.current === "diag" ||
           modeRef.current === "alarm-diag" ||
           modeRef.current === "ray" ||
-          modeRef.current === "alarm-ray"
+          modeRef.current === "alarm-ray" ||
+          modeRef.current === "measure"
         )
           return;
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
@@ -2284,6 +2341,44 @@ export default function DashboardPage() {
           return;
         }
 
+        // Measure tool: two clicks → show delta box
+        if (m === "measure") {
+          const t = resolveTime(param);
+          if (t == null || Number.isNaN(t)) return;
+          if (!measureStartRef.current) {
+            measureStartRef.current = { time: t, price: fp };
+            setMeasureStart({ time: t, price: fp });
+            setMeasureEnd(null);
+            setStatusMsg("Measure: tap second point");
+            return;
+          }
+          // Second point — lock result
+          const a = measureStartRef.current;
+          const b = { time: t, price: fp };
+          setMeasureEnd(b);
+          try {
+            if (!measureSeriesRef.current) {
+              measureSeriesRef.current = chart.addLineSeries({
+                color: "#60a5fa",
+                lineWidth: 2,
+                lineStyle: LineStyle.Dashed,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+              });
+            }
+            const pts = [
+              { time: a.time as any, value: a.price },
+              { time: b.time as any, value: b.price },
+            ].sort((p, q) => Number(p.time) - Number(q.time));
+            measureSeriesRef.current.setData(pts);
+          } catch {}
+          setStatusMsg("Measure done — tap again to reset");
+          // Reset start so next tap begins new measure
+          measureStartRef.current = null;
+          return;
+        }
+
         if (m === "draw" || m === "ray") {
           clickLockRef.current = true;
           setSaving(true);
@@ -2501,7 +2596,8 @@ export default function DashboardPage() {
       pivotSettings ||
       trendSettings ||
       rsiSettings ||
-      dmiSettings;
+      dmiSettings ||
+      hideMenuOpen;
     if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
@@ -2511,7 +2607,7 @@ export default function DashboardPage() {
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
       }
-      // Indicator list + gear settings: close when clicking outside the panel
+      // Indicator list + gear settings + hide menu: close when clicking outside
       if (anyIndPanel && !el.closest?.("[data-ind-panel]")) {
         setShowIndicatorMenu(false);
         setSmaSettings(false);
@@ -2519,6 +2615,7 @@ export default function DashboardPage() {
         setTrendSettings(false);
         setRsiSettings(false);
         setDmiSettings(false);
+        setHideMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -2537,6 +2634,7 @@ export default function DashboardPage() {
     trendSettings,
     rsiSettings,
     dmiSettings,
+    hideMenuOpen,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -2565,6 +2663,8 @@ export default function DashboardPage() {
     showPivot, pivotVisible, pivotTf, pivotFib,
     showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
     showVol, volVisible,
+    hideIndicators,
+    rebuildIndicators,
   ]);
 
   useEffect(() => {
@@ -2919,6 +3019,18 @@ export default function DashboardPage() {
   const deleteLine = async (id: string) => {
     setLines((prev) => prev.filter((l) => l.id !== id));
     await supabase.from("chart_lines").delete().eq("id", id);
+  };
+  const deleteAllLines = async () => {
+    const list = lines.filter(
+      (l) => l.symbol.toUpperCase() === symbolUpper
+    );
+    if (!list.length) return;
+    if (!confirm(`Delete all ${list.length} lines on ${symbolUpper}?`)) return;
+    const ids = list.map((l) => l.id);
+    setLines((prev) => prev.filter((l) => !ids.includes(l.id)));
+    try {
+      await supabase.from("chart_lines").delete().in("id", ids);
+    } catch {}
   };
   const updateAlarmCondition = async (id: string, condition: Alarm["condition"]) => {
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
@@ -3391,6 +3503,131 @@ export default function DashboardPage() {
                 <line x1="18" y1="20" x2="18" y2="14" />
               </svg>
             </button>
+
+            {/* Measure (ruler) */}
+            <button
+              type="button"
+              title="Measure"
+              onClick={() => {
+                const next = mode === "measure" ? "none" : "measure";
+                setMode(next);
+                measureStartRef.current = null;
+                setMeasureStart(null);
+                setMeasureEnd(null);
+                setDiagStart(null);
+                setAlarmMenuOpen(false);
+                if (measureSeriesRef.current && chartRef.current) {
+                  try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
+                  measureSeriesRef.current = null;
+                }
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "measure"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 22L22 2" />
+                <path d="M6 18l2-2" />
+                <path d="M10 14l2-2" />
+                <path d="M14 10l2-2" />
+                <path d="M18 6l1-1" />
+              </svg>
+            </button>
+
+            {/* Eye — hide lines / indicators */}
+            <div className="relative" data-ind-panel>
+              <button
+                type="button"
+                title="Hide drawings"
+                onClick={() => setHideMenuOpen((v) => !v)}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  hideLines || hideIndicators || hideMenuOpen
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                {hideLines && hideIndicators ? (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+              {hideMenuOpen && (
+                <div
+                  data-ind-panel
+                  className="absolute left-full top-0 ml-1.5 z-30 bg-gray-900/95 border border-gray-600 rounded-xl p-1.5 shadow-xl w-40"
+                  style={{ animation: "tfPop 0.18s cubic-bezier(0.34,1.3,0.64,1)" }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHideLines((v) => !v);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      hideLines ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{hideLines ? "✓" : ""}</span>
+                    Hide lines
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHideIndicators((v) => !v);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      hideIndicators ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{hideIndicators ? "✓" : ""}</span>
+                    Hide indicators
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHideLines(true);
+                      setHideIndicators(true);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-200 hover:bg-white/10"
+                  >
+                    Hide all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHideLines(false);
+                      setHideIndicators(false);
+                      setHideMenuOpen(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-green-400 hover:bg-white/10"
+                  >
+                    Show all
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Trash — delete all lines on this symbol */}
+            <button
+              type="button"
+              title="Remove all lines"
+              onClick={() => deleteAllLines()}
+              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:bg-red-950/50 hover:border-red-700 hover:text-red-400 transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
           </div>
         )}
 
@@ -3414,31 +3651,59 @@ export default function DashboardPage() {
           />
 
           <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
-            {showSMA && (
+            {!hideIndicators && showSMA && (
               <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible((v) => !v)}
                 onSettings={() => setSmaSettings((v) => !v)} onRemove={() => { setShowSMA(false); removeSMA(); }} />
             )}
-            {showPivot && (
+            {!hideIndicators && showPivot && (
               <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible((v) => !v)}
                 onSettings={() => setPivotSettings((v) => !v)} onRemove={() => { setShowPivot(false); removePivot(); }} />
             )}
-            {showTrend && (
+            {!hideIndicators && showTrend && (
               <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
                 onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
             )}
-            {showRSI && (
+            {!hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
             )}
-            {showDMI && (
+            {!hideIndicators && showDMI && (
               <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
                 onSettings={() => setDmiSettings((v) => !v)} onRemove={() => { setShowDMI(false); removeDMI(); }} />
             )}
-            {showVol && (
+            {!hideIndicators && showVol && (
               <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible((v) => !v)}
                 onRemove={() => { setShowVol(false); applyVolume(); }} />
             )}
           </div>
+
+          {/* Measure result box (TradingView-style) */}
+          {mode === "measure" && measureStart && measureEnd && (
+            <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-blue-600/95 text-white text-xs rounded-lg px-3 py-2 shadow-xl pointer-events-none tabular-nums">
+              {(() => {
+                const dp = measureEnd.price - measureStart.price;
+                const pct = (dp / measureStart.price) * 100;
+                const sec = Math.abs(measureEnd.time - measureStart.time);
+                const barSec = intervalToSeconds(String(interval));
+                const bars = barSec > 0 ? Math.max(1, Math.round(sec / barSec)) : 0;
+                const h = Math.floor(sec / 3600);
+                const m = Math.floor((sec % 3600) / 60);
+                const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+                return (
+                  <>
+                    <div className="font-semibold">
+                      {dp >= 0 ? "+" : ""}
+                      {formatPrice(dp)} ({pct >= 0 ? "+" : ""}
+                      {pct.toFixed(2)}%)
+                    </div>
+                    <div className="opacity-90 mt-0.5">
+                      {bars} bars · {timeStr}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
 
           {showIndicatorMenu && (
             <div data-ind-panel className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
