@@ -3117,6 +3117,11 @@ export default function DashboardPage() {
                 };
               }
             }
+            // Ray half-line encoded in note
+            if (row.start_time == null && row.note?.startsWith("__ray:")) {
+              const n = Number(row.note.replace("__ray:", ""));
+              if (!Number.isNaN(n)) return { ...row, start_time: n };
+            }
             return row;
           };
           setAlarms((prev) => {
@@ -3310,20 +3315,40 @@ export default function DashboardPage() {
   const convertLineToAlarm = async (line: ChartLine) => {
     try {
       const chosenColor = line.color || DEFAULT_LINE_COLOR;
-      // Resolve diagonal endpoints (columns or note fallback)
+      // Resolve diagonal / ray geometry (columns or note fallback)
       let startTime = line.start_time ?? null;
       let endTime = line.end_time ?? null;
       let endPrice = line.end_price ?? null;
       if ((!endTime || endPrice == null) && line.note?.startsWith("__diag:")) {
-        const parts = line.note.split(":");
+        const parts = line.note.replace(/^__diag:/, "").split("|")[0].split(":");
         if (parts.length >= 3) {
+          startTime = startTime ?? Number(parts[0]);
           endTime = Number(parts[1]);
           endPrice = Number(parts[2]);
         }
       }
-      const isDiag = startTime != null && endTime != null && endPrice != null;
+      // Ray stored as start_time only, or note `__ray:unix`
+      if (startTime == null && line.note?.startsWith("__ray:")) {
+        const n = Number(line.note.replace("__ray:", ""));
+        if (!Number.isNaN(n)) startTime = n;
+      }
+      const isDiag =
+        startTime != null &&
+        endTime != null &&
+        endPrice != null &&
+        Number(endTime) !== Number(startTime);
+      // Half-line (ray): has origin time but is NOT a diagonal
+      const isRay = !isDiag && startTime != null;
       const noteClean =
-        line.note && !line.note.startsWith("__diag:") ? line.note : isDiag ? "Diag" : line.note || null;
+        line.note &&
+        !line.note.startsWith("__diag:") &&
+        !line.note.startsWith("__ray:")
+          ? line.note
+          : isDiag
+          ? "Diag"
+          : isRay
+          ? null
+          : line.note || null;
 
       const payload: any = {
         symbol: line.symbol,
@@ -3340,10 +3365,12 @@ export default function DashboardPage() {
         payload.start_time = startTime;
         payload.end_time = endTime;
         payload.end_price = endPrice;
+      } else if (isRay) {
+        // Keep half-line geometry on the alarm
+        payload.start_time = startTime;
       }
       let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
       if (error && isDiag) {
-        // DB may lack diagonal columns — encode in note
         const fallbackNote = `__diag:${startTime}:${endTime}:${endPrice}${noteClean && noteClean !== "Diag" ? "|" + noteClean : ""}`;
         payload.note = fallbackNote;
         delete payload.start_time;
@@ -3351,11 +3378,24 @@ export default function DashboardPage() {
         delete payload.end_price;
         ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
+      if (error && isRay) {
+        // Schema may lack start_time — encode ray origin in note
+        payload.note = `__ray:${startTime}`;
+        delete payload.start_time;
+        ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
+      }
       if (error) {
-        const minimal = {
-          symbol: line.symbol, price: line.price, condition: "cross",
-          is_active: true, triggered: false,
-          note: isDiag ? `__diag:${startTime}:${endTime}:${endPrice}` : noteClean,
+        const minimal: any = {
+          symbol: line.symbol,
+          price: line.price,
+          condition: "cross",
+          is_active: true,
+          triggered: false,
+          note: isDiag
+            ? `__diag:${startTime}:${endTime}:${endPrice}`
+            : isRay
+            ? `__ray:${startTime}`
+            : noteClean,
         };
         ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
       }
@@ -3369,11 +3409,12 @@ export default function DashboardPage() {
         width: (data as any).width || payload.width,
         dash: (data as any).dash || payload.dash,
         note: (data as any).note || payload.note,
-        start_time: (data as any).start_time ?? (isDiag ? startTime : null),
+        start_time:
+          (data as any).start_time ?? (isDiag || isRay ? startTime : null),
         end_time: (data as any).end_time ?? (isDiag ? endTime : null),
         end_price: (data as any).end_price ?? (isDiag ? endPrice : null),
       };
-      // Parse note-encoded diagonal if columns missing
+      // Parse note-encoded geometry if columns missing
       if (!isDiagonalLine(saved) && saved.note?.startsWith("__diag:")) {
         const parts = saved.note.replace(/^__diag:/, "").split("|")[0].split(":");
         if (parts.length >= 3) {
@@ -3382,10 +3423,16 @@ export default function DashboardPage() {
           saved.end_price = Number(parts[2]);
         }
       }
+      if (saved.start_time == null && saved.note?.startsWith("__ray:")) {
+        const n = Number(saved.note.replace("__ray:", ""));
+        if (!Number.isNaN(n)) saved.start_time = n;
+      }
       setAlarms((prev) => [saved, ...prev]);
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
-      setStatusMsg(isDiag ? "Diagonal alarm active" : "Converted to alarm");
+      setStatusMsg(
+        isDiag ? "Diagonal alarm active" : isRay ? "Ray alarm active" : "Converted to alarm"
+      );
     } catch {
       setStatusMsg("Convert error");
     }
@@ -3501,16 +3548,21 @@ export default function DashboardPage() {
             <button
               type="button"
               onClick={() => { setTfMenuOpen((v) => !v); setTzMenuOpen(false); setOpenMenu(null); }}
-              className={`px-2.5 py-1.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
+              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
                 tfMenuOpen
-                  ? "bg-orange-500 text-black border-orange-400 shadow-lg scale-105"
-                  : "bg-gray-900 text-gray-200 border-gray-600 hover:bg-white/10"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300 shadow-lg"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
               }`}
               title="Timeframes"
             >
-              <span aria-hidden className="text-sm leading-none">🕐</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="12" cy="12" r="9" />
+                <polyline points="12 7 12 12 15 14" />
+              </svg>
               <span className="font-medium">Time</span>
-              <span className={`transition-transform duration-200 ${tfMenuOpen ? "rotate-180" : ""}`}>▾</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform duration-200 ${tfMenuOpen ? "rotate-180" : ""}`} aria-hidden>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
             </button>
             {tfMenuOpen && (
               <div
