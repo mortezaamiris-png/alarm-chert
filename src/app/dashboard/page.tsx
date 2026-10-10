@@ -559,7 +559,10 @@ function IndChip({
   onToggleVisible: () => void; onSettings?: () => void; onRemove: () => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100">
+    <div
+      data-ind-panel
+      className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100"
+    >
       <span className="px-0.5 font-medium whitespace-nowrap opacity-90">{label}</span>
       <button type="button" onClick={onToggleVisible} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
         {visible ? "👁" : "⊘"}
@@ -2490,16 +2493,32 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl, showToolsPanel]);
 
-  // Close TF / timezone / list menus when clicking outside
+  // Close TF / timezone / list / indicator menus when clicking outside
   useEffect(() => {
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu) return;
+    const anyIndPanel =
+      showIndicatorMenu ||
+      smaSettings ||
+      pivotSettings ||
+      trendSettings ||
+      rsiSettings ||
+      dmiSettings;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
+      const el = t as HTMLElement;
       if (tfMenuOpen && tfMenuRef.current && !tfMenuRef.current.contains(t)) setTfMenuOpen(false);
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
       if (openMenu) {
-        const el = t as HTMLElement;
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
+      }
+      // Indicator list + gear settings: close when clicking outside the panel
+      if (anyIndPanel && !el.closest?.("[data-ind-panel]")) {
+        setShowIndicatorMenu(false);
+        setSmaSettings(false);
+        setPivotSettings(false);
+        setTrendSettings(false);
+        setRsiSettings(false);
+        setDmiSettings(false);
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -2508,7 +2527,17 @@ export default function DashboardPage() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("touchstart", onDown);
     };
-  }, [tfMenuOpen, tzMenuOpen, openMenu]);
+  }, [
+    tfMenuOpen,
+    tzMenuOpen,
+    openMenu,
+    showIndicatorMenu,
+    smaSettings,
+    pivotSettings,
+    trendSettings,
+    rsiSettings,
+    dmiSettings,
+  ]);
 
   // Refresh last-price axis label when timezone / TF changes
   useEffect(() => {
@@ -3347,6 +3376,7 @@ export default function DashboardPage() {
             {/* Indicators */}
             <button
               type="button"
+              data-ind-panel
               title="Indicators"
               onClick={() => setShowIndicatorMenu((v) => !v)}
               className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
@@ -3411,7 +3441,7 @@ export default function DashboardPage() {
           </div>
 
           {showIndicatorMenu && (
-            <div className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
+            <div data-ind-panel className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
               {[
                 { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
                 { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
@@ -3591,7 +3621,7 @@ export default function DashboardPage() {
           )}
 
           {smaSettings && showSMA && (
-            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
               <p className="font-medium mb-2">SMA Settings</p>
               {[
                 { str: sma1Str, setStr: setSma1Str, set: setSma1, col: smaColor1, setCol: setSmaColor1, label: "SMA1" },
@@ -3610,7 +3640,7 @@ export default function DashboardPage() {
             </div>
           )}
           {pivotSettings && showPivot && (
-            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
               <p className="font-medium mb-2">Pivot TF</p>
               <div className="flex flex-wrap gap-1 mb-2">
                 {PIVOT_TFS.map((t) => (
@@ -3628,7 +3658,7 @@ export default function DashboardPage() {
             </div>
           )}
           {trendSettings && showTrend && (
-            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
               <p className="font-medium mb-2">Trend Settings</p>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-14">Period</span>
@@ -3658,7 +3688,7 @@ export default function DashboardPage() {
             </div>
           )}
           {rsiSettings && showRSI && (
-            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
               <p className="font-medium mb-2">RSI</p>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-12">Period</span>
@@ -3678,7 +3708,7 @@ export default function DashboardPage() {
             </div>
           )}
           {dmiSettings && showDMI && (
-            <div className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
               <p className="font-medium mb-2">DMI</p>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-12">Period</span>
