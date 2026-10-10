@@ -1321,18 +1321,33 @@ export default function DashboardPage() {
         const barSec = intervalToSeconds(String(intervalRef.current));
         const candles = candlesRef.current;
         const lastT = candles.length ? candles[candles.length - 1].time : highlightRay.start_time;
-        const rayEnd = lastT + FUTURE_BARS * barSec;
+        const rayStartT = Number(highlightRay.start_time);
+        // Ensure end is clearly after start so LWC draws a segment
+        const rayEnd = Math.max(lastT + FUTURE_BARS * barSec, rayStartT + barSec * 8);
         const ls: any = chart.addLineSeries({
           color: "#eab308",
           lineWidth: 3,
           lineStyle: LineStyle.Dashed,
           priceLineVisible: false,
-          lastValueVisible: false,
+          lastValueVisible: true,
           crosshairMarkerVisible: false,
           title: "◀ HISTORY",
         });
+        // Marker at origin so user sees where the half-line begins
+        try {
+          ls.setMarkers([
+            {
+              time: rayStartT as any,
+              position: "inBar",
+              color: "#eab308",
+              shape: "circle",
+              size: 1,
+              text: "RAY",
+            },
+          ]);
+        } catch {}
         ls.setData([
-          { time: Number(highlightRay.start_time) as any, value: highlightRay.price },
+          { time: rayStartT as any, value: highlightRay.price },
           { time: rayEnd as any, value: highlightRay.price },
         ]);
         chartLinesRef.current.set("highlight-ray-temp", ls);
@@ -2676,18 +2691,23 @@ export default function DashboardPage() {
             width: drawWidthRef.current,
             dash: drawDashRef.current,
           };
-          if (t != null && !Number.isNaN(t)) payload.start_time = t;
+          if (t != null && !Number.isNaN(t)) {
+            payload.start_time = t;
+            // Always dual-write ray origin into note (survives schema / history reloads)
+            payload.note = `__ray:${t}`;
+          }
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
           if (error && payload.start_time != null) {
-            payload.note = `__ray:${payload.start_time}`;
+            // Column may not exist — note-only fallback
             delete payload.start_time;
             ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
           }
           if (error) {
-            const minimal = {
+            const minimal: any = {
               symbol: payload.symbol, price: payload.price, condition: payload.condition,
               is_active: true, triggered: false,
             };
+            if (t != null && !Number.isNaN(t)) minimal.note = `__ray:${t}`;
             ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
           if (!error && data) {
@@ -2695,6 +2715,7 @@ export default function DashboardPage() {
               ...(data as Alarm),
               color: (data as any).color || chosenColor,
               start_time: (data as any).start_time ?? (t != null ? t : null),
+              note: (data as any).note || (t != null ? `__ray:${t}` : null),
             };
             if (saved.start_time == null && saved.note?.startsWith("__ray:")) {
               const n = Number(saved.note.replace("__ray:", ""));
@@ -3402,8 +3423,9 @@ export default function DashboardPage() {
         payload.end_time = endTime;
         payload.end_price = endPrice;
       } else if (isRay) {
-        // Keep half-line geometry on the alarm
+        // Keep half-line geometry on the alarm (column + note backup)
         payload.start_time = startTime;
+        payload.note = `__ray:${startTime}`;
       }
       let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
       if (error && isDiag) {
@@ -3415,9 +3437,9 @@ export default function DashboardPage() {
         ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error && isRay) {
-        // Schema may lack start_time — encode ray origin in note
-        payload.note = `__ray:${startTime}`;
+        // Schema may lack start_time — note-only
         delete payload.start_time;
+        payload.note = `__ray:${startTime}`;
         ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error) {
@@ -5097,15 +5119,21 @@ export default function DashboardPage() {
                         } catch {}
                       }
                     } else {
-                      // Resolve ray (half-line) geometry
-                      let rayStart = a.start_time ?? null;
-                      if (rayStart == null && a.note?.startsWith("__ray:")) {
-                        const n = Number(a.note.replace("__ray:", ""));
-                        if (!Number.isNaN(n)) rayStart = n;
+                      // Resolve ray (half-line) geometry — column, note, or non-diag start_time
+                      let rayStart: number | null = null;
+                      if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
+                        rayStart = Number(a.start_time);
                       }
-                      const isRayHist =
-                        rayStart != null &&
-                        (a.end_time == null || a.end_price == null);
+                      if (rayStart == null && a.note?.startsWith("__ray:")) {
+                        const n = Number(String(a.note).replace("__ray:", "").split("|")[0]);
+                        if (!Number.isNaN(n) && n > 0) rayStart = n;
+                      }
+                      // Note may contain "__ray:unix" even alongside other text
+                      if (rayStart == null && a.note && String(a.note).includes("__ray:")) {
+                        const m = String(a.note).match(/__ray:(\d+)/);
+                        if (m) rayStart = Number(m[1]);
+                      }
+                      const isRayHist = rayStart != null && !Number.isNaN(rayStart) && rayStart > 0;
 
                       setHighlightDiag(null);
                       if (isRayHist) {
@@ -5187,6 +5215,19 @@ export default function DashboardPage() {
                             et = Number(parts[1]);
                             ep = Number(parts[2]);
                           }
+                        }
+                        // Ray history label
+                        let rayS = a.start_time ?? null;
+                        if (rayS == null && a.note?.startsWith("__ray:")) {
+                          const n = Number(String(a.note).replace("__ray:", "").split("|")[0]);
+                          if (!Number.isNaN(n)) rayS = n;
+                        }
+                        if (
+                          rayS != null &&
+                          (a.end_time == null || a.end_price == null) &&
+                          !(a.end_time != null && a.end_price != null)
+                        ) {
+                          return `→ ${formatPrice(a.price)}`;
                         }
                         if (et != null && ep != null && Number(a.start_time) !== Number(et)) {
                           return `↗ ${formatPrice(a.price)}→${formatPrice(Number(ep))}`;
