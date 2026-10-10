@@ -3188,26 +3188,19 @@ export default function DashboardPage() {
               let target = a.price;
               if (isDiagonalLine(a)) {
                 const nowT = Math.floor(Date.now() / 1000);
-                target = projectedPriceOnDiag(
-                  Number(a.start_time),
-                  Number(a.price),
-                  Number(a.end_time),
-                  Number(a.end_price),
-                  nowT
-                );
+                // Only active while "now" is within the segment time span
+                const st = Number(a.start_time);
+                const et = Number(a.end_time);
+                const tMin = Math.min(st, et);
+                const tMax = Math.max(st, et);
+                if (nowT < tMin || nowT > tMax + 60) continue;
+                target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
-              const hitClose = didCross(a.condition, target, prev, price);
-              const hitWick =
-                a.condition === "above" || a.condition === "cross"
-                  ? high >= target && (prev == null || prev < target || low <= target)
-                  : a.condition === "below"
-                  ? low <= target && (prev == null || prev > target || high >= target)
-                  : false;
-              const hitCrossWick =
-                a.condition === "cross" &&
-                ((high >= target && low <= target) || hitClose);
-
-              if (hitClose || (a.condition === "cross" ? hitCrossWick : hitWick)) {
+              // Precision: only last-price cross (prev → price).
+              // Never use chart-TF candle high/low — on 1h/4h a wick inside the bar
+              // would false-trigger even when price never actually crossed the level.
+              if (prev == null || Number.isNaN(prev)) continue;
+              if (didCross(a.condition, target, prev, price)) {
                 await triggerAlarmLocal(a, price);
               }
             }
@@ -3578,6 +3571,103 @@ export default function DashboardPage() {
               </svg>
             </button>
 
+            {/* Alarm — top of tool list */}
+            <div className="relative">
+              <button
+                type="button"
+                title="Alarm"
+                onClick={() => {
+                  setAlarmMenuOpen((v) => !v);
+                  if (alarmMenuOpen) {
+                    setMode("none");
+                    setDiagStart(null);
+                  }
+                  setMovingId(null);
+                  setMovingType(null);
+                }}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </button>
+              {alarmMenuOpen && (
+                <div
+                  className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
+                  style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
+                >
+                  <button
+                    type="button"
+                    title="Full line alarm"
+                    onClick={() => {
+                      clearPreview();
+                      setMode("alarm");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("Tap chart for full-line alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm"
+                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <line x1="3" y1="12" x2="21" y2="12" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Half-line (ray) alarm"
+                    onClick={() => {
+                      clearPreview();
+                      setMode("alarm-ray");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("Tap chart for ray alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm-ray"
+                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <line x1="4" y1="12" x2="20" y2="12" />
+                      <circle cx="4" cy="12" r="2" fill="currentColor" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Diagonal alarm"
+                    onClick={() => {
+                      clearPreview();
+                      setMode("alarm-diag");
+                      setAlarmMenuOpen(false);
+                      setDiagStart(null);
+                      setStatusMsg("Tap two points for diagonal alarm");
+                    }}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                      mode === "alarm-diag"
+                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <line x1="4" y1="18" x2="20" y2="6" />
+                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                      <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Horizontal line (draw) */}
             <button
               type="button"
@@ -3644,101 +3734,6 @@ export default function DashboardPage() {
                 <circle cx="20" cy="6" r="1.5" fill="currentColor" />
               </svg>
             </button>
-
-            {/* Alarm — expands to 3 shapes with animation */}
-            <div className="relative">
-              <button
-                type="button"
-                title="Alarm"
-                onClick={() => {
-                  setAlarmMenuOpen((v) => !v);
-                  if (alarmMenuOpen) {
-                    setMode("none");
-                    setDiagStart(null);
-                  }
-                  setMovingId(null);
-                  setMovingType(null);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              </button>
-              {alarmMenuOpen && (
-                <div
-                  className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
-                  style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
-                >
-                  <button
-                    type="button"
-                    title="Full line alarm"
-                    onClick={() => {
-                      setMode("alarm");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("Tap chart for full-line alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm"
-                        ? "bg-orange-500 text-black border-orange-400"
-                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="3" y1="12" x2="21" y2="12" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    title="Half-line (ray) alarm"
-                    onClick={() => {
-                      clearPreview();
-                      setMode("alarm-ray");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("Tap chart for ray alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm-ray"
-                        ? "bg-orange-500 text-black border-orange-400"
-                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="4" y1="12" x2="18" y2="12" />
-                      <polyline points="14,8 18,12 14,16" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    title="Diagonal alarm"
-                    onClick={() => {
-                      setMode("alarm-diag");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("① point then ② for diag alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm-diag"
-                        ? "bg-orange-500 text-black border-orange-400"
-                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="4" y1="18" x2="20" y2="6" />
-                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                      <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
 
             {/* Indicators */}
             <button
@@ -4116,15 +4111,16 @@ export default function DashboardPage() {
               >
                 {drawDash === "solid" ? "——" : "- -"}
               </button>
-              {mode === "alarm" && (
+              {(mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag") && (
                 <select
                   value={condition}
                   onChange={(e) => setCondition(e.target.value as any)}
                   className="bg-gray-800 rounded px-1.5 py-1 text-xs"
+                  title="Trigger condition"
                 >
+                  <option value="cross">Cross</option>
                   <option value="above">Above</option>
                   <option value="below">Below</option>
-                  <option value="cross">Cross</option>
                 </select>
               )}
               {previewPrice != null && (
