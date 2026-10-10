@@ -674,6 +674,9 @@ export default function DashboardPage() {
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
   const measureSeriesRef = useRef<any>(null);
+  /** Live measure HUD (DOM-only — avoids React re-render lag) */
+  const measureHudRef = useRef<HTMLDivElement | null>(null);
+  const measureLastHudTs = useRef(0);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
@@ -1771,7 +1774,7 @@ export default function DashboardPage() {
 
           const modeNow = modeRef.current;
 
-          // Measure live preview after first point (dashed + hollow dots)
+          // Measure live preview — DOM only (no setState → no lag)
           if (modeNow === "measure" && measureStartRef.current) {
             const a = measureStartRef.current;
             try {
@@ -1791,7 +1794,6 @@ export default function DashboardPage() {
                 { time: tCursor as any, value: price },
               ].sort((p, q) => Number(p.time) - Number(q.time));
               measureSeriesRef.current.setData(pts);
-              setMeasureEnd({ time: tCursor, price });
               // hollow dots at A and cursor
               const xA = chart.timeScale().timeToCoordinate(a.time as any);
               const yA = series.priceToCoordinate(a.price);
@@ -1808,6 +1810,23 @@ export default function DashboardPage() {
                 handleBElRef.current.style.left = `${xB}px`;
                 handleBElRef.current.style.top = `${yB}px`;
                 handleBElRef.current.style.borderColor = "#60a5fa";
+              }
+              // HUD text (throttled ~8fps)
+              const now = performance.now();
+              if (measureHudRef.current && now - measureLastHudTs.current > 120) {
+                measureLastHudTs.current = now;
+                const dp = price - a.price;
+                const pct = (dp / a.price) * 100;
+                const sec = Math.abs(tCursor - a.time);
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                const bars = barSec > 0 ? Math.max(1, Math.round(sec / barSec)) : 0;
+                const h = Math.floor(sec / 3600);
+                const m = Math.floor((sec % 3600) / 60);
+                const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+                measureHudRef.current.style.display = "block";
+                measureHudRef.current.innerHTML =
+                  `<div class="font-semibold">${dp >= 0 ? "+" : ""}${formatPrice(dp)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)</div>` +
+                  `<div class="opacity-90 mt-0.5">${bars} bars · ${timeStr}</div>`;
               }
             } catch {}
             return;
@@ -2412,11 +2431,29 @@ export default function DashboardPage() {
             ].sort((p, q) => Number(p.time) - Number(q.time));
             measureSeriesRef.current.setData(pts);
           } catch {}
+          // Final HUD values
+          if (measureHudRef.current) {
+            const dp = b.price - a.price;
+            const pct = (dp / a.price) * 100;
+            const sec = Math.abs(b.time - a.time);
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            const bars = barSec > 0 ? Math.max(1, Math.round(sec / barSec)) : 0;
+            const h = Math.floor(sec / 3600);
+            const mi = Math.floor((sec % 3600) / 60);
+            const timeStr = h > 0 ? `${h}h ${mi}m` : `${mi}m`;
+            measureHudRef.current.style.display = "block";
+            measureHudRef.current.innerHTML =
+              `<div class="font-semibold">${dp >= 0 ? "+" : ""}${formatPrice(dp)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)</div>` +
+              `<div class="opacity-90 mt-0.5">${bars} bars · ${timeStr}</div>`;
+          }
           measureStartRef.current = null;
           measureDoneRef.current = false;
           lockChartInteraction(false);
-          setMode("none");
-          setStatusMsg("");
+          // Exit measure mode without heavy cascade — defer React updates
+          requestAnimationFrame(() => {
+            setMode("none");
+            setStatusMsg("");
+          });
           window.setTimeout(() => {
             if (measureSeriesRef.current && chartRef.current) {
               try { chartRef.current.removeSeries(measureSeriesRef.current); } catch {}
@@ -2426,6 +2463,7 @@ export default function DashboardPage() {
             setMeasureEnd(null);
             if (handleAElRef.current) handleAElRef.current.style.display = "none";
             if (handleBElRef.current) handleBElRef.current.style.display = "none";
+            if (measureHudRef.current) measureHudRef.current.style.display = "none";
           }, 4000);
           return;
         }
@@ -3116,6 +3154,7 @@ export default function DashboardPage() {
     }
     if (handleAElRef.current) handleAElRef.current.style.display = "none";
     if (handleBElRef.current) handleBElRef.current.style.display = "none";
+    if (measureHudRef.current) measureHudRef.current.style.display = "none";
     // Unlock chart scroll/scale (lockChartInteraction lives inside loadCandles)
     try {
       chartRef.current?.applyOptions({
@@ -3853,33 +3892,12 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Measure result box (TradingView-style) */}
-          {measureStart && measureEnd && (
-            <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-blue-600/95 text-white text-xs rounded-lg px-3 py-2 shadow-xl pointer-events-none tabular-nums">
-              {(() => {
-                const dp = measureEnd.price - measureStart.price;
-                const pct = (dp / measureStart.price) * 100;
-                const sec = Math.abs(measureEnd.time - measureStart.time);
-                const barSec = intervalToSeconds(String(interval));
-                const bars = barSec > 0 ? Math.max(1, Math.round(sec / barSec)) : 0;
-                const h = Math.floor(sec / 3600);
-                const m = Math.floor((sec % 3600) / 60);
-                const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
-                return (
-                  <>
-                    <div className="font-semibold">
-                      {dp >= 0 ? "+" : ""}
-                      {formatPrice(dp)} ({pct >= 0 ? "+" : ""}
-                      {pct.toFixed(2)}%)
-                    </div>
-                    <div className="opacity-90 mt-0.5">
-                      {bars} bars · {timeStr}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          )}
+          {/* Measure HUD — updated via DOM during drag (no React lag) */}
+          <div
+            ref={measureHudRef}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-blue-600/95 text-white text-xs rounded-lg px-3 py-2 shadow-xl pointer-events-none tabular-nums"
+            style={{ display: "none" }}
+          />
 
           {showIndicatorMenu && (
             <div data-ind-panel className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
