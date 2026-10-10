@@ -1141,9 +1141,14 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
+          // Diagonals always solid continuous segment (dash looks like "gaps" on higher TF)
           const ls: any = chart.addLineSeries({
-            color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            color,
+            lineWidth: width,
+            lineStyle: LineStyle.Solid,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
             title: title || "",
           });
           if (t1 > t0) {
@@ -1225,9 +1230,14 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
+          // Diag alarms: solid continuous (no dashed gaps on higher TF)
           const ls: any = chart.addLineSeries({
-            color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            color,
+            lineWidth: width,
+            lineStyle: isMoving || isHL ? LineStyle.Dashed : LineStyle.Solid,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
             title: title || "",
           });
           // Segment only A→B (hit detection uses projectedPriceOnDiag at runtime)
@@ -1283,7 +1293,7 @@ export default function DashboardPage() {
       } catch {}
     }
 
-    // History / temp highlight: yellow dashed DIAGONAL segment
+    // History / temp highlight: continuous yellow DIAGONAL (solid — no dashed gaps)
     if (highlightDiag) {
       try {
         const st = Number(highlightDiag.start_time);
@@ -1297,12 +1307,13 @@ export default function DashboardPage() {
         const ls: any = chart.addLineSeries({
           color: "#eab308",
           lineWidth: 3,
-          lineStyle: LineStyle.Dashed,
+          lineStyle: LineStyle.Solid,
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
           title: "◀ HISTORY",
         });
+        // Two endpoints only — LWC draws a continuous segment on any TF
         if (t1 > t0) {
           ls.setData([
             { time: t0 as any, value: v0 },
@@ -1596,9 +1607,9 @@ export default function DashboardPage() {
         borderUpColor: "#22c55e", borderDownColor: "#ef4444",
         wickUpColor: "#22c55e", wickDownColor: "#ef4444",
         priceFormat: { type: "price", precision, minMove },
-        // Hide default last-value label; we render TradingView-style price+time badge ourselves
+        // Custom last-price badge via lastPriceLineRef — hide built-in (avoids double dashed line)
         lastValueVisible: false,
-        priceLineVisible: true,
+        priceLineVisible: false,
       });
       // Real candles + trailing whitespace so time labels continue past last bar
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
@@ -4904,6 +4915,25 @@ export default function DashboardPage() {
                       ep != null &&
                       Number(st) !== Number(et);
                     setHighlightAlarmId(null);
+
+                    // Jump chart to the hit / line region (not just flash off-screen)
+                    const chart = chartRef.current;
+                    const series = seriesRef.current;
+                    const candles = candlesRef.current;
+                    const barSec = intervalToSeconds(String(intervalRef.current));
+                    const idxNear = (unix: number) => {
+                      if (!candles.length) return 0;
+                      // binary search nearest bar
+                      let lo = 0;
+                      let hi = candles.length - 1;
+                      while (lo < hi) {
+                        const mid = (lo + hi) >> 1;
+                        if (candles[mid].time < unix) lo = mid + 1;
+                        else hi = mid;
+                      }
+                      return Math.max(0, Math.min(candles.length - 1, lo));
+                    };
+
                     if (isDiag) {
                       setHighlightPrice(null);
                       setHighlightDiag({
@@ -4913,13 +4943,83 @@ export default function DashboardPage() {
                         end_price: Number(ep),
                       });
                       setStatusMsg(`History Diag ${formatPrice(a.price)}→${formatPrice(Number(ep))}`);
+                      if (chart && candles.length) {
+                        const t0 = Math.min(Number(st), Number(et));
+                        const t1 = Math.max(Number(st), Number(et));
+                        // Prefer trigger moment if known, else middle of segment
+                        let focusT = (t0 + t1) / 2;
+                        try {
+                          const trig = (a as any).triggered_at || (a as any).updated_at;
+                          if (trig) {
+                            const n = Math.floor(new Date(trig).getTime() / 1000);
+                            if (!Number.isNaN(n) && n > 0) focusT = n;
+                          }
+                        } catch {}
+                        const i0 = idxNear(t0 - barSec * 8);
+                        const i1 = idxNear(t1 + barSec * 8);
+                        const iF = idxNear(focusT);
+                        const from = Math.max(0, Math.min(i0, iF) - 5);
+                        const to = Math.min(
+                          candles.length - 1 + FUTURE_VISIBLE,
+                          Math.max(i1, iF) + 15
+                        );
+                        try {
+                          chart.timeScale().setVisibleLogicalRange({ from, to });
+                        } catch {}
+                        // Fit price around the segment
+                        try {
+                          const pLo = Math.min(Number(a.price), Number(ep));
+                          const pHi = Math.max(Number(a.price), Number(ep));
+                          const pad = Math.max((pHi - pLo) * 0.35, pHi * 0.002);
+                          series?.priceScale()?.setVisibleRange?.({
+                            from: pLo - pad,
+                            to: pHi + pad,
+                          });
+                        } catch {}
+                      }
                     } else {
                       setHighlightDiag(null);
                       setHighlightPrice(a.price);
                       setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                      if (chart && candles.length) {
+                        let focusT: number | null = null;
+                        try {
+                          const trig = (a as any).triggered_at || (a as any).updated_at;
+                          if (trig) {
+                            const n = Math.floor(new Date(trig).getTime() / 1000);
+                            if (!Number.isNaN(n) && n > 0) focusT = n;
+                          }
+                        } catch {}
+                        if (focusT != null) {
+                          const iF = idxNear(focusT);
+                          const from = Math.max(0, iF - 40);
+                          const to = Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20);
+                          try {
+                            chart.timeScale().setVisibleLogicalRange({ from, to });
+                          } catch {}
+                        } else {
+                          // No trigger time — frame last bars so price line is visible
+                          try {
+                            const bars = candles.length;
+                            const past = Math.min(70, bars);
+                            chart.timeScale().setVisibleLogicalRange({
+                              from: bars - past,
+                              to: bars - 1 + FUTURE_VISIBLE,
+                            });
+                          } catch {}
+                        }
+                        try {
+                          const p = Number(a.price);
+                          const pad = Math.abs(p) * 0.01;
+                          series?.priceScale()?.setVisibleRange?.({
+                            from: p - pad,
+                            to: p + pad,
+                          });
+                        } catch {}
+                      }
                     }
                   }}
-                  title="Tap to flash line on chart"
+                  title="Tap to jump to hit area on chart"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono font-medium text-gray-400">
