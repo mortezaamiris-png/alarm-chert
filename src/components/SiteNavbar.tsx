@@ -221,6 +221,18 @@ export default function SiteNavbar() {
     let cancelled = false;
     (async () => {
       try {
+        // Unread = triggered alarms for this user (last 7 days) as inbox badge
+        const { count, error } = await supabase
+          .from("alarms")
+          .select("*", { count: "exact", head: true })
+          .eq("triggered", true)
+          .eq("user_id", user.id);
+        if (!error && !cancelled && typeof count === "number") {
+          setUnreadCount(count);
+          return;
+        }
+      } catch {}
+      try {
         const { count, error } = await supabase
           .from("messages")
           .select("*", { count: "exact", head: true })
@@ -250,75 +262,76 @@ export default function SiteNavbar() {
     <>
       <header className="sticky top-0 z-50 w-full border-b border-white/5 bg-[#0b0e11]/90 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-3 h-12 flex items-center gap-2">
-          {/* LEFT — Profile + Messages (جایی که علامت زدی) */}
+          {/* LEFT — اول ورود/آواتار، بعد نامه (فقط بعد از لاگین) */}
           <div className="flex items-center gap-1.5 shrink-0 min-w-[88px]">
-            <button
-              type="button"
-              onClick={() => router.push("/messages")}
-              title="Messages"
-              className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white"
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-                <polyline points="22,6 12,13 2,6" />
-              </svg>
-              {unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-3.5 px-1 rounded-full bg-orange-500 text-black text-[9px] font-bold flex items-center justify-center">
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </span>
-              )}
-            </button>
-
             {user ? (
-              <div className="relative">
+              <>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setMenuOpen((v) => !v)}
+                    title={displayName}
+                    className="w-9 h-9 rounded-full overflow-hidden border-2 border-orange-500/60 hover:border-orange-400 bg-gray-800 flex items-center justify-center"
+                  >
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-sm font-bold text-orange-300">{letter}</span>
+                    )}
+                  </button>
+                  {menuOpen && (
+                    <div className="absolute left-0 top-full mt-1.5 z-[90] w-52 bg-gray-950 border border-gray-700 rounded-xl shadow-xl py-1">
+                      <div className="px-3 py-2 border-b border-gray-800">
+                        <p className="text-sm font-medium text-white truncate">{displayName}</p>
+                        <p className="text-[11px] text-gray-500 truncate">{user.email}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          router.push("/profile");
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                      >
+                        Profile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          router.push("/messages");
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                      >
+                        Messages
+                      </button>
+                      <button
+                        type="button"
+                        onClick={logout}
+                        className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
-                  onClick={() => setMenuOpen((v) => !v)}
-                  title={displayName}
-                  className="w-9 h-9 rounded-full overflow-hidden border-2 border-orange-500/60 hover:border-orange-400 bg-gray-800 flex items-center justify-center"
+                  onClick={() => router.push("/messages")}
+                  title="Alarm messages"
+                  className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white"
                 >
-                  {avatarUrl ? (
-                    <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-sm font-bold text-orange-300">{letter}</span>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                    <polyline points="22,6 12,13 2,6" />
+                  </svg>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-3.5 px-1 rounded-full bg-orange-500 text-black text-[9px] font-bold flex items-center justify-center">
+                      {unreadCount > 9 ? "9+" : unreadCount}
+                    </span>
                   )}
                 </button>
-                {menuOpen && (
-                  <div className="absolute left-0 top-full mt-1.5 z-[90] w-52 bg-gray-950 border border-gray-700 rounded-xl shadow-xl py-1">
-                    <div className="px-3 py-2 border-b border-gray-800">
-                      <p className="text-sm font-medium text-white truncate">{displayName}</p>
-                      <p className="text-[11px] text-gray-500 truncate">{user.email}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        router.push("/profile");
-                      }}
-                      className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
-                    >
-                      Profile
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        router.push("/messages");
-                      }}
-                      className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
-                    >
-                      Messages
-                    </button>
-                    <button
-                      type="button"
-                      onClick={logout}
-                      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
-                    >
-                      Sign out
-                    </button>
-                  </div>
-                )}
-              </div>
+              </>
             ) : (
               <button
                 type="button"
