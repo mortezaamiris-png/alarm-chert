@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createChart, ISeriesApi } from "lightweight-charts";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import type { User, Session } from "@supabase/supabase-js";
 
 interface WatchList {
   id: string;
@@ -54,7 +55,6 @@ function storedExchange(stored: string): string | null {
   const p = stored.split("@");
   return p.length > 1 ? p[1] : null;
 }
-
 
 function loadLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -180,7 +180,6 @@ function MiniChart({
     if (!ref.current) return;
     ref.current.innerHTML = "";
 
-    // green if up, red if down, orange if unknown
     const isUp = pct != null && !Number.isNaN(pct) && pct >= 0;
     const isDown = pct != null && !Number.isNaN(pct) && pct < 0;
     const lineColor = isUp ? "#22c55e" : isDown ? "#ef4444" : "#f97316";
@@ -198,7 +197,11 @@ function MiniChart({
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth || 160,
       height: 80,
-      layout: { background: { color: "transparent" }, textColor: "#6b7280" },
+      layout: {
+        background: { color: "transparent" },
+        textColor: "#6b7280",
+        attributionLogo: false as any,
+      },
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       rightPriceScale: { visible: false },
       timeScale: { visible: false },
@@ -257,7 +260,6 @@ function DetailChart({
   const lastBarTimeRef = useRef<number | null>(null);
   const priceLineRef = useRef<any>(null);
 
-  // Create chart once / when mode changes
   useEffect(() => {
     if (!ref.current) return;
     ref.current.innerHTML = "";
@@ -269,7 +271,11 @@ function DetailChart({
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth,
       height: 420,
-      layout: { background: { color: "#0f0f0f" }, textColor: "#d1d5db" },
+      layout: {
+        background: { color: "#0f0f0f" },
+        textColor: "#d1d5db",
+        attributionLogo: false as any,
+      },
       grid: {
         vertLines: { color: "#1f2937" },
         horzLines: { color: "#1f2937" },
@@ -317,28 +323,6 @@ function DetailChart({
     };
   }, [symbol, interval, lineMode]);
 
-  // Apply countdown title on last price label
-  const applyCountdown = useCallback(() => {
-    const t = lastBarTimeRef.current;
-    if (t == null) return;
-    const title = formatCountdownRemaining(t, interval);
-    const series = lineMode ? lineRef.current : candleRef.current;
-    if (!series) return;
-    try {
-      // lightweight-charts last value label uses series options / price line
-      if (priceLineRef.current) {
-        try {
-          series.removePriceLine(priceLineRef.current);
-        } catch {}
-        priceLineRef.current = null;
-      }
-      // Get last close from series data is hard; use price line with title
-      // Instead update via applyOptions on lastValueVisible title — not supported.
-      // Use a price line at last price with countdown title.
-    } catch {}
-  }, [interval, lineMode]);
-
-  // Live poll candles (like main Charts page)
   useEffect(() => {
     let cancelled = false;
     let fitted = false;
@@ -366,7 +350,6 @@ function DetailChart({
           lineRef.current.setData(rows as any);
           lastBarTimeRef.current = Number(last?.time) || null;
 
-          // countdown price line
           if (priceLineRef.current) {
             try {
               lineRef.current.removePriceLine(priceLineRef.current);
@@ -424,19 +407,16 @@ function DetailChart({
     };
 
     load(true);
-    // poll live — 2s for short TF, 5s for longer
     const sec = intervalToSeconds(interval);
     const pollMs = sec <= 60 ? 2000 : sec <= 900 ? 3000 : 5000;
     const id = window.setInterval(() => load(false), pollMs);
 
-    // tick countdown every 1s
     const tick = window.setInterval(() => {
       const t = lastBarTimeRef.current;
       const series = lineMode ? lineRef.current : candleRef.current;
       if (t == null || !series || !priceLineRef.current) return;
       try {
         const title = formatCountdownRemaining(t, interval);
-        // recreate price line title by updating options if supported
         priceLineRef.current.applyOptions({ title });
       } catch {}
     }, 1000);
@@ -454,6 +434,297 @@ function DetailChart({
       className="w-full rounded-xl overflow-hidden border border-gray-800"
       style={{ height: 420 }}
     />
+  );
+}
+
+/** Auth modal: Google / Email login & signup */
+function AuthModal({
+  open,
+  onClose,
+  onAuthed,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAuthed: (user: User) => void;
+}) {
+  const [tab, setTab] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [info, setInfo] = useState("");
+
+  if (!open) return null;
+
+  const signInGoogle = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+        },
+      });
+      if (error) setErr(error.message);
+    } catch (e: any) {
+      setErr(e?.message || "Google sign-in failed");
+    }
+    setBusy(false);
+  };
+
+  const submitEmail = async () => {
+    setBusy(true);
+    setErr("");
+    setInfo("");
+    try {
+      if (!email.trim() || !password) {
+        setErr("Email and password required");
+        setBusy(false);
+        return;
+      }
+      if (tab === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) {
+          setErr(error.message);
+        } else if (data.user) {
+          onAuthed(data.user);
+          onClose();
+        }
+      } else {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            data: { full_name: name.trim() || undefined },
+          },
+        });
+        if (error) {
+          setErr(error.message);
+        } else if (data.user) {
+          if (data.session) {
+            onAuthed(data.user);
+            onClose();
+          } else {
+            setInfo("Check your email to confirm the account, then log in.");
+          }
+        }
+      }
+    } catch (e: any) {
+      setErr(e?.message || "Auth failed");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="w-full max-w-md bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <h2 className="text-lg font-semibold text-white">
+            {tab === "login" ? "Sign in" : "Create account"}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-full text-gray-400 hover:bg-gray-800 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={signInGoogle}
+            className="w-full flex items-center justify-center gap-3 py-2.5 rounded-xl bg-white text-gray-900 font-medium text-sm hover:bg-gray-100 disabled:opacity-60"
+          >
+            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>
+              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.5-.4-3.5z" />
+              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13.1 24 13.1c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 16.3 4 9.6 8.3 6.3 14.7z" />
+              <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.3l-6.3-5.3C29.3 35.1 26.8 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+              <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l.1.1 6.3 5.3C39.3 37 44 32 44 24c0-1.3-.1-2.5-.4-3.5z" />
+            </svg>
+            Continue with Google
+          </button>
+
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            <div className="flex-1 h-px bg-gray-800" />
+            or email
+            <div className="flex-1 h-px bg-gray-800" />
+          </div>
+
+          {tab === "signup" && (
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Display name (optional)"
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500"
+            />
+          )}
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500"
+            autoComplete="email"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500"
+            autoComplete={tab === "login" ? "current-password" : "new-password"}
+          />
+
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+          {info && <p className="text-green-400 text-xs">{info}</p>}
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={submitEmail}
+            className="w-full py-2.5 rounded-xl bg-orange-500 text-black font-semibold text-sm hover:bg-orange-400 disabled:opacity-60"
+          >
+            {busy ? "Please wait…" : tab === "login" ? "Sign in" : "Sign up"}
+          </button>
+
+          <p className="text-center text-xs text-gray-500">
+            {tab === "login" ? (
+              <>
+                No account?{" "}
+                <button type="button" className="text-orange-400 hover:underline" onClick={() => setTab("signup")}>
+                  Sign up
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{" "}
+                <button type="button" className="text-orange-400 hover:underline" onClick={() => setTab("login")}>
+                  Sign in
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Top-left profile avatar + messages icon */
+function ProfileBar({
+  user,
+  unreadCount,
+  onLogin,
+  onLogout,
+  onMessages,
+  onProfile,
+}: {
+  user: User | null;
+  unreadCount: number;
+  onLogin: () => void;
+  onLogout: () => void;
+  onMessages: () => void;
+  onProfile: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const meta = user?.user_metadata || {};
+  const avatarUrl = meta.avatar_url || meta.picture || null;
+  const displayName =
+    meta.full_name || meta.name || user?.email?.split("@")[0] || "User";
+  const letter = (displayName[0] || "U").toUpperCase();
+
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      {/* Messages */}
+      <button
+        type="button"
+        onClick={onMessages}
+        title="Messages"
+        className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white transition-colors"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+          <polyline points="22,6 12,13 2,6" />
+        </svg>
+        {unreadCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-orange-500 text-black text-[10px] font-bold flex items-center justify-center">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {/* Avatar / Login */}
+      {user ? (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            title={displayName}
+            className="w-9 h-9 rounded-full overflow-hidden border-2 border-orange-500/60 hover:border-orange-400 transition-colors bg-gray-800 flex items-center justify-center"
+          >
+            {avatarUrl ? (
+              <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-sm font-bold text-orange-300">{letter}</span>
+            )}
+          </button>
+          {menuOpen && (
+            <div className="absolute left-0 top-full mt-1.5 z-[90] w-52 bg-gray-950 border border-gray-700 rounded-xl shadow-xl py-1 overflow-hidden">
+              <div className="px-3 py-2 border-b border-gray-800">
+                <p className="text-sm font-medium text-white truncate">{displayName}</p>
+                <p className="text-[11px] text-gray-500 truncate">{user.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onProfile();
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+              >
+                Profile
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onMessages();
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+              >
+                Messages
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLogout();
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onLogin}
+          className="h-9 px-3 rounded-full bg-orange-500 text-black text-xs font-semibold hover:bg-orange-400"
+        >
+          Sign in
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -480,7 +751,11 @@ export default function WatchlistPage() {
   const [listMenuId, setListMenuId] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<string | null>(null);
 
-  /** Drag-reorder for list tabs (⋮⋮) — lift + gap like symbol rows */
+  // Auth / profile
+  const [user, setUser] = useState<User | null>(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
   const [draggingListId, setDraggingListId] = useState<string | null>(null);
   const [listDropTargetId, setListDropTargetId] = useState<string | null>(null);
   const [listFloatPos, setListFloatPos] = useState<{ x: number; y: number } | null>(null);
@@ -513,7 +788,47 @@ export default function WatchlistPage() {
     saveLS("wl_view", viewMode);
   }, [viewMode]);
 
-  // symbols from server proxy (Binance+Bybit+LBank+Bitunix + indices) — no Iran IP block
+  // Session
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (mounted) setUser(data.session?.user ?? null);
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session: Session | null) => {
+      setUser(session?.user ?? null);
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Optional: unread messages count (table `messages` if exists)
+  useEffect(() => {
+    if (!user) {
+      setUnreadCount(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { count, error } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("to_user", user.id)
+          .eq("read", false);
+        if (!error && !cancelled && typeof count === "number") setUnreadCount(count);
+      } catch {
+        // table may not exist yet
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // symbols from server proxy
   useEffect(() => {
     (async () => {
       try {
@@ -532,7 +847,6 @@ export default function WatchlistPage() {
           return;
         }
       } catch {}
-      // minimal offline fallback
       setAllSymbols(
         ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].map((s) => ({
           symbol: s,
@@ -545,7 +859,6 @@ export default function WatchlistPage() {
     })();
   }, []);
 
-  // prices via our multi-exchange API
   useEffect(() => {
     if (!items.length && !searchHits.length) return;
     let cancelled = false;
@@ -595,7 +908,6 @@ export default function WatchlistPage() {
       .select("*")
       .order("created_at", { ascending: true });
     let rows = data || [];
-    // Apply saved tab order (localStorage)
     try {
       const order: string[] = loadLS("wl_list_order", []);
       if (order.length && rows.length) {
@@ -653,357 +965,67 @@ export default function WatchlistPage() {
       if (t.closest("[data-menu-root]")) return;
       setMenuItemId(null);
       setListMenuId(null);
-      // close search when tapping anywhere outside search box / search button
-      if (showSearch && !t.closest("[data-search-root]")) {
-        setShowSearch(false);
-        setSearchQuery("");
-        setSearchHits([]);
-      }
     };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
-  }, [showSearch]);
-
-  const runSearch = (q: string) => {
-    setSearchQuery(q);
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    if (!q.trim()) {
-      setSearchHits([]);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    searchTimer.current = setTimeout(() => {
-      const up = q.toUpperCase().replace(/[^A-Z0-9.]/g, "");
-      const exOrder: Record<string, number> = {
-        BINANCE: 0,
-        BYBIT: 1,
-        BITUNIX: 2,
-        LBANK: 3,
-      };
-      const hits = allSymbols
-        .filter(
-          (s) =>
-            s.symbol.includes(up) ||
-            (s.baseCoin || "").toUpperCase().includes(up) ||
-            (s.quoteCoin || "").toUpperCase().includes(up)
-        )
-        .sort((a, b) => {
-          // exact symbol first
-          const ae = a.symbol === up ? 0 : a.symbol.startsWith(up) ? 1 : 2;
-          const be = b.symbol === up ? 0 : b.symbol.startsWith(up) ? 1 : 2;
-          if (ae !== be) return ae - be;
-          // same symbol: Spot before Futures, then exchange order
-          if (a.symbol === b.symbol) {
-            if (a.market !== b.market) return a.market === "Spot" ? -1 : 1;
-            return (exOrder[a.exchange || ""] ?? 9) - (exOrder[b.exchange || ""] ?? 9);
-          }
-          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-          return 0;
-        })
-        .slice(0, 40);
-      setSearchHits(hits);
-      setSearching(false);
-    }, 180);
-  };
-
-  const persistOrder = async (ordered: WatchItem[]) => {
-    setItems(ordered);
-    itemsRef.current = ordered;
-    await Promise.all(
-      ordered.map((item, idx) =>
-        supabase
-          .from("watchlist_items")
-          .update({ sort_order: idx + 1 })
-          .eq("id", item.id)
-      )
-    );
-  };
-
-  const reorderById = (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    const arr = [...itemsRef.current];
-    const fromIdx = arr.findIndex((i) => i.id === fromId);
-    const toIdx = arr.findIndex((i) => i.id === toId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = arr.splice(fromIdx, 1);
-    arr.splice(toIdx, 0, moved);
-    const withOrder = arr.map((item, i) => ({ ...item, sort_order: i + 1 }));
-    setItems(withOrder);
-    itemsRef.current = withOrder;
-  };
-
-  const finishDrag = async () => {
-    const id = dragIdRef.current;
-    dragIdRef.current = null;
-    setDraggingId(null);
-    setFloatPos(null);
-    setDropTargetId(null);
-    if (!id) return;
-    const ordered = itemsRef.current.map((item, i) => ({
-      ...item,
-      sort_order: i + 1,
-    }));
-    await persistOrder(ordered);
-  };
-
-  const autoScroll = (clientY: number) => {
-    const containers = [listScrollRef.current, gridScrollRef.current].filter(
-      Boolean
-    ) as HTMLDivElement[];
-    for (const el of containers) {
-      const rect = el.getBoundingClientRect();
-      if (clientY < rect.top || clientY > rect.bottom) continue;
-      const edge = 56;
-      if (clientY < rect.top + edge) el.scrollTop -= 18;
-      else if (clientY > rect.bottom - edge) el.scrollTop += 18;
-    }
-  };
-
-  useEffect(() => {
-    const onMove = (clientX: number, clientY: number) => {
-      // Item drag
-      if (dragIdRef.current) {
-        setFloatPos({
-          x: clientX - offsetRef.current.x,
-          y: clientY - offsetRef.current.y,
-        });
-        autoScroll(clientY);
-        const el = document.elementFromPoint(clientX, clientY);
-        if (!el) return;
-        const row = (el as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
-        if (!row) return;
-        const targetId = row.getAttribute("data-item-id");
-        if (targetId && targetId !== dragIdRef.current) {
-          setDropTargetId(targetId);
-          reorderById(dragIdRef.current, targetId);
-        }
-        return;
-      }
-      // List-tab drag — floating chip follows finger
-      if (listDragIdRef.current) {
-        setListFloatPos({
-          x: clientX - listOffsetRef.current.x,
-          y: clientY - listOffsetRef.current.y,
-        });
-        const el = document.elementFromPoint(clientX, clientY);
-        if (!el) return;
-        const tab = (el as HTMLElement).closest("[data-list-id]") as HTMLElement | null;
-        if (!tab) return;
-        const targetId = tab.getAttribute("data-list-id");
-        if (targetId && targetId !== listDragIdRef.current) {
-          setListDropTargetId(targetId);
-          reorderListsById(listDragIdRef.current, targetId);
-        }
-      }
-    };
-    const onPointerMove = (e: PointerEvent) => {
-      if (!dragIdRef.current && !listDragIdRef.current) return;
-      e.preventDefault();
-      onMove(e.clientX, e.clientY);
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!dragIdRef.current && !listDragIdRef.current) return;
-      if (e.touches[0]) {
-        e.preventDefault();
-        onMove(e.touches[0].clientX, e.touches[0].clientY);
-      }
-    };
-    const onEnd = () => {
-      if (dragIdRef.current) finishDrag();
-      if (listDragIdRef.current) finishListDrag();
-    };
-    document.addEventListener("pointermove", onPointerMove, { passive: false });
-    document.addEventListener("touchmove", onTouchMove, { passive: false });
-    document.addEventListener("pointerup", onEnd);
-    document.addEventListener("touchend", onEnd);
-    document.addEventListener("pointercancel", onEnd);
-    return () => {
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("touchmove", onTouchMove);
-      document.removeEventListener("pointerup", onEnd);
-      document.removeEventListener("touchend", onEnd);
-      document.removeEventListener("pointercancel", onEnd);
-    };
   }, []);
 
-  const startDrag = (
-    id: string,
-    clientX: number,
-    clientY: number,
-    rowEl: HTMLElement
-  ) => {
-    setMenuItemId(null);
-    setListMenuId(null);
-    const rect = rowEl.getBoundingClientRect();
-    offsetRef.current = { x: clientX - rect.left, y: clientY - rect.top };
-    setFloatSize({ w: rect.width, h: Math.max(rect.height, 56) });
-    setFloatPos({ x: rect.left, y: rect.top });
-    dragIdRef.current = id;
-    setDraggingId(id);
-    setDropTargetId(null);
-  };
-
   const createList = async () => {
-    const name = newListName.trim() || "New list";
+    if (!newListName.trim()) return;
     setSaving(true);
-    try {
-      const { data, error } = await supabase
-        .from("watchlist_lists")
-        .insert([{ name }])
-        .select()
-        .single();
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      setLists((prev) => {
-        const next = [...prev, data];
-        listsRef.current = next;
-        saveLS(
-          "wl_list_order",
-          next.map((x) => x.id)
-        );
-        return next;
-      });
+    const { data, error } = await supabase
+      .from("watchlist_lists")
+      .insert([{ name: newListName.trim() }])
+      .select()
+      .single();
+    setSaving(false);
+    if (!error && data) {
+      setLists((prev) => [...prev, data]);
       setActiveListId(data.id);
       setNewListName("");
       setShowNewList(false);
-    } finally {
-      setSaving(false);
     }
   };
 
-  const deleteList = async (listId: string) => {
-    if (!confirm("Delete this list and all its symbols?")) return;
-    await supabase.from("watchlist_items").delete().eq("list_id", listId);
-    await supabase.from("watchlist_lists").delete().eq("id", listId);
+  const deleteList = async (id: string) => {
+    await supabase.from("watchlist_items").delete().eq("list_id", id);
+    await supabase.from("watchlist_lists").delete().eq("id", id);
     setListMenuId(null);
-    if (activeListId === listId) {
-      setActiveListId(null);
-      setItems([]);
+    setLists((prev) => prev.filter((l) => l.id !== id));
+    if (activeListId === id) {
+      const rest = lists.filter((l) => l.id !== id);
+      setActiveListId(rest[0]?.id || null);
     }
-    // drop deleted id from saved order
-    try {
-      const order: string[] = loadLS("wl_list_order", []);
-      saveLS(
-        "wl_list_order",
-        order.filter((id) => id !== listId)
-      );
-    } catch {}
-    await loadLists();
   };
 
-  const reorderListsById = (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    const arr = [...listsRef.current];
-    const fromIdx = arr.findIndex((l) => l.id === fromId);
-    const toIdx = arr.findIndex((l) => l.id === toId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = arr.splice(fromIdx, 1);
-    arr.splice(toIdx, 0, moved);
-    setLists(arr);
-    listsRef.current = arr;
-  };
-
-  const finishListDrag = () => {
-    const id = listDragIdRef.current;
-    listDragIdRef.current = null;
-    setDraggingListId(null);
-    setListDropTargetId(null);
-    setListFloatPos(null);
-    if (!id) return;
-    const order = listsRef.current.map((l) => l.id);
-    saveLS("wl_list_order", order);
-  };
-
-  const startListDrag = (
-    id: string,
-    clientX: number,
-    clientY: number,
-    el: HTMLElement
-  ) => {
-    setMenuItemId(null);
-    setListMenuId(null);
-    const rect = el.getBoundingClientRect();
-    listOffsetRef.current = { x: clientX - rect.left, y: clientY - rect.top };
-    setListFloatSize({ w: rect.width, h: Math.max(rect.height, 32) });
-    setListFloatPos({ x: rect.left, y: rect.top });
-    listDragIdRef.current = id;
-    setDraggingListId(id);
-    setListDropTargetId(null);
-  };
-
-  const findItem = (sym: string, exchange?: string) => {
+  const inList = (sym: string, exchange?: string) => {
     const key = storageSymbol(sym, exchange);
-    // also match legacy rows without @exchange
-    return items.find((i) => {
-      if (i.symbol === key) return true;
-      if (!exchange && bareSymbol(i.symbol) === sym.toUpperCase()) return true;
-      return false;
-    });
-  };
-
-  const addSymbol = async (sym: string, exchange?: string) => {
-    if (!activeListId) return;
-    const symbol = storageSymbol(sym, exchange);
-    if (items.some((i) => i.symbol === symbol)) return;
-    setSaving(true);
-    try {
-      const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
-      const payload: any = {
-        list_id: activeListId,
-        symbol,
-        note: exchange || null,
-        sort_order: maxOrder + 1,
-      };
-      let { data, error } = await supabase
-        .from("watchlist_items")
-        .insert([payload])
-        .select()
-        .single();
-      if (error && String(error.message || "").toLowerCase().includes("sort_order")) {
-        delete payload.sort_order;
-        const r = await supabase.from("watchlist_items").insert([payload]).select().single();
-        data = r.data;
-        error = r.error;
-      }
-      if (error) {
-        const msg = String(error.message || error);
-        if (msg.toLowerCase().includes("unique") || msg.toLowerCase().includes("duplicate")) {
-          alert("این نماد از قبل در لیست است: " + symbol);
-        } else {
-          alert(msg);
-        }
-        return;
-      }
-      setItems((prev) => [...prev, data]);
-      setJustAdded(symbol);
-      setTimeout(() => setJustAdded(null), 1200);
-      if (!selectedSymbol) setSelectedSymbol(symbol);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeSymbol = async (sym: string, exchange?: string) => {
-    const found = findItem(sym, exchange);
-    if (!found) return;
-    setSaving(true);
-    try {
-      await supabase.from("watchlist_items").delete().eq("id", found.id);
-      setItems((prev) => prev.filter((i) => i.id !== found.id));
-      if (selectedSymbol && bareSymbol(selectedSymbol) === sym.toUpperCase()) {
-        setSelectedSymbol(null);
-      }
-    } finally {
-      setSaving(false);
-    }
+    return items.some((i) => i.symbol === key || bareSymbol(i.symbol) === bareSymbol(key));
   };
 
   const toggleSymbol = async (sym: string, exchange?: string) => {
-    if (findItem(sym, exchange)) await removeSymbol(sym, exchange);
-    else await addSymbol(sym, exchange);
+    if (!activeListId) return;
+    const key = storageSymbol(sym, exchange);
+    const existing = items.find(
+      (i) => i.symbol === key || bareSymbol(i.symbol) === bareSymbol(key)
+    );
+    setSaving(true);
+    if (existing) {
+      await supabase.from("watchlist_items").delete().eq("id", existing.id);
+      setItems((prev) => prev.filter((i) => i.id !== existing.id));
+    } else {
+      const { data, error } = await supabase
+        .from("watchlist_items")
+        .insert([{ list_id: activeListId, symbol: key, sort_order: items.length }])
+        .select()
+        .single();
+      if (!error && data) {
+        setItems((prev) => [...prev, data]);
+        setJustAdded(key);
+        setTimeout(() => setJustAdded(null), 1200);
+      }
+    }
+    setSaving(false);
   };
 
   const deleteItem = async (id: string) => {
@@ -1013,21 +1035,92 @@ export default function WatchlistPage() {
   };
 
   const goChart = (sym: string) => {
-    localStorage.setItem("chart_symbol", bareSymbol(sym));
-    router.push("/dashboard");
+    const bare = bareSymbol(sym);
+    try {
+      localStorage.setItem("chart_symbol", bare);
+    } catch {}
+    router.push(`/dashboard?symbol=${encodeURIComponent(bare)}`);
   };
 
-  const draggingItem = items.find((i) => i.id === draggingId);
-  const inList = (sym: string, exchange?: string) => !!findItem(sym, exchange);
+  const runSearch = (q: string) => {
+    setSearchQuery(q);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!q.trim()) {
+      setSearchHits([]);
+      return;
+    }
+    setSearching(true);
+    searchTimer.current = setTimeout(() => {
+      const qq = q.trim().toUpperCase();
+      const hits = allSymbols
+        .filter(
+          (h) =>
+            h.symbol.includes(qq) ||
+            (h.baseCoin && h.baseCoin.toUpperCase().includes(qq))
+        )
+        .slice(0, 40);
+      setSearchHits(hits);
+      setSearching(false);
+    }, 200);
+  };
+
+  const startDrag = (id: string, cx: number, cy: number, el: HTMLElement) => {
+    const rect = el.getBoundingClientRect();
+    dragIdRef.current = id;
+    offsetRef.current = { x: cx - rect.left, y: cy - rect.top };
+    setFloatSize({ w: rect.width, h: rect.height });
+    setFloatPos({ x: rect.left, y: rect.top });
+    setDraggingId(id);
+
+    const onMove = (e: PointerEvent) => {
+      setFloatPos({
+        x: e.clientX - offsetRef.current.x,
+        y: e.clientY - offsetRef.current.y,
+      });
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const row = under?.closest?.("[data-item-id]") as HTMLElement | null;
+      setDropTargetId(row?.dataset?.itemId || null);
+    };
+    const onUp = async () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const fromId = dragIdRef.current;
+      const toId = dropTargetId;
+      setDraggingId(null);
+      setFloatPos(null);
+      setDropTargetId(null);
+      dragIdRef.current = null;
+      if (!fromId || !toId || fromId === toId) return;
+      const arr = [...itemsRef.current];
+      const fromIdx = arr.findIndex((x) => x.id === fromId);
+      const toIdx = arr.findIndex((x) => x.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const [moved] = arr.splice(fromIdx, 1);
+      arr.splice(toIdx, 0, moved);
+      const withOrder = arr.map((x, i) => ({ ...x, sort_order: i }));
+      setItems(withOrder);
+      itemsRef.current = withOrder;
+      try {
+        await Promise.all(
+          withOrder.map((x, i) =>
+            supabase.from("watchlist_items").update({ sort_order: i }).eq("id", x.id)
+          )
+        );
+      } catch {}
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   const PriceBlock = ({ sym }: { sym: string }) => {
-    const key = bareSymbol(sym);
-    const p = prices[key];
-    const pct = pcts[key];
-    if (p == null) return <span className="text-xs text-gray-600">—</span>;
+    const bare = bareSymbol(sym);
+    const p = prices[bare];
+    const pct = pcts[bare];
     return (
       <div className="text-right">
-        <div className="text-sm text-gray-100 font-medium">{formatPrice(p)}</div>
+        <div className="text-sm font-medium tabular-nums">
+          {p != null ? formatPrice(p) : "—"}
+        </div>
         {pct != null && !Number.isNaN(pct) && (
           <div
             className={`text-[11px] font-medium ${
@@ -1041,116 +1134,65 @@ export default function WatchlistPage() {
     );
   };
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
+
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
-      {draggingId && floatPos && draggingItem && (
-        <div
-          className="fixed z-[9999] pointer-events-none rounded-xl border-2 border-orange-500 bg-gray-900 shadow-2xl shadow-orange-500/40"
-          style={{
-            left: floatPos.x,
-            top: floatPos.y,
-            width: floatSize.w,
-            minHeight: floatSize.h,
-            transform: "scale(1.05) rotate(1.5deg)",
-            boxShadow: "0 12px 40px rgba(249,115,22,0.35)",
-          }}
-        >
-          <div className="flex items-center gap-2.5 px-3 py-3">
-            <CoinIcon symbol={bareSymbol(draggingItem.symbol)} size={28} />
-            <div className="min-w-0 flex-1 font-semibold text-sm text-white truncate">
-              {bareSymbol(draggingItem.symbol)}
-            </div>
-            {prices[bareSymbol(draggingItem.symbol)] != null && (
-              <span className="text-orange-400 text-xs font-medium">
-                {formatPrice(prices[bareSymbol(draggingItem.symbol)])}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3 md:p-4">
+      {/* Header: Profile (left) + title + view mode */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <ProfileBar
+          user={user}
+          unreadCount={unreadCount}
+          onLogin={() => setAuthOpen(true)}
+          onLogout={handleLogout}
+          onMessages={() => router.push("/messages")}
+          onProfile={() => router.push("/profile")}
+        />
 
-      {draggingListId && listFloatPos && (
-        <div
-          className="fixed z-[9999] pointer-events-none rounded-full border-2 border-orange-500 bg-gray-900 px-3 py-1.5 shadow-2xl"
-          style={{
-            left: listFloatPos.x,
-            top: listFloatPos.y,
-            width: listFloatSize.w,
-            minHeight: listFloatSize.h,
-            transform: "scale(1.08) rotate(-2deg)",
-            boxShadow: "0 10px 32px rgba(249,115,22,0.4)",
-          }}
+        <h1 className="text-xl font-bold">Watchlist</h1>
+        <button
+          type="button"
+          onClick={() => setShowSearch((v) => !v)}
+          className="w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10"
+          title="Search symbols"
         >
-          <div className="flex items-center justify-center h-full text-sm font-medium text-orange-300">
-            {lists.find((x) => x.id === draggingListId)?.name || "…"}
-          </div>
-        </div>
-      )}
+          🔍
+        </button>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">Watchlist</h1>
-          {!showSearch && (
-            <button
-              type="button"
-              onClick={() => setShowSearch(true)} data-search-root
-              className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 hover:border-orange-500"
-              title="Search symbols"
-            >
-              🔍
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+        <div className="flex-1" />
+
+        <div className="flex gap-1">
           <button
             type="button"
             onClick={() => setViewMode("grid")}
-            className={`px-3 py-2 rounded-lg text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm ${
               viewMode === "grid" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
             }`}
           >
-            ▦ Grid
+            Grid
           </button>
           <button
             type="button"
             onClick={() => setViewMode("list")}
-            className={`px-3 py-2 rounded-lg text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm ${
               viewMode === "list" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
             }`}
           >
-            ☰ List
+            ≡ List
           </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      {/* List tabs */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
         {lists.map((l) => (
-          <div key={l.id} className="flex items-center gap-0">
-            {draggingListId &&
-              listDropTargetId === l.id &&
-              draggingListId !== l.id && (
-                <div
-                  className="rounded-full border-2 border-dashed border-orange-500/70 bg-orange-500/10 shrink-0"
-                  style={{ width: listFloatSize.w, height: listFloatSize.h }}
-                />
-              )}
-          <div
-            data-list-id={l.id}
-            className={`relative flex items-center select-none transition-all duration-150 ${
-              draggingListId === l.id
-                ? "opacity-20 scale-90"
-                : ""
-            }`}
-            data-menu-root
-          >
+          <div key={l.id} className="relative flex items-center">
             <button
               type="button"
-              onClick={() => {
-                if (draggingListId) return;
-                setActiveListId(l.id);
-                setListMenuId(null);
-                setMenuItemId(null);
-              }}
+              onClick={() => setActiveListId(l.id)}
               className={`px-3 py-1.5 rounded-full text-sm ${
                 activeListId === l.id
                   ? "bg-orange-500 text-white"
@@ -1160,50 +1202,18 @@ export default function WatchlistPage() {
               {l.name}
             </button>
             <div
+              data-menu-root
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const startX = e.clientX;
-                const startY = e.clientY;
-                let dragged = false;
-                // start drag after small move OR 120ms hold
-                const chip = (e.currentTarget as HTMLElement).closest(
-                  "[data-list-id]"
-                ) as HTMLElement;
-                const timer = setTimeout(() => {
-                  if (!dragged && chip) {
-                    dragged = true;
-                    startListDrag(l.id, startX, startY, chip);
-                  }
-                }, 120);
-                const onMove = (ev: PointerEvent) => {
-                  const dx = Math.abs(ev.clientX - startX);
-                  const dy = Math.abs(ev.clientY - startY);
-                  if (!dragged && chip && (dx > 6 || dy > 6)) {
-                    dragged = true;
-                    clearTimeout(timer);
-                    startListDrag(l.id, startX, startY, chip);
-                  }
-                };
-                const onUp = () => {
-                  clearTimeout(timer);
-                  window.removeEventListener("pointermove", onMove);
-                  window.removeEventListener("pointerup", onUp);
-                  if (!dragged) {
-                    setMenuItemId(null);
-                    setListMenuId((prev) => (prev === l.id ? null : l.id));
-                  }
-                };
-                window.addEventListener("pointermove", onMove);
-                window.addEventListener("pointerup", onUp);
+                setListMenuId((prev) => (prev === l.id ? null : l.id));
               }}
-              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-grab active:cursor-grabbing touch-none"
-              style={{ touchAction: "none" }}
-              title="Drag to reorder lists · tap for menu"
+              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-pointer"
+              title="List menu"
             >
               ⋮⋮
             </div>
-            {listMenuId === l.id && !draggingListId && (
+            {listMenuId === l.id && (
               <div
                 className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
                 onClick={(e) => e.stopPropagation()}
@@ -1220,7 +1230,6 @@ export default function WatchlistPage() {
                 </button>
               </div>
             )}
-          </div>
           </div>
         ))}
         <button
@@ -1271,10 +1280,7 @@ export default function WatchlistPage() {
       )}
 
       {showSearch && (
-        <div
-          className="mb-6 relative"
-          data-search-root
-        >
+        <div className="mb-6 relative" data-search-root>
           <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-xl">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
               <span className="text-gray-500">🔍</span>
@@ -1412,7 +1418,9 @@ export default function WatchlistPage() {
                     <div className="min-w-0">
                       <div className="font-semibold text-sm truncate">{bareSymbol(item.symbol)}</div>
                       {storedExchange(item.symbol) && (
-                        <div className="text-[10px] text-gray-500 truncate leading-tight">{storedExchange(item.symbol)}</div>
+                        <div className="text-[10px] text-gray-500 truncate leading-tight">
+                          {storedExchange(item.symbol)}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1517,7 +1525,8 @@ export default function WatchlistPage() {
                   <div
                     data-item-id={item.id}
                     className={`flex items-center gap-1.5 px-2 border-b border-gray-800/80 select-none transition-all duration-150 ${
-                      bareSymbol(selectedSymbol || "") === bareSymbol(item.symbol) && draggingId !== item.id
+                      bareSymbol(selectedSymbol || "") === bareSymbol(item.symbol) &&
+                      draggingId !== item.id
                         ? "bg-gray-800 border-l-2 border-l-orange-500"
                         : ""
                     } ${draggingId === item.id ? "opacity-20 scale-[0.98]" : ""}`}
@@ -1593,9 +1602,13 @@ export default function WatchlistPage() {
                       className="flex-1 min-w-0 text-left py-3"
                     >
                       <div className="min-w-0">
-                        <div className="font-medium text-sm truncate">{bareSymbol(item.symbol)}</div>
+                        <div className="font-medium text-sm truncate">
+                          {bareSymbol(item.symbol)}
+                        </div>
                         {storedExchange(item.symbol) && (
-                          <div className="text-[10px] text-gray-500 truncate leading-tight">{storedExchange(item.symbol)}</div>
+                          <div className="text-[10px] text-gray-500 truncate leading-tight">
+                            {storedExchange(item.symbol)}
+                          </div>
                         )}
                       </div>
                       {item.note && (
@@ -1673,6 +1686,25 @@ export default function WatchlistPage() {
           </div>
         </div>
       )}
+
+      {/* Floating drag ghost */}
+      {draggingId && floatPos && (
+        <div
+          className="fixed z-[100] pointer-events-none opacity-90 shadow-2xl rounded-xl border border-orange-500/50 bg-gray-900"
+          style={{
+            left: floatPos.x,
+            top: floatPos.y,
+            width: floatSize.w,
+            height: floatSize.h,
+          }}
+        />
+      )}
+
+      <AuthModal
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onAuthed={(u) => setUser(u)}
+      />
     </div>
   );
 }
