@@ -33,11 +33,27 @@ function AuthModal({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [showPass, setShowPass] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
 
   if (!open) return null;
+
+  const finishAuth = async (user: User) => {
+    onAuthed(user);
+    onClose();
+    // Force UI refresh so avatar replaces Sign in everywhere
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        // small delay then reload to sync all pages
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 150);
+      }
+    } catch {}
+  };
 
   const signInGoogle = async () => {
     setBusy(true);
@@ -66,30 +82,48 @@ function AuthModal({
         setBusy(false);
         return;
       }
+      if (password.length < 6) {
+        setErr("Password must be at least 6 characters");
+        setBusy(false);
+        return;
+      }
       if (tab === "login") {
         const { data, error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
           password,
         });
-        if (error) setErr(error.message);
-        else if (data.user) {
-          onAuthed(data.user);
-          onClose();
+        if (error) {
+          setErr(error.message);
+        } else if (data.user && data.session) {
+          await finishAuth(data.user);
+        } else if (data.user && !data.session) {
+          setErr("Email not confirmed yet. Check your inbox, or disable Confirm email in Supabase.");
+        } else {
+          setErr("Login failed — no session");
         }
       } else {
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
-          options: { data: { full_name: name.trim() || undefined } },
+          options: {
+            data: { full_name: name.trim() || undefined },
+            emailRedirectTo:
+              typeof window !== "undefined" ? window.location.origin : undefined,
+          },
         });
-        if (error) setErr(error.message);
-        else if (data.user) {
-          if (data.session) {
-            onAuthed(data.user);
-            onClose();
-          } else {
-            setInfo("Check your email to confirm, then log in.");
-          }
+        if (error) {
+          setErr(error.message);
+        } else if (data.user && data.session) {
+          // Confirm email is OFF → immediate session
+          await finishAuth(data.user);
+        } else if (data.user && !data.session) {
+          // Confirm email is ON → must verify
+          setInfo(
+            "Account created. Check your email and click the confirmation link, then Sign in."
+          );
+          setTab("login");
+        } else {
+          setErr("Sign up failed");
         }
       }
     } catch (e: any) {
@@ -149,14 +183,24 @@ function AuthModal({
             className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500"
             autoComplete="email"
           />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500"
-            autoComplete={tab === "login" ? "current-password" : "new-password"}
-          />
+          <div className="relative">
+            <input
+              type={showPass ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password (min 6 chars)"
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 pr-12 text-sm text-white outline-none focus:border-orange-500"
+              autoComplete={tab === "login" ? "current-password" : "new-password"}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPass((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-gray-400 hover:text-white"
+              title={showPass ? "Hide password" : "Show password"}
+            >
+              {showPass ? "Hide" : "Show"}
+            </button>
+          </div>
           {err && <p className="text-red-400 text-xs">{err}</p>}
           {info && <p className="text-green-400 text-xs">{info}</p>}
           <button
@@ -171,14 +215,14 @@ function AuthModal({
             {tab === "login" ? (
               <>
                 No account?{" "}
-                <button type="button" className="text-orange-400 hover:underline" onClick={() => setTab("signup")}>
+                <button type="button" className="text-orange-400 hover:underline" onClick={() => { setTab("signup"); setErr(""); setInfo(""); }}>
                   Sign up
                 </button>
               </>
             ) : (
               <>
                 Already have an account?{" "}
-                <button type="button" className="text-orange-400 hover:underline" onClick={() => setTab("login")}>
+                <button type="button" className="text-orange-400 hover:underline" onClick={() => { setTab("login"); setErr(""); setInfo(""); }}>
                   Sign in
                 </button>
               </>
