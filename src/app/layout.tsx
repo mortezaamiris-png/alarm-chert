@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import SiteNavbar from "@/components/SiteNavbar";
+import AuthGate from "@/components/AuthGate";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,9 +27,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-gray-950 text-white">
-        {/* Profile + Messages (left) | Home Watchlist Charts Alerts (center) */}
         <SiteNavbar />
-        <main className="flex-1">{children}</main>
+        <AuthGate allowHome>
+          <main className="flex-1">{children}</main>
+        </AuthGate>
         <footer className="border-t border-gray-800 py-8 mt-auto">
           <div className="max-w-7xl mx-auto px-4 text-center text-gray-500 text-sm">
             <p>© 2026 Alarm Chert</p>
