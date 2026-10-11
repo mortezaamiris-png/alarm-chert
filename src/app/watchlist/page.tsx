@@ -1141,17 +1141,8 @@ export default function WatchlistPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3 md:p-4">
-      {/* Header: Profile (left) + title + view mode */}
+      {/* Header — بدون Sign in تکراری (فقط در SiteNavbar بالاست) */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <ProfileBar
-          user={user}
-          unreadCount={unreadCount}
-          onLogin={() => setAuthOpen(true)}
-          onLogout={handleLogout}
-          onMessages={() => router.push("/messages")}
-          onProfile={() => router.push("/profile")}
-        />
-
         <h1 className="text-xl font-bold">Watchlist</h1>
         <button
           type="button"
