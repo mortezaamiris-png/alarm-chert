@@ -1605,7 +1605,7 @@ export default function DashboardPage() {
     if (container.clientWidth < 20) {
       await new Promise((r) => setTimeout(r, 150));
     }
-    destroyChart();
+    // اول داده را بگیر، بعد چارت را عوض کن تا صفحه سیاه نشود
     setStatusMsg("Loading...");
     try {
       const fetchRows = async () => {
@@ -1617,10 +1617,12 @@ export default function DashboardPage() {
       };
       let rows: any[] = await fetchRows();
       if (!rows.length) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 400));
         rows = await fetchRows();
       }
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
+
+      destroyChart();
 
       const candles = rows
         .map((r: any) => {
@@ -3089,7 +3091,7 @@ export default function DashboardPage() {
     if (!series) return;
     try {
       const res = await fetch(
-        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=5`
+        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=3`
       );
       const raw = await res.json();
       const rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
