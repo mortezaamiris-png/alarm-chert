@@ -1,18 +1,18 @@
 export async function GET(request) {
-  const authHeader = request.headers.get('authorization');
-  
+  const authHeader = request.headers.get("authorization");
+
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response('Unauthorized', { status: 401 });
+    return new Response("Unauthorized", { status: 401 });
   }
 
   try {
     const response = await fetch(
-      'https://ddykxhyhjyhrrpbsdhp.supabase.co/functions/v1/check-alarms',
+      "https://jpzxsjzkuhnxvjudebee.supabase.co/functions/v1/check-alarms",
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json",
         },
       }
     );
@@ -20,7 +20,7 @@ export async function GET(request) {
     const data = await response.json();
     return new Response(JSON.stringify(data), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
