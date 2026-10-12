@@ -3135,12 +3135,8 @@ export default function DashboardPage() {
         setLastBarClose(last.close);
         setLastBarTime(last.time);
         applyLastPriceLabel();
-        // feed price into alarm cross check
-        const sym = symbolRef.current.toUpperCase();
-        const prev = prevPricesRef.current[sym];
-        prevPricesRef.current[sym] = last.close;
-        // also use high/low for more accurate cross detection on current bar
-        return { last, prev, high: last.high, low: last.low };
+        // فقط قیمت را برگردان — prev را اینجا عوض نکن (باگ cross)
+        return { last, high: last.high, low: last.low };
       }
     } catch {}
     return null;
@@ -3282,14 +3278,14 @@ export default function DashboardPage() {
             }
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
-            prevPricesRef.current[sym] = price;
+            // high/low کندل جاری برای رد شدن ناگهانی
+            const hi = high > 0 ? high : price;
+            const lo = low > 0 ? low : price;
 
             for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
-              // Diagonal alarm: project price at "now" from the two endpoints
               let target = a.price;
               if (isDiagonalLine(a)) {
                 const nowT = Math.floor(Date.now() / 1000);
-                // Only active while "now" is within the segment time span
                 const st = Number(a.start_time);
                 const et = Number(a.end_time);
                 const tMin = Math.min(st, et);
@@ -3297,24 +3293,27 @@ export default function DashboardPage() {
                 if (nowT < tMin || nowT > tMax + 60) continue;
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
-              // Cross: prev→price. اگر prev هنوز نیست، نزدیک بودن قیمت را هم بپذیر
-              // (تا آلارم اول بعد از لود صفحه از دست نرود)
+              let hit = false;
               if (prev == null || Number.isNaN(prev)) {
                 const near =
-                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.00025;
-                if (
+                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.0003;
+                hit =
                   (a.condition === "above" && price >= target) ||
                   (a.condition === "below" && price <= target) ||
-                  (a.condition === "cross" && near)
-                ) {
-                  await triggerAlarmLocal(a, price);
+                  (a.condition === "cross" && (near || (lo <= target && hi >= target)));
+              } else {
+                hit = didCross(a.condition, target, prev, price);
+                // wick: خط بین high و low کندل باشد
+                if (!hit && a.condition === "cross" && lo <= target && hi >= target) {
+                  hit = true;
                 }
-                continue;
+                if (!hit && a.condition === "above" && hi >= target) hit = true;
+                if (!hit && a.condition === "below" && lo <= target) hit = true;
               }
-              if (didCross(a.condition, target, prev, price)) {
-                await triggerAlarmLocal(a, price);
-              }
+              if (hit) await triggerAlarmLocal(a, price);
             }
+            // بعد از چک، prev را به‌روز کن
+            prevPricesRef.current[sym] = price;
           } catch {}
         }
       } catch {}
