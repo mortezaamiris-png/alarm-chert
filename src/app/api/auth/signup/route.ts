@@ -1,19 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-function serverSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    "";
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
 export async function POST(req: NextRequest) {
   try {
+    const url = (
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      ""
+    ).trim();
+    const key = (
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      ""
+    ).trim();
+
+    if (!url || !key) {
+      return NextResponse.json(
+        {
+          error: "Missing env: URL or ANON_KEY empty on server",
+          hasUrl: !!url,
+          hasKey: !!key,
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!url.startsWith("https://") || url.includes("/rest/") || url.includes("/auth/")) {
+      return NextResponse.json(
+        {
+          error: "Bad SUPABASE_URL format",
+          urlPreview: url.slice(0, 60),
+        },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
     const email = String(body.email || "").trim();
     const password = String(body.password || "");
@@ -26,7 +47,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
     }
 
-    const supabase = serverSupabase();
+    const supabase = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -37,7 +61,10 @@ export async function POST(req: NextRequest) {
     });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json(
+        { error: error.message, code: (error as any).code || null },
+        { status: 400 }
+      );
     }
 
     const res = NextResponse.json({
@@ -74,6 +101,13 @@ export async function POST(req: NextRequest) {
 
     return res;
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Signup failed" }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: e?.message || "Signup failed",
+        name: e?.name || null,
+        cause: e?.cause ? String(e.cause) : null,
+      },
+      { status: 500 }
+    );
   }
 }
