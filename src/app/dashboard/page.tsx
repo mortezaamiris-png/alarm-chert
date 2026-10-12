@@ -1602,13 +1602,25 @@ export default function DashboardPage() {
   const loadCandles = useCallback(async () => {
     const container = chartContainerRef.current;
     if (!container) return;
+    if (container.clientWidth < 20) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
     destroyChart();
     setStatusMsg("Loading...");
     try {
-      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=500`);
-      const raw = await res.json();
-      let rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
-      if (!rows.length) { setStatusMsg("No data"); return; }
+      const fetchRows = async () => {
+        const res = await fetch(
+          `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(String(intervalRef.current))}&limit=500`
+        );
+        const raw = await res.json();
+        return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+      };
+      let rows: any[] = await fetchRows();
+      if (!rows.length) {
+        await new Promise((r) => setTimeout(r, 500));
+        rows = await fetchRows();
+      }
+      if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
 
       const candles = rows
         .map((r: any) => {
@@ -1926,6 +1938,7 @@ export default function DashboardPage() {
                   priceLineVisible: false,
                   lastValueVisible: false,
                   crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
                 });
               }
               if (Math.abs(a.time - tCursor) < 1) return;
@@ -1994,6 +2007,7 @@ export default function DashboardPage() {
                   priceLineVisible: false,
                   lastValueVisible: false,
                   crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
                 });
               }
               previewDiagSeriesRef.current.setData([
@@ -2021,6 +2035,7 @@ export default function DashboardPage() {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
               });
             }
             if (Math.abs(a.time - b.time) < 1) return;
@@ -2110,6 +2125,7 @@ export default function DashboardPage() {
                     priceLineVisible: false,
                     lastValueVisible: false,
                     crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
                   });
                 }
                 const pts = [
@@ -2579,6 +2595,7 @@ export default function DashboardPage() {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
               });
             }
             const pts = [
@@ -2787,7 +2804,14 @@ export default function DashboardPage() {
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
   useEffect(() => {
-    loadCandles();
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (!cancelled) loadCandles();
+      });
+    };
+    run();
     const onResize = () => {
       if (chartRef.current && chartContainerRef.current) {
         chartRef.current.applyOptions({
@@ -2796,12 +2820,25 @@ export default function DashboardPage() {
         });
       }
     };
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        if (!seriesRef.current || !candlesRef.current.length) run();
+      }
+    };
+    const onFocus = () => {
+      if (!seriesRef.current || !candlesRef.current.length) run();
+    };
     window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
     return () => {
+      cancelled = true;
       window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
       destroyChart();
     };
-  }, [symbol, interval]);
+  }, [symbol, interval, loadCandles, destroyChart]);
 
   // Apply timezone change live — preserve visible range (don't jump to empty future)
   useEffect(() => {
@@ -3074,21 +3111,23 @@ export default function DashboardPage() {
         }
       }
       candlesRef.current = candles;
-      // New bar consumed one whitespace slot — rebuild trailing future strip
-      // without shifting the user's current view
+      // فقط هر چند کندل یک‌بار whitespace را بازسازی کن تا چارت گیر نکند
       if (addedNew) {
-        try {
-          const chart = chartRef.current;
-          let lr: { from: number; to: number } | null = null;
+        const n = (refreshLiveCandles as any)._newBarCount = ((refreshLiveCandles as any)._newBarCount || 0) + 1;
+        if (n % 5 === 0) {
           try {
-            const r = chart?.timeScale().getVisibleLogicalRange();
-            if (r) lr = { from: r.from, to: r.to };
+            const chart = chartRef.current;
+            let lr: { from: number; to: number } | null = null;
+            try {
+              const r = chart?.timeScale().getVisibleLogicalRange();
+              if (r) lr = { from: r.from, to: r.to };
+            } catch {}
+            series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+            if (lr && chart) {
+              try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
+            }
           } catch {}
-          series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-          if (lr && chart) {
-            try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
-          }
-        } catch {}
+        }
       }
 
       const last = candles[candles.length - 1];
@@ -3258,10 +3297,20 @@ export default function DashboardPage() {
                 if (nowT < tMin || nowT > tMax + 60) continue;
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
-              // Precision: only last-price cross (prev → price).
-              // Never use chart-TF candle high/low — on 1h/4h a wick inside the bar
-              // would false-trigger even when price never actually crossed the level.
-              if (prev == null || Number.isNaN(prev)) continue;
+              // Cross: prev→price. اگر prev هنوز نیست، نزدیک بودن قیمت را هم بپذیر
+              // (تا آلارم اول بعد از لود صفحه از دست نرود)
+              if (prev == null || Number.isNaN(prev)) {
+                const near =
+                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.00025;
+                if (
+                  (a.condition === "above" && price >= target) ||
+                  (a.condition === "below" && price <= target) ||
+                  (a.condition === "cross" && near)
+                ) {
+                  await triggerAlarmLocal(a, price);
+                }
+                continue;
+              }
               if (didCross(a.condition, target, prev, price)) {
                 await triggerAlarmLocal(a, price);
               }
@@ -3271,10 +3320,16 @@ export default function DashboardPage() {
       } catch {}
     };
     tick();
-    const id = window.setInterval(tick, 2000);
+    // کندل سریع‌تر؛ همگام‌سازی آلارم از DB کمی آهسته‌تر تا چارت گیر نکند
+    const idCandle = window.setInterval(async () => {
+      if (!alive) return;
+      try { await refreshLiveCandles(); } catch {}
+    }, 1000);
+    const id = window.setInterval(tick, 4000);
     return () => {
       alive = false;
       clearInterval(id);
+      clearInterval(idCandle);
     };
   }, [refreshLiveCandles, triggerAlarmLocal]);
 
@@ -4775,6 +4830,7 @@ export default function DashboardPage() {
                                 priceLineVisible: false,
                                 lastValueVisible: false,
                                 crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
                               });
                               const pts = [
                                 { time: md.pointA.time as any, value: md.pointA.price },
@@ -4956,6 +5012,7 @@ export default function DashboardPage() {
                                 priceLineVisible: false,
                                 lastValueVisible: false,
                                 crosshairMarkerVisible: false,
+                                autoscaleInfoProvider: () => null as any,
                               });
                               const pts = [
                                 { time: md.pointA.time as any, value: md.pointA.price },
