@@ -1602,25 +1602,13 @@ export default function DashboardPage() {
   const loadCandles = useCallback(async () => {
     const container = chartContainerRef.current;
     if (!container) return;
-    if (container.clientWidth < 20) {
-      await new Promise((r) => setTimeout(r, 150));
-    }
     destroyChart();
     setStatusMsg("Loading...");
     try {
-      const fetchRows = async () => {
-        const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(String(intervalRef.current))}&limit=500`
-        );
-        const raw = await res.json();
-        return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
-      };
-      let rows: any[] = await fetchRows();
-      if (!rows.length) {
-        await new Promise((r) => setTimeout(r, 500));
-        rows = await fetchRows();
-      }
-      if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=500`);
+      const raw = await res.json();
+      let rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+      if (!rows.length) { setStatusMsg("No data"); return; }
 
       const candles = rows
         .map((r: any) => {
@@ -2799,14 +2787,7 @@ export default function DashboardPage() {
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
   useEffect(() => {
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      requestAnimationFrame(() => {
-        if (!cancelled) loadCandles();
-      });
-    };
-    run();
+    loadCandles();
     const onResize = () => {
       if (chartRef.current && chartContainerRef.current) {
         chartRef.current.applyOptions({
@@ -2815,25 +2796,12 @@ export default function DashboardPage() {
         });
       }
     };
-    const onVis = () => {
-      if (document.visibilityState === "visible") {
-        if (!seriesRef.current || !candlesRef.current.length) run();
-      }
-    };
-    const onFocus = () => {
-      if (!seriesRef.current || !candlesRef.current.length) run();
-    };
     window.addEventListener("resize", onResize);
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onFocus);
     return () => {
-      cancelled = true;
       window.removeEventListener("resize", onResize);
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", onFocus);
       destroyChart();
     };
-  }, [symbol, interval, loadCandles, destroyChart]);
+  }, [symbol, interval]);
 
   // Apply timezone change live — preserve visible range (don't jump to empty future)
   useEffect(() => {
@@ -3290,20 +3258,10 @@ export default function DashboardPage() {
                 if (nowT < tMin || nowT > tMax + 60) continue;
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
-              // Cross: prev→price. اگر prev هنوز نیست، نزدیک بودن قیمت را هم بپذیر
-              // (تا آلارم اول بعد از لود صفحه از دست نرود)
-              if (prev == null || Number.isNaN(prev)) {
-                const near =
-                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.00025;
-                if (
-                  (a.condition === "above" && price >= target) ||
-                  (a.condition === "below" && price <= target) ||
-                  (a.condition === "cross" && near)
-                ) {
-                  await triggerAlarmLocal(a, price);
-                }
-                continue;
-              }
+              // Precision: only last-price cross (prev → price).
+              // Never use chart-TF candle high/low — on 1h/4h a wick inside the bar
+              // would false-trigger even when price never actually crossed the level.
+              if (prev == null || Number.isNaN(prev)) continue;
               if (didCross(a.condition, target, prev, price)) {
                 await triggerAlarmLocal(a, price);
               }
