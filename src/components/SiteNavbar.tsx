@@ -59,6 +59,7 @@ function AuthModal({
         return;
       }
 
+      // فقط از سرور خودمان — نه مستقیم supabase.co
       const endpoint = tab === "login" ? "/api/auth/login" : "/api/auth/signup";
       const res = await fetch(endpoint, {
         method: "POST",
@@ -234,7 +235,10 @@ export default function SiteNavbar() {
   const logout = async () => {
     setMenuOpen(false);
     try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+      });
     } catch {}
     setUser(null);
     window.location.reload();
@@ -244,6 +248,7 @@ export default function SiteNavbar() {
     <>
       <header className="sticky top-0 z-50 w-full border-b border-white/5 bg-[#0b0e11]/90 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-3 h-12 flex items-center gap-2">
+          {/* LEFT: Sign in / Profile + Messages */}
           <div className="flex items-center gap-1.5 shrink-0 min-w-[88px]">
             {user ? (
               <>
@@ -255,16 +260,26 @@ export default function SiteNavbar() {
                     className="w-9 h-9 rounded-full overflow-hidden border-2 border-orange-500/60 hover:border-orange-400 bg-gray-800 flex items-center justify-center"
                   >
                     {avatarUrl ? (
-                      <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                      <img
+                        src={avatarUrl}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
                     ) : (
-                      <span className="text-sm font-bold text-orange-300">{letter}</span>
+                      <span className="text-sm font-bold text-orange-300">
+                        {letter}
+                      </span>
                     )}
                   </button>
                   {menuOpen && (
                     <div className="absolute left-0 top-full mt-1.5 z-[90] w-52 bg-gray-950 border border-gray-700 rounded-xl shadow-xl py-1">
                       <div className="px-3 py-2 border-b border-gray-800">
-                        <p className="text-sm font-medium text-white truncate">{displayName}</p>
-                        <p className="text-[11px] text-gray-500 truncate">{user.email}</p>
+                        <p className="text-sm font-medium text-white truncate">
+                          {displayName}
+                        </p>
+                        <p className="text-[11px] text-gray-500 truncate">
+                          {user.email}
+                        </p>
                       </div>
                       <button
                         type="button"
@@ -302,7 +317,16 @@ export default function SiteNavbar() {
                   title="Messages"
                   className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white"
                 >
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
                     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
                     <polyline points="22,6 12,13 2,6" />
                   </svg>
@@ -324,6 +348,7 @@ export default function SiteNavbar() {
             )}
           </div>
 
+          {/* CENTER: Nav */}
           <nav className="flex-1 flex items-center justify-center gap-1">
             {NAV.map((item) => {
               const active =
