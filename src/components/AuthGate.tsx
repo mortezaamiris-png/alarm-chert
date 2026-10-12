@@ -1,44 +1,31 @@
 "use client";
 
-/**
- * Optional wrapper: block app pages until user is signed in.
- * Use in layout or around main content.
- *
- * Example in layout.tsx:
- *   import AuthGate from "@/components/AuthGate";
- *   <SiteNavbar />
- *   <AuthGate><main>{children}</main></AuthGate>
- */
-
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
-import type { User } from "@supabase/supabase-js";
 
 export default function AuthGate({
   children,
   allowHome = true,
 }: {
   children: React.ReactNode;
-  /** If true, "/" stays public */
   allowHome?: boolean;
 }) {
-  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [user, setUser] = useState<null | { id: string } | undefined>(undefined);
   const [path, setPath] = useState("/");
 
   useEffect(() => {
     setPath(typeof window !== "undefined" ? window.location.pathname : "/");
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      setUser(data.session?.user ?? null);
+      try {
+        const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+        const json = await res.json();
+        setUser(json.user ?? null);
+      } catch {
+        setUser(null);
+      }
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => sub.subscription.unsubscribe();
   }, []);
 
-  const publicPath =
-    allowHome && (path === "/" || path === "");
+  const publicPath = allowHome && (path === "/" || path === "");
 
   if (user === undefined) {
     return (
