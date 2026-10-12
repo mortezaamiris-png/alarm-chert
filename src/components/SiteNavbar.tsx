@@ -1,17 +1,14 @@
 "use client";
 
-/**
- * Shared top navbar: Profile + Messages (left) | Home Watchlist Charts Alerts (center) | Bell (right)
- * Put this in your layout so it appears on every page.
- *
- * Replace / integrate into: src/components/Navbar.tsx  OR  src/app/layout.tsx header
- */
-
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
-import type { User, Session } from "@supabase/supabase-js";
+
+type AuthUser = {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, any>;
+};
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -27,7 +24,7 @@ function AuthModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onAuthed: (user: User) => void;
+  onAuthed: (user: AuthUser) => void;
 }) {
   const [tab, setTab] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
@@ -40,36 +37,10 @@ function AuthModal({
 
   if (!open) return null;
 
-  const finishAuth = async (user: User) => {
+  const finishAuth = (user: AuthUser) => {
     onAuthed(user);
     onClose();
-    // Force UI refresh so avatar replaces Sign in everywhere
-    try {
-      const { data } = await supabase.auth.getSession();
-      if (data.session) {
-        // small delay then reload to sync all pages
-        window.setTimeout(() => {
-          window.location.reload();
-        }, 150);
-      }
-    } catch {}
-  };
-
-  const signInGoogle = async () => {
-    setBusy(true);
-    setErr("");
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
-        },
-      });
-      if (error) setErr(error.message);
-    } catch (e: any) {
-      setErr(e?.message || "Google sign-in failed");
-    }
-    setBusy(false);
+    window.setTimeout(() => window.location.reload(), 150);
   };
 
   const submitEmail = async () => {
@@ -87,47 +58,43 @@ function AuthModal({
         setBusy(false);
         return;
       }
-      if (tab === "login") {
-        const { data, error } = await supabase.auth.signInWithPassword({
+
+      const endpoint = tab === "login" ? "/api/auth/login" : "/api/auth/signup";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
           email: email.trim(),
           password,
-        });
-        if (error) {
-          setErr(error.message);
-        } else if (data.user && data.session) {
-          await finishAuth(data.user);
-        } else if (data.user && !data.session) {
-          setErr("Email not confirmed yet. Check your inbox, or disable Confirm email in Supabase.");
-        } else {
-          setErr("Login failed — no session");
-        }
+          name: name.trim() || undefined,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setErr(json.error || "Request failed");
+        setBusy(false);
+        return;
+      }
+
+      if (tab === "signup" && json.needsEmailConfirm) {
+        setInfo(
+          json.message ||
+            "Account created. Please check your email and confirm, then Sign in."
+        );
+        setTab("login");
+        setBusy(false);
+        return;
+      }
+
+      if (json.user) {
+        finishAuth(json.user as AuthUser);
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            data: { full_name: name.trim() || undefined },
-            emailRedirectTo:
-              typeof window !== "undefined" ? window.location.origin : undefined,
-          },
-        });
-        if (error) {
-          setErr(error.message);
-        } else if (data.user && data.session) {
-          // Confirm email is OFF → immediate session
-          await finishAuth(data.user);
-        } else if (data.user && !data.session) {
-          // Confirm email is ON → must verify
-          setInfo(
-            "Account created. Check your email and click the confirmation link, then Sign in."
-          );
-          setTab("login");
-        } else {
-          setErr("Sign up failed");
-        }
+        setErr("No user returned");
       }
     } catch (e: any) {
-      setErr(e?.message || "Auth failed");
+      setErr(e?.message || "Network error");
     }
     setBusy(false);
   };
@@ -148,25 +115,6 @@ function AuthModal({
           </button>
         </div>
         <div className="p-5 space-y-4">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={signInGoogle}
-            className="w-full flex items-center justify-center gap-3 py-2.5 rounded-xl bg-white text-gray-900 font-medium text-sm hover:bg-gray-100 disabled:opacity-60"
-          >
-            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>
-              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.5-.4-3.5z" />
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13.1 24 13.1c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 16.3 4 9.6 8.3 6.3 14.7z" />
-              <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.3l-6.3-5.3C29.3 35.1 26.8 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-              <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l.1.1 6.3 5.3C39.3 37 44 32 44 24c0-1.3-.1-2.5-.4-3.5z" />
-            </svg>
-            Continue with Google
-          </button>
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-            <div className="flex-1 h-px bg-gray-800" />
-            or email
-            <div className="flex-1 h-px bg-gray-800" />
-          </div>
           {tab === "signup" && (
             <input
               value={name}
@@ -196,7 +144,6 @@ function AuthModal({
               type="button"
               onClick={() => setShowPass((v) => !v)}
               className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-gray-400 hover:text-white"
-              title={showPass ? "Hide password" : "Show password"}
             >
               {showPass ? "Hide" : "Show"}
             </button>
@@ -215,14 +162,30 @@ function AuthModal({
             {tab === "login" ? (
               <>
                 No account?{" "}
-                <button type="button" className="text-orange-400 hover:underline" onClick={() => { setTab("signup"); setErr(""); setInfo(""); }}>
+                <button
+                  type="button"
+                  className="text-orange-400 hover:underline"
+                  onClick={() => {
+                    setTab("signup");
+                    setErr("");
+                    setInfo("");
+                  }}
+                >
                   Sign up
                 </button>
               </>
             ) : (
               <>
                 Already have an account?{" "}
-                <button type="button" className="text-orange-400 hover:underline" onClick={() => { setTab("login"); setErr(""); setInfo(""); }}>
+                <button
+                  type="button"
+                  className="text-orange-400 hover:underline"
+                  onClick={() => {
+                    setTab("login");
+                    setErr("");
+                    setInfo("");
+                  }}
+                >
                   Sign in
                 </button>
               </>
@@ -237,57 +200,29 @@ function AuthModal({
 export default function SiteNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [authOpen, setAuthOpen] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (mounted) setUser(data.session?.user ?? null);
+      try {
+        const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+        const json = await res.json();
+        if (mounted) setUser(json.user ?? null);
+      } catch {
+        if (mounted) setUser(null);
+      }
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session: Session | null) => {
-      setUser(session?.user ?? null);
-    });
     return () => {
       mounted = false;
-      sub.subscription.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      setUnreadCount(0);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        // Unread = triggered alarms for this user (last 7 days) as inbox badge
-        const { count, error } = await supabase
-          .from("alarms")
-          .select("*", { count: "exact", head: true })
-          .eq("triggered", true)
-          .eq("user_id", user.id);
-        if (!error && !cancelled && typeof count === "number") {
-          setUnreadCount(count);
-          return;
-        }
-      } catch {}
-      try {
-        const { count, error } = await supabase
-          .from("messages")
-          .select("*", { count: "exact", head: true })
-          .eq("to_user", user.id)
-          .eq("read", false);
-        if (!error && !cancelled && typeof count === "number") setUnreadCount(count);
-      } catch {}
-    })();
-    return () => {
-      cancelled = true;
-    };
+    if (!user) setUnreadCount(0);
   }, [user]);
 
   const meta = user?.user_metadata || {};
@@ -298,15 +233,17 @@ export default function SiteNavbar() {
 
   const logout = async () => {
     setMenuOpen(false);
-    await supabase.auth.signOut();
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } catch {}
     setUser(null);
+    window.location.reload();
   };
 
   return (
     <>
       <header className="sticky top-0 z-50 w-full border-b border-white/5 bg-[#0b0e11]/90 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-3 h-12 flex items-center gap-2">
-          {/* LEFT — اول ورود/آواتار، بعد نامه (فقط بعد از لاگین) */}
           <div className="flex items-center gap-1.5 shrink-0 min-w-[88px]">
             {user ? (
               <>
@@ -362,7 +299,7 @@ export default function SiteNavbar() {
                 <button
                   type="button"
                   onClick={() => router.push("/messages")}
-                  title="Alarm messages"
+                  title="Messages"
                   className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white"
                 >
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -387,39 +324,37 @@ export default function SiteNavbar() {
             )}
           </div>
 
-          {/* CENTER — main nav */}
-          <nav className="flex-1 flex justify-center">
-            <div className="inline-flex items-center gap-0.5 rounded-full bg-gray-900/80 border border-gray-700/80 p-0.5">
-              {NAV.map((item) => {
-                const active =
-                  item.href === "/"
-                    ? pathname === "/"
-                    : pathname?.startsWith(item.href);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={`px-3 sm:px-4 py-1.5 rounded-full text-xs sm:text-sm font-medium transition-colors ${
-                      active
-                        ? "bg-gray-700 text-white"
-                        : "text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </div>
+          <nav className="flex-1 flex items-center justify-center gap-1">
+            {NAV.map((item) => {
+              const active =
+                item.href === "/"
+                  ? pathname === "/"
+                  : pathname?.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`px-3 py-1.5 rounded-full text-sm ${
+                    active
+                      ? "bg-gray-800 text-white"
+                      : "text-gray-400 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
           </nav>
 
-          {/* RIGHT — spacer / push notifications slot (keep your existing Bell if needed) */}
-          <div className="min-w-[88px] flex justify-end">
-            {/* Your existing Bell button can stay here in layout if separate */}
-          </div>
+          <div className="w-[88px] shrink-0" />
         </div>
       </header>
 
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} onAuthed={setUser} />
+      <AuthModal
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onAuthed={(u) => setUser(u)}
+      />
     </>
   );
 }
