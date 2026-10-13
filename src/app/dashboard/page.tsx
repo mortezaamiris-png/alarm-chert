@@ -553,9 +553,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 100;
+const FUTURE_BARS = 160;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 45;
+const FUTURE_VISIBLE = 70;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1783,7 +1783,7 @@ export default function DashboardPage() {
               const bars = candles.length;
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 24, barSpacing: 8 });
+                chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
                 const past = Math.min(120, bars);
                 chart.timeScale().setVisibleLogicalRange({
                   from: bars - past,
@@ -2028,7 +2028,7 @@ export default function DashboardPage() {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
           // فقط نوار قیمت سمت راست (~80px)
-          if (fromRight > 80 || fromRight < 0) return;
+          if (fromRight > 100 || fromRight < 0) return;
           // جلوگیری از اسکرول افقی پیش‌فرض روی محور قیمت
           e.preventDefault();
           e.stopPropagation();
@@ -2084,7 +2084,7 @@ export default function DashboardPage() {
         const onDblPrice = (e: MouseEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          if (fromRight > 80 || fromRight < 0) return;
+          if (fromRight > 100 || fromRight < 0) return;
           priceRangeOverrideRef.current = null;
           try {
             const s = seriesRef.current as any;
@@ -2093,8 +2093,9 @@ export default function DashboardPage() {
             ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
           } catch {}
         };
-        container.addEventListener("wheel", onWheelPrice, { passive: false });
-        container.addEventListener("dblclick", onDblPrice);
+        // capture:true تا قبل از handler خود LWC اجرا شود
+        container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+        container.addEventListener("dblclick", onDblPrice, { capture: true });
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
@@ -2133,10 +2134,12 @@ export default function DashboardPage() {
           const bars = candlesRef.current.length || candles.length;
           if (bars < 2) return;
           programmaticRangeRef.current = true;
-          chart.timeScale().applyOptions({ rightOffset: 4 });
-          const past = Math.min(70, bars);
+          // rightOffset بزرگ = فضای خالی سمت راست (زمان آینده)
+          chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
+          const past = Math.min(80, bars);
+          // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
-            from: bars - past,
+            from: Math.max(0, bars - past),
             to: bars - 1 + FUTURE_VISIBLE,
           });
           requestAnimationFrame(() => { programmaticRangeRef.current = false; });
@@ -2248,11 +2251,11 @@ export default function DashboardPage() {
             chart.timeScale().scrollToRealTime();
             return;
           }
-          // Same framing as initial load: last ~70 real bars + future strip
-          chart.timeScale().applyOptions({ rightOffset: 4 });
-          const past = Math.min(70, bars);
+          // Same framing as initial load: last ~80 real bars + future strip
+          chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
+          const past = Math.min(80, bars);
           chart.timeScale().setVisibleLogicalRange({
-            from: bars - past,
+            from: Math.max(0, bars - past),
             to: bars - 1 + FUTURE_VISIBLE,
           });
         } catch {
