@@ -1631,10 +1631,6 @@ export default function DashboardPage() {
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
 
-      // Only tear down the old chart once new candles are ready
-      destroyChart();
-      if (gen !== loadGenRef.current) return;
-
       const candles = rows
         .map((r: any) => {
           const time = Math.floor(
@@ -1653,6 +1649,8 @@ export default function DashboardPage() {
         .filter((c: any) => c.time && !Number.isNaN(c.close))
         .sort((a: any, b: any) => a.time - b.time);
 
+      if (gen !== loadGenRef.current) return;
+
       candlesRef.current = candles;
       const lastClose = candles[candles.length - 1]?.close || 1;
       const lastTime = candles[candles.length - 1]?.time ?? null;
@@ -1660,7 +1658,115 @@ export default function DashboardPage() {
       setLastBarTime(lastTime);
       const { precision, minMove } = getPrecision(lastClose);
       const tz = timeZoneRef.current;
-      const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
+      const isIntraday = ["1", "5", "15"].includes(fetchIv);
+
+      // ── Soft path: keep same chart instance (no black flash / no freeze) ──
+      if (chartRef.current && seriesRef.current) {
+        try {
+          const chart = chartRef.current;
+          const series = seriesRef.current;
+          clearPreview();
+          // Remove overlay price-lines & drawn line series (will re-add below)
+          try {
+            if (lastPriceLineRef.current) {
+              series.removePriceLine(lastPriceLineRef.current);
+              lastPriceLineRef.current = null;
+            }
+          } catch {}
+          alarmLinesRef.current.forEach((pl) => {
+            try { series.removePriceLine(pl); } catch {}
+          });
+          alarmLinesRef.current.clear();
+          chartLinesRef.current.forEach((s) => {
+            try {
+              if (s && typeof s === "object" && "applyOptions" in s) {
+                // line series
+                try { chart.removeSeries(s); } catch {
+                  try { series.removePriceLine(s); } catch {}
+                }
+              } else {
+                try { series.removePriceLine(s); } catch {}
+              }
+            } catch {}
+          });
+          chartLinesRef.current.clear();
+          // Drop indicator series so rebuildIndicators recreates them cleanly
+          try {
+            if (smaSeriesRef.current) {
+              const { s1, s2, s3 } = smaSeriesRef.current;
+              try { chart.removeSeries(s1); } catch {}
+              try { chart.removeSeries(s2); } catch {}
+              try { chart.removeSeries(s3); } catch {}
+              smaSeriesRef.current = null;
+            }
+          } catch {}
+          try {
+            if (rsiSeriesRef.current) {
+              chart.removeSeries(rsiSeriesRef.current);
+              rsiSeriesRef.current = null;
+            }
+          } catch {}
+          try {
+            if (dmiSeriesRef.current) {
+              const { plus, minus, adx } = dmiSeriesRef.current;
+              try { chart.removeSeries(plus); } catch {}
+              try { chart.removeSeries(minus); } catch {}
+              try { chart.removeSeries(adx); } catch {}
+              dmiSeriesRef.current = null;
+            }
+          } catch {}
+          pivotSeriesRef.current.forEach((s) => {
+            try { chart.removeSeries(s); } catch {}
+          });
+          pivotSeriesRef.current = [];
+          trendSeriesRef.current.forEach((s) => {
+            try { chart.removeSeries(s); } catch {}
+          });
+          trendSeriesRef.current = [];
+          try {
+            if (volumeSeriesRef.current) {
+              chart.removeSeries(volumeSeriesRef.current);
+              volumeSeriesRef.current = null;
+            }
+          } catch {}
+
+          series.applyOptions({
+            priceFormat: { type: "price", precision, minMove },
+          });
+          series.setData(appendFutureWhitespace(candles, fetchIv) as any);
+          chart.applyOptions({
+            localization: makeLocalization(tz),
+            timeScale: {
+              secondsVisible: isIntraday,
+              tickMarkFormatter: makeTickMarkFormatter(tz) as any,
+            },
+          });
+          try {
+            const bars = candles.length;
+            if (bars >= 2) {
+              chart.timeScale().applyOptions({ rightOffset: 4 });
+              const past = Math.min(70, bars);
+              chart.timeScale().setVisibleLogicalRange({
+                from: bars - past,
+                to: bars - 1 + FUTURE_VISIBLE,
+              });
+            }
+          } catch {}
+          if (gen !== loadGenRef.current) return;
+          renderAllLinesAndAlarms();
+          rebuildIndicators();
+          applyLastPriceLabel();
+          setStatusMsg("");
+          return; // done — no destroy, no recreate
+        } catch (softErr) {
+          console.warn("soft TF switch failed, full rebuild", softErr);
+          destroyChart();
+        }
+      }
+
+      // ── Full path: first load or soft update failed ──
+      destroyChart();
+      if (gen !== loadGenRef.current) return;
 
       const chart = createChart(container, {
         layout: {
@@ -3156,8 +3262,9 @@ export default function DashboardPage() {
 
       const last = candles[candles.length - 1];
       if (last) {
-        setLastBarClose(last.close);
-        setLastBarTime(last.time);
+        // Avoid React re-render every tick — only push state when values actually change
+        setLastBarClose((prev) => (prev === last.close ? prev : last.close));
+        setLastBarTime((prev) => (prev === last.time ? prev : last.time));
         applyLastPriceLabel();
         // فقط قیمت را برگردان — prev را اینجا عوض نکن (باگ cross)
         return { last, high: last.high, low: last.low };
@@ -3344,10 +3451,11 @@ export default function DashboardPage() {
     };
     tick();
     // کندل سریع‌تر؛ همگام‌سازی آلارم از DB کمی آهسته‌تر تا چارت گیر نکند
+    // 1.5s is enough for live feel; 1s + setState was freezing iPad/desktop
     const idCandle = window.setInterval(async () => {
       if (!alive) return;
       try { await refreshLiveCandles(); } catch {}
-    }, 1000);
+    }, 1500);
     const id = window.setInterval(tick, 4000);
     return () => {
       alive = false;
