@@ -1986,58 +1986,98 @@ export default function DashboardPage() {
       setShowGoLive(false);
 
       // اسکرول روی محور قیمت (سمت راست) → زوم عمودی مثل TradingView
+      // درگ روی محور قیمت هم از handleScale.axisPressedMouseMove فعال است
+      try {
+        chart.applyOptions({
+          handleScale: {
+            axisPressedMouseMove: { time: true, price: true },
+            axisDoubleClickReset: { time: true, price: true },
+            mouseWheel: true,
+            pinch: true,
+          },
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+          },
+        });
+      } catch {}
       try {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // فقط وقتی موس روی نوار قیمت سمت راست است (~70px)
-          if (fromRight > 72 || fromRight < 0) return;
+          // نوار قیمت سمت راست (~90px) — مثل TradingView
+          if (fromRight > 90 || fromRight < 0) return;
           e.preventDefault();
           e.stopPropagation();
           const s = seriesRef.current as any;
           if (!s) return;
           const ps = s.priceScale?.() || chart.priceScale("right");
           if (!ps) return;
+          try { ps.applyOptions({ autoScale: false }); } catch {}
+
+          // قیمت بالا/پایین صفحه از مختصات پیکسل
+          let pTop: number | null = null;
+          let pBot: number | null = null;
           try {
-            ps.applyOptions({ autoScale: false });
-          } catch {}
-          let from: number | null = null;
-          let to: number | null = null;
-          try {
-            const vr = ps.getVisibleRange?.();
-            if (vr && vr.from != null && vr.to != null) {
-              from = Number(vr.from);
-              to = Number(vr.to);
+            const t = s.coordinateToPrice?.(0);
+            const b = s.coordinateToPrice?.(container.clientHeight);
+            if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
+              pTop = Math.max(t, b);
+              pBot = Math.min(t, b);
             }
           } catch {}
-          if (from == null || to == null || !(to > from)) {
-            // fallback: از کندل‌های مرئی
+          if (pTop == null || pBot == null || !(pTop > pBot)) {
             try {
-              const bars = candlesRef.current;
-              if (!bars.length) return;
-              let lo = Infinity, hi = -Infinity;
-              for (const c of bars.slice(-200)) {
-                if (c.low < lo) lo = c.low;
-                if (c.high > hi) hi = c.high;
+              const vr = ps.getVisibleRange?.();
+              if (vr?.from != null && vr?.to != null) {
+                pBot = Number(vr.from);
+                pTop = Number(vr.to);
               }
-              if (!(hi > lo)) return;
-              from = lo;
-              to = hi;
-            } catch { return; }
+            } catch {}
           }
-          const mid = (from + to) / 2;
-          const half = (to - from) / 2;
-          // deltaY < 0 = zoom in (تنگ‌تر)
-          const factor = e.deltaY < 0 ? 0.88 : 1.14;
-          const newHalf = Math.max(half * factor, Math.abs(mid) * 0.00005 + 0.5);
+          if (pTop == null || pBot == null || !(pTop > pBot)) {
+            const bars = candlesRef.current;
+            if (!bars.length) return;
+            let lo = Infinity, hi = -Infinity;
+            for (const c of bars.slice(-150)) {
+              if (c.low < lo) lo = c.low;
+              if (c.high > hi) hi = c.high;
+            }
+            if (!(hi > lo)) return;
+            pBot = lo;
+            pTop = hi;
+          }
+
+          // زوم حول نقطهٔ زیر موس
+          const relY = (e.clientY - rect.top) / Math.max(1, rect.height);
+          const priceAtCursor = pTop - relY * (pTop - pBot);
+          const factor = e.deltaY < 0 ? 0.85 : 1.18; // in / out
+          const newRange = (pTop - pBot) * factor;
+          const minRange = Math.max(Math.abs(priceAtCursor) * 0.00005, 0.5);
+          const range = Math.max(newRange, minRange);
+          const above = (pTop - priceAtCursor) / (pTop - pBot);
+          const below = 1 - above;
+          const newTop = priceAtCursor + range * above;
+          const newBot = priceAtCursor - range * below;
+
           try {
             if (typeof ps.setVisibleRange === "function") {
-              ps.setVisibleRange({ from: mid - newHalf, to: mid + newHalf });
+              ps.setVisibleRange({ from: newBot, to: newTop });
             } else {
-              // تقریبی با scaleMargins
-              const top = Math.min(0.45, Math.max(0.02, 0.05 * factor));
-              const bottom = Math.min(0.45, Math.max(0.02, 0.05 * factor));
-              ps.applyOptions({ scaleMargins: { top, bottom } });
+              // fallback: scaleMargins
+              const bars = candlesRef.current;
+              let dataLo = Infinity, dataHi = -Infinity;
+              for (const c of bars.slice(-200)) {
+                if (c.low < dataLo) dataLo = c.low;
+                if (c.high > dataHi) dataHi = c.high;
+              }
+              if (dataHi > dataLo) {
+                const padTop = Math.max(0.02, Math.min(0.45, (dataHi - newTop) / (dataHi - dataLo + range)));
+                const padBot = Math.max(0.02, Math.min(0.45, (newBot - dataLo) / (dataHi - dataLo + range)));
+                ps.applyOptions({ scaleMargins: { top: padTop, bottom: padBot } });
+              }
             }
           } catch {}
         };
