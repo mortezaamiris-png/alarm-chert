@@ -1705,7 +1705,7 @@ export default function DashboardPage() {
             } catch {}
             // Clear stale indicators that still hold old price range
             try {
-              for (const s of [sma1SeriesRef.current, sma2SeriesRef.current, sma3SeriesRef.current]) {
+              for (const s of [smaSeriesRef.current?.s1, smaSeriesRef.current?.s2, smaSeriesRef.current?.s3]) {
                 if (s) { try { s.setData([]); } catch {} }
               }
             } catch {}
