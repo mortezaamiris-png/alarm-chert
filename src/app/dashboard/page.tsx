@@ -629,6 +629,9 @@ export default function DashboardPage() {
   const loadGenRef = useRef(0);
   /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
   const pinnedToRightRef = useRef(true);
+  /** True while finger/mouse is dragging the chart — freeze all auto range changes */
+  const userInteractingRef = useRef(false);
+  const interactTimerRef = useRef<number | null>(null);
   /** rAF throttle for pointermove (prevents desktop freeze) */
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
@@ -1081,6 +1084,13 @@ export default function DashboardPage() {
   }, [hideHandles]);
 
   const destroyChart = useCallback(() => {
+    try {
+      const ch = chartRef.current as any;
+      if (ch?.__interactCleanup) { ch.__interactCleanup(); ch.__interactCleanup = null; }
+    } catch {}
+    if (interactTimerRef.current) { window.clearTimeout(interactTimerRef.current); interactTimerRef.current = null; }
+    userInteractingRef.current = false;
+
     clearPreview();
     try { pointerAbortRef.current?.abort(); } catch {}
     pointerAbortRef.current = null;
@@ -1763,12 +1773,13 @@ export default function DashboardPage() {
           rebuildIndicators();
           applyLastPriceLabel();
           setStatusMsg("");
-          // Background: pull fuller history without blocking UI
+          // Background: pull fuller history without blocking UI / without jumping viewport
           if (candles.length <= 150) {
             void (async () => {
               try {
                 const more = await fetchRows(300);
                 if (gen !== loadGenRef.current || !Array.isArray(more) || more.length <= candles.length) return;
+                if (userInteractingRef.current) return; // don't touch chart mid-gesture
                 const richer = more
                   .map((r: any) => {
                     const time = Math.floor(
@@ -1786,21 +1797,18 @@ export default function DashboardPage() {
                   })
                   .filter((c: any) => c.time && !Number.isNaN(c.close))
                   .sort((a: any, b: any) => a.time - b.time);
-                if (gen !== loadGenRef.current || !seriesRef.current) return;
-                candlesRef.current = richer;
+                if (gen !== loadGenRef.current || !seriesRef.current || userInteractingRef.current) return;
+                // Capture TIME window BEFORE setData (logical indices shift when history grows left)
                 let tr: any = null;
                 try { tr = chartRef.current?.timeScale().getVisibleRange?.(); } catch {}
+                candlesRef.current = richer;
                 seriesRef.current.setData(appendFutureWhitespace(richer, fetchIv) as any);
+                // Always restore the same wall-clock window — never jump to start or end
                 if (tr && chartRef.current) {
                   try {
-                    chartRef.current.timeScale().setVisibleRange(tr);
-                  } catch {}
-                } else if (pinnedToRightRef.current && chartRef.current) {
-                  const bars = richer.length;
-                  try {
-                    chartRef.current.timeScale().setVisibleLogicalRange({
-                      from: Math.max(0, bars - 70),
-                      to: bars - 1 + FUTURE_VISIBLE,
+                    chartRef.current.timeScale().setVisibleRange({
+                      from: tr.from as any,
+                      to: tr.to as any,
                     });
                   } catch {}
                 }
@@ -1872,12 +1880,53 @@ export default function DashboardPage() {
       // Track whether user scrolled away from the live edge (prevents auto-jump on iPad)
       try {
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-          if (!range) return;
+          if (!range || userInteractingRef.current) return;
           const bars = candlesRef.current.length;
           if (bars < 2) return;
-          // pinned if right edge is near last real bar + future strip
-          pinnedToRightRef.current = range.to >= bars - 1 + FUTURE_VISIBLE - 20;
+          // Pinned ONLY when viewport right edge is at/past the last REAL candle
+          // (not merely somewhere in the future-whitespace strip while browsing history)
+          pinnedToRightRef.current = range.to >= bars - 1 + 1;
         });
+      } catch {}
+
+      // Freeze auto-scroll while user is panning/zooming (critical on iPad)
+      try {
+        const el = container;
+        const onStart = () => {
+          userInteractingRef.current = true;
+          pinnedToRightRef.current = false;
+          if (interactTimerRef.current) {
+            window.clearTimeout(interactTimerRef.current);
+            interactTimerRef.current = null;
+          }
+        };
+        const onEnd = () => {
+          if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
+          interactTimerRef.current = window.setTimeout(() => {
+            userInteractingRef.current = false;
+            try {
+              const r = chart.timeScale().getVisibleLogicalRange();
+              const bars = candlesRef.current.length;
+              if (r && bars >= 2) {
+                pinnedToRightRef.current = r.to >= bars - 1 + 1;
+              }
+            } catch {}
+            interactTimerRef.current = null;
+          }, 400);
+        };
+        el.addEventListener("pointerdown", onStart, { passive: true });
+        el.addEventListener("touchstart", onStart, { passive: true });
+        el.addEventListener("pointerup", onEnd, { passive: true });
+        el.addEventListener("pointercancel", onEnd, { passive: true });
+        el.addEventListener("touchend", onEnd, { passive: true });
+        // stash for cleanup via destroyChart path if needed
+        (chart as any).__interactCleanup = () => {
+          el.removeEventListener("pointerdown", onStart);
+          el.removeEventListener("touchstart", onStart);
+          el.removeEventListener("pointerup", onEnd);
+          el.removeEventListener("pointercancel", onEnd);
+          el.removeEventListener("touchend", onEnd);
+        };
       } catch {}
 
       /** Frame last ~70 real bars + a wide visible future strip (more is scrollable) */
@@ -1895,9 +1944,7 @@ export default function DashboardPage() {
       };
       ensureFutureTimeSpace();
       requestAnimationFrame(() => {
-        ensureFutureTimeSpace();
-        setTimeout(ensureFutureTimeSpace, 150);
-        setTimeout(ensureFutureTimeSpace, 500);
+        if (!userInteractingRef.current) ensureFutureTimeSpace();
       });
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
@@ -3341,6 +3388,8 @@ export default function DashboardPage() {
 
       const restoreView = () => {
         if (!chart) return;
+        // Never fight the user's finger / mouse
+        if (userInteractingRef.current) return;
         if (pinnedToRightRef.current) {
           try {
             const bars = candles.length;
@@ -3354,7 +3403,7 @@ export default function DashboardPage() {
           } catch {}
           return;
         }
-        // Keep the same wall-clock window the user was looking at
+        // Keep the same wall-clock window the user was looking at (no jump to start)
         if (timeRange) {
           try {
             chart.timeScale().setVisibleRange({
@@ -3364,9 +3413,7 @@ export default function DashboardPage() {
             return;
           } catch {}
         }
-        if (lr) {
-          try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
-        }
+        // Last resort: do NOT apply stale logical range after history grew — causes jump-to-start
       };
 
       if (addedNew) {
