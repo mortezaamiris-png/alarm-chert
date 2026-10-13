@@ -1,19 +1,13 @@
 /**
- * /api/cron — Vercel Cron هر ۱ دقیقه این را صدا می‌زند
- * → Edge Function چک‌آلارم → Web Push (حتی وقتی اپ بسته است)
- *
- * Env در Vercel (شما دارید):
- *   CRON_SECRET
- *   NEXT_PUBLIC_SUPABASE_URL
- *   SUPABASE_ANON_KEY  یا  NEXT_PUBLIC_SUPABASE_ANON_KEY
+ * /api/cron — صدا زدن check-alarms
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function GET(req: NextRequest) {
+export async function GET(req) {
   const auth = req.headers.get("authorization") || "";
   const secret = process.env.CRON_SECRET || "";
   const ok =
@@ -54,7 +48,7 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({ source: "vercel-cron", t: Date.now() }),
     });
     const text = await res.text();
-    let data: unknown = text;
+    let data = text;
     try {
       data = JSON.parse(text);
     } catch {}
@@ -62,7 +56,7 @@ export async function GET(req: NextRequest) {
       { ok: res.ok, status: res.status, data },
       { status: res.ok ? 200 : 502 }
     );
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json(
       { error: e?.message || "cron failed" },
       { status: 500 }
@@ -70,6 +64,6 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req) {
   return GET(req);
 }
