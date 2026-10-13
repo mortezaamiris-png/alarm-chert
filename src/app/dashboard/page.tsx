@@ -625,6 +625,8 @@ export default function DashboardPage() {
   const previewDiagSeriesRef = useRef<any>(null);
   /** AbortController to remove pointer listeners on chart rebuild */
   const pointerAbortRef = useRef<AbortController | null>(null);
+  /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
+  const loadGenRef = useRef(0);
   /** rAF throttle for pointermove (prevents desktop freeze) */
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
@@ -1605,24 +1607,33 @@ export default function DashboardPage() {
     if (container.clientWidth < 20) {
       await new Promise((r) => setTimeout(r, 150));
     }
-    // اول داده را بگیر، بعد چارت را عوض کن تا صفحه سیاه نشود
+    // Keep previous chart visible until new data is ready (no black flash on TF switch).
+    // Capture symbol/interval + generation so a slow response never clobbers a newer request.
+    const gen = ++loadGenRef.current;
+    const fetchSym = symbolRef.current;
+    const fetchIv = String(intervalRef.current);
     setStatusMsg("Loading...");
     try {
       const fetchRows = async () => {
         const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(String(intervalRef.current))}&limit=500`
+          `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=500`
         );
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       };
       let rows: any[] = await fetchRows();
+      if (gen !== loadGenRef.current) return; // newer TF/symbol already in flight
       if (!rows.length) {
         await new Promise((r) => setTimeout(r, 400));
+        if (gen !== loadGenRef.current) return;
         rows = await fetchRows();
       }
+      if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
 
+      // Only tear down the old chart once new candles are ready
       destroyChart();
+      if (gen !== loadGenRef.current) return;
 
       const candles = rows
         .map((r: any) => {
@@ -2795,13 +2806,14 @@ export default function DashboardPage() {
         }
       });
 
+      if (gen !== loadGenRef.current) return;
       renderAllLinesAndAlarms();
       rebuildIndicators();
       // Native axis label for last price + bar time (does not float on scroll)
       applyLastPriceLabel();
       setStatusMsg("");
     } catch (e: any) {
-      setStatusMsg(e?.message || "Load error");
+      if (gen === loadGenRef.current) setStatusMsg(e?.message || "Load error");
     }
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
@@ -2838,9 +2850,19 @@ export default function DashboardPage() {
       window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
+      // Do NOT destroyChart here — that caused the black flash on 1m↔5m.
+      // Old chart stays until loadCandles finishes fetching and swaps in the new one.
+      // Real unmount destroy is in the effect below.
+    };
+  }, [symbol, interval, loadCandles]);
+
+  // Destroy chart only when this component actually unmounts (leave page)
+  useEffect(() => {
+    return () => {
+      loadGenRef.current += 1; // invalidate any in-flight load
       destroyChart();
     };
-  }, [symbol, interval, loadCandles, destroyChart]);
+  }, [destroyChart]);
 
   // Apply timezone change live — preserve visible range (don't jump to empty future)
   useEffect(() => {
