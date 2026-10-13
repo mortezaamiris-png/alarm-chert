@@ -545,9 +545,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 120;
+const FUTURE_BARS = 30;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 40;
+const FUTURE_VISIBLE = 12;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -628,6 +628,8 @@ export default function DashboardPage() {
   /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
   const loadGenRef = useRef(0);
   const lastLoadedSymbolRef = useRef<string>("");
+  const lastLoadedIntervalRef = useRef<string>("");
+  const loadCandlesRef = useRef<() => Promise<void>>(async () => {});
   /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
   const pinnedToRightRef = useRef(true);
   /** True while finger/mouse is dragging the chart — freeze all auto range changes */
@@ -1741,22 +1743,29 @@ export default function DashboardPage() {
               tickMarkFormatter: makeTickMarkFormatter(tz) as any,
             },
           });
-          pinnedToRightRef.current = true;
-          setShowGoLive(false);
-          try {
-            const bars = candles.length;
-            if (bars >= 2) {
-              programmaticRangeRef.current = true;
-              chart.timeScale().applyOptions({ rightOffset: 4, barSpacing: 8 });
-              const past = Math.min(70, bars);
-              chart.timeScale().setVisibleLogicalRange({
-                from: bars - past,
-                to: bars - 1 + FUTURE_VISIBLE,
-              });
-              requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+          const intervalChanged =
+            lastLoadedIntervalRef.current !== "" &&
+            lastLoadedIntervalRef.current !== fetchIv;
+          const shouldResetView = symbolChanged || intervalChanged || lastLoadedIntervalRef.current === "";
+          lastLoadedIntervalRef.current = fetchIv;
+          if (shouldResetView) {
+            pinnedToRightRef.current = true;
+            setShowGoLive(false);
+            try {
+              const bars = candles.length;
+              if (bars >= 2) {
+                programmaticRangeRef.current = true;
+                chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 8 });
+                const past = Math.min(70, bars);
+                chart.timeScale().setVisibleLogicalRange({
+                  from: bars - past,
+                  to: bars - 1 + FUTURE_VISIBLE,
+                });
+                requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+              }
+            } catch {
+              programmaticRangeRef.current = false;
             }
-          } catch {
-            programmaticRangeRef.current = false;
           }
 
           // 2) Then clear overlays (chart already shows new TF candles)
@@ -1922,7 +1931,7 @@ export default function DashboardPage() {
           timeVisible: true,
           secondsVisible: isIntraday,
           // Empty bars to the right of last candle (TradingView-style future area)
-          rightOffset: 30,
+          rightOffset: 8,
           barSpacing: 8,
           minBarSpacing: 2,
           fixLeftEdge: false,
@@ -3080,12 +3089,15 @@ export default function DashboardPage() {
     }
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
+  // همیشه آخرین loadCandles را در ref نگه دار تا useEffect با عوض شدن identity دوباره لود نکند
+  loadCandlesRef.current = loadCandles;
+
   useEffect(() => {
     let cancelled = false;
     const run = () => {
       if (cancelled) return;
       requestAnimationFrame(() => {
-        if (!cancelled) loadCandles();
+        if (!cancelled) loadCandlesRef.current();
       });
     };
     run();
@@ -3095,6 +3107,7 @@ export default function DashboardPage() {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
         });
+        // عمداً رنج را دست نمی‌زنیم
       }
     };
     const onVis = () => {
@@ -3114,10 +3127,8 @@ export default function DashboardPage() {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
       // Do NOT destroyChart here — that caused the black flash on 1m↔5m.
-      // Old chart stays until loadCandles finishes fetching and swaps in the new one.
-      // Real unmount destroy is in the effect below.
     };
-  }, [symbol, interval, loadCandles]);
+  }, [symbol, interval]); // فقط نماد و تایم‌فریم — نه loadCandles
 
   // Destroy chart only when this component actually unmounts (leave page)
   useEffect(() => {
