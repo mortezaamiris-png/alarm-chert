@@ -1630,7 +1630,12 @@ export default function DashboardPage() {
     const gen = ++loadGenRef.current;
     const fetchSym = symbolRef.current;
     const fetchIv = String(intervalRef.current);
-    setStatusMsg("Loading...");
+    // فقط اگر چارت هنوز ساخته نشده Loading بزرگ نشان بده (جلوگیری از چشمک هنگام عوض TF)
+    if (!chartRef.current || !seriesRef.current) {
+      setStatusMsg("Loading...");
+    } else {
+      setStatusMsg("");
+    }
     try {
       const fetchRows = async (limit: number, endTime?: number) => {
         let url = `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=${limit}`;
@@ -3593,9 +3598,13 @@ export default function DashboardPage() {
             }
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
-            // high/low کندل جاری برای رد شدن ناگهانی
+            // high/low فقط برای wick واقعی؛ روی TF بالاتر خیلی پهن می‌شود
+            // پس فقط وقتی prev مشخص است و قیمت از یک طرف خط به طرف دیگر رفته، wick را قبول کن
             const hi = high > 0 ? high : price;
             const lo = low > 0 ? low : price;
+            // برای آلارم دقیق همیشه از قیمت ticker/close استفاده کن — نه کل رنج کندل TF
+            const useWick =
+              String(intervalRef.current) === "1" || String(intervalRef.current) === "5";
 
             for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
               let target = a.price;
@@ -3605,25 +3614,33 @@ export default function DashboardPage() {
                 const et = Number(a.end_time);
                 const tMin = Math.min(st, et);
                 const tMax = Math.max(st, et);
+                // فقط وقتی زمان فعلی داخل بازه خط مورب (یا کمی بعد از انتها) است
                 if (nowT < tMin || nowT > tMax + 60) continue;
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
               let hit = false;
               if (prev == null || Number.isNaN(prev)) {
+                // اولین تیک: فقط prev را seed کن — تریگر نکن (جلوگیری از آلارم دروغین هنگام باز شدن / عوض TF)
+                // مگر اینکه قیمت واقعاً خیلی نزدیک خط باشد (۰٫۰۱٪)
                 const near =
-                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.0003;
-                hit =
-                  (a.condition === "above" && price >= target) ||
-                  (a.condition === "below" && price <= target) ||
-                  (a.condition === "cross" && (near || (lo <= target && hi >= target)));
-              } else {
-                hit = didCross(a.condition, target, prev, price);
-                // wick: خط بین high و low کندل باشد
-                if (!hit && a.condition === "cross" && lo <= target && hi >= target) {
+                  target > 0 && Math.abs(price - target) / Math.abs(target) <= 0.0001;
+                if (near && a.condition === "cross") {
                   hit = true;
                 }
-                if (!hit && a.condition === "above" && hi >= target) hit = true;
-                if (!hit && a.condition === "below" && lo <= target) hit = true;
+                // above/below روی اولین تیک تریگر نشوند
+              } else {
+                // شرط اصلی: عبور واقعی close/ticker نسبت به prev
+                hit = didCross(a.condition, target, prev, price);
+                // wick فقط روی ۱m/۵m و فقط وقتی prev یک طرف خط بوده
+                if (!hit && useWick && lo <= target && hi >= target) {
+                  if (a.condition === "cross") {
+                    if (prev < target || prev > target) hit = true;
+                  } else if (a.condition === "above" && prev < target && hi >= target) {
+                    hit = true;
+                  } else if (a.condition === "below" && prev > target && lo <= target) {
+                    hit = true;
+                  }
+                }
               }
               if (hit) await triggerAlarmLocal(a, price);
             }
