@@ -424,9 +424,15 @@ function didCross(
   prev: number | null | undefined,
   price: number
 ) {
-  if (prev == null || Number.isNaN(prev)) return false;
+  if (prev == null || Number.isNaN(prev) || Number.isNaN(price)) return false;
+  if (!target || !Number.isFinite(target)) return false;
+  // پرش غیرواقعی قیمت (گلیچ API / عوض TF) را تریگر نکن
+  const jump = Math.abs(price - prev);
+  const span = Math.max(Math.abs(target) * 0.02, 1); // 2% or $1
+  if (jump > span * 15) return false;
   if (condition === "above") return prev < target && price >= target;
   if (condition === "below") return prev > target && price <= target;
+  // cross: must actually cross the level (strict inequality on one side)
   return (prev < target && price >= target) || (prev > target && price <= target);
 }
 function toLineStyle(dash?: string | null) {
@@ -665,6 +671,8 @@ export default function DashboardPage() {
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   const prevPricesRef = useRef<Record<string, number>>({});
+  /** بعد از لود/عوض TF چند تیک صبر کن تا seed پایدار شود */
+  const priceSeedCountRef = useRef<Record<string, number>>({});
   const clickLockRef = useRef(false);
 
   const [symbol, setSymbol] = useState(() =>
@@ -1154,6 +1162,20 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!series || !chart) return;
 
+    // هر بار قبل از رسم، preview موقت را پاک کن تا خط دوتایی نماند
+    try {
+      if (previewLineRef.current) {
+        series.removePriceLine(previewLineRef.current);
+        previewLineRef.current = null;
+      }
+    } catch {}
+    try {
+      if (previewDiagSeriesRef.current) {
+        chart.removeSeries(previewDiagSeriesRef.current);
+        previewDiagSeriesRef.current = null;
+      }
+    } catch {}
+
     // Freeze visible window — adding line series with future times must not scroll the chart
     let savedRange: { from: number; to: number } | null = null;
     try {
@@ -1631,6 +1653,7 @@ export default function DashboardPage() {
     // Capture symbol/interval + generation so a slow response never clobbers a newer request.
     // TF عوض شد → prev قیمت‌ها را پاک کن تا آلارم دروغین نخورد
     prevPricesRef.current = {};
+    priceSeedCountRef.current = {};
     const gen = ++loadGenRef.current;
     const fetchSym = symbolRef.current;
     const fetchIv = String(intervalRef.current);
@@ -1756,7 +1779,7 @@ export default function DashboardPage() {
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
                 chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 8 });
-                const past = Math.min(70, bars);
+                const past = Math.min(120, bars);
                 chart.timeScale().setVisibleLogicalRange({
                   from: bars - past,
                   to: bars - 1 + FUTURE_VISIBLE,
@@ -1842,7 +1865,7 @@ export default function DashboardPage() {
             try {
               const myGen = gen;
               let all = candles.slice();
-              for (let p = 0; p < 2; p++) {
+              for (let p = 0; p < 8; p++) {
                 if (myGen !== loadGenRef.current) return;
                 const oldest = all[0]?.time;
                 if (!oldest) break;
@@ -3063,6 +3086,11 @@ export default function DashboardPage() {
             };
             ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
+          // اول preview و mode را ببند تا خط دوتایی نماند
+          modeRef.current = "none";
+          setMode("none");
+          setAlarmMenuOpen(false);
+          clearPreview();
           if (!error && data) {
             const saved = {
               ...(data as Alarm),
@@ -3073,7 +3101,7 @@ export default function DashboardPage() {
             setAlarms((prev) => [saved, ...prev]);
             setStatusMsg("Alarm saved");
           } else setStatusMsg("Alarm save failed");
-          setSaving(false); clearPreview(); setMode("none");
+          setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
         }
       });
@@ -3624,14 +3652,16 @@ export default function DashboardPage() {
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
               let hit = false;
-              if (prev == null || Number.isNaN(prev)) {
-                // اولین نمونه قیمت: فقط seed — تریگر نکن
+              const seeds = priceSeedCountRef.current[sym] || 0;
+              if (prev == null || Number.isNaN(prev) || seeds < 2) {
+                // حداقل ۲ نمونه پایدار بعد از لود/عوض TF — تریگر نکن
               } else {
                 hit = didCross(a.condition, target, prev, price);
               }
               if (hit) await triggerAlarmLocal(a, price);
             }
             prevPricesRef.current[sym] = price;
+            priceSeedCountRef.current[sym] = Math.min(10, (priceSeedCountRef.current[sym] || 0) + 1);
           } catch {}
         }
       } catch {}
@@ -5604,7 +5634,7 @@ export default function DashboardPage() {
                           historyFocusRef.current = null;
                           try {
                             const bars = candles.length;
-                            const past = Math.min(70, bars);
+                            const past = Math.min(120, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
                               to: bars - 1 + FUTURE_VISIBLE,
