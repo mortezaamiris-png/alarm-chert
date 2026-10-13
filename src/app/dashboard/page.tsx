@@ -1636,13 +1636,13 @@ export default function DashboardPage() {
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       };
-      // Single fetch — progressive fill was jumping the viewport on iPad
-      let rows: any[] = await fetchRows(250);
+      // Full history (API max 1000) — single fetch, no progressive fill (avoids iPad jump)
+      let rows: any[] = await fetchRows(1000);
       if (gen !== loadGenRef.current) return;
       if (!rows.length) {
         await new Promise((r) => setTimeout(r, 300));
         if (gen !== loadGenRef.current) return;
-        rows = await fetchRows(250);
+        rows = await fetchRows(1000);
       }
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
