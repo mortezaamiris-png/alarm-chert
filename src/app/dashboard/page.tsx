@@ -553,20 +553,39 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 160;
+const FUTURE_BARS = 220;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 70;
+const FUTURE_VISIBLE = 110;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
   if (barSec <= 0) return candles;
   const lastT = Number(candles[candles.length - 1].time);
+  // align to interval grid
+  const base = Math.floor(lastT / barSec) * barSec;
   const out = candles.slice();
   for (let i = 1; i <= count; i++) {
     // WhitespaceData: time only — LWC draws empty slot + tick mark
-    out.push({ time: lastT + i * barSec });
+    out.push({ time: (base + i * barSec) as any });
   }
   return out;
+}
+
+/** Future helper points for a transparent line series (forces time-axis labels) */
+function futureHelperPoints(candles: any[], interval: string, count = FUTURE_BARS, lastPrice = 0): { time: any; value: number }[] {
+  if (!candles.length) return [];
+  const barSec = intervalToSeconds(String(interval));
+  if (barSec <= 0) return [];
+  const lastT = Number(candles[candles.length - 1].time);
+  const base = Math.floor(lastT / barSec) * barSec;
+  const px = Number(lastPrice) || Number(candles[candles.length - 1].close) || 0;
+  const pts: { time: any; value: number }[] = [];
+  // include last real point so series connects
+  pts.push({ time: lastT as any, value: px });
+  for (let i = 1; i <= count; i++) {
+    pts.push({ time: (base + i * barSec) as any, value: px });
+  }
+  return pts;
 }
 
 /** Remaining time until current candle closes — counts DOWN like TradingView */
@@ -627,6 +646,7 @@ export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const futureSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
   /** Temporary line series while drawing diagonal (start → cursor) */
@@ -1127,6 +1147,7 @@ export default function DashboardPage() {
     volumeSeriesRef.current = null;
     previewDiagSeriesRef.current = null;
     seriesRef.current = null;
+    futureSeriesRef.current = null;
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
@@ -1647,6 +1668,27 @@ export default function DashboardPage() {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume();
   }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume]);
 
+
+  const syncFutureAxis = useCallback((candles: any[], iv: string) => {
+    try {
+      const chart = chartRef.current;
+      const last = candles[candles.length - 1];
+      if (!chart || !last) return;
+      const pts = futureHelperPoints(candles, iv, FUTURE_BARS, last.close);
+      if (!futureSeriesRef.current) {
+        futureSeriesRef.current = chart.addLineSeries({
+          color: "rgba(0,0,0,0)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          visible: true,
+        } as any);
+      }
+      futureSeriesRef.current.setData(pts as any);
+    } catch {}
+  }, []);
+
   const loadCandles = useCallback(async () => {
     const container = chartContainerRef.current;
     if (!container) return;
@@ -1749,6 +1791,7 @@ export default function DashboardPage() {
           }
 
           series.setData(appendFutureWhitespace(candles, fetchIv) as any);
+          try { syncFutureAxis(candles, fetchIv); } catch {}
 
           // Always re-enable autoScale after data swap
           try {
@@ -1783,8 +1826,8 @@ export default function DashboardPage() {
               const bars = candles.length;
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
-                const past = Math.min(120, bars);
+                chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
+                const past = Math.min(55, bars);
                 chart.timeScale().setVisibleLogicalRange({
                   from: bars - past,
                   to: bars - 1 + FUTURE_VISIBLE,
@@ -1908,6 +1951,7 @@ export default function DashboardPage() {
                   savedTime = (chartRef.current.timeScale() as any).getVisibleRange?.();
                 } catch {}
                 seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
+                try { syncFutureAxis(all, fetchIv); } catch {}
                 if (savedTime && savedTime.from != null && savedTime.to != null) {
                   try {
                     programmaticRangeRef.current = true;
@@ -1959,7 +2003,7 @@ export default function DashboardPage() {
           timeVisible: true,
           secondsVisible: isIntraday,
           // Empty bars to the right of last candle (TradingView-style future area)
-          rightOffset: 24,
+          rightOffset: 50,
           barSpacing: 8,
           minBarSpacing: 2,
           fixLeftEdge: false,
@@ -1983,6 +2027,8 @@ export default function DashboardPage() {
       });
       // Real candles + trailing whitespace so time labels continue past last bar
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
+      try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
       lastLoadedSymbolRef.current = fetchSym;
       seriesRef.current = series;
       pinnedToRightRef.current = true;
@@ -2096,10 +2142,78 @@ export default function DashboardPage() {
         // capture:true تا قبل از handler خود LWC اجرا شود
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
+
+        // iPad / touch: درگ عمودی روی محور قیمت = زوم عمودی
+        let priceTouchY0 = 0;
+        let priceTouchRange: { from: number; to: number } | null = null;
+        let priceTouchActive = false;
+        const onTouchStartPrice = (e: TouchEvent) => {
+          if (!e.touches.length) return;
+          const rect = container.getBoundingClientRect();
+          const fromRight = rect.right - e.touches[0].clientX;
+          if (fromRight > 100 || fromRight < 0) {
+            priceTouchActive = false;
+            return;
+          }
+          priceTouchActive = true;
+          priceTouchY0 = e.touches[0].clientY;
+          const s = seriesRef.current as any;
+          let pTop: number | null = null;
+          let pBot: number | null = null;
+          try {
+            const t = s?.coordinateToPrice?.(1);
+            const b = s?.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+            if (t != null && b != null) {
+              pTop = Math.max(Number(t), Number(b));
+              pBot = Math.min(Number(t), Number(b));
+            }
+          } catch {}
+          if (pTop == null || pBot == null) {
+            const ov = priceRangeOverrideRef.current;
+            if (ov) { pBot = ov.from; pTop = ov.to; }
+          }
+          if (pTop != null && pBot != null && pTop > pBot) {
+            priceTouchRange = { from: pBot, to: pTop };
+          } else {
+            priceTouchRange = null;
+          }
+        };
+        const onTouchMovePrice = (e: TouchEvent) => {
+          if (!priceTouchActive || !priceTouchRange || !e.touches.length) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const dy = e.touches[0].clientY - priceTouchY0;
+          // drag down = zoom out, drag up = zoom in
+          const factor = Math.exp(dy / 280);
+          const mid = (priceTouchRange.from + priceTouchRange.to) / 2;
+          const half = ((priceTouchRange.to - priceTouchRange.from) / 2) * factor;
+          const minHalf = Math.max(Math.abs(mid) * 0.00004, 0.25);
+          const h = Math.max(half, minHalf);
+          priceRangeOverrideRef.current = { from: mid - h, to: mid + h };
+          try {
+            const s = seriesRef.current as any;
+            const ps = s?.priceScale?.() || chart.priceScale("right");
+            ps?.setAutoScale?.(true);
+            ps?.applyOptions?.({ autoScale: true });
+          } catch {}
+        };
+        const onTouchEndPrice = () => {
+          priceTouchActive = false;
+          priceTouchRange = null;
+        };
+        container.addEventListener("touchstart", onTouchStartPrice, { passive: true, capture: true });
+        container.addEventListener("touchmove", onTouchMovePrice, { passive: false, capture: true });
+        container.addEventListener("touchend", onTouchEndPrice, { capture: true });
+        container.addEventListener("touchcancel", onTouchEndPrice, { capture: true });
+
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
           try { container.removeEventListener("dblclick", onDblPrice); } catch {}
+          try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
+          try { container.removeEventListener("touchmove", onTouchMovePrice); } catch {}
+          try { container.removeEventListener("touchend", onTouchEndPrice); } catch {}
+          try { container.removeEventListener("touchcancel", onTouchEndPrice); } catch {}
           try { if (typeof prevCleanup === "function") prevCleanup(); } catch {}
         };
       } catch {}
@@ -2135,8 +2249,8 @@ export default function DashboardPage() {
           if (bars < 2) return;
           programmaticRangeRef.current = true;
           // rightOffset بزرگ = فضای خالی سمت راست (زمان آینده)
-          chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
-          const past = Math.min(80, bars);
+          chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
+          const past = Math.min(55, bars);
           // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
@@ -2252,8 +2366,8 @@ export default function DashboardPage() {
             return;
           }
           // Same framing as initial load: last ~80 real bars + future strip
-          chart.timeScale().applyOptions({ rightOffset: 28, barSpacing: 8 });
-          const past = Math.min(80, bars);
+          chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
+          const past = Math.min(55, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
             to: bars - 1 + FUTURE_VISIBLE,
@@ -3582,6 +3696,7 @@ export default function DashboardPage() {
               series.update(lastBar as any);
             } catch {
               series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
             }
           }
         } catch {}
@@ -3598,6 +3713,7 @@ export default function DashboardPage() {
         if (needFull) {
           try {
             series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
             // still do not touch visible range
           } catch {}
         }
@@ -5761,7 +5877,7 @@ export default function DashboardPage() {
                           historyFocusRef.current = null;
                           try {
                             const bars = candles.length;
-                            const past = Math.min(120, bars);
+                            const past = Math.min(55, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
                               to: bars - 1 + FUTURE_VISIBLE,
