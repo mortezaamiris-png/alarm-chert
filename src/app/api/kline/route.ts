@@ -1,7 +1,7 @@
 /**
  * /api/kline — fast path for live chart
  * Edge runtime + Binance Vision first
- * Supports: symbol, interval, limit (max 1000), endTime (unix seconds or ms)
+ * Place at: src/app/api/kline/route.ts
  */
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,20 +17,52 @@ type Candle = {
   volume: number;
 };
 
-function mapInterval(iv: string): string {
+/** Map UI interval codes → Binance interval strings */
+function mapIntervalBinance(iv: string): string {
   const m: Record<string, string> = {
     "1": "1m",
     "5": "5m",
     "15": "15m",
     "60": "1h",
+    "120": "2h",
     "240": "4h",
     D: "1d",
     "1D": "1d",
+    W: "1w",
+    "1W": "1w",
+    M: "1M",
+    "1M": "1M",
     "1m": "1m",
     "5m": "5m",
     "15m": "15m",
     "1h": "1h",
+    "2h": "2h",
     "4h": "4h",
+  };
+  return m[iv] || "1m";
+}
+
+/** Map UI interval codes → OKX bar strings */
+function mapIntervalOkx(iv: string): string {
+  const m: Record<string, string> = {
+    "1": "1m",
+    "5": "5m",
+    "15": "15m",
+    "60": "1H",
+    "120": "2H",
+    "240": "4H",
+    D: "1D",
+    "1D": "1D",
+    W: "1W",
+    "1W": "1W",
+    M: "1M",
+    "1M": "1M",
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "1h": "1H",
+    "2h": "2H",
+    "4h": "4H",
   };
   return m[iv] || "1m";
 }
@@ -39,13 +71,13 @@ async function fetchVision(
   symbol: string,
   interval: string,
   limit: number,
-  endTime?: number | null
+  endTimeSec?: number
 ): Promise<Candle[] | null> {
-  const iv = mapInterval(interval);
+  const iv = mapIntervalBinance(interval);
   let url = `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${iv}&limit=${limit}`;
-  if (endTime != null && endTime > 0) {
-    const ms = endTime < 1e12 ? endTime * 1000 : endTime;
-    url += `&endTime=${ms}`;
+  // Binance expects milliseconds
+  if (endTimeSec != null && endTimeSec > 0) {
+    url += `&endTime=${endTimeSec * 1000}`;
   }
   try {
     const ctrl = new AbortController();
@@ -76,28 +108,14 @@ async function fetchOkx(
   symbol: string,
   interval: string,
   limit: number,
-  endTime?: number | null
+  endTimeSec?: number
 ): Promise<Candle[] | null> {
-  const m: Record<string, string> = {
-    "1": "1m",
-    "5": "5m",
-    "15": "15m",
-    "60": "1H",
-    "240": "4H",
-    D: "1D",
-    "1D": "1D",
-    "1m": "1m",
-    "5m": "5m",
-    "15m": "15m",
-    "1h": "1H",
-    "4h": "4H",
-  };
-  const bar = m[interval] || "1m";
+  const bar = mapIntervalOkx(interval);
   const inst = `${symbol.replace("USDT", "")}-USDT`;
   let url = `https://www.okx.com/api/v5/market/candles?instId=${inst}&bar=${bar}&limit=${limit}`;
-  if (endTime != null && endTime > 0) {
-    const ms = endTime < 1e12 ? endTime * 1000 : endTime;
-    url += `&after=${ms}`;
+  // OKX: after = older than this timestamp (ms)
+  if (endTimeSec != null && endTimeSec > 0) {
+    url += `&after=${endTimeSec * 1000}`;
   }
   try {
     const res = await fetch(url, {
@@ -133,17 +151,25 @@ export async function GET(req: NextRequest) {
     Math.max(parseInt(sp.get("limit") || "500", 10) || 500, 1),
     1000
   );
-  const endRaw = sp.get("endTime");
-  const endTime = endRaw ? Number(endRaw) : null;
+  const endTimeRaw = sp.get("endTime");
+  const endTimeSec =
+    endTimeRaw != null && endTimeRaw !== ""
+      ? Math.floor(Number(endTimeRaw))
+      : undefined;
+  const endArg =
+    endTimeSec != null && Number.isFinite(endTimeSec) && endTimeSec > 0
+      ? endTimeSec
+      : undefined;
 
+  // live tick: فقط Vision
   if (limit <= 10) {
-    const data = await fetchVision(symbol, interval, limit, endTime);
+    const data = await fetchVision(symbol, interval, limit, endArg);
     if (data) {
       return NextResponse.json(data, {
         headers: { "Cache-Control": "no-store" },
       });
     }
-    const okx = await fetchOkx(symbol, interval, limit, endTime);
+    const okx = await fetchOkx(symbol, interval, limit, endArg);
     if (okx)
       return NextResponse.json(okx, {
         headers: { "Cache-Control": "no-store" },
@@ -151,8 +177,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "no data" }, { status: 502 });
   }
 
-  let data = await fetchVision(symbol, interval, limit, endTime);
-  if (!data) data = await fetchOkx(symbol, interval, limit, endTime);
+  let data = await fetchVision(symbol, interval, limit, endArg);
+  if (!data) data = await fetchOkx(symbol, interval, limit, endArg);
   if (!data) {
     return NextResponse.json({ error: "no data" }, { status: 502 });
   }
