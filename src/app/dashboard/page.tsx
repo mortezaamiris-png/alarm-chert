@@ -627,6 +627,7 @@ export default function DashboardPage() {
   const pointerAbortRef = useRef<AbortController | null>(null);
   /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
   const loadGenRef = useRef(0);
+  const lastLoadedSymbolRef = useRef<string>("");
   /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
   const pinnedToRightRef = useRef(true);
   /** True while finger/mouse is dragging the chart — freeze all auto range changes */
@@ -1115,6 +1116,7 @@ export default function DashboardPage() {
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
+    lastLoadedSymbolRef.current = "";
     }
   }, [clearPreview]);
 
@@ -1684,17 +1686,50 @@ export default function DashboardPage() {
           const series = seriesRef.current;
 
           // 1) Paint candles FIRST so TF/symbol switch feels instant
+          const symbolChanged =
+            lastLoadedSymbolRef.current !== "" &&
+            lastLoadedSymbolRef.current !== fetchSym;
+          lastLoadedSymbolRef.current = fetchSym;
+
           series.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
+
+          // On symbol change: strip old price lines first so scale is not stuck at BTC levels
+          if (symbolChanged) {
+            try {
+              const pls = (series as any).priceLines?.() || [];
+              for (const pl of pls) {
+                try { series.removePriceLine(pl); } catch {}
+              }
+            } catch {}
+            // Clear stale indicators that still hold old price range
+            try {
+              for (const s of [sma1SeriesRef.current, sma2SeriesRef.current, sma3SeriesRef.current]) {
+                if (s) { try { s.setData([]); } catch {} }
+              }
+            } catch {}
+          }
+
           series.setData(appendFutureWhitespace(candles, fetchIv) as any);
-          // Reset price scale so new symbol (e.g. ETH after BTC) does not keep old 0–85000 range
+
+          // Always re-enable autoScale after data swap
           try {
-            series.priceScale().applyOptions({ autoScale: true });
+            series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
           } catch {}
           try {
             chart.priceScale("right").applyOptions({ autoScale: true });
           } catch {}
+
+          // Symbol change: jump to live view so ETH does not sit in empty 0–85000 frame
+          if (symbolChanged) {
+            try {
+              chart.timeScale().scrollToRealTime();
+            } catch {}
+            try {
+              chart.timeScale().fitContent();
+            } catch {}
+          }
           chart.applyOptions({
             localization: makeLocalization(tz),
             timeScale: {
@@ -1894,6 +1929,7 @@ export default function DashboardPage() {
       });
       // Real candles + trailing whitespace so time labels continue past last bar
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+      lastLoadedSymbolRef.current = fetchSym;
       seriesRef.current = series;
       pinnedToRightRef.current = true;
       setShowGoLive(false);
