@@ -545,9 +545,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 120;
+const FUTURE_BARS = 300;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 40;
+const FUTURE_VISIBLE = 60;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -625,16 +625,6 @@ export default function DashboardPage() {
   const previewDiagSeriesRef = useRef<any>(null);
   /** AbortController to remove pointer listeners on chart rebuild */
   const pointerAbortRef = useRef<AbortController | null>(null);
-  /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
-  const loadGenRef = useRef(0);
-  const lastLoadedSymbolRef = useRef<string>("");
-  /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
-  const pinnedToRightRef = useRef(true);
-  /** True while finger/mouse is dragging the chart — freeze all auto range changes */
-  const userInteractingRef = useRef(false);
-  const interactTimerRef = useRef<number | null>(null);
-  /** True while WE are changing the visible range — ignore those events for pin detection */
-  const programmaticRangeRef = useRef(false);
   /** rAF throttle for pointermove (prevents desktop freeze) */
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
@@ -727,8 +717,6 @@ export default function DashboardPage() {
   const historyFocusRef = useRef<{ from: number; to: number } | null>(null);
   const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
-  /** Show TradingView-style "go to live" chevron when user scrolled into history */
-  const [showGoLive, setShowGoLive] = useState(false);
   const [sideOrder, setSideOrder] = useState<string[]>(() => loadLS("side_order", []));
   const [draggingSym, setDraggingSym] = useState<string | null>(null);
   const [dragOverSym, setDragOverSym] = useState<string | null>(null);
@@ -999,12 +987,12 @@ export default function DashboardPage() {
     if (showDMI && dmiVisible) {
       try { chart.priceScale("dmi").applyOptions({ scaleMargins: { top: 0.78, bottom } }); } catch {}
     }
-    // Do NOT force autoScale:true here — that was the "magnet" snapping price back to center
     chart.priceScale("right").applyOptions({
       scaleMargins: {
         top: 0.05,
         bottom: Math.max(bottom, showRSI && rsiVisible ? 0.22 : 0.05, showVol && volVisible ? 0.2 : 0.05),
       },
+      autoScale: true,
     });
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
 
@@ -1089,13 +1077,6 @@ export default function DashboardPage() {
   }, [hideHandles]);
 
   const destroyChart = useCallback(() => {
-    try {
-      const ch = chartRef.current as any;
-      if (ch?.__interactCleanup) { ch.__interactCleanup(); ch.__interactCleanup = null; }
-    } catch {}
-    if (interactTimerRef.current) { window.clearTimeout(interactTimerRef.current); interactTimerRef.current = null; }
-    userInteractingRef.current = false;
-
     clearPreview();
     try { pointerAbortRef.current?.abort(); } catch {}
     pointerAbortRef.current = null;
@@ -1116,7 +1097,6 @@ export default function DashboardPage() {
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
-    lastLoadedSymbolRef.current = "";
     }
   }, [clearPreview]);
 
@@ -1622,40 +1602,13 @@ export default function DashboardPage() {
   const loadCandles = useCallback(async () => {
     const container = chartContainerRef.current;
     if (!container) return;
-    if (container.clientWidth < 20) {
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    // Keep previous chart visible until new data is ready (no black flash on TF switch).
-    // Capture symbol/interval + generation so a slow response never clobbers a newer request.
-    // TF عوض شد → prev قیمت‌ها را پاک کن تا آلارم دروغین نخورد
-    prevPricesRef.current = {};
-    const gen = ++loadGenRef.current;
-    const fetchSym = symbolRef.current;
-    const fetchIv = String(intervalRef.current);
-    // فقط اگر چارت هنوز ساخته نشده Loading بزرگ نشان بده (جلوگیری از چشمک هنگام عوض TF)
-    if (!chartRef.current || !seriesRef.current) {
-      setStatusMsg("Loading...");
-    } else {
-      setStatusMsg("");
-    }
+    destroyChart();
+    setStatusMsg("Loading...");
     try {
-      const fetchRows = async (limit: number, endTime?: number) => {
-        let url = `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=${limit}`;
-        if (endTime != null && endTime > 0) url += `&endTime=${endTime}`;
-        const res = await fetch(url, { cache: "no-store" });
-        const raw = await res.json();
-        return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
-      };
-      // FAST first paint: one request only (max 1000). More history loads in background after paint.
-      let rows: any[] = await fetchRows(1000);
-      if (gen !== loadGenRef.current) return;
-      if (!rows.length) {
-        await new Promise((r) => setTimeout(r, 250));
-        if (gen !== loadGenRef.current) return;
-        rows = await fetchRows(1000);
-      }
-      if (gen !== loadGenRef.current) return;
-      if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=500`);
+      const raw = await res.json();
+      let rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+      if (!rows.length) { setStatusMsg("No data"); return; }
 
       const candles = rows
         .map((r: any) => {
@@ -1675,8 +1628,6 @@ export default function DashboardPage() {
         .filter((c: any) => c.time && !Number.isNaN(c.close))
         .sort((a: any, b: any) => a.time - b.time);
 
-      if (gen !== loadGenRef.current) return;
-
       candlesRef.current = candles;
       const lastClose = candles[candles.length - 1]?.close || 1;
       const lastTime = candles[candles.length - 1]?.time ?? null;
@@ -1684,218 +1635,7 @@ export default function DashboardPage() {
       setLastBarTime(lastTime);
       const { precision, minMove } = getPrecision(lastClose);
       const tz = timeZoneRef.current;
-      const isIntraday = ["1", "5", "15"].includes(fetchIv);
-
-      // ── Soft path: keep same chart instance (no black flash / no freeze) ──
-      if (chartRef.current && seriesRef.current) {
-        try {
-          const chart = chartRef.current;
-          const series = seriesRef.current;
-
-          // 1) Paint candles FIRST so TF/symbol switch feels instant
-          const symbolChanged =
-            lastLoadedSymbolRef.current !== "" &&
-            lastLoadedSymbolRef.current !== fetchSym;
-          lastLoadedSymbolRef.current = fetchSym;
-
-          series.applyOptions({
-            priceFormat: { type: "price", precision, minMove },
-          });
-
-          // On symbol change: strip old price lines first so scale is not stuck at BTC levels
-          if (symbolChanged) {
-            try {
-              const pls = (series as any).priceLines?.() || [];
-              for (const pl of pls) {
-                try { series.removePriceLine(pl); } catch {}
-              }
-            } catch {}
-            // Clear stale indicators that still hold old price range
-            try {
-              for (const s of [smaSeriesRef.current?.s1, smaSeriesRef.current?.s2, smaSeriesRef.current?.s3]) {
-                if (s) { try { s.setData([]); } catch {} }
-              }
-            } catch {}
-          }
-
-          series.setData(appendFutureWhitespace(candles, fetchIv) as any);
-
-          // Always re-enable autoScale after data swap
-          try {
-            series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
-          } catch {}
-          try {
-            chart.priceScale("right").applyOptions({ autoScale: true });
-          } catch {}
-
-          // Symbol change: fit once (no scrollToRealTime — آن باعث آهنربا می‌شد)
-          if (symbolChanged) {
-            try {
-              chart.timeScale().fitContent();
-            } catch {}
-          }
-          chart.applyOptions({
-            localization: makeLocalization(tz),
-            timeScale: {
-              secondsVisible: isIntraday,
-              tickMarkFormatter: makeTickMarkFormatter(tz) as any,
-            },
-          });
-          pinnedToRightRef.current = true;
-          setShowGoLive(false);
-          try {
-            const bars = candles.length;
-            if (bars >= 2) {
-              programmaticRangeRef.current = true;
-              chart.timeScale().applyOptions({ rightOffset: 4, barSpacing: 8 });
-              const past = Math.min(70, bars);
-              chart.timeScale().setVisibleLogicalRange({
-                from: bars - past,
-                to: bars - 1 + FUTURE_VISIBLE,
-              });
-              requestAnimationFrame(() => { programmaticRangeRef.current = false; });
-            }
-          } catch {
-            programmaticRangeRef.current = false;
-          }
-
-          // 2) Then clear overlays (chart already shows new TF candles)
-          clearPreview();
-          try {
-            if (lastPriceLineRef.current) {
-              series.removePriceLine(lastPriceLineRef.current);
-              lastPriceLineRef.current = null;
-            }
-          } catch {}
-          alarmLinesRef.current.forEach((pl) => {
-            try { series.removePriceLine(pl); } catch {}
-          });
-          alarmLinesRef.current.clear();
-          chartLinesRef.current.forEach((s) => {
-            try {
-              if (s && typeof s === "object" && "applyOptions" in s) {
-                try { chart.removeSeries(s); } catch {
-                  try { series.removePriceLine(s); } catch {}
-                }
-              } else {
-                try { series.removePriceLine(s); } catch {}
-              }
-            } catch {}
-          });
-          chartLinesRef.current.clear();
-          try {
-            if (smaSeriesRef.current) {
-              const { s1, s2, s3 } = smaSeriesRef.current;
-              try { chart.removeSeries(s1); } catch {}
-              try { chart.removeSeries(s2); } catch {}
-              try { chart.removeSeries(s3); } catch {}
-              smaSeriesRef.current = null;
-            }
-          } catch {}
-          try {
-            if (rsiSeriesRef.current) {
-              chart.removeSeries(rsiSeriesRef.current);
-              rsiSeriesRef.current = null;
-            }
-          } catch {}
-          try {
-            if (dmiSeriesRef.current) {
-              const { plus, minus, adx } = dmiSeriesRef.current;
-              try { chart.removeSeries(plus); } catch {}
-              try { chart.removeSeries(minus); } catch {}
-              try { chart.removeSeries(adx); } catch {}
-              dmiSeriesRef.current = null;
-            }
-          } catch {}
-          pivotSeriesRef.current.forEach((s) => {
-            try { chart.removeSeries(s); } catch {}
-          });
-          pivotSeriesRef.current = [];
-          trendSeriesRef.current.forEach((s) => {
-            try { chart.removeSeries(s); } catch {}
-          });
-          trendSeriesRef.current = [];
-          try {
-            if (volumeSeriesRef.current) {
-              chart.removeSeries(volumeSeriesRef.current);
-              volumeSeriesRef.current = null;
-            }
-          } catch {}
-
-          if (gen !== loadGenRef.current) return;
-          renderAllLinesAndAlarms();
-          rebuildIndicators();
-          applyLastPriceLabel();
-          setStatusMsg("");
-
-          // Background: add older history (does not block UI; skip if user already switched away)
-          void (async () => {
-            try {
-              const myGen = gen;
-              let all = candles.slice();
-              for (let p = 0; p < 2; p++) {
-                if (myGen !== loadGenRef.current) return;
-                const oldest = all[0]?.time;
-                if (!oldest) break;
-                const olderRaw = await fetchRows(1000, oldest - 1);
-                if (myGen !== loadGenRef.current) return;
-                if (!Array.isArray(olderRaw) || !olderRaw.length) break;
-                const mapped = olderRaw
-                  .map((r: any) => {
-                    const time = Math.floor(
-                      Number(r.time || r[0] || r.openTime || r.t) /
-                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-                    );
-                    return {
-                      time,
-                      open: parseFloat(r.open ?? r[1]),
-                      high: parseFloat(r.high ?? r[2]),
-                      low: parseFloat(r.low ?? r[3]),
-                      close: parseFloat(r.close ?? r[4]),
-                      volume: parseFloat(r.volume ?? r[5] ?? 0),
-                    };
-                  })
-                  .filter((c: any) => c.time && !Number.isNaN(c.close));
-                const seen = new Set(all.map((c) => c.time));
-                const extra = mapped.filter((c: any) => !seen.has(c.time));
-                if (extra.length < 10) break;
-                all = [...extra, ...all].sort((a, b) => a.time - b.time);
-              }
-              if (myGen !== loadGenRef.current) return;
-              if (all.length <= candles.length) return;
-              // تاریخچه بیشتر به چپ اضافه می‌شود — رنج را بر اساس زمان نگه دار نه logical
-              candlesRef.current = all;
-              if (seriesRef.current && chartRef.current) {
-                let savedTime: any = null;
-                try {
-                  savedTime = (chartRef.current.timeScale() as any).getVisibleRange?.();
-                } catch {}
-                seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
-                if (savedTime && savedTime.from != null && savedTime.to != null) {
-                  try {
-                    programmaticRangeRef.current = true;
-                    (chartRef.current.timeScale() as any).setVisibleRange(savedTime);
-                    requestAnimationFrame(() => { programmaticRangeRef.current = false; });
-                  } catch {
-                    programmaticRangeRef.current = false;
-                  }
-                }
-                try { rebuildIndicators(); } catch {}
-                try { renderAllLinesAndAlarms(); } catch {}
-              }
-            } catch {}
-          })();
-
-          return; // done — no destroy, no recreate
-        } catch (softErr) {
-          console.warn("soft TF switch failed, full rebuild", softErr);
-          destroyChart();
-        }
-      }
-
-      // ── Full path: first load or soft update failed ──
-      destroyChart();
-      if (gen !== loadGenRef.current) return;
+      const isIntraday = ["1", "5", "15"].includes(String(intervalRef.current));
 
       const chart = createChart(container, {
         layout: {
@@ -1914,8 +1654,6 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           scaleMargins: { top: 0.05, bottom: 0.05 },
           entireTextOnly: false,
-          autoScale: true,
-          mode: 0, // Normal — user can drag price scale freely
         },
         timeScale: {
           borderColor: "#2a2e39",
@@ -1946,53 +1684,27 @@ export default function DashboardPage() {
       });
       // Real candles + trailing whitespace so time labels continue past last bar
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-      lastLoadedSymbolRef.current = fetchSym;
       seriesRef.current = series;
-      pinnedToRightRef.current = true;
-      setShowGoLive(false);
-
-      // User-driven range changes only (ignore our own programmatic sets)
-      try {
-        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-          if (!range || programmaticRangeRef.current) return;
-          userInteractingRef.current = true;
-          const bars = candlesRef.current.length;
-          let pinned = false;
-          if (bars >= 2) {
-            // با FUTURE_VISIBLE، لبه زنده حدود bars-1+FUTURE_VISIBLE است
-            // فقط وقتی خیلی نزدیک لبه راست باشیم pinned بمان
-            const liveEdge = bars - 1 + FUTURE_VISIBLE;
-            pinned = range.to >= liveEdge - 2;
-          }
-          pinnedToRightRef.current = pinned;
-          setShowGoLive(!pinned);
-          if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
-          // تا وقتی دست کاربر روی چارت است auto-scroll نکن
-          interactTimerRef.current = window.setTimeout(() => {
-            userInteractingRef.current = false;
-            interactTimerRef.current = null;
-          }, 1500);
-        });
-      } catch {}
 
       /** Frame last ~70 real bars + a wide visible future strip (more is scrollable) */
       const ensureFutureTimeSpace = () => {
         try {
-          const bars = candlesRef.current.length || candles.length;
+          const bars = candlesRef.current.length || candles.length; // real bars only
           if (bars < 2) return;
-          programmaticRangeRef.current = true;
           chart.timeScale().applyOptions({ rightOffset: 4 });
           const past = Math.min(70, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: bars - past,
             to: bars - 1 + FUTURE_VISIBLE,
           });
-          requestAnimationFrame(() => { programmaticRangeRef.current = false; });
-        } catch {
-          programmaticRangeRef.current = false;
-        }
+        } catch {}
       };
       ensureFutureTimeSpace();
+      requestAnimationFrame(() => {
+        ensureFutureTimeSpace();
+        setTimeout(ensureFutureTimeSpace, 150);
+        setTimeout(ensureFutureTimeSpace, 500);
+      });
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
       const resolveTime = (param: any): number | null => {
@@ -2214,7 +1926,6 @@ export default function DashboardPage() {
                   priceLineVisible: false,
                   lastValueVisible: false,
                   crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
                 });
               }
               if (Math.abs(a.time - tCursor) < 1) return;
@@ -2283,7 +1994,6 @@ export default function DashboardPage() {
                   priceLineVisible: false,
                   lastValueVisible: false,
                   crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
                 });
               }
               previewDiagSeriesRef.current.setData([
@@ -2311,7 +2021,6 @@ export default function DashboardPage() {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
               });
             }
             if (Math.abs(a.time - b.time) < 1) return;
@@ -2401,7 +2110,6 @@ export default function DashboardPage() {
                     priceLineVisible: false,
                     lastValueVisible: false,
                     crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
                   });
                 }
                 const pts = [
@@ -2871,7 +2579,6 @@ export default function DashboardPage() {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
               });
             }
             const pts = [
@@ -3069,26 +2776,18 @@ export default function DashboardPage() {
         }
       });
 
-      if (gen !== loadGenRef.current) return;
       renderAllLinesAndAlarms();
       rebuildIndicators();
       // Native axis label for last price + bar time (does not float on scroll)
       applyLastPriceLabel();
       setStatusMsg("");
     } catch (e: any) {
-      if (gen === loadGenRef.current) setStatusMsg(e?.message || "Load error");
+      setStatusMsg(e?.message || "Load error");
     }
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
   useEffect(() => {
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      requestAnimationFrame(() => {
-        if (!cancelled) loadCandles();
-      });
-    };
-    run();
+    loadCandles();
     const onResize = () => {
       if (chartRef.current && chartContainerRef.current) {
         chartRef.current.applyOptions({
@@ -3097,35 +2796,12 @@ export default function DashboardPage() {
         });
       }
     };
-    const onVis = () => {
-      if (document.visibilityState === "visible") {
-        if (!seriesRef.current || !candlesRef.current.length) run();
-      }
-    };
-    const onFocus = () => {
-      if (!seriesRef.current || !candlesRef.current.length) run();
-    };
     window.addEventListener("resize", onResize);
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onFocus);
     return () => {
-      cancelled = true;
       window.removeEventListener("resize", onResize);
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", onFocus);
-      // Do NOT destroyChart here — that caused the black flash on 1m↔5m.
-      // Old chart stays until loadCandles finishes fetching and swaps in the new one.
-      // Real unmount destroy is in the effect below.
-    };
-  }, [symbol, interval, loadCandles]);
-
-  // Destroy chart only when this component actually unmounts (leave page)
-  useEffect(() => {
-    return () => {
-      loadGenRef.current += 1; // invalidate any in-flight load
       destroyChart();
     };
-  }, [destroyChart]);
+  }, [symbol, interval]);
 
   // Apply timezone change live — preserve visible range (don't jump to empty future)
   useEffect(() => {
@@ -3153,7 +2829,7 @@ export default function DashboardPage() {
     } catch {}
   }, [timeZone]);
 
-  // Resize chart when side list is shown/hidden — فقط عرض/ارتفاع، رنج را دست نزن
+  // Resize chart when side list is shown/hidden — keep future time strip
   useEffect(() => {
     const t = setTimeout(() => {
       if (chartRef.current && chartContainerRef.current) {
@@ -3161,7 +2837,17 @@ export default function DashboardPage() {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight || 640,
         });
-        // عمداً setVisibleLogicalRange نمی‌زنیم — باعث پرش/آهنربا می‌شد
+        try {
+          const bars = candlesRef.current.length;
+          if (bars > 2) {
+            chartRef.current.timeScale().applyOptions({ rightOffset: 4 });
+            const past = Math.min(70, bars);
+            chartRef.current.timeScale().setVisibleLogicalRange({
+              from: bars - past,
+              to: bars - 1 + FUTURE_VISIBLE,
+            });
+          }
+        } catch {}
       }
     }, 50);
     return () => clearTimeout(t);
@@ -3366,97 +3052,56 @@ export default function DashboardPage() {
     if (!series) return;
     try {
       const res = await fetch(
-        `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(String(intervalRef.current))}&limit=5`,
-        { cache: "no-store" }
+        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=5`
       );
-      if (!res.ok) return;
       const raw = await res.json();
       const rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       if (!rows.length) return;
       const fresh = parseKlineRows(rows);
       if (!fresh.length) return;
 
-      const candles = candlesRef.current.slice(); // copy
+      const candles = candlesRef.current;
       let addedNew = false;
-      let changed = false;
       for (const c of fresh) {
-        const idx = candles.findIndex((x: any) => Number(x.time) === Number(c.time));
+        const idx = candles.findIndex((x: any) => x.time === c.time);
         if (idx >= 0) {
-          const prev = candles[idx];
-          if (
-            prev.close !== c.close ||
-            prev.high !== c.high ||
-            prev.low !== c.low ||
-            prev.open !== c.open ||
-            prev.volume !== c.volume
-          ) {
-            candles[idx] = c;
-            changed = true;
-          }
-        } else if (!candles.length || Number(c.time) > Number(candles[candles.length - 1].time)) {
+          candles[idx] = c;
+          try { series.update(c as any); } catch {}
+        } else if (!candles.length || c.time > candles[candles.length - 1].time) {
           candles.push(c);
           addedNew = true;
-          changed = true;
+          try { series.update(c as any); } catch {}
         }
-      }
-      if (!changed) {
-        // still refresh axis label countdown
-        const last = candles[candles.length - 1];
-        if (last) applyLastPriceLabel();
-        return last ? { last, high: last.high, low: last.low } : null;
       }
       candlesRef.current = candles;
-
-      // CRITICAL: never call setVisibleRange / setVisibleLogicalRange on live ticks.
-      // That was the iPad jump. Append keeps zoom; only scrollToRealTime if pinned.
-      const chart = chartRef.current;
-
+      // New bar consumed one whitespace slot — rebuild trailing future strip
+      // without shifting the user's current view
       if (addedNew) {
         try {
-          // فقط داده را عوض کن — هیچ scroll / setVisibleRange نزن (جلوگیری از آهنربا و پرش)
-          const lastBar = candles[candles.length - 1];
-          if (lastBar) {
-            try {
-              series.update(lastBar as any);
-            } catch {
-              series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-            }
+          const chart = chartRef.current;
+          let lr: { from: number; to: number } | null = null;
+          try {
+            const r = chart?.timeScale().getVisibleLogicalRange();
+            if (r) lr = { from: r.from, to: r.to };
+          } catch {}
+          series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+          if (lr && chart) {
+            try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
           }
         } catch {}
-      } else {
-        // Same bars — update in place only (zero range mutation)
-        const tail = fresh.slice(-3);
-        let needFull = false;
-        for (const c of tail) {
-          try { series.update(c as any); } catch {
-            needFull = true;
-            break;
-          }
-        }
-        if (needFull) {
-          try {
-            series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-            // still do not touch visible range
-          } catch {}
-        }
-        if (volumeSeriesRef.current && candles.length) {
-          const last = candles[candles.length - 1];
-          try {
-            volumeSeriesRef.current.update({
-              time: last.time as any,
-              value: last.volume || 0,
-              color: last.close >= last.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
-            });
-          } catch {}
-        }
       }
 
       const last = candles[candles.length - 1];
       if (last) {
-        setLastBarClose((prev) => (prev === last.close ? prev : last.close));
-        setLastBarTime((prev) => (prev === last.time ? prev : last.time));
+        setLastBarClose(last.close);
+        setLastBarTime(last.time);
         applyLastPriceLabel();
-        return { last, high: last.high, low: last.low };
+        // feed price into alarm cross check
+        const sym = symbolRef.current.toUpperCase();
+        const prev = prevPricesRef.current[sym];
+        prevPricesRef.current[sym] = last.close;
+        // also use high/low for more accurate cross detection on current bar
+        return { last, prev, high: last.high, low: last.low };
       }
     } catch {}
     return null;
@@ -3598,13 +3243,14 @@ export default function DashboardPage() {
             }
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
-            // دقت: فقط عبور واقعی ticker/close — بدون high/low کندل
-            // (high/low روی TF بالاتر و حتی ۱m باعث آلارم زودرس می‌شد)
+            prevPricesRef.current[sym] = price;
 
             for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
+              // Diagonal alarm: project price at "now" from the two endpoints
               let target = a.price;
               if (isDiagonalLine(a)) {
                 const nowT = Math.floor(Date.now() / 1000);
+                // Only active while "now" is within the segment time span
                 const st = Number(a.start_time);
                 const et = Number(a.end_time);
                 const tMin = Math.min(st, et);
@@ -3612,31 +3258,23 @@ export default function DashboardPage() {
                 if (nowT < tMin || nowT > tMax + 60) continue;
                 target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
               }
-              let hit = false;
-              if (prev == null || Number.isNaN(prev)) {
-                // اولین نمونه قیمت: فقط seed — تریگر نکن
-              } else {
-                hit = didCross(a.condition, target, prev, price);
+              // Precision: only last-price cross (prev → price).
+              // Never use chart-TF candle high/low — on 1h/4h a wick inside the bar
+              // would false-trigger even when price never actually crossed the level.
+              if (prev == null || Number.isNaN(prev)) continue;
+              if (didCross(a.condition, target, prev, price)) {
+                await triggerAlarmLocal(a, price);
               }
-              if (hit) await triggerAlarmLocal(a, price);
             }
-            prevPricesRef.current[sym] = price;
           } catch {}
         }
       } catch {}
     };
     tick();
-    // کندل سریع‌تر؛ همگام‌سازی آلارم از DB کمی آهسته‌تر تا چارت گیر نکند
-    // 1s live tip — setData only on new bar; update() for same bar
-    const idCandle = window.setInterval(async () => {
-      if (!alive) return;
-      try { await refreshLiveCandles(); } catch {}
-    }, 1000);
-    const id = window.setInterval(tick, 4000);
+    const id = window.setInterval(tick, 2000);
     return () => {
       alive = false;
       clearInterval(id);
-      clearInterval(idCandle);
     };
   }, [refreshLiveCandles, triggerAlarmLocal]);
 
@@ -3889,21 +3527,13 @@ export default function DashboardPage() {
 
   const enablePushNotifications = async () => {
     setPushStatus("idle");
-    setStatusMsg("Enabling notifications…");
     const result = await ensurePushSubscription();
     setPushStatus(result);
-    if (result === "ok") {
-      setStatusMsg("Push notifications ON");
-      // Confirm to user (and wake iOS notification permission UX)
-      try {
-        showLocalNotification("Alarm Chart", "Notifications enabled — you will get alerts when lines/alarms hit");
-      } catch {}
-    } else if (result === "denied") {
-      setStatusMsg("Permission denied — iPad: Settings → [App] → Notifications → Allow");
-    } else if (result === "no-key") setStatusMsg("Missing VAPID key — see setup");
-    else if (result === "unsupported") {
-      setStatusMsg("Add to Home Screen first (iPad Safari Share → Add to Home Screen)");
-    } else setStatusMsg("Push setup failed — check /public/sw.js and VAPID keys");
+    if (result === "ok") setStatusMsg("Push notifications enabled");
+    else if (result === "denied") setStatusMsg("Notification permission denied");
+    else if (result === "no-key") setStatusMsg("Missing VAPID key — see setup");
+    else if (result === "unsupported") setStatusMsg("Push not supported on this browser");
+    else setStatusMsg("Push setup failed");
   };
 
   const disablePushNotifications = async () => {
@@ -4026,8 +3656,7 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-
-                  </div>
+        </div>
       </div>
 
       <div className="flex gap-2">
@@ -4450,13 +4079,6 @@ export default function DashboardPage() {
             className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
             style={{ height: 640 }}
           />
-          {statusMsg === "Loading..." && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
-              <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
-                Loading…
-              </div>
-            </div>
-          )}
           {/* Hollow circle handles for diagonal Move — overlay on chart */}
           <div
             ref={handleAElRef}
@@ -4468,35 +4090,6 @@ export default function DashboardPage() {
             className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none z-20"
             style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }}
           />
-
-          {/* Go to live — only when scrolled into history (TradingView-style) */}
-          {showGoLive && (
-            <button
-              type="button"
-              title="Go to latest candles"
-              onClick={() => {
-                const chart = chartRef.current;
-                if (!chart) return;
-                try {
-                  programmaticRangeRef.current = true;
-                  chart.timeScale().scrollToRealTime();
-                  requestAnimationFrame(() => {
-                    programmaticRangeRef.current = false;
-                  });
-                } catch {
-                  programmaticRangeRef.current = false;
-                }
-                pinnedToRightRef.current = true;
-                setShowGoLive(false);
-              }}
-              className="absolute bottom-3 right-3 z-20 flex items-center justify-center w-9 h-9 rounded-full bg-gray-800/95 border border-gray-600 text-gray-100 shadow-lg hover:bg-orange-600 hover:border-orange-500 active:scale-95 transition"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="13 17 18 12 13 7" />
-                <polyline points="6 17 11 12 6 7" />
-              </svg>
-            </button>
-          )}
 
           <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
             {!hideIndicators && showSMA && (
@@ -5182,7 +4775,6 @@ export default function DashboardPage() {
                                 priceLineVisible: false,
                                 lastValueVisible: false,
                                 crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
                               });
                               const pts = [
                                 { time: md.pointA.time as any, value: md.pointA.price },
@@ -5364,7 +4956,6 @@ export default function DashboardPage() {
                                 priceLineVisible: false,
                                 lastValueVisible: false,
                                 crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
                               });
                               const pts = [
                                 { time: md.pointA.time as any, value: md.pointA.price },
