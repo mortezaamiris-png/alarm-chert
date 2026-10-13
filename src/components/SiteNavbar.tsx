@@ -3,12 +3,97 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 type AuthUser = {
   id: string;
   email?: string | null;
   user_metadata?: Record<string, any>;
 };
+
+/** VAPID public key — must match server private key */
+const VAPID_PUBLIC_KEY_FALLBACK =
+  "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error"> {
+  if (typeof window === "undefined") return "unsupported";
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return "unsupported";
+  }
+  const vapid =
+    (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_VAPID_PUBLIC_KEY) ||
+    VAPID_PUBLIC_KEY_FALLBACK;
+  if (!vapid) return "no-key";
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== "granted") return "denied";
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapid),
+      });
+    }
+    const json = sub.toJSON();
+    const endpoint = json.endpoint || "";
+    const p256dh = json.keys?.p256dh || "";
+    const auth = json.keys?.auth || "";
+    if (!endpoint || !p256dh || !auth) return "error";
+    const { data: existing } = await supabase
+      .from("push_subscriptions")
+      .select("id")
+      .eq("endpoint", endpoint)
+      .maybeSingle();
+    if (existing?.id) {
+      await supabase
+        .from("push_subscriptions")
+        .update({
+          p256dh,
+          auth,
+          user_agent: navigator.userAgent,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+    } else {
+      await supabase.from("push_subscriptions").insert([
+        { endpoint, p256dh, auth, user_agent: navigator.userAgent },
+      ]);
+    }
+    return "ok";
+  } catch (e) {
+    console.warn("Push subscribe failed", e);
+    return "error";
+  }
+}
+
+async function disablePushSubscription() {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const endpoint = sub.endpoint;
+      await sub.unsubscribe();
+      try {
+        await supabase.from("push_subscriptions").delete().eq("endpoint", endpoint);
+      } catch {}
+    }
+  } catch {}
+}
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -205,6 +290,40 @@ export default function SiteNavbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  /** idle | ok | denied | unsupported | no-key | error */
+  const [pushStatus, setPushStatus] = useState<string>("idle");
+
+  // Restore push status if permission already granted (iPad PWA)
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setPushStatus("unsupported");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      ensurePushSubscription().then(setPushStatus);
+    } else if (Notification.permission === "denied") {
+      setPushStatus("denied");
+    }
+  }, []);
+
+  const togglePush = async () => {
+    if (pushStatus === "ok") {
+      await disablePushSubscription();
+      setPushStatus("idle");
+      return;
+    }
+    setPushStatus("idle");
+    const result = await ensurePushSubscription();
+    setPushStatus(result);
+    if (result === "ok") {
+      try {
+        new Notification("Alarm Chart", {
+          body: "Notifications ON — you will get alerts when alarms hit",
+          icon: "/icon-192.png",
+        });
+      } catch {}
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -371,7 +490,51 @@ export default function SiteNavbar() {
             })}
           </nav>
 
-          <div className="w-[88px] shrink-0" />
+          {/* RIGHT: Push notifications On/Off (global — all pages) */}
+          <div className="w-[100px] shrink-0 flex items-center justify-end">
+            <button
+              type="button"
+              onClick={togglePush}
+              title={
+                pushStatus === "ok"
+                  ? "Notifications ON — tap to turn off"
+                  : pushStatus === "denied"
+                  ? "Blocked — enable in iPad Settings → Notifications"
+                  : pushStatus === "unsupported"
+                  ? "Add to Home Screen (Safari Share) then enable"
+                  : "Enable alarm notifications"
+              }
+              className={`h-8 px-2.5 rounded-full text-xs font-medium inline-flex items-center gap-1.5 border transition-all ${
+                pushStatus === "ok"
+                  ? "bg-emerald-500/20 border-emerald-500 text-emerald-300"
+                  : pushStatus === "denied"
+                  ? "bg-red-500/15 border-red-500/60 text-red-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill={pushStatus === "ok" ? "currentColor" : "none"}
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              <span>
+                {pushStatus === "ok"
+                  ? "On"
+                  : pushStatus === "denied"
+                  ? "Blocked"
+                  : "Off"}
+              </span>
+            </button>
+          </div>
         </div>
       </header>
 
