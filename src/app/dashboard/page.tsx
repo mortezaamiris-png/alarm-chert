@@ -627,6 +627,8 @@ export default function DashboardPage() {
   const pointerAbortRef = useRef<AbortController | null>(null);
   /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
   const loadGenRef = useRef(0);
+  /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
+  const pinnedToRightRef = useRef(true);
   /** rAF throttle for pointermove (prevents desktop freeze) */
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
@@ -1614,19 +1616,21 @@ export default function DashboardPage() {
     const fetchIv = String(intervalRef.current);
     setStatusMsg("Loading...");
     try {
-      const fetchRows = async () => {
+      const fetchRows = async (limit: number) => {
         const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=250`
+          `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=${limit}`,
+          { cache: "no-store" }
         );
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       };
-      let rows: any[] = await fetchRows();
-      if (gen !== loadGenRef.current) return; // newer TF/symbol already in flight
+      // Fast first paint (120 bars) so TF switch feels snappy on mobile
+      let rows: any[] = await fetchRows(120);
+      if (gen !== loadGenRef.current) return;
       if (!rows.length) {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, 300));
         if (gen !== loadGenRef.current) return;
-        rows = await fetchRows();
+        rows = await fetchRows(120);
       }
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
@@ -1678,10 +1682,11 @@ export default function DashboardPage() {
               tickMarkFormatter: makeTickMarkFormatter(tz) as any,
             },
           });
+          pinnedToRightRef.current = true;
           try {
             const bars = candles.length;
             if (bars >= 2) {
-              chart.timeScale().applyOptions({ rightOffset: 4 });
+              chart.timeScale().applyOptions({ rightOffset: 4, barSpacing: 8 });
               const past = Math.min(70, bars);
               chart.timeScale().setVisibleLogicalRange({
                 from: bars - past,
@@ -1758,6 +1763,51 @@ export default function DashboardPage() {
           rebuildIndicators();
           applyLastPriceLabel();
           setStatusMsg("");
+          // Background: pull fuller history without blocking UI
+          if (candles.length <= 150) {
+            void (async () => {
+              try {
+                const more = await fetchRows(300);
+                if (gen !== loadGenRef.current || !Array.isArray(more) || more.length <= candles.length) return;
+                const richer = more
+                  .map((r: any) => {
+                    const time = Math.floor(
+                      Number(r.time || r[0] || r.openTime || r.t) /
+                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+                    );
+                    return {
+                      time,
+                      open: parseFloat(r.open ?? r[1]),
+                      high: parseFloat(r.high ?? r[2]),
+                      low: parseFloat(r.low ?? r[3]),
+                      close: parseFloat(r.close ?? r[4]),
+                      volume: parseFloat(r.volume ?? r[5] ?? 0),
+                    };
+                  })
+                  .filter((c: any) => c.time && !Number.isNaN(c.close))
+                  .sort((a: any, b: any) => a.time - b.time);
+                if (gen !== loadGenRef.current || !seriesRef.current) return;
+                candlesRef.current = richer;
+                let tr: any = null;
+                try { tr = chartRef.current?.timeScale().getVisibleRange?.(); } catch {}
+                seriesRef.current.setData(appendFutureWhitespace(richer, fetchIv) as any);
+                if (tr && chartRef.current) {
+                  try {
+                    chartRef.current.timeScale().setVisibleRange(tr);
+                  } catch {}
+                } else if (pinnedToRightRef.current && chartRef.current) {
+                  const bars = richer.length;
+                  try {
+                    chartRef.current.timeScale().setVisibleLogicalRange({
+                      from: Math.max(0, bars - 70),
+                      to: bars - 1 + FUTURE_VISIBLE,
+                    });
+                  } catch {}
+                }
+                rebuildIndicators();
+              } catch {}
+            })();
+          }
           return; // done — no destroy, no recreate
         } catch (softErr) {
           console.warn("soft TF switch failed, full rebuild", softErr);
@@ -1817,6 +1867,18 @@ export default function DashboardPage() {
       // Real candles + trailing whitespace so time labels continue past last bar
       series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
       seriesRef.current = series;
+      pinnedToRightRef.current = true;
+
+      // Track whether user scrolled away from the live edge (prevents auto-jump on iPad)
+      try {
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+          if (!range) return;
+          const bars = candlesRef.current.length;
+          if (bars < 2) return;
+          // pinned if right edge is near last real bar + future strip
+          pinnedToRightRef.current = range.to >= bars - 1 + FUTURE_VISIBLE - 20;
+        });
+      } catch {}
 
       /** Frame last ~70 real bars + a wide visible future strip (more is scrollable) */
       const ensureFutureTimeSpace = () => {
@@ -3261,48 +3323,73 @@ export default function DashboardPage() {
       }
       candlesRef.current = candles;
 
-      // Whitespace bars use future times — series.update() on a new bar often fails
-      // because that time already exists as empty whitespace. Always setData on new bar.
+      // Whitespace future times collide with new bars → setData on new bar only.
+      // Preserve VIEW BY TIME so iPad doesn't jump when user is scrolled left.
       const chart = chartRef.current;
+      let timeRange: { from: number; to: number } | null = null;
+      try {
+        const tr = chart?.timeScale().getVisibleRange?.();
+        if (tr && tr.from != null && tr.to != null) {
+          timeRange = { from: Number(tr.from), to: Number(tr.to) };
+        }
+      } catch {}
       let lr: { from: number; to: number } | null = null;
       try {
         const r = chart?.timeScale().getVisibleLogicalRange();
         if (r) lr = { from: r.from, to: r.to };
       } catch {}
 
+      const restoreView = () => {
+        if (!chart) return;
+        if (pinnedToRightRef.current) {
+          try {
+            const bars = candles.length;
+            if (bars >= 2) {
+              const width = lr ? Math.max(20, lr.to - lr.from) : 70 + FUTURE_VISIBLE;
+              chart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, bars - 1 + FUTURE_VISIBLE - width),
+                to: bars - 1 + FUTURE_VISIBLE,
+              });
+            }
+          } catch {}
+          return;
+        }
+        // Keep the same wall-clock window the user was looking at
+        if (timeRange) {
+          try {
+            chart.timeScale().setVisibleRange({
+              from: timeRange.from as any,
+              to: timeRange.to as any,
+            });
+            return;
+          } catch {}
+        }
+        if (lr) {
+          try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
+        }
+      };
+
       if (addedNew) {
         try {
           series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-          if (lr && chart) {
-            // Keep view anchored; nudge right edge if user was near the end
-            const nearEnd = lr.to >= (candles.length - 1 + FUTURE_VISIBLE) - 8;
-            if (nearEnd) {
-              const bars = candles.length;
-              chart.timeScale().setVisibleLogicalRange({
-                from: Math.max(0, bars - (lr.to - lr.from)),
-                to: bars - 1 + FUTURE_VISIBLE,
-              });
-            } else {
-              try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
-            }
-          }
+          restoreView();
         } catch {}
       } else {
-        // Same bars — update last few in place (fast path)
+        // Same bars — update last few in place (no range change → no jump)
         const tail = fresh.slice(-3);
+        let needFull = false;
         for (const c of tail) {
           try { series.update(c as any); } catch {
-            // fallback if update rejects (e.g. whitespace collision)
-            try {
-              series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-              if (lr && chart) {
-                try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
-              }
-            } catch {}
+            needFull = true;
             break;
           }
         }
-        // volume series live tip
+        if (needFull) {
+          try {
+            series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+            restoreView();
+          } catch {}
+        }
         if (volumeSeriesRef.current && candles.length) {
           const last = candles[candles.length - 1];
           try {
