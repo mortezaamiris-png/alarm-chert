@@ -1728,11 +1728,8 @@ export default function DashboardPage() {
             chart.priceScale("right").applyOptions({ autoScale: true });
           } catch {}
 
-          // Symbol change: jump to live view so ETH does not sit in empty 0–85000 frame
+          // Symbol change: fit once (no scrollToRealTime — آن باعث آهنربا می‌شد)
           if (symbolChanged) {
-            try {
-              chart.timeScale().scrollToRealTime();
-            } catch {}
             try {
               chart.timeScale().fitContent();
             } catch {}
@@ -1866,10 +1863,23 @@ export default function DashboardPage() {
               }
               if (myGen !== loadGenRef.current) return;
               if (all.length <= candles.length) return;
-              // Only update data — never touch visible range (avoids jump)
+              // تاریخچه بیشتر به چپ اضافه می‌شود — رنج را بر اساس زمان نگه دار نه logical
               candlesRef.current = all;
-              if (seriesRef.current) {
+              if (seriesRef.current && chartRef.current) {
+                let savedTime: any = null;
+                try {
+                  savedTime = (chartRef.current.timeScale() as any).getVisibleRange?.();
+                } catch {}
                 seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
+                if (savedTime && savedTime.from != null && savedTime.to != null) {
+                  try {
+                    programmaticRangeRef.current = true;
+                    (chartRef.current.timeScale() as any).setVisibleRange(savedTime);
+                    requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+                  } catch {
+                    programmaticRangeRef.current = false;
+                  }
+                }
                 try { rebuildIndicators(); } catch {}
                 try { renderAllLinesAndAlarms(); } catch {}
               }
@@ -3143,7 +3153,7 @@ export default function DashboardPage() {
     } catch {}
   }, [timeZone]);
 
-  // Resize chart when side list is shown/hidden — keep future time strip
+  // Resize chart when side list is shown/hidden — فقط عرض/ارتفاع، رنج را دست نزن
   useEffect(() => {
     const t = setTimeout(() => {
       if (chartRef.current && chartContainerRef.current) {
@@ -3151,17 +3161,7 @@ export default function DashboardPage() {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight || 640,
         });
-        try {
-          const bars = candlesRef.current.length;
-          if (bars > 2) {
-            chartRef.current.timeScale().applyOptions({ rightOffset: 4 });
-            const past = Math.min(70, bars);
-            chartRef.current.timeScale().setVisibleLogicalRange({
-              from: bars - past,
-              to: bars - 1 + FUTURE_VISIBLE,
-            });
-          }
-        } catch {}
+        // عمداً setVisibleLogicalRange نمی‌زنیم — باعث پرش/آهنربا می‌شد
       }
     }, 50);
     return () => clearTimeout(t);
@@ -3413,19 +3413,13 @@ export default function DashboardPage() {
 
       if (addedNew) {
         try {
-          series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-          if (
-            chart &&
-            pinnedToRightRef.current &&
-            !userInteractingRef.current &&
-            !programmaticRangeRef.current
-          ) {
+          // فقط داده را عوض کن — هیچ scroll / setVisibleRange نزن (جلوگیری از آهنربا و پرش)
+          const lastBar = candles[candles.length - 1];
+          if (lastBar) {
             try {
-              programmaticRangeRef.current = true;
-              chart.timeScale().scrollToRealTime();
-              requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+              series.update(lastBar as any);
             } catch {
-              programmaticRangeRef.current = false;
+              series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
             }
           }
         } catch {}
