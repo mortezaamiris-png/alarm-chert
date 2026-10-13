@@ -632,6 +632,8 @@ export default function DashboardPage() {
   /** True while finger/mouse is dragging the chart — freeze all auto range changes */
   const userInteractingRef = useRef(false);
   const interactTimerRef = useRef<number | null>(null);
+  /** True while WE are changing the visible range — ignore those events for pin detection */
+  const programmaticRangeRef = useRef(false);
   /** rAF throttle for pointermove (prevents desktop freeze) */
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
@@ -1634,13 +1636,13 @@ export default function DashboardPage() {
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       };
-      // Fast first paint (120 bars) so TF switch feels snappy on mobile
-      let rows: any[] = await fetchRows(120);
+      // Single fetch — progressive fill was jumping the viewport on iPad
+      let rows: any[] = await fetchRows(250);
       if (gen !== loadGenRef.current) return;
       if (!rows.length) {
         await new Promise((r) => setTimeout(r, 300));
         if (gen !== loadGenRef.current) return;
-        rows = await fetchRows(120);
+        rows = await fetchRows(250);
       }
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
@@ -1696,14 +1698,18 @@ export default function DashboardPage() {
           try {
             const bars = candles.length;
             if (bars >= 2) {
+              programmaticRangeRef.current = true;
               chart.timeScale().applyOptions({ rightOffset: 4, barSpacing: 8 });
               const past = Math.min(70, bars);
               chart.timeScale().setVisibleLogicalRange({
                 from: bars - past,
                 to: bars - 1 + FUTURE_VISIBLE,
               });
+              requestAnimationFrame(() => { programmaticRangeRef.current = false; });
             }
-          } catch {}
+          } catch {
+            programmaticRangeRef.current = false;
+          }
 
           // 2) Then clear overlays (chart already shows new TF candles)
           clearPreview();
@@ -1773,49 +1779,7 @@ export default function DashboardPage() {
           rebuildIndicators();
           applyLastPriceLabel();
           setStatusMsg("");
-          // Background: pull fuller history without blocking UI / without jumping viewport
-          if (candles.length <= 150) {
-            void (async () => {
-              try {
-                const more = await fetchRows(300);
-                if (gen !== loadGenRef.current || !Array.isArray(more) || more.length <= candles.length) return;
-                if (userInteractingRef.current) return; // don't touch chart mid-gesture
-                const richer = more
-                  .map((r: any) => {
-                    const time = Math.floor(
-                      Number(r.time || r[0] || r.openTime || r.t) /
-                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-                    );
-                    return {
-                      time,
-                      open: parseFloat(r.open ?? r[1]),
-                      high: parseFloat(r.high ?? r[2]),
-                      low: parseFloat(r.low ?? r[3]),
-                      close: parseFloat(r.close ?? r[4]),
-                      volume: parseFloat(r.volume ?? r[5] ?? 0),
-                    };
-                  })
-                  .filter((c: any) => c.time && !Number.isNaN(c.close))
-                  .sort((a: any, b: any) => a.time - b.time);
-                if (gen !== loadGenRef.current || !seriesRef.current || userInteractingRef.current) return;
-                // Capture TIME window BEFORE setData (logical indices shift when history grows left)
-                let tr: any = null;
-                try { tr = chartRef.current?.timeScale().getVisibleRange?.(); } catch {}
-                candlesRef.current = richer;
-                seriesRef.current.setData(appendFutureWhitespace(richer, fetchIv) as any);
-                // Always restore the same wall-clock window — never jump to start or end
-                if (tr && chartRef.current) {
-                  try {
-                    chartRef.current.timeScale().setVisibleRange({
-                      from: tr.from as any,
-                      to: tr.to as any,
-                    });
-                  } catch {}
-                }
-                rebuildIndicators();
-              } catch {}
-            })();
-          }
+
           return; // done — no destroy, no recreate
         } catch (softErr) {
           console.warn("soft TF switch failed, full rebuild", softErr);
@@ -1877,75 +1841,44 @@ export default function DashboardPage() {
       seriesRef.current = series;
       pinnedToRightRef.current = true;
 
-      // Track whether user scrolled away from the live edge (prevents auto-jump on iPad)
+      // User-driven range changes only (ignore our own programmatic sets)
       try {
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-          if (!range || userInteractingRef.current) return;
-          const bars = candlesRef.current.length;
-          if (bars < 2) return;
-          // Pinned ONLY when viewport right edge is at/past the last REAL candle
-          // (not merely somewhere in the future-whitespace strip while browsing history)
-          pinnedToRightRef.current = range.to >= bars - 1 + 1;
-        });
-      } catch {}
-
-      // Freeze auto-scroll while user is panning/zooming (critical on iPad)
-      try {
-        const el = container;
-        const onStart = () => {
+          if (!range || programmaticRangeRef.current) return;
           userInteractingRef.current = true;
-          pinnedToRightRef.current = false;
-          if (interactTimerRef.current) {
-            window.clearTimeout(interactTimerRef.current);
-            interactTimerRef.current = null;
+          const bars = candlesRef.current.length;
+          if (bars < 2) {
+            pinnedToRightRef.current = false;
+          } else {
+            // Pinned only when right edge is at/past last REAL candle
+            pinnedToRightRef.current = range.to >= bars - 1 + 1;
           }
-        };
-        const onEnd = () => {
           if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
           interactTimerRef.current = window.setTimeout(() => {
             userInteractingRef.current = false;
-            try {
-              const r = chart.timeScale().getVisibleLogicalRange();
-              const bars = candlesRef.current.length;
-              if (r && bars >= 2) {
-                pinnedToRightRef.current = r.to >= bars - 1 + 1;
-              }
-            } catch {}
             interactTimerRef.current = null;
-          }, 400);
-        };
-        el.addEventListener("pointerdown", onStart, { passive: true });
-        el.addEventListener("touchstart", onStart, { passive: true });
-        el.addEventListener("pointerup", onEnd, { passive: true });
-        el.addEventListener("pointercancel", onEnd, { passive: true });
-        el.addEventListener("touchend", onEnd, { passive: true });
-        // stash for cleanup via destroyChart path if needed
-        (chart as any).__interactCleanup = () => {
-          el.removeEventListener("pointerdown", onStart);
-          el.removeEventListener("touchstart", onStart);
-          el.removeEventListener("pointerup", onEnd);
-          el.removeEventListener("pointercancel", onEnd);
-          el.removeEventListener("touchend", onEnd);
-        };
+          }, 500);
+        });
       } catch {}
 
       /** Frame last ~70 real bars + a wide visible future strip (more is scrollable) */
       const ensureFutureTimeSpace = () => {
         try {
-          const bars = candlesRef.current.length || candles.length; // real bars only
+          const bars = candlesRef.current.length || candles.length;
           if (bars < 2) return;
+          programmaticRangeRef.current = true;
           chart.timeScale().applyOptions({ rightOffset: 4 });
           const past = Math.min(70, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: bars - past,
             to: bars - 1 + FUTURE_VISIBLE,
           });
-        } catch {}
+          requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+        } catch {
+          programmaticRangeRef.current = false;
+        }
       };
       ensureFutureTimeSpace();
-      requestAnimationFrame(() => {
-        if (!userInteractingRef.current) ensureFutureTimeSpace();
-      });
 
       /** Resolve unix time from click/crosshair — works on empty area (no candle) too */
       const resolveTime = (param: any): number | null => {
@@ -3370,59 +3303,30 @@ export default function DashboardPage() {
       }
       candlesRef.current = candles;
 
-      // Whitespace future times collide with new bars → setData on new bar only.
-      // Preserve VIEW BY TIME so iPad doesn't jump when user is scrolled left.
+      // CRITICAL: never call setVisibleRange / setVisibleLogicalRange on live ticks.
+      // That was the iPad jump. Append keeps zoom; only scrollToRealTime if pinned.
       const chart = chartRef.current;
-      let timeRange: { from: number; to: number } | null = null;
-      try {
-        const tr = chart?.timeScale().getVisibleRange?.();
-        if (tr && tr.from != null && tr.to != null) {
-          timeRange = { from: Number(tr.from), to: Number(tr.to) };
-        }
-      } catch {}
-      let lr: { from: number; to: number } | null = null;
-      try {
-        const r = chart?.timeScale().getVisibleLogicalRange();
-        if (r) lr = { from: r.from, to: r.to };
-      } catch {}
-
-      const restoreView = () => {
-        if (!chart) return;
-        // Never fight the user's finger / mouse
-        if (userInteractingRef.current) return;
-        if (pinnedToRightRef.current) {
-          try {
-            const bars = candles.length;
-            if (bars >= 2) {
-              const width = lr ? Math.max(20, lr.to - lr.from) : 70 + FUTURE_VISIBLE;
-              chart.timeScale().setVisibleLogicalRange({
-                from: Math.max(0, bars - 1 + FUTURE_VISIBLE - width),
-                to: bars - 1 + FUTURE_VISIBLE,
-              });
-            }
-          } catch {}
-          return;
-        }
-        // Keep the same wall-clock window the user was looking at (no jump to start)
-        if (timeRange) {
-          try {
-            chart.timeScale().setVisibleRange({
-              from: timeRange.from as any,
-              to: timeRange.to as any,
-            });
-            return;
-          } catch {}
-        }
-        // Last resort: do NOT apply stale logical range after history grew — causes jump-to-start
-      };
 
       if (addedNew) {
         try {
           series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-          restoreView();
+          if (
+            chart &&
+            pinnedToRightRef.current &&
+            !userInteractingRef.current &&
+            !programmaticRangeRef.current
+          ) {
+            try {
+              programmaticRangeRef.current = true;
+              chart.timeScale().scrollToRealTime();
+              requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+            } catch {
+              programmaticRangeRef.current = false;
+            }
+          }
         } catch {}
       } else {
-        // Same bars — update last few in place (no range change → no jump)
+        // Same bars — update in place only (zero range mutation)
         const tail = fresh.slice(-3);
         let needFull = false;
         for (const c of tail) {
@@ -3434,7 +3338,7 @@ export default function DashboardPage() {
         if (needFull) {
           try {
             series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-            restoreView();
+            // still do not touch visible range
           } catch {}
         }
         if (volumeSeriesRef.current && candles.length) {
