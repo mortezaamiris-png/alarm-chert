@@ -428,12 +428,14 @@ function didCross(
   if (!target || !Number.isFinite(target)) return false;
   // پرش غیرواقعی قیمت (گلیچ API / عوض TF) را تریگر نکن
   const jump = Math.abs(price - prev);
-  const span = Math.max(Math.abs(target) * 0.02, 1); // 2% or $1
-  if (jump > span * 15) return false;
-  if (condition === "above") return prev < target && price >= target;
-  if (condition === "below") return prev > target && price <= target;
-  // cross: must actually cross the level (strict inequality on one side)
-  return (prev < target && price >= target) || (prev > target && price <= target);
+  const span = Math.max(Math.abs(target) * 0.015, 0.5);
+  if (jump > span * 12) return false;
+  // prev باید واقعاً یک طرف خط باشد (نه چسبیده)
+  const eps = Math.max(Math.abs(target) * 1e-8, 1e-8);
+  if (condition === "above") return prev < target - eps && price >= target;
+  if (condition === "below") return prev > target + eps && price <= target;
+  // cross: عبور واقعی از سطح
+  return (prev < target - eps && price >= target) || (prev > target + eps && price <= target);
 }
 function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
@@ -1865,7 +1867,7 @@ export default function DashboardPage() {
             try {
               const myGen = gen;
               let all = candles.slice();
-              for (let p = 0; p < 8; p++) {
+              for (let p = 0; p < 12; p++) {
                 if (myGen !== loadGenRef.current) return;
                 const oldest = all[0]?.time;
                 if (!oldest) break;
@@ -1982,6 +1984,70 @@ export default function DashboardPage() {
       seriesRef.current = series;
       pinnedToRightRef.current = true;
       setShowGoLive(false);
+
+      // اسکرول روی محور قیمت (سمت راست) → زوم عمودی مثل TradingView
+      try {
+        const onWheelPrice = (e: WheelEvent) => {
+          const rect = container.getBoundingClientRect();
+          const fromRight = rect.right - e.clientX;
+          // فقط وقتی موس روی نوار قیمت سمت راست است (~70px)
+          if (fromRight > 72 || fromRight < 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const s = seriesRef.current as any;
+          if (!s) return;
+          const ps = s.priceScale?.() || chart.priceScale("right");
+          if (!ps) return;
+          try {
+            ps.applyOptions({ autoScale: false });
+          } catch {}
+          let from: number | null = null;
+          let to: number | null = null;
+          try {
+            const vr = ps.getVisibleRange?.();
+            if (vr && vr.from != null && vr.to != null) {
+              from = Number(vr.from);
+              to = Number(vr.to);
+            }
+          } catch {}
+          if (from == null || to == null || !(to > from)) {
+            // fallback: از کندل‌های مرئی
+            try {
+              const bars = candlesRef.current;
+              if (!bars.length) return;
+              let lo = Infinity, hi = -Infinity;
+              for (const c of bars.slice(-200)) {
+                if (c.low < lo) lo = c.low;
+                if (c.high > hi) hi = c.high;
+              }
+              if (!(hi > lo)) return;
+              from = lo;
+              to = hi;
+            } catch { return; }
+          }
+          const mid = (from + to) / 2;
+          const half = (to - from) / 2;
+          // deltaY < 0 = zoom in (تنگ‌تر)
+          const factor = e.deltaY < 0 ? 0.88 : 1.14;
+          const newHalf = Math.max(half * factor, Math.abs(mid) * 0.00005 + 0.5);
+          try {
+            if (typeof ps.setVisibleRange === "function") {
+              ps.setVisibleRange({ from: mid - newHalf, to: mid + newHalf });
+            } else {
+              // تقریبی با scaleMargins
+              const top = Math.min(0.45, Math.max(0.02, 0.05 * factor));
+              const bottom = Math.min(0.45, Math.max(0.02, 0.05 * factor));
+              ps.applyOptions({ scaleMargins: { top, bottom } });
+            }
+          } catch {}
+        };
+        container.addEventListener("wheel", onWheelPrice, { passive: false });
+        const prevCleanup = (chart as any).__interactCleanup;
+        (chart as any).__interactCleanup = () => {
+          try { container.removeEventListener("wheel", onWheelPrice); } catch {}
+          try { if (typeof prevCleanup === "function") prevCleanup(); } catch {}
+        };
+      } catch {}
 
       // User-driven range changes only (ignore our own programmatic sets)
       try {
@@ -3582,7 +3648,11 @@ export default function DashboardPage() {
               const db = byId.get(local.id);
               if (!db) return local;
               if (db.triggered && !local.triggered) {
-                if (!notifiedAlarmsRef.current.has(local.id)) {
+                // فقط اگر قیمت برخورد نزدیک سطح آلارم باشد نوتیف بده (جلوگیری از تریگر دروغین سرور)
+                const lp = Number((db as any).last_price ?? 0);
+                const ap = Number(db.price);
+                const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
+                if (near && !notifiedAlarmsRef.current.has(local.id)) {
                   notifiedAlarmsRef.current.add(local.id);
                   showLocalNotification(`${db.symbol}`, `Alarm hit @ ${db.price}`);
                 }
