@@ -553,9 +553,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 30;
+const FUTURE_BARS = 100;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 12;
+const FUTURE_VISIBLE = 45;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -675,6 +675,8 @@ export default function DashboardPage() {
   const prevPricesRef = useRef<Record<string, number>>({});
   /** بعد از لود/عوض TF چند تیک صبر کن تا seed پایدار شود */
   const priceSeedCountRef = useRef<Record<string, number>>({});
+  /** زوم عمودی دستی روی محور قیمت (null = autoScale) */
+  const priceRangeOverrideRef = useRef<{ from: number; to: number } | null>(null);
   const clickLockRef = useRef(false);
 
   const [symbol, setSymbol] = useState(() =>
@@ -1656,6 +1658,7 @@ export default function DashboardPage() {
     // TF عوض شد → prev قیمت‌ها را پاک کن تا آلارم دروغین نخورد
     prevPricesRef.current = {};
     priceSeedCountRef.current = {};
+    priceRangeOverrideRef.current = null;
     const gen = ++loadGenRef.current;
     const fetchSym = symbolRef.current;
     const fetchIv = String(intervalRef.current);
@@ -1780,7 +1783,7 @@ export default function DashboardPage() {
               const bars = candles.length;
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 8 });
+                chart.timeScale().applyOptions({ rightOffset: 24, barSpacing: 8 });
                 const past = Math.min(120, bars);
                 chart.timeScale().setVisibleLogicalRange({
                   from: bars - past,
@@ -1956,7 +1959,7 @@ export default function DashboardPage() {
           timeVisible: true,
           secondsVisible: isIntraday,
           // Empty bars to the right of last candle (TradingView-style future area)
-          rightOffset: 8,
+          rightOffset: 24,
           barSpacing: 8,
           minBarSpacing: 2,
           fixLeftEdge: false,
@@ -1985,8 +1988,7 @@ export default function DashboardPage() {
       pinnedToRightRef.current = true;
       setShowGoLive(false);
 
-      // اسکرول روی محور قیمت (سمت راست) → زوم عمودی مثل TradingView
-      // درگ روی محور قیمت هم از handleScale.axisPressedMouseMove فعال است
+      // اسکرول روی محور قیمت → زوم عمودی | بقیه چارت → افقی (پیش‌فرض LWC)
       try {
         chart.applyOptions({
           handleScale: {
@@ -2003,45 +2005,58 @@ export default function DashboardPage() {
           },
         });
       } catch {}
+      // autoscaleInfoProvider برای زوم عمودی دستی
+      try {
+        series.applyOptions({
+          autoscaleInfoProvider: (original: any) => {
+            const ov = priceRangeOverrideRef.current;
+            if (ov && ov.to > ov.from) {
+              return {
+                priceRange: { minValue: ov.from, maxValue: ov.to },
+              };
+            }
+            try {
+              return typeof original === "function" ? original() : original;
+            } catch {
+              return null;
+            }
+          },
+        } as any);
+      } catch {}
       try {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // نوار قیمت سمت راست (~90px) — مثل TradingView
-          if (fromRight > 90 || fromRight < 0) return;
+          // فقط نوار قیمت سمت راست (~80px)
+          if (fromRight > 80 || fromRight < 0) return;
+          // جلوگیری از اسکرول افقی پیش‌فرض روی محور قیمت
           e.preventDefault();
           e.stopPropagation();
           const s = seriesRef.current as any;
           if (!s) return;
-          const ps = s.priceScale?.() || chart.priceScale("right");
-          if (!ps) return;
-          try { ps.applyOptions({ autoScale: false }); } catch {}
 
-          // قیمت بالا/پایین صفحه از مختصات پیکسل
           let pTop: number | null = null;
           let pBot: number | null = null;
           try {
-            const t = s.coordinateToPrice?.(0);
-            const b = s.coordinateToPrice?.(container.clientHeight);
+            const t = s.coordinateToPrice?.(1);
+            const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
             if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
-              pTop = Math.max(t, b);
-              pBot = Math.min(t, b);
+              pTop = Math.max(Number(t), Number(b));
+              pBot = Math.min(Number(t), Number(b));
             }
           } catch {}
           if (pTop == null || pBot == null || !(pTop > pBot)) {
-            try {
-              const vr = ps.getVisibleRange?.();
-              if (vr?.from != null && vr?.to != null) {
-                pBot = Number(vr.from);
-                pTop = Number(vr.to);
-              }
-            } catch {}
+            const ov = priceRangeOverrideRef.current;
+            if (ov) {
+              pBot = ov.from;
+              pTop = ov.to;
+            }
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) {
             const bars = candlesRef.current;
             if (!bars.length) return;
             let lo = Infinity, hi = -Infinity;
-            for (const c of bars.slice(-150)) {
+            for (const c of bars.slice(-120)) {
               if (c.low < lo) lo = c.low;
               if (c.high > hi) hi = c.high;
             }
@@ -2050,41 +2065,40 @@ export default function DashboardPage() {
             pTop = hi;
           }
 
-          // زوم حول نقطهٔ زیر موس
-          const relY = (e.clientY - rect.top) / Math.max(1, rect.height);
+          // زوم حول قیمت زیر موس
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          const factor = e.deltaY < 0 ? 0.85 : 1.18; // in / out
-          const newRange = (pTop - pBot) * factor;
-          const minRange = Math.max(Math.abs(priceAtCursor) * 0.00005, 0.5);
-          const range = Math.max(newRange, minRange);
-          const above = (pTop - priceAtCursor) / (pTop - pBot);
-          const below = 1 - above;
-          const newTop = priceAtCursor + range * above;
-          const newBot = priceAtCursor - range * below;
-
+          const factor = e.deltaY < 0 ? 0.82 : 1.22;
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00008 + 0.5);
+          const aboveRatio = (pTop - priceAtCursor) / (pTop - pBot);
+          const newTop = priceAtCursor + newRange * aboveRatio;
+          const newBot = priceAtCursor - newRange * (1 - aboveRatio);
+          priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
-            if (typeof ps.setVisibleRange === "function") {
-              ps.setVisibleRange({ from: newBot, to: newTop });
-            } else {
-              // fallback: scaleMargins
-              const bars = candlesRef.current;
-              let dataLo = Infinity, dataHi = -Infinity;
-              for (const c of bars.slice(-200)) {
-                if (c.low < dataLo) dataLo = c.low;
-                if (c.high > dataHi) dataHi = c.high;
-              }
-              if (dataHi > dataLo) {
-                const padTop = Math.max(0.02, Math.min(0.45, (dataHi - newTop) / (dataHi - dataLo + range)));
-                const padBot = Math.max(0.02, Math.min(0.45, (newBot - dataLo) / (dataHi - dataLo + range)));
-                ps.applyOptions({ scaleMargins: { top: padTop, bottom: padBot } });
-              }
-            }
+            const ps = s.priceScale?.() || chart.priceScale("right");
+            ps?.setAutoScale?.(true);
+            ps?.applyOptions?.({ autoScale: true });
+          } catch {}
+        };
+        // دابل‌کلیک روی محور قیمت = ریست به autoScale
+        const onDblPrice = (e: MouseEvent) => {
+          const rect = container.getBoundingClientRect();
+          const fromRight = rect.right - e.clientX;
+          if (fromRight > 80 || fromRight < 0) return;
+          priceRangeOverrideRef.current = null;
+          try {
+            const s = seriesRef.current as any;
+            const ps = s?.priceScale?.() || chart.priceScale("right");
+            ps?.setAutoScale?.(true);
+            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
           } catch {}
         };
         container.addEventListener("wheel", onWheelPrice, { passive: false });
+        container.addEventListener("dblclick", onDblPrice);
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
+          try { container.removeEventListener("dblclick", onDblPrice); } catch {}
           try { if (typeof prevCleanup === "function") prevCleanup(); } catch {}
         };
       } catch {}
