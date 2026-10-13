@@ -545,9 +545,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 300;
+const FUTURE_BARS = 120;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 60;
+const FUTURE_VISIBLE = 40;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1616,7 +1616,7 @@ export default function DashboardPage() {
     try {
       const fetchRows = async () => {
         const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=500`
+          `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(fetchIv)}&limit=250`
         );
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
@@ -1665,8 +1665,33 @@ export default function DashboardPage() {
         try {
           const chart = chartRef.current;
           const series = seriesRef.current;
+
+          // 1) Paint candles FIRST so TF switch feels instant
+          series.applyOptions({
+            priceFormat: { type: "price", precision, minMove },
+          });
+          series.setData(appendFutureWhitespace(candles, fetchIv) as any);
+          chart.applyOptions({
+            localization: makeLocalization(tz),
+            timeScale: {
+              secondsVisible: isIntraday,
+              tickMarkFormatter: makeTickMarkFormatter(tz) as any,
+            },
+          });
+          try {
+            const bars = candles.length;
+            if (bars >= 2) {
+              chart.timeScale().applyOptions({ rightOffset: 4 });
+              const past = Math.min(70, bars);
+              chart.timeScale().setVisibleLogicalRange({
+                from: bars - past,
+                to: bars - 1 + FUTURE_VISIBLE,
+              });
+            }
+          } catch {}
+
+          // 2) Then clear overlays (chart already shows new TF candles)
           clearPreview();
-          // Remove overlay price-lines & drawn line series (will re-add below)
           try {
             if (lastPriceLineRef.current) {
               series.removePriceLine(lastPriceLineRef.current);
@@ -1680,7 +1705,6 @@ export default function DashboardPage() {
           chartLinesRef.current.forEach((s) => {
             try {
               if (s && typeof s === "object" && "applyOptions" in s) {
-                // line series
                 try { chart.removeSeries(s); } catch {
                   try { series.removePriceLine(s); } catch {}
                 }
@@ -1690,7 +1714,6 @@ export default function DashboardPage() {
             } catch {}
           });
           chartLinesRef.current.clear();
-          // Drop indicator series so rebuildIndicators recreates them cleanly
           try {
             if (smaSeriesRef.current) {
               const { s1, s2, s3 } = smaSeriesRef.current;
@@ -1730,28 +1753,6 @@ export default function DashboardPage() {
             }
           } catch {}
 
-          series.applyOptions({
-            priceFormat: { type: "price", precision, minMove },
-          });
-          series.setData(appendFutureWhitespace(candles, fetchIv) as any);
-          chart.applyOptions({
-            localization: makeLocalization(tz),
-            timeScale: {
-              secondsVisible: isIntraday,
-              tickMarkFormatter: makeTickMarkFormatter(tz) as any,
-            },
-          });
-          try {
-            const bars = candles.length;
-            if (bars >= 2) {
-              chart.timeScale().applyOptions({ rightOffset: 4 });
-              const past = Math.min(70, bars);
-              chart.timeScale().setVisibleLogicalRange({
-                from: bars - past,
-                to: bars - 1 + FUTURE_VISIBLE,
-              });
-            }
-          } catch {}
           if (gen !== loadGenRef.current) return;
           renderAllLinesAndAlarms();
           rebuildIndicators();
@@ -3219,54 +3220,106 @@ export default function DashboardPage() {
     if (!series) return;
     try {
       const res = await fetch(
-        `/api/kline?symbol=${symbolRef.current}&interval=${intervalRef.current}&limit=3`
+        `/api/kline?symbol=${encodeURIComponent(symbolRef.current)}&interval=${encodeURIComponent(String(intervalRef.current))}&limit=5`,
+        { cache: "no-store" }
       );
+      if (!res.ok) return;
       const raw = await res.json();
       const rows: any[] = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       if (!rows.length) return;
       const fresh = parseKlineRows(rows);
       if (!fresh.length) return;
 
-      const candles = candlesRef.current;
+      const candles = candlesRef.current.slice(); // copy
       let addedNew = false;
+      let changed = false;
       for (const c of fresh) {
-        const idx = candles.findIndex((x: any) => x.time === c.time);
+        const idx = candles.findIndex((x: any) => Number(x.time) === Number(c.time));
         if (idx >= 0) {
-          candles[idx] = c;
-          try { series.update(c as any); } catch {}
-        } else if (!candles.length || c.time > candles[candles.length - 1].time) {
+          const prev = candles[idx];
+          if (
+            prev.close !== c.close ||
+            prev.high !== c.high ||
+            prev.low !== c.low ||
+            prev.open !== c.open ||
+            prev.volume !== c.volume
+          ) {
+            candles[idx] = c;
+            changed = true;
+          }
+        } else if (!candles.length || Number(c.time) > Number(candles[candles.length - 1].time)) {
           candles.push(c);
           addedNew = true;
-          try { series.update(c as any); } catch {}
+          changed = true;
         }
       }
+      if (!changed) {
+        // still refresh axis label countdown
+        const last = candles[candles.length - 1];
+        if (last) applyLastPriceLabel();
+        return last ? { last, high: last.high, low: last.low } : null;
+      }
       candlesRef.current = candles;
-      // فقط هر چند کندل یک‌بار whitespace را بازسازی کن تا چارت گیر نکند
+
+      // Whitespace bars use future times — series.update() on a new bar often fails
+      // because that time already exists as empty whitespace. Always setData on new bar.
+      const chart = chartRef.current;
+      let lr: { from: number; to: number } | null = null;
+      try {
+        const r = chart?.timeScale().getVisibleLogicalRange();
+        if (r) lr = { from: r.from, to: r.to };
+      } catch {}
+
       if (addedNew) {
-        const n = (refreshLiveCandles as any)._newBarCount = ((refreshLiveCandles as any)._newBarCount || 0) + 1;
-        if (n % 5 === 0) {
-          try {
-            const chart = chartRef.current;
-            let lr: { from: number; to: number } | null = null;
-            try {
-              const r = chart?.timeScale().getVisibleLogicalRange();
-              if (r) lr = { from: r.from, to: r.to };
-            } catch {}
-            series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-            if (lr && chart) {
+        try {
+          series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+          if (lr && chart) {
+            // Keep view anchored; nudge right edge if user was near the end
+            const nearEnd = lr.to >= (candles.length - 1 + FUTURE_VISIBLE) - 8;
+            if (nearEnd) {
+              const bars = candles.length;
+              chart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, bars - (lr.to - lr.from)),
+                to: bars - 1 + FUTURE_VISIBLE,
+              });
+            } else {
               try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
             }
+          }
+        } catch {}
+      } else {
+        // Same bars — update last few in place (fast path)
+        const tail = fresh.slice(-3);
+        for (const c of tail) {
+          try { series.update(c as any); } catch {
+            // fallback if update rejects (e.g. whitespace collision)
+            try {
+              series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+              if (lr && chart) {
+                try { chart.timeScale().setVisibleLogicalRange(lr); } catch {}
+              }
+            } catch {}
+            break;
+          }
+        }
+        // volume series live tip
+        if (volumeSeriesRef.current && candles.length) {
+          const last = candles[candles.length - 1];
+          try {
+            volumeSeriesRef.current.update({
+              time: last.time as any,
+              value: last.volume || 0,
+              color: last.close >= last.open ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
+            });
           } catch {}
         }
       }
 
       const last = candles[candles.length - 1];
       if (last) {
-        // Avoid React re-render every tick — only push state when values actually change
         setLastBarClose((prev) => (prev === last.close ? prev : last.close));
         setLastBarTime((prev) => (prev === last.time ? prev : last.time));
         applyLastPriceLabel();
-        // فقط قیمت را برگردان — prev را اینجا عوض نکن (باگ cross)
         return { last, high: last.high, low: last.low };
       }
     } catch {}
@@ -3451,11 +3504,11 @@ export default function DashboardPage() {
     };
     tick();
     // کندل سریع‌تر؛ همگام‌سازی آلارم از DB کمی آهسته‌تر تا چارت گیر نکند
-    // 1.5s is enough for live feel; 1s + setState was freezing iPad/desktop
+    // 1s live tip — setData only on new bar; update() for same bar
     const idCandle = window.setInterval(async () => {
       if (!alive) return;
       try { await refreshLiveCandles(); } catch {}
-    }, 1500);
+    }, 1000);
     const id = window.setInterval(tick, 4000);
     return () => {
       alive = false;
