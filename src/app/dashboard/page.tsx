@@ -1637,41 +1637,16 @@ export default function DashboardPage() {
         const raw = await res.json();
         return Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
       };
-      // Paginate: Binance max 1000/request → up to 4 pages (~4000 bars) before first paint
-      const PAGE = 1000;
-      const PAGES = 4;
-      let rows: any[] = await fetchRows(PAGE);
+      // FAST first paint: one request only (max 1000). More history loads in background after paint.
+      let rows: any[] = await fetchRows(1000);
       if (gen !== loadGenRef.current) return;
       if (!rows.length) {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 250));
         if (gen !== loadGenRef.current) return;
-        rows = await fetchRows(PAGE);
+        rows = await fetchRows(1000);
       }
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
-      // Older pages (endTime = oldest open time in seconds)
-      for (let p = 1; p < PAGES; p++) {
-        if (gen !== loadGenRef.current) return;
-        const times = rows.map((r: any) =>
-          Math.floor(Number(r.time || r[0] || r.openTime || r.t) / (String(r.time || r[0] || "").length > 12 ? 1000 : 1))
-        ).filter((t: number) => t > 0);
-        if (!times.length) break;
-        const oldest = Math.min(...times);
-        const older = await fetchRows(PAGE, oldest - 1);
-        if (gen !== loadGenRef.current) return;
-        if (!Array.isArray(older) || !older.length) break;
-        const seen = new Set(times);
-        let added = 0;
-        for (const r of older) {
-          const t = Math.floor(Number(r.time || r[0] || r.openTime || r.t) / (String(r.time || r[0] || "").length > 12 ? 1000 : 1));
-          if (t > 0 && !seen.has(t)) {
-            rows.push(r);
-            seen.add(t);
-            added++;
-          }
-        }
-        if (added < 10) break; // no meaningful older data
-      }
 
       const candles = rows
         .map((r: any) => {
@@ -1708,11 +1683,18 @@ export default function DashboardPage() {
           const chart = chartRef.current;
           const series = seriesRef.current;
 
-          // 1) Paint candles FIRST so TF switch feels instant
+          // 1) Paint candles FIRST so TF/symbol switch feels instant
           series.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
           series.setData(appendFutureWhitespace(candles, fetchIv) as any);
+          // Reset price scale so new symbol (e.g. ETH after BTC) does not keep old 0–85000 range
+          try {
+            series.priceScale().applyOptions({ autoScale: true });
+          } catch {}
+          try {
+            chart.priceScale("right").applyOptions({ autoScale: true });
+          } catch {}
           chart.applyOptions({
             localization: makeLocalization(tz),
             timeScale: {
@@ -1806,6 +1788,51 @@ export default function DashboardPage() {
           rebuildIndicators();
           applyLastPriceLabel();
           setStatusMsg("");
+
+          // Background: add older history (does not block UI; skip if user already switched away)
+          void (async () => {
+            try {
+              const myGen = gen;
+              let all = candles.slice();
+              for (let p = 0; p < 2; p++) {
+                if (myGen !== loadGenRef.current) return;
+                const oldest = all[0]?.time;
+                if (!oldest) break;
+                const olderRaw = await fetchRows(1000, oldest - 1);
+                if (myGen !== loadGenRef.current) return;
+                if (!Array.isArray(olderRaw) || !olderRaw.length) break;
+                const mapped = olderRaw
+                  .map((r: any) => {
+                    const time = Math.floor(
+                      Number(r.time || r[0] || r.openTime || r.t) /
+                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+                    );
+                    return {
+                      time,
+                      open: parseFloat(r.open ?? r[1]),
+                      high: parseFloat(r.high ?? r[2]),
+                      low: parseFloat(r.low ?? r[3]),
+                      close: parseFloat(r.close ?? r[4]),
+                      volume: parseFloat(r.volume ?? r[5] ?? 0),
+                    };
+                  })
+                  .filter((c: any) => c.time && !Number.isNaN(c.close));
+                const seen = new Set(all.map((c) => c.time));
+                const extra = mapped.filter((c: any) => !seen.has(c.time));
+                if (extra.length < 10) break;
+                all = [...extra, ...all].sort((a, b) => a.time - b.time);
+              }
+              if (myGen !== loadGenRef.current) return;
+              if (all.length <= candles.length) return;
+              // Only update data — never touch visible range (avoids jump)
+              candlesRef.current = all;
+              if (seriesRef.current) {
+                seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
+                try { rebuildIndicators(); } catch {}
+                try { renderAllLinesAndAlarms(); } catch {}
+              }
+            } catch {}
+          })();
 
           return; // done — no destroy, no recreate
         } catch (softErr) {
@@ -3834,13 +3861,21 @@ export default function DashboardPage() {
 
   const enablePushNotifications = async () => {
     setPushStatus("idle");
+    setStatusMsg("Enabling notifications…");
     const result = await ensurePushSubscription();
     setPushStatus(result);
-    if (result === "ok") setStatusMsg("Push notifications enabled");
-    else if (result === "denied") setStatusMsg("Notification permission denied");
-    else if (result === "no-key") setStatusMsg("Missing VAPID key — see setup");
-    else if (result === "unsupported") setStatusMsg("Push not supported on this browser");
-    else setStatusMsg("Push setup failed");
+    if (result === "ok") {
+      setStatusMsg("Push notifications ON");
+      // Confirm to user (and wake iOS notification permission UX)
+      try {
+        showLocalNotification("Alarm Chart", "Notifications enabled — you will get alerts when lines/alarms hit");
+      } catch {}
+    } else if (result === "denied") {
+      setStatusMsg("Permission denied — iPad: Settings → [App] → Notifications → Allow");
+    } else if (result === "no-key") setStatusMsg("Missing VAPID key — see setup");
+    else if (result === "unsupported") {
+      setStatusMsg("Add to Home Screen first (iPad Safari Share → Add to Home Screen)");
+    } else setStatusMsg("Push setup failed — check /public/sw.js and VAPID keys");
   };
 
   const disablePushNotifications = async () => {
@@ -3963,7 +3998,8 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-        </div>
+
+                  </div>
       </div>
 
       <div className="flex gap-2">
@@ -4386,6 +4422,13 @@ export default function DashboardPage() {
             className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
             style={{ height: 640 }}
           />
+          {statusMsg === "Loading..." && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
+              <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
+                Loading…
+              </div>
+            </div>
+          )}
           {/* Hollow circle handles for diagonal Move — overlay on chart */}
           <div
             ref={handleAElRef}
