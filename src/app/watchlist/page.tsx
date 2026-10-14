@@ -225,12 +225,12 @@ function MiniChart({
           `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=60`
         );
         const json = await res.json();
-        const list = json?.data;
+        const list = Array.isArray(json) ? json : json?.data || json?.result?.list || [];
         if (!list?.length) return;
         const rows = list.map((item: any) => ({
-          time: item.time,
-          value: item.value ?? item.close,
-        }));
+          time: typeof item.time === "number" ? item.time : Math.floor(Number(item[0] || item.time) / (Number(item[0]) > 1e12 ? 1000 : 1)),
+          value: Number(item.value ?? item.close ?? item[4]),
+        })).filter((r: any) => r.time && Number.isFinite(r.value));
         series.setData(rows as any);
         chart.timeScale().fitContent();
       } catch {}
@@ -333,7 +333,7 @@ function DetailChart({
           `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=200`
         );
         const json = await res.json();
-        const list = json?.data;
+        const list = Array.isArray(json) ? json : json?.data || json?.result?.list || [];
         if (!list?.length || cancelled) return;
 
         if (lineMode && lineRef.current) {
@@ -772,6 +772,26 @@ export default function WatchlistPage() {
   const itemsRef = useRef<WatchItem[]>([]);
   const offsetRef = useRef({ x: 0, y: 0 });
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // کلیک بیرون از سرچ → بستن
+  useEffect(() => {
+    if (!showSearch) return;
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest?.("[data-search-root]")) return;
+      if (t.closest?.("[data-search-btn]")) return;
+      setShowSearch(false);
+      setSearchQuery("");
+      setSearchHits([]);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [showSearch]);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1000,15 +1020,14 @@ export default function WatchlistPage() {
 
   const inList = (sym: string, exchange?: string) => {
     const key = storageSymbol(sym, exchange);
-    return items.some((i) => i.symbol === key || bareSymbol(i.symbol) === bareSymbol(key));
+    // فقط همان نماد+صرافی — نه همهٔ AVAXها
+    return items.some((i) => i.symbol === key);
   };
 
   const toggleSymbol = async (sym: string, exchange?: string) => {
     if (!activeListId) return;
     const key = storageSymbol(sym, exchange);
-    const existing = items.find(
-      (i) => i.symbol === key || bareSymbol(i.symbol) === bareSymbol(key)
-    );
+    const existing = items.find((i) => i.symbol === key);
     setSaving(true);
     if (existing) {
       await supabase.from("watchlist_items").delete().eq("id", existing.id);
@@ -1149,8 +1168,12 @@ export default function WatchlistPage() {
           onClick={() => setShowSearch((v) => !v)}
           className="w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10"
           title="Search symbols"
+          data-search-btn
         >
-          🔍
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
         </button>
 
         <div className="flex-1" />
@@ -1362,13 +1385,17 @@ export default function WatchlistPage() {
                       disabled={saving}
                       onClick={() => toggleSymbol(hit.symbol, hit.exchange)}
                       title={added ? "Remove from list" : "Add to list"}
-                      className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${
+                      className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors ${
                         added || flash
-                          ? "bg-green-600 text-white hover:bg-red-600"
-                          : "bg-gray-700 text-gray-200 hover:bg-orange-500"
+                          ? "bg-green-500/20 text-green-400 border border-green-500/50 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/50"
+                          : "bg-gray-800 text-gray-200 border border-gray-600 hover:bg-orange-500 hover:border-orange-400 hover:text-black"
                       }`}
                     >
-                      {added || flash ? "✓" : "+"}
+                      {added || flash ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                      )}
                     </button>
                   </div>
                 );
@@ -1408,11 +1435,6 @@ export default function WatchlistPage() {
                     <CoinIcon symbol={bareSymbol(item.symbol)} size={26} />
                     <div className="min-w-0">
                       <div className="font-semibold text-sm truncate">{bareSymbol(item.symbol)}</div>
-                      {storedExchange(item.symbol) && (
-                        <div className="text-[10px] text-gray-500 truncate leading-tight">
-                          {storedExchange(item.symbol)}
-                        </div>
-                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
@@ -1596,11 +1618,6 @@ export default function WatchlistPage() {
                         <div className="font-medium text-sm truncate">
                           {bareSymbol(item.symbol)}
                         </div>
-                        {storedExchange(item.symbol) && (
-                          <div className="text-[10px] text-gray-500 truncate leading-tight">
-                            {storedExchange(item.symbol)}
-                          </div>
-                        )}
                       </div>
                       {item.note && (
                         <div className="text-gray-500 text-xs truncate">{item.note}</div>
