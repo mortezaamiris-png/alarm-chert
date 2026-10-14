@@ -1119,9 +1119,17 @@ export default function WatchlistPage() {
   }, [items, searchHits]);
 
   const loadLists = useCallback(async () => {
+    const { data: sess } = await supabase.auth.getSession();
+    const uid = sess?.session?.user?.id;
+    if (!uid) {
+      setLists([]);
+      listsRef.current = [];
+      return;
+    }
     const { data } = await supabase
       .from("watchlist_lists")
       .select("*")
+      .eq("user_id", uid)
       .order("created_at", { ascending: true });
     let rows = data || [];
     try {
@@ -1142,11 +1150,19 @@ export default function WatchlistPage() {
     } catch {}
     setLists(rows);
     listsRef.current = rows;
-    if (!activeListId && rows.length) setActiveListId(rows[0].id);
-    if (activeListId && !rows.find((r) => r.id === activeListId) && rows.length) {
+    let nextId = activeListId;
+    try {
+      const saved = loadLS(`wl_active_${uid}`, null as string | null);
+      if (saved && rows.find((r) => r.id === saved)) nextId = saved;
+    } catch {}
+    if (nextId && rows.find((r) => r.id === nextId)) {
+      setActiveListId(nextId);
+    } else if (rows.length) {
       setActiveListId(rows[0].id);
+    } else {
+      setActiveListId(null);
     }
-  }, [activeListId]);
+  }, []);
 
   const loadItems = useCallback(
     async (listId: string) => {
@@ -1176,9 +1192,25 @@ export default function WatchlistPage() {
       setActiveListId(null);
     }
   }, [user]);
+
+  // وقتی از چارت برمی‌گردی لیست‌ها دوباره لود شوند
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible" && user) loadLists();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [user]);
   useEffect(() => {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
+
+  useEffect(() => {
+    if (!user?.id || !activeListId) return;
+    try {
+      saveLS(`wl_active_${user.id}`, activeListId);
+    } catch {}
+  }, [user?.id, activeListId]);
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -1194,17 +1226,31 @@ export default function WatchlistPage() {
   const createList = async () => {
     if (!newListName.trim()) return;
     setSaving(true);
+    const { data: sess } = await supabase.auth.getSession();
+    const uid = sess?.session?.user?.id;
+    if (!uid) {
+      setSaving(false);
+      setAuthOpen(true);
+      return;
+    }
     const { data, error } = await supabase
       .from("watchlist_lists")
-      .insert([{ name: newListName.trim() }])
+      .insert([{ name: newListName.trim(), user_id: uid }])
       .select()
       .single();
     setSaving(false);
-    if (!error && data) {
+    if (error) {
+      console.error("createList", error);
+      return;
+    }
+    if (data) {
       setLists((prev) => [...prev, data]);
       setActiveListId(data.id);
       setNewListName("");
       setShowNewList(false);
+      try {
+        saveLS(`wl_active_${uid}`, data.id);
+      } catch {}
     }
   };
 
@@ -1236,7 +1282,12 @@ export default function WatchlistPage() {
     } else {
       const { data, error } = await supabase
         .from("watchlist_items")
-        .insert([{ list_id: activeListId, symbol: key, sort_order: items.length }])
+        .insert([{
+          list_id: activeListId,
+          symbol: key,
+          sort_order: items.length,
+          user_id: (await supabase.auth.getSession()).data.session?.user?.id,
+        }])
         .select()
         .single();
       if (!error && data) {
