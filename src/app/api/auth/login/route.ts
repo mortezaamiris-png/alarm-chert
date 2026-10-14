@@ -32,11 +32,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Login failed — no session" }, { status: 400 });
     }
 
+    // cookie برای AuthGate + session در body برای supabase کلاینت مرورگر
     const res = NextResponse.json({
       user: {
         id: data.user.id,
         email: data.user.email,
         user_metadata: data.user.user_metadata,
+      },
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
       },
     });
 
