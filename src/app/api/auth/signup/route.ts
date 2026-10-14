@@ -75,6 +75,12 @@ export async function POST(req: NextRequest) {
             user_metadata: data.user.user_metadata,
           }
         : null,
+      session: data.session
+        ? {
+            access_token: data.session.access_token,
+            refresh_token: data.session.refresh_token,
+          }
+        : null,
       needsEmailConfirm: !data.session && !!data.user,
       message: data.session
         ? "ok"
