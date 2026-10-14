@@ -259,6 +259,7 @@ function DetailChart({
   const lineRef = useRef<ISeriesApi<"Area"> | null>(null);
   const lastBarTimeRef = useRef<number | null>(null);
   const priceLineRef = useRef<any>(null);
+  const fittedRef = useRef(false);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -267,6 +268,7 @@ function DetailChart({
     lineRef.current = null;
     priceLineRef.current = null;
     lastBarTimeRef.current = null;
+    fittedRef.current = false;
 
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth,
@@ -280,8 +282,18 @@ function DetailChart({
         vertLines: { color: "#1f2937" },
         horzLines: { color: "#1f2937" },
       },
-      rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.12 } },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        rightOffset: 40,
+        barSpacing: 7,
+        minBarSpacing: 2,
+        fixLeftEdge: false,
+        fixRightEdge: false,
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
     chartRef.current = chart;
 
@@ -325,30 +337,48 @@ function DetailChart({
 
   useEffect(() => {
     let cancelled = false;
-    let fitted = false;
+
+    const FUTURE = 180;
+
+    const appendFuture = (candles: any[]) => {
+      if (!candles.length) return candles;
+      const barSec = intervalToSeconds(String(interval));
+      if (barSec <= 0) return candles;
+      const lastT = Number(candles[candles.length - 1].time);
+      const base = Math.floor(lastT / barSec) * barSec;
+      const out = candles.slice();
+      for (let i = 1; i <= FUTURE; i++) {
+        out.push({ time: (base + i * barSec) as any });
+      }
+      return out;
+    };
 
     const load = async (isFirst: boolean) => {
       try {
         const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=200`
+          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=500`
         );
         const json = await res.json();
         const list = Array.isArray(json) ? json : json?.data || json?.result?.list || [];
         if (!list?.length || cancelled) return;
 
         if (lineMode && lineRef.current) {
-          const rows = list.map((item: any) => ({
-            time: item.time,
-            value: item.value ?? item.close,
-          }));
+          const rows = list
+            .map((item: any) => ({
+              time: Number(item.time),
+              value: Number(item.value ?? item.close),
+            }))
+            .filter((r: any) => r.time && Number.isFinite(r.value));
+          if (!rows.length) return;
           const last = rows[rows.length - 1];
-          const lastVal = last?.value || 0;
+          const lastVal = last.value;
           const { precision, minMove } = getPrecision(lastVal);
           lineRef.current.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
+          // area series can't take empty whitespace the same way — pad with last value for axis only via rightOffset
           lineRef.current.setData(rows as any);
-          lastBarTimeRef.current = Number(last?.time) || null;
+          lastBarTimeRef.current = Number(last.time) || null;
 
           if (priceLineRef.current) {
             try {
@@ -366,19 +396,23 @@ function DetailChart({
             });
           }
         } else if (candleRef.current) {
-          const candles = list.map((item: any) => ({
-            time: item.time,
-            open: item.open,
-            high: item.high,
-            low: item.low,
-            close: item.close,
-          }));
+          const candles = list
+            .map((item: any) => ({
+              time: Number(item.time),
+              open: Number(item.open),
+              high: Number(item.high),
+              low: Number(item.low),
+              close: Number(item.close),
+            }))
+            .filter((c: any) => c.time && Number.isFinite(c.close));
+          if (!candles.length) return;
           const last = candles[candles.length - 1];
           const { precision, minMove } = getPrecision(last.close);
           candleRef.current.applyOptions({
             priceFormat: { type: "price", precision, minMove },
           });
-          candleRef.current.setData(candles as any);
+          const withFuture = appendFuture(candles);
+          candleRef.current.setData(withFuture as any);
           lastBarTimeRef.current = Number(last.time) || null;
 
           if (priceLineRef.current) {
@@ -399,9 +433,20 @@ function DetailChart({
           }
         }
 
-        if (isFirst && chartRef.current && !fitted) {
-          chartRef.current.timeScale().fitContent();
-          fitted = true;
+        if (isFirst && chartRef.current && !fittedRef.current) {
+          const bars = list.length;
+          const past = Math.min(80, bars);
+          try {
+            chartRef.current.timeScale().setVisibleLogicalRange({
+              from: Math.max(0, bars - past),
+              to: bars - 1 + Math.min(50, FUTURE * 0.4),
+            });
+          } catch {
+            try {
+              chartRef.current.timeScale().fitContent();
+            } catch {}
+          }
+          fittedRef.current = true;
         }
       } catch {}
     };
@@ -769,6 +814,7 @@ export default function WatchlistPage() {
   const [floatSize, setFloatSize] = useState<{ w: number; h: number }>({ w: 200, h: 56 });
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const dragIdRef = useRef<string | null>(null);
+  const dropTargetIdRef = useRef<string | null>(null);
   const itemsRef = useRef<WatchItem[]>([]);
   const offsetRef = useRef({ x: 0, y: 0 });
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -792,6 +838,23 @@ export default function WatchlistPage() {
       document.removeEventListener("touchstart", onDown);
     };
   }, [showSearch]);
+
+  useEffect(() => {
+    if (!listsMenuOpen) return;
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest?.("[data-lists-menu-root]")) return;
+      setListsMenuOpen(false);
+      setListMenuId(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [listsMenuOpen]);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1098,16 +1161,19 @@ export default function WatchlistPage() {
       });
       const under = document.elementFromPoint(e.clientX, e.clientY);
       const row = under?.closest?.("[data-item-id]") as HTMLElement | null;
-      setDropTargetId(row?.dataset?.itemId || null);
+      const tid = row?.dataset?.itemId || null;
+      dropTargetIdRef.current = tid;
+      setDropTargetId(tid);
     };
     const onUp = async () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       const fromId = dragIdRef.current;
-      const toId = dropTargetId;
+      const toId = dropTargetIdRef.current;
       setDraggingId(null);
       setFloatPos(null);
       setDropTargetId(null);
+      dropTargetIdRef.current = null;
       dragIdRef.current = null;
       if (!fromId || !toId || fromId === toId) return;
       const arr = [...itemsRef.current];
@@ -1200,59 +1266,84 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* List tabs */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        {lists.map((l) => (
-          <div key={l.id} className="relative flex items-center">
-            <button
-              type="button"
-              onClick={() => setActiveListId(l.id)}
-              className={`px-3 py-1.5 rounded-full text-sm ${
-                activeListId === l.id
-                  ? "bg-orange-500 text-white"
-                  : "bg-gray-800 text-gray-300"
-              }`}
-            >
-              {l.name}
-            </button>
-            <div
-              data-menu-root
-              onPointerDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setListMenuId((prev) => (prev === l.id ? null : l.id));
-              }}
-              className="ml-0.5 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-pointer"
-              title="List menu"
-            >
-              ⋮⋮
-            </div>
-            {listMenuId === l.id && (
-              <div
-                className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
-                onClick={(e) => e.stopPropagation()}
-              >
+      {/* My List — parent; lists expand under it */}
+      <div className="mb-3" data-lists-menu-root>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setListsMenuOpen((v) => !v)}
+            className="px-3 py-1.5 rounded-full text-sm bg-orange-500 text-white font-medium inline-flex items-center gap-1.5"
+          >
+            My List
+            <span className={`text-[10px] transition-transform ${listsMenuOpen ? "rotate-180" : ""}`}>▼</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowNewList(!showNewList)}
+            className="px-3 py-1.5 rounded-full text-sm bg-gray-800 text-gray-300 hover:bg-gray-700"
+          >
+            + New list
+          </button>
+          {activeListId && (
+            <span className="text-xs text-gray-500">
+              {lists.find((l) => l.id === activeListId)?.name || ""}
+            </span>
+          )}
+        </div>
+        {listsMenuOpen && (
+          <div className="mt-2 ml-1 flex flex-col gap-1 max-w-xs">
+            {lists.map((l) => (
+              <div key={l.id} className="relative flex items-center group">
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteList(l.id);
+                  onClick={() => {
+                    setActiveListId(l.id);
+                    setListsMenuOpen(false);
                   }}
-                  className="w-full text-left px-3 py-2.5 text-sm text-red-400 hover:bg-gray-800"
+                  className={`flex-1 text-left px-3 py-2 rounded-lg text-sm ${
+                    activeListId === l.id
+                      ? "bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                      : "bg-gray-900 text-gray-300 border border-gray-800 hover:bg-gray-800"
+                  }`}
                 >
-                  Delete list
+                  {l.name}
                 </button>
+                <div
+                  data-menu-root
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setListMenuId((prev) => (prev === l.id ? null : l.id));
+                  }}
+                  className="ml-1 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-pointer"
+                  title="List menu"
+                >
+                  ⋮
+                </div>
+                {listMenuId === l.id && (
+                  <div
+                    className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteList(l.id);
+                      }}
+                      className="w-full text-left px-3 py-2.5 text-sm text-red-400 hover:bg-gray-800"
+                    >
+                      Delete list
+                    </button>
+                  </div>
+                )}
               </div>
+            ))}
+            {!lists.length && (
+              <p className="text-xs text-gray-500 px-2 py-1">No lists yet — create one</p>
             )}
           </div>
-        ))}
-        <button
-          type="button"
-          onClick={() => setShowNewList(!showNewList)}
-          className="px-3 py-1.5 rounded-full text-sm bg-gray-800 text-gray-300"
-        >
-          + New list
-        </button>
+        )}
       </div>
 
       {showNewList && (
@@ -1698,6 +1789,7 @@ export default function WatchlistPage() {
       {/* Floating drag ghost */}
       {draggingId && floatPos && (
         <div
+          id="wl-drag-ghost"
           className="fixed z-[100] pointer-events-none opacity-90 shadow-2xl rounded-xl border border-orange-500/50 bg-gray-900"
           style={{
             left: floatPos.x,
