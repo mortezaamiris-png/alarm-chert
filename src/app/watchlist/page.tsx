@@ -777,6 +777,7 @@ export default function WatchlistPage() {
   const router = useRouter();
   const [lists, setLists] = useState<WatchList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
+  const [listsMenuOpen, setListsMenuOpen] = useState(false);
   const [items, setItems] = useState<WatchItem[]>([]);
   const [newListName, setNewListName] = useState("");
   const [showNewList, setShowNewList] = useState(false);
