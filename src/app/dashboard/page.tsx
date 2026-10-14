@@ -1006,9 +1006,15 @@ export default function DashboardPage() {
     return Array.from(set);
   }, [alarms]);
   const alarmSymbols = useMemo(() => {
-    const set = new Set(alarmSymbolsRaw);
-    const ordered = sideOrder.filter((s) => set.has(s));
-    const rest = alarmSymbolsRaw.filter((s) => !ordered.includes(s)).sort();
+    const set = new Set(alarmSymbolsRaw.map((s) => chartSymbol(s)));
+    const ordered = sideOrder
+      .map((s) => chartSymbol(s))
+      .filter((s) => set.has(s));
+    const rest = alarmSymbolsRaw
+      .map((s) => chartSymbol(s))
+      .filter((s) => !ordered.includes(s))
+      .sort();
+    // فقط نمادهایی که واقعاً آلارم فعال همین یوزر دارند
     return [...ordered, ...rest];
   }, [alarmSymbolsRaw, sideOrder]);
 
@@ -2075,8 +2081,17 @@ export default function DashboardPage() {
         });
         // iPad/Safari: allow horizontal pan on chart body
         container.style.touchAction = "pan-x pan-y";
-        container.style.webkitUserSelect = "none";
+        (container.style as any).webkitUserSelect = "none";
         (container.style as any).userSelect = "none";
+        // اطمینان از باز بودن اسکرول لمسی
+        chart.applyOptions({
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+          },
+        });
       } catch {}
       const series = chart.addCandlestickSeries({
         upColor: "#22c55e", downColor: "#ef4444",
@@ -2262,10 +2277,11 @@ export default function DashboardPage() {
           priceTouchActive = false;
           priceTouchRange = null;
         };
-        container.addEventListener("touchstart", onTouchStartPrice, { passive: true, capture: true });
-        container.addEventListener("touchmove", onTouchMovePrice, { passive: false, capture: true });
-        container.addEventListener("touchend", onTouchEndPrice, { capture: true });
-        container.addEventListener("touchcancel", onTouchEndPrice, { capture: true });
+        // بدون capture تا LWC اول pan افقی را بگیرد؛ زوم قیمت فقط روی محور راست
+        container.addEventListener("touchstart", onTouchStartPrice, { passive: true });
+        container.addEventListener("touchmove", onTouchMovePrice, { passive: false });
+        container.addEventListener("touchend", onTouchEndPrice);
+        container.addEventListener("touchcancel", onTouchEndPrice);
 
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
@@ -3603,12 +3619,22 @@ export default function DashboardPage() {
     rebuildIndicators,
   ]);
 
-  useEffect(() => {
-    (async () => {
+  const loadUserScopedData = useCallback(async () => {
+    try {
       const { data: sessA } = await supabase.auth.getSession();
       const uidA = sessA?.session?.user?.id;
-      if (!uidA) return;
-      const { data: a } = await supabase.from("alarms").select("*").eq("user_id", uidA).order("created_at", { ascending: false });
+      if (!uidA) {
+        setAlarms([]);
+        setLines([]);
+        setWatchLists([]);
+        setWatchItems([]);
+        return;
+      }
+      const { data: a } = await supabase
+        .from("alarms")
+        .select("*")
+        .eq("user_id", uidA)
+        .order("created_at", { ascending: false });
       if (a) {
         setAlarms(
           (a as Alarm[]).map((row) => {
@@ -3632,8 +3658,14 @@ export default function DashboardPage() {
             return row;
           })
         );
+      } else {
+        setAlarms([]);
       }
-      const { data: l } = await supabase.from("chart_lines").select("*").eq("user_id", uidA).order("created_at", { ascending: false });
+      const { data: l } = await supabase
+        .from("chart_lines")
+        .select("*")
+        .eq("user_id", uidA)
+        .order("created_at", { ascending: false });
       if (l) {
         setLines(
           (l as ChartLine[]).map((row) => {
@@ -3655,25 +3687,52 @@ export default function DashboardPage() {
             return row;
           })
         );
+      } else {
+        setLines([]);
       }
-      // فقط واچ‌لیست‌های همین یوزر
       const { data: wl } = await supabase
         .from("watchlist_lists")
         .select("*")
         .eq("user_id", uidA)
         .order("created_at", { ascending: true });
-      if (wl) setWatchLists(wl as WatchList[]);
-      else setWatchLists([]);
+      setWatchLists((wl as WatchList[]) || []);
       const { data: wi } = await supabase
         .from("watchlist_items")
         .select("*")
         .eq("user_id", uidA)
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: true });
-      if (wi) setWatchItems(wi as WatchItem[]);
-      else setWatchItems([]);
-    })();
+      setWatchItems((wi as WatchItem[]) || []);
+    } catch (e) {
+      console.error("loadUserScopedData", e);
+    }
   }, []);
+
+  useEffect(() => {
+    loadUserScopedData();
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (
+        event === "SIGNED_IN" ||
+        event === "TOKEN_REFRESHED" ||
+        event === "INITIAL_SESSION" ||
+        event === "USER_UPDATED"
+      ) {
+        loadUserScopedData();
+      }
+      if (event === "SIGNED_OUT") {
+        setAlarms([]);
+        setLines([]);
+        setWatchLists([]);
+        setWatchItems([]);
+        setSideOrder([]);
+      }
+    });
+    return () => {
+      try {
+        sub.subscription.unsubscribe();
+      } catch {}
+    };
+  }, [loadUserScopedData]);
 
   // Refresh watchlist items periodically (in case user edits on Watchlist page)
   useEffect(() => {
