@@ -2032,6 +2032,23 @@ export default function DashboardPage() {
         height: container.clientHeight || 640,
       });
       chartRef.current = chart;
+      try {
+        chart.applyOptions({
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+          },
+          handleScale: {
+            axisPressedMouseMove: { time: true, price: true },
+            axisDoubleClickReset: { time: true, price: true },
+            mouseWheel: true,
+            pinch: true,
+          },
+        });
+        container.style.touchAction = "manipulation";
+      } catch {}
       const series = chart.addCandlestickSeries({
         upColor: "#22c55e", downColor: "#ef4444",
         borderUpColor: "#22c55e", borderDownColor: "#ef4444",
@@ -2357,7 +2374,7 @@ export default function DashboardPage() {
         } catch {}
         // Only block touch-pan on the chart canvas — rest of app stays usable
         try {
-          container.style.touchAction = lock ? "none" : "";
+          container.style.touchAction = lock ? "none" : "manipulation";
         } catch {}
         // Always clear any leftover full-page locks from older builds
         try {
