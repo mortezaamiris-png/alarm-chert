@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 export default function AuthGate({
   children,
@@ -14,15 +15,42 @@ export default function AuthGate({
 
   useEffect(() => {
     setPath(typeof window !== "undefined" ? window.location.pathname : "/");
+    let mounted = true;
     (async () => {
       try {
-        const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+        // همگام‌سازی cookie → supabase client
+        const res = await fetch("/api/auth/session", { credentials: "same-origin" });
         const json = await res.json();
-        setUser(json.user ?? null);
+        if (json?.session?.access_token && json?.session?.refresh_token) {
+          try {
+            await supabase.auth.setSession({
+              access_token: json.session.access_token,
+              refresh_token: json.session.refresh_token,
+            });
+          } catch {}
+        }
+        if (mounted) setUser(json?.user ?? null);
+
+        if (!json?.user) {
+          const { data } = await supabase.auth.getSession();
+          if (mounted) setUser(data.session?.user ? { id: data.session.user.id } : null);
+        }
       } catch {
-        setUser(null);
+        if (mounted) setUser(null);
       }
     })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      if (!mounted) return;
+      setUser(session?.user ? { id: session.user.id } : null);
+    });
+
+    return () => {
+      mounted = false;
+      try {
+        sub.subscription.unsubscribe();
+      } catch {}
+    };
   }, []);
 
   const publicPath = allowHome && (path === "/" || path === "");
