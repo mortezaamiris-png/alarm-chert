@@ -64,6 +64,13 @@ interface WatchItem {
 /** Built-in side-panel view: symbols that currently have active alarms */
 const SIDE_VIEW_ALARMS = "__alarms__";
 
+/** BTCUSDT@BINANCE → BTCUSDT (برای API و نمایش) */
+function chartSymbol(sym: string): string {
+  if (!sym) return "";
+  return String(sym).split("@")[0].toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+
 type ToolMode =
   | "none"
   | "draw"
@@ -994,7 +1001,7 @@ export default function DashboardPage() {
   const alarmSymbolsRaw = useMemo(() => {
     const set = new Set<string>();
     alarms.forEach((a) => {
-      if (a.is_active && !a.triggered) set.add(a.symbol.toUpperCase());
+      if (a.is_active && !a.triggered) set.add(chartSymbol(a.symbol));
     });
     return Array.from(set);
   }, [alarms]);
@@ -1011,7 +1018,7 @@ export default function DashboardPage() {
     const listItems = watchItems
       .filter((i) => i.list_id === sideViewId)
       .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
-    return listItems.map((i) => i.symbol.toUpperCase());
+    return listItems.map((i) => chartSymbol(i.symbol));
   }, [sideViewId, alarmSymbols, watchItems]);
 
   const sideViewLabel = useMemo(() => {
@@ -1114,7 +1121,7 @@ export default function DashboardPage() {
       });
     } catch {}
     try {
-      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     } catch {}
@@ -1702,7 +1709,7 @@ export default function DashboardPage() {
     priceSeedCountRef.current = {};
     priceRangeOverrideRef.current = null;
     const gen = ++loadGenRef.current;
-    const fetchSym = symbolRef.current;
+    const fetchSym = chartSymbol(symbolRef.current);
     const fetchIv = String(intervalRef.current);
     // فقط اگر چارت هنوز ساخته نشده Loading بزرگ نشان بده (جلوگیری از چشمک هنگام عوض TF)
     if (!chartRef.current || !seriesRef.current) {
@@ -1801,10 +1808,29 @@ export default function DashboardPage() {
             chart.priceScale("right").applyOptions({ autoScale: true });
           } catch {}
 
-          // Symbol change: fit once (no scrollToRealTime — آن باعث آهنربا می‌شد)
+          // Symbol change: force fresh price scale + show latest candles
           if (symbolChanged) {
             try {
+              series.priceScale().applyOptions({ autoScale: true });
+              chart.priceScale("right").applyOptions({ autoScale: true });
               chart.timeScale().fitContent();
+              const bars = candles.length;
+              if (bars >= 2) {
+                programmaticRangeRef.current = true;
+                chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
+                const past = Math.min(80, bars);
+                chart.timeScale().setVisibleLogicalRange({
+                  from: bars - past,
+                  to: bars - 1 + FUTURE_VISIBLE,
+                });
+                requestAnimationFrame(() => {
+                  try {
+                    series.priceScale().applyOptions({ autoScale: true });
+                    chart.priceScale("right").applyOptions({ autoScale: true });
+                  } catch {}
+                  programmaticRangeRef.current = false;
+                });
+              }
             } catch {}
           }
           chart.applyOptions({
@@ -2047,7 +2073,10 @@ export default function DashboardPage() {
             pinch: true,
           },
         });
-        container.style.touchAction = "manipulation";
+        // iPad/Safari: allow horizontal pan on chart body
+        container.style.touchAction = "pan-x pan-y";
+        container.style.webkitUserSelect = "none";
+        (container.style as any).userSelect = "none";
       } catch {}
       const series = chart.addCandlestickSeries({
         upColor: "#22c55e", downColor: "#ef4444",
@@ -2374,7 +2403,7 @@ export default function DashboardPage() {
         } catch {}
         // Only block touch-pan on the chart canvas — rest of app stays usable
         try {
-          container.style.touchAction = lock ? "none" : "manipulation";
+          container.style.touchAction = lock ? "none" : "pan-x pan-y";
         } catch {}
         // Always clear any leftover full-page locks from older builds
         try {
@@ -3627,18 +3656,22 @@ export default function DashboardPage() {
           })
         );
       }
-      // Load all watchlists + items for the side panel
+      // فقط واچ‌لیست‌های همین یوزر
       const { data: wl } = await supabase
         .from("watchlist_lists")
         .select("*")
+        .eq("user_id", uidA)
         .order("created_at", { ascending: true });
       if (wl) setWatchLists(wl as WatchList[]);
+      else setWatchLists([]);
       const { data: wi } = await supabase
         .from("watchlist_items")
         .select("*")
+        .eq("user_id", uidA)
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: true });
       if (wi) setWatchItems(wi as WatchItem[]);
+      else setWatchItems([]);
     })();
   }, []);
 
@@ -3647,17 +3680,25 @@ export default function DashboardPage() {
     let alive = true;
     const refresh = async () => {
       try {
+        const { data: sessR } = await supabase.auth.getSession();
+        const uidR = sessR?.session?.user?.id;
+        if (!uidR) {
+          if (alive) { setWatchLists([]); setWatchItems([]); }
+          return;
+        }
         const { data: wl } = await supabase
           .from("watchlist_lists")
           .select("*")
+          .eq("user_id", uidR)
           .order("created_at", { ascending: true });
-        if (alive && wl) setWatchLists(wl as WatchList[]);
+        if (alive) setWatchLists((wl as WatchList[]) || []);
         const { data: wi } = await supabase
           .from("watchlist_items")
           .select("*")
+          .eq("user_id", uidR)
           .order("sort_order", { ascending: true, nullsFirst: false })
           .order("created_at", { ascending: true });
-        if (alive && wi) setWatchItems(wi as WatchItem[]);
+        if (alive) setWatchItems((wi as WatchItem[]) || []);
       } catch {}
     };
     const id = window.setInterval(refresh, 15000);
@@ -4033,7 +4074,7 @@ export default function DashboardPage() {
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
         handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
       });
-      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     } catch {}
@@ -4211,7 +4252,7 @@ export default function DashboardPage() {
     setEditingNoteType(null);
   };
 
-  const goToSymbol = (sym: string) => setSymbol(sym);
+  const goToSymbol = (sym: string) => setSymbol(chartSymbol(sym));
 
   // Auto-register push if permission already granted (e.g. returning user on iPad PWA)
   useEffect(() => {
@@ -4294,7 +4335,12 @@ export default function DashboardPage() {
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-          onKeyDown={(e) => e.key === "Enter" && loadCandles()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setSymbol(chartSymbol((e.target as HTMLInputElement).value));
+              setTimeout(() => loadCandles(), 0);
+            }
+          }}
           className="bg-gray-900/90 border border-gray-600 rounded-full px-4 py-1.5 text-sm w-32 font-mono text-center tracking-wide shadow-inner focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/40 transition-colors"
           title="Symbol"
         />
@@ -5038,7 +5084,7 @@ export default function DashboardPage() {
                           handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                           handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
                         });
-                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
                         document.body.style.overflow = "";
                         document.documentElement.style.overflow = "";
                       } catch {}
@@ -5502,7 +5548,7 @@ export default function DashboardPage() {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
                             document.documentElement.style.overflow = "";
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                               handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
@@ -5684,7 +5730,7 @@ export default function DashboardPage() {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
                             document.documentElement.style.overflow = "";
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                               handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
