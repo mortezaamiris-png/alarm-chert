@@ -3004,8 +3004,8 @@ export default function DashboardPage() {
               end_price: base.end_price,
               note: "Diag",
             };
-            let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single();
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
             if (error) {
               payload = {
                 symbol: base.symbol,
@@ -3016,8 +3016,8 @@ export default function DashboardPage() {
                 color: chosenColor,
                 note: `__diag:${base.start_time}:${base.end_time}:${base.end_price}`,
               };
-              ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single());
+              payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
             }
             if (!error && data) {
               const saved: Alarm = {
@@ -3049,8 +3049,8 @@ export default function DashboardPage() {
           }
 
           let payload = { ...base };
-          let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single();
+          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
           if (error) {
             // Schema may lack end_time / end_price — store meta in note as fallback
             payload = {
@@ -3062,8 +3062,8 @@ export default function DashboardPage() {
               start_time: base.start_time,
               note: `__diag:${base.end_time}:${base.end_price}`,
             };
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
             payload = {
@@ -3073,8 +3073,8 @@ export default function DashboardPage() {
               start_time: base.start_time,
               note: `__diag:${base.end_time}:${base.end_price}`,
             };
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (!error && data) {
             const saved: ChartLine = {
@@ -3209,8 +3209,8 @@ export default function DashboardPage() {
             if (t != null && !Number.isNaN(t)) base.start_time = t;
           }
           let payload = { ...base };
-          let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single();
+          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
           if (error && m === "ray" && base.start_time != null) {
             // Schema may lack start_time — keep it in note fallback
             payload = {
@@ -3221,18 +3221,18 @@ export default function DashboardPage() {
               dash: base.dash,
               note: `__ray:${base.start_time}`,
             };
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
             payload = { symbol: base.symbol, price: base.price, color: base.color, width: base.width };
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
             payload = { symbol: base.symbol, price: base.price, color: base.color };
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("chart_lines").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (!error && data) {
             const saved: ChartLine = {
@@ -3282,13 +3282,13 @@ export default function DashboardPage() {
             // Always dual-write ray origin into note (survives schema / history reloads)
             payload.note = `__ray:${t}`;
           }
-          let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single();
+          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
           if (error && payload.start_time != null) {
             // Column may not exist — note-only fallback
             delete payload.start_time;
-            ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single());
+            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
           }
           if (error) {
             const minimal: any = {
@@ -3296,8 +3296,8 @@ export default function DashboardPage() {
               is_active: true, triggered: false,
             };
             if (t != null && !Number.isNaN(t)) minimal.note = `__ray:${t}`;
-            ({ data, error } = minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([minimal]).select().single());
+            minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
           if (!error && data) {
             const saved: Alarm = {
@@ -3342,15 +3342,15 @@ export default function DashboardPage() {
             width: drawWidthRef.current,
             dash: drawDashRef.current,
           };
-          let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single();
+          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
           if (error) {
             const minimal = {
               symbol: payload.symbol, price: payload.price, condition: payload.condition,
               is_active: true, triggered: false,
             };
-            ({ data, error } = minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([minimal]).select().single());
+            minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
           // اول preview و mode را ببند تا خط دوتایی نماند
           modeRef.current = "none";
@@ -4105,23 +4105,23 @@ export default function DashboardPage() {
         payload.start_time = startTime;
         payload.note = `__ray:${startTime}`;
       }
-      let { data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single();
+      payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
       if (error && isDiag) {
         const fallbackNote = `__diag:${startTime}:${endTime}:${endPrice}${noteClean && noteClean !== "Diag" ? "|" + noteClean : ""}`;
         payload.note = fallbackNote;
         delete payload.start_time;
         delete payload.end_time;
         delete payload.end_price;
-        ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single());
+        payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error && isRay) {
         // Schema may lack start_time — note-only
         delete payload.start_time;
         payload.note = `__ray:${startTime}`;
-        ({ data, error } = payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([payload]).select().single());
+        payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error) {
         const minimal: any = {
@@ -4136,8 +4136,8 @@ export default function DashboardPage() {
             ? `__ray:${startTime}`
             : noteClean,
         };
-        ({ data, error } = minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-          await supabase.from("alarms").insert([minimal]).select().single());
+        minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
       }
       if (error || !data) {
         setStatusMsg("Convert failed");
