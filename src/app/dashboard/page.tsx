@@ -3004,7 +3004,7 @@ export default function DashboardPage() {
               end_price: base.end_price,
               note: "Diag",
             };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
             if (error) {
               payload = {
@@ -3016,7 +3016,7 @@ export default function DashboardPage() {
                 color: chosenColor,
                 note: `__diag:${base.start_time}:${base.end_time}:${base.end_price}`,
               };
-              payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
             }
             if (!error && data) {
@@ -3049,7 +3049,7 @@ export default function DashboardPage() {
           }
 
           let payload = { ...base };
-          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
           if (error) {
             // Schema may lack end_time / end_price — store meta in note as fallback
@@ -3062,7 +3062,7 @@ export default function DashboardPage() {
               start_time: base.start_time,
               note: `__diag:${base.end_time}:${base.end_price}`,
             };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
@@ -3073,7 +3073,7 @@ export default function DashboardPage() {
               start_time: base.start_time,
               note: `__diag:${base.end_time}:${base.end_price}`,
             };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (!error && data) {
@@ -3209,7 +3209,7 @@ export default function DashboardPage() {
             if (t != null && !Number.isNaN(t)) base.start_time = t;
           }
           let payload = { ...base };
-          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
           if (error && m === "ray" && base.start_time != null) {
             // Schema may lack start_time — keep it in note fallback
@@ -3221,17 +3221,17 @@ export default function DashboardPage() {
               dash: base.dash,
               note: `__ray:${base.start_time}`,
             };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
             payload = { symbol: base.symbol, price: base.price, color: base.color, width: base.width };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (error) {
             payload = { symbol: base.symbol, price: base.price, color: base.color };
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
           }
           if (!error && data) {
@@ -3282,12 +3282,12 @@ export default function DashboardPage() {
             // Always dual-write ray origin into note (survives schema / history reloads)
             payload.note = `__ray:${t}`;
           }
-          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
           if (error && payload.start_time != null) {
             // Column may not exist — note-only fallback
             delete payload.start_time;
-            payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
           }
           if (error) {
@@ -3296,7 +3296,7 @@ export default function DashboardPage() {
               is_active: true, triggered: false,
             };
             if (t != null && !Number.isNaN(t)) minimal.note = `__ray:${t}`;
-            minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            (minimal as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
           if (!error && data) {
@@ -3342,14 +3342,17 @@ export default function DashboardPage() {
             width: drawWidthRef.current,
             dash: drawDashRef.current,
           };
-          payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
           if (error) {
-            const minimal = {
-              symbol: payload.symbol, price: payload.price, condition: payload.condition,
-              is_active: true, triggered: false,
+            const minimal: any = {
+              symbol: payload.symbol,
+              price: payload.price,
+              condition: payload.condition,
+              is_active: true,
+              triggered: false,
+              user_id: (await supabase.auth.getSession()).data.session?.user?.id,
             };
-            minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
           }
           // اول preview و mode را ببند تا خط دوتایی نماند
@@ -4105,7 +4108,7 @@ export default function DashboardPage() {
         payload.start_time = startTime;
         payload.note = `__ray:${startTime}`;
       }
-      payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+      (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
       if (error && isDiag) {
         const fallbackNote = `__diag:${startTime}:${endTime}:${endPrice}${noteClean && noteClean !== "Diag" ? "|" + noteClean : ""}`;
@@ -4113,14 +4116,14 @@ export default function DashboardPage() {
         delete payload.start_time;
         delete payload.end_time;
         delete payload.end_price;
-        payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+        (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error && isRay) {
         // Schema may lack start_time — note-only
         delete payload.start_time;
         payload.note = `__ray:${startTime}`;
-        payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+        (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([payload]).select().single());
       }
       if (error) {
@@ -4136,7 +4139,7 @@ export default function DashboardPage() {
             ? `__ray:${startTime}`
             : noteClean,
         };
-        minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+        (minimal as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
               ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
       }
       if (error || !data) {
