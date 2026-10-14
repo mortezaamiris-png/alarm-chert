@@ -122,10 +122,21 @@ function AuthModal({
 
   if (!open) return null;
 
-  const finishAuth = (user: AuthUser) => {
+  const finishAuth = async (user: AuthUser, session?: { access_token: string; refresh_token: string } | null) => {
+    // هم cookie (از API) هم session مرورگر — تا صفحه و ناوبار یکی شوند
+    if (session?.access_token && session?.refresh_token) {
+      try {
+        await supabase.auth.setSession({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+        });
+      } catch (e) {
+        console.warn("setSession failed", e);
+      }
+    }
     onAuthed(user);
     onClose();
-    window.setTimeout(() => window.location.reload(), 150);
+    window.setTimeout(() => window.location.reload(), 200);
   };
 
   const submitEmail = async () => {
@@ -175,7 +186,7 @@ function AuthModal({
       }
 
       if (json.user) {
-        finishAuth(json.user as AuthUser);
+        await finishAuth(json.user as AuthUser, json.session || null);
       } else {
         setErr("No user returned");
       }
@@ -329,15 +340,54 @@ export default function SiteNavbar() {
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+        // 1) اگر cookie لاگین هست، session را به supabase کلاینت بده
+        const res = await fetch("/api/auth/session", { credentials: "same-origin" });
         const json = await res.json();
-        if (mounted) setUser(json.user ?? null);
+        if (json?.session?.access_token && json?.session?.refresh_token) {
+          try {
+            await supabase.auth.setSession({
+              access_token: json.session.access_token,
+              refresh_token: json.session.refresh_token,
+            });
+          } catch {}
+        }
+        if (mounted) setUser(json?.user ?? null);
+
+        // 2) اگر cookie نبود، از localStorage supabase بخوان
+        if (!json?.user) {
+          const { data } = await supabase.auth.getSession();
+          if (mounted && data.session?.user) {
+            setUser({
+              id: data.session.user.id,
+              email: data.session.user.email,
+              user_metadata: data.session.user.user_metadata as any,
+            });
+          }
+        }
       } catch {
         if (mounted) setUser(null);
       }
     })();
+
+    // 3) هر تغییر auth در supabase
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (session?.user) {
+        setUser({
+          id: session.user.id,
+          email: session.user.email,
+          user_metadata: session.user.user_metadata as any,
+        });
+      } else {
+        // cookie ممکن است هنوز باشد — دوباره چک نکن تا logout عمدی
+      }
+    });
+
     return () => {
       mounted = false;
+      try {
+        sub.subscription.unsubscribe();
+      } catch {}
     };
   }, []);
 
@@ -358,6 +408,9 @@ export default function SiteNavbar() {
         method: "POST",
         credentials: "same-origin",
       });
+    } catch {}
+    try {
+      await supabase.auth.signOut();
     } catch {}
     setUser(null);
     window.location.reload();
