@@ -1169,8 +1169,13 @@ export default function WatchlistPage() {
   );
 
   useEffect(() => {
-    loadLists();
-  }, []);
+    if (user) loadLists();
+    else {
+      setLists([]);
+      setItems([]);
+      setActiveListId(null);
+    }
+  }, [user]);
   useEffect(() => {
     if (activeListId) loadItems(activeListId);
   }, [activeListId]);
