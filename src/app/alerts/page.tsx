@@ -17,10 +17,6 @@ interface Alert {
   repeat?: boolean;
   note?: string | null;
   color?: string | null;
-  /** Diagonal alarm endpoints */
-  start_time?: number | null;
-  end_time?: number | null;
-  end_price?: number | null;
 }
 
 function formatAgo(iso: string | null | undefined): string {
@@ -33,64 +29,15 @@ function formatAgo(iso: string | null | undefined): string {
   const m = Math.floor(sec / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  // After 24 hours show days (e.g. 2d ago)
-  if (h >= 24) {
-    const d = Math.floor(h / 24);
-    return `${d}d ago`;
-  }
-  return `${h}h ago`;
+  if (h < 48) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 function formatPrice(n: number) {
   if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   return n.toLocaleString(undefined, { maximumFractionDigits: 8 });
-}
-
-function CoinIcon({ symbol }: { symbol: string }) {
-  const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
-  return (
-    <img
-      src={`https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${base}.png`}
-      alt=""
-      width={20}
-      height={20}
-      className="w-5 h-5 rounded-full shrink-0"
-      onError={(e) => {
-        (e.target as HTMLImageElement).src =
-          `https://ui-avatars.com/api/?name=${base}&background=374151&color=fff&size=32`;
-      }}
-    />
-  );
-}
-
-/** Resolve diagonal endpoints from columns or note fallback */
-function resolveDiag(a: Alert): {
-  start_time: number;
-  end_time: number;
-  price: number;
-  end_price: number;
-} | null {
-  let st = a.start_time ?? null;
-  let et = a.end_time ?? null;
-  let ep = a.end_price ?? null;
-  if ((!et || ep == null) && a.note?.startsWith("__diag:")) {
-    const parts = a.note.replace(/^__diag:/, "").split("|")[0].split(":");
-    if (parts.length >= 3) {
-      st = Number(parts[0]);
-      et = Number(parts[1]);
-      ep = Number(parts[2]);
-    }
-  }
-  if (st != null && et != null && ep != null && Number(st) !== Number(et)) {
-    return {
-      start_time: Number(st),
-      end_time: Number(et),
-      price: Number(a.price),
-      end_price: Number(ep),
-    };
-  }
-  return null;
 }
 
 export default function AlertsPage() {
@@ -113,6 +60,7 @@ export default function AlertsPage() {
       const { data, error } = await supabase
         .from("alarms")
         .select("*")
+        .eq("user_id", (await supabase.auth.getSession()).data.session?.user?.id || "none")
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -149,6 +97,12 @@ export default function AlertsPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
+      const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+      if (!uid) {
+        setErrorMsg("Please sign in first");
+        setLoading(false);
+        return;
+      }
       const { error } = await supabase.from("alarms").insert([
         {
           symbol: symbol.toUpperCase().trim(),
@@ -158,6 +112,7 @@ export default function AlertsPage() {
           triggered: false,
           repeat,
           note: "Alert from site",
+          user_id: uid,
         },
       ]);
       if (error) {
@@ -212,22 +167,18 @@ export default function AlertsPage() {
     }
   };
 
-  const goToChart = (sym: string, alert?: Alert) => {
+  const goToChart = (sym: string, alertId?: string, price?: number) => {
     try {
       localStorage.setItem("chart_symbol", sym.toUpperCase().split("@")[0]);
-      localStorage.removeItem("chart_highlight_alarm_id");
-      localStorage.removeItem("chart_highlight_price");
-      localStorage.removeItem("chart_highlight_diag");
-
-      if (alert) {
-        localStorage.setItem("chart_highlight_alarm_id", alert.id);
-        const diag = resolveDiag(alert);
-        if (diag) {
-          // Diagonal: flash the slanted segment on chart
-          localStorage.setItem("chart_highlight_diag", JSON.stringify(diag));
-        } else if (alert.price != null && !Number.isNaN(alert.price)) {
-          localStorage.setItem("chart_highlight_price", String(alert.price));
-        }
+      if (alertId) {
+        localStorage.setItem("chart_highlight_alarm_id", alertId);
+      } else {
+        localStorage.removeItem("chart_highlight_alarm_id");
+      }
+      if (price != null && !Number.isNaN(price)) {
+        localStorage.setItem("chart_highlight_price", String(price));
+      } else {
+        localStorage.removeItem("chart_highlight_price");
       }
     } catch {}
     router.push("/dashboard");
@@ -399,10 +350,7 @@ export default function AlertsPage() {
                     onClick={() => goToChart(sym)}
                     className="w-full flex items-center justify-between px-3.5 py-2.5 bg-gray-800/60 hover:bg-gray-800 border-b border-gray-800"
                   >
-                    <span className="font-semibold text-sm text-white inline-flex items-center gap-2">
-                      <CoinIcon symbol={sym} />
-                      {sym}
-                    </span>
+                    <span className="font-semibold text-sm text-white">{sym}</span>
                     <span className="text-[11px] text-gray-500">
                       {list.length} alert{list.length > 1 ? "s" : ""} · Chart →
                     </span>
@@ -433,20 +381,15 @@ export default function AlertsPage() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <button
                               type="button"
-                              onClick={() => goToChart(sym, alert)}
+                              onClick={() => goToChart(sym, alert.id, alert.price)}
                               className="text-orange-400 font-medium text-sm hover:text-orange-300 hover:underline"
                               title="Open on chart"
                             >
-                              {(() => {
-                                const d = resolveDiag(alert);
-                                if (d) {
-                                  return `↗ ${formatPrice(d.price)}→${formatPrice(d.end_price)}`;
-                                }
-                                return `${getConditionSymbol(alert.condition)} ${formatPrice(alert.price)}`;
-                              })()}
+                              {getConditionSymbol(alert.condition)}{" "}
+                              {formatPrice(alert.price)}
                             </button>
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
-                              {resolveDiag(alert) ? "Diag" : getConditionLabel(alert.condition)}
+                              {getConditionLabel(alert.condition)}
                             </span>
                             {alert.repeat && (
                               <span className="text-[10px] bg-blue-900/50 text-blue-300 px-1.5 py-0.5 rounded">
@@ -498,6 +441,7 @@ export default function AlertsPage() {
             </div>
           </div>
 
+
           {filteredHistory.length === 0 ? (
             <div className="text-center text-gray-600 py-10 border border-dashed border-gray-800 rounded-xl text-sm">
               Empty
@@ -506,7 +450,6 @@ export default function AlertsPage() {
             <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
               {filteredHistory.slice(0, 80).map((alert) => {
                 const when = alert.triggered_at || alert.created_at;
-                const diag = resolveDiag(alert);
                 return (
                   <div
                     key={alert.id}
@@ -526,27 +469,30 @@ export default function AlertsPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => goToChart(alert.symbol, alert)}
+                          onClick={() => goToChart(alert.symbol, alert.id, alert.price)}
                           className="font-medium text-sm text-white hover:text-orange-400"
                         >
                           {alert.symbol}
                         </button>
                         <button
                           type="button"
-                          onClick={() => goToChart(alert.symbol, alert)}
+                          onClick={() => goToChart(alert.symbol, alert.id, alert.price)}
                           className="text-orange-400 text-sm hover:text-orange-300 hover:underline"
                           title="Open on chart"
                         >
-                          {diag
-                            ? `↗ ${formatPrice(diag.price)}→${formatPrice(diag.end_price)}`
-                            : `${getConditionSymbol(alert.condition)} ${formatPrice(alert.price)}`}
+                          {getConditionSymbol(alert.condition)}{" "}
+                          {formatPrice(alert.price)}
                         </button>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-500">
-                          {diag ? "Diag" : getConditionLabel(alert.condition)}
+                          {getConditionLabel(alert.condition)}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-600">
-                        {when && <span>{new Date(when).toLocaleString()}</span>}
+                        {when && (
+                          <span>
+                            {new Date(when).toLocaleString()}
+                          </span>
+                        )}
                       </div>
                     </div>
 
