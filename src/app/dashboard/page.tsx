@@ -553,9 +553,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 220;
+const FUTURE_BARS = 900;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 110;
+const FUTURE_VISIBLE = 280;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1993,19 +1993,35 @@ export default function DashboardPage() {
         crosshair: { mode: CrosshairMode.Normal },
         rightPriceScale: {
           borderColor: "#2a2e39",
-          scaleMargins: { top: 0.05, bottom: 0.05 },
+          scaleMargins: { top: 0.06, bottom: 0.08 },
           entireTextOnly: false,
           autoScale: true,
-          mode: 0, // Normal — user can drag price scale freely
+          mode: 0, // Normal — drag/scroll price axis freely (TV-style)
+          invertScale: false,
+          alignLabels: true,
+        },
+        // اسکرول روی محور قیمت = زوم عمودی؛ روی بدنه چارت = افقی
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          // چرخ ماوس روی محور راست قیمت → زوم عمودی مثل TradingView
+          axisPressedMouseMove: { time: true, price: true },
+          axisDoubleClickReset: { time: true, price: true },
+          mouseWheel: true,
+          pinch: true,
         },
         timeScale: {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          // Empty bars to the right of last candle (TradingView-style future area)
-          rightOffset: 50,
+          // فضای خالی آینده خیلی بیشتر (مثل TradingView)
+          rightOffset: 120,
           barSpacing: 8,
-          minBarSpacing: 2,
+          minBarSpacing: 1.5,
           fixLeftEdge: false,
           fixRightEdge: false,
           lockVisibleTimeRangeOnResize: false,
