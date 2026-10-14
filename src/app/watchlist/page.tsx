@@ -1009,8 +1009,19 @@ export default function WatchlistPage() {
       const { data } = await supabase.auth.getSession();
       if (mounted) setUser(data.session?.user ?? null);
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session: Session | null) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session: Session | null) => {
       setUser(session?.user ?? null);
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") {
+        // لیست‌ها بلافاصله بعد از لاگین لود شوند
+        setTimeout(() => {
+          try { /* loadLists via user effect */ } catch {}
+        }, 100);
+      }
+      if (event === "SIGNED_OUT") {
+        setLists([]);
+        setItems([]);
+        setActiveListId(null);
+      }
     });
     return () => {
       mounted = false;
@@ -1117,11 +1128,19 @@ export default function WatchlistPage() {
   }, [items, searchHits]);
 
   const loadLists = useCallback(async () => {
-    const { data: sess } = await supabase.auth.getSession();
-    const uid = sess?.session?.user?.id;
+    let uid: string | null = null;
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      uid = sess?.session?.user?.id || null;
+      if (!uid) {
+        const { data: u } = await supabase.auth.getUser();
+        uid = u?.user?.id || null;
+      }
+    } catch {}
     if (!uid) {
       setLists([]);
       listsRef.current = [];
+      setItems([]);
       return;
     }
     const { data } = await supabase
@@ -1129,7 +1148,8 @@ export default function WatchlistPage() {
       .select("*")
       .eq("user_id", uid)
       .order("created_at", { ascending: true });
-    let rows = data || [];
+    // فیلتر دفاعی سمت کلاینت (اگر RLS باز باشد)
+    let rows = (data || []).filter((r: any) => !r.user_id || r.user_id === uid);
     try {
       const order: string[] = loadLS("wl_list_order", []);
       if (order.length && rows.length) {
@@ -1224,8 +1244,18 @@ export default function WatchlistPage() {
   const createList = async () => {
     if (!newListName.trim()) return;
     setSaving(true);
-    const { data: sess } = await supabase.auth.getSession();
-    const uid = sess?.session?.user?.id;
+    // اول از state، بعد getSession، بعد getUser (برای iPad که session دیر می‌آید)
+    let uid = user?.id || null;
+    if (!uid) {
+      const { data: sess } = await supabase.auth.getSession();
+      uid = sess?.session?.user?.id || null;
+    }
+    if (!uid) {
+      try {
+        const { data: u } = await supabase.auth.getUser();
+        uid = u?.user?.id || null;
+      } catch {}
+    }
     if (!uid) {
       setSaving(false);
       setAuthOpen(true);
