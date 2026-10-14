@@ -286,7 +286,7 @@ function DetailChart({
       timeScale: {
         borderVisible: false,
         timeVisible: true,
-        rightOffset: 40,
+        rightOffset: 80,
         barSpacing: 7,
         minBarSpacing: 2,
         fixLeftEdge: false,
@@ -338,7 +338,7 @@ function DetailChart({
   useEffect(() => {
     let cancelled = false;
 
-    const FUTURE = 180;
+    const FUTURE = 800;
 
     const appendFuture = (candles: any[]) => {
       if (!candles.length) return candles;
@@ -356,7 +356,7 @@ function DetailChart({
     const load = async (isFirst: boolean) => {
       try {
         const res = await fetch(
-          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=500`
+          `/api/kline?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=1000`
         );
         const json = await res.json();
         const list = Array.isArray(json) ? json : json?.data || json?.result?.list || [];
@@ -435,11 +435,11 @@ function DetailChart({
 
         if (isFirst && chartRef.current && !fittedRef.current) {
           const bars = list.length;
-          const past = Math.min(80, bars);
+          const past = Math.min(160, bars);
           try {
             chartRef.current.timeScale().setVisibleLogicalRange({
               from: Math.max(0, bars - past),
-              to: bars - 1 + Math.min(50, FUTURE * 0.4),
+              to: bars - 1 + 120,
             });
           } catch {
             try {
@@ -1154,18 +1154,62 @@ export default function WatchlistPage() {
     setFloatSize({ w: rect.width, h: rect.height });
     setFloatPos({ x: rect.left, y: rect.top });
     setDraggingId(id);
+    dropTargetIdRef.current = null;
+
+    const scrollContainers = () =>
+      [listScrollRef.current, gridScrollRef.current].filter(Boolean) as HTMLElement[];
 
     const onMove = (e: PointerEvent) => {
+      try { e.preventDefault(); } catch {}
       setFloatPos({
         x: e.clientX - offsetRef.current.x,
         y: e.clientY - offsetRef.current.y,
       });
+
+      // auto-scroll near edges so you can reach top/bottom of long lists
+      for (const sc of scrollContainers()) {
+        const r = sc.getBoundingClientRect();
+        const edge = 56;
+        if (e.clientY < r.top + edge) {
+          sc.scrollTop -= Math.max(8, (r.top + edge - e.clientY) * 0.4);
+        } else if (e.clientY > r.bottom - edge) {
+          sc.scrollTop += Math.max(8, (e.clientY - (r.bottom - edge)) * 0.4);
+        }
+      }
+
       const under = document.elementFromPoint(e.clientX, e.clientY);
       const row = under?.closest?.("[data-item-id]") as HTMLElement | null;
-      const tid = row?.dataset?.itemId || null;
+      let tid = row?.dataset?.itemId || null;
+      if (!tid) {
+        for (const sc of scrollContainers()) {
+          const r = sc.getBoundingClientRect();
+          if (
+            e.clientX >= r.left &&
+            e.clientX <= r.right &&
+            e.clientY >= r.top - 20 &&
+            e.clientY <= r.bottom + 40
+          ) {
+            const rows = Array.from(sc.querySelectorAll("[data-item-id]")) as HTMLElement[];
+            if (!rows.length) continue;
+            let best: HTMLElement | null = null;
+            let bestD = Infinity;
+            for (const rowEl of rows) {
+              const rr = rowEl.getBoundingClientRect();
+              const mid = (rr.top + rr.bottom) / 2;
+              const d = Math.abs(e.clientY - mid);
+              if (d < bestD) {
+                bestD = d;
+                best = rowEl;
+              }
+            }
+            tid = best?.dataset?.itemId || null;
+          }
+        }
+      }
       dropTargetIdRef.current = tid;
       setDropTargetId(tid);
     };
+
     const onUp = async () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
@@ -1194,7 +1238,7 @@ export default function WatchlistPage() {
         );
       } catch {}
     };
-    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", onUp);
   };
 
@@ -1267,44 +1311,44 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* My List — parent; lists expand under it */}
+      {/* My List — horizontal expand + compact + for new list */}
       <div className="mb-3" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setListsMenuOpen((v) => !v)}
-            className="px-3 py-1.5 rounded-full text-sm bg-orange-500 text-white font-medium inline-flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-full text-sm bg-orange-500 text-white font-medium inline-flex items-center gap-1.5 shadow-sm shadow-orange-500/20"
           >
             My List
-            <span className={`text-[10px] transition-transform ${listsMenuOpen ? "rotate-180" : ""}`}>▼</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowNewList(!showNewList)}
-            className="px-3 py-1.5 rounded-full text-sm bg-gray-800 text-gray-300 hover:bg-gray-700"
-          >
-            + New list
-          </button>
-          {activeListId && (
-            <span className="text-xs text-gray-500">
-              {lists.find((l) => l.id === activeListId)?.name || ""}
+            <span
+              className={`inline-block text-[10px] transition-transform duration-300 ${
+                listsMenuOpen ? "rotate-180" : ""
+              }`}
+            >
+              ▼
             </span>
-          )}
-        </div>
-        {listsMenuOpen && (
-          <div className="mt-2 ml-1 flex flex-col gap-1 max-w-xs">
+          </button>
+
+          {/* lists expand horizontally with fade/slide */}
+          <div
+            className={`flex flex-wrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
+              listsMenuOpen
+                ? "max-w-[900px] opacity-100 translate-x-0"
+                : "max-w-0 opacity-0 -translate-x-2 pointer-events-none"
+            }`}
+          >
             {lists.map((l) => (
-              <div key={l.id} className="relative flex items-center group">
+              <div key={l.id} className="relative flex items-center shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     setActiveListId(l.id);
                     setListsMenuOpen(false);
                   }}
-                  className={`flex-1 text-left px-3 py-2 rounded-lg text-sm ${
+                  className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
                     activeListId === l.id
-                      ? "bg-orange-500/20 text-orange-300 border border-orange-500/40"
-                      : "bg-gray-900 text-gray-300 border border-gray-800 hover:bg-gray-800"
+                      ? "bg-orange-500/25 text-orange-300 border border-orange-500/50"
+                      : "bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700"
                   }`}
                 >
                   {l.name}
@@ -1316,14 +1360,14 @@ export default function WatchlistPage() {
                     e.stopPropagation();
                     setListMenuId((prev) => (prev === l.id ? null : l.id));
                   }}
-                  className="ml-1 w-8 h-8 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-base leading-none cursor-pointer"
+                  className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-sm cursor-pointer"
                   title="List menu"
                 >
                   ⋮
                 </div>
                 {listMenuId === l.id && (
                   <div
-                    className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
+                    className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[130px]"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <button
@@ -1331,8 +1375,9 @@ export default function WatchlistPage() {
                       onClick={(e) => {
                         e.stopPropagation();
                         deleteList(l.id);
+                        setListMenuId(null);
                       }}
-                      className="w-full text-left px-3 py-2.5 text-sm text-red-400 hover:bg-gray-800"
+                      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
                     >
                       Delete list
                     </button>
@@ -1341,30 +1386,69 @@ export default function WatchlistPage() {
               </div>
             ))}
             {!lists.length && (
-              <p className="text-xs text-gray-500 px-2 py-1">No lists yet — create one</p>
+              <span className="text-xs text-gray-500 px-1">No lists yet</span>
             )}
           </div>
-        )}
-      </div>
 
-      {showNewList && (
-        <div className="flex gap-2 mb-4">
-          <input
-            value={newListName}
-            onChange={(e) => setNewListName(e.target.value)}
-            placeholder="List name"
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm"
-          />
+          {/* + only — expands input with animation */}
           <button
             type="button"
-            onClick={createList}
-            disabled={saving}
-            className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm"
+            onClick={() => {
+              setShowNewList(true);
+              setListsMenuOpen(false);
+            }}
+            title="New list"
+            className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-semibold transition-all duration-200 ${
+              showNewList
+                ? "bg-orange-500 text-black scale-95"
+                : "bg-gray-800 text-gray-200 border border-gray-700 hover:bg-orange-500 hover:text-black hover:border-orange-400"
+            }`}
           >
-            Create
+            +
           </button>
+
+          <div
+            className={`flex items-center gap-2 overflow-hidden transition-all duration-300 ease-out ${
+              showNewList
+                ? "max-w-[280px] opacity-100 ml-1"
+                : "max-w-0 opacity-0 ml-0"
+            }`}
+          >
+            <input
+              autoFocus={showNewList}
+              value={newListName}
+              onChange={(e) => setNewListName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") createList();
+                if (e.key === "Escape") {
+                  setShowNewList(false);
+                  setNewListName("");
+                }
+              }}
+              placeholder="List name…"
+              className="w-40 bg-gray-900 border border-gray-600 focus:border-orange-500 rounded-full px-3 py-1.5 text-white text-sm outline-none"
+            />
+            <button
+              type="button"
+              onClick={createList}
+              disabled={saving || !newListName.trim()}
+              className="px-3 py-1.5 rounded-full text-sm bg-orange-500 text-black font-medium disabled:opacity-40 hover:bg-orange-400"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowNewList(false);
+                setNewListName("");
+              }}
+              className="w-7 h-7 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 text-sm"
+            >
+              ✕
+            </button>
+          </div>
         </div>
-      )}
+      </div>
 
       {viewMode === "grid" && (
         <div className="flex flex-wrap gap-2 mb-4">
