@@ -338,56 +338,7 @@ function DetailChart({
     } as any);
     chartRef.current = chart;
 
-    // اسکرول روی قیمت: بالا بزرگ · پایین کوچک (بدون آهنربا)
-    const priceRangeRef = { from: null as number | null, to: null as number | null };
-    const onWheelPrice = (e: WheelEvent) => {
-      const container = ref.current;
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const fromRight = rect.right - e.clientX;
-      if (fromRight > 90 || fromRight < 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const s = (candleRef.current || lineRef.current) as any;
-      if (!s) return;
-      let delta = e.deltaY;
-      if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
-      if (delta === 0) return;
-      let pTop: number | null = null;
-      let pBot: number | null = null;
-      if (priceRangeRef.from != null && priceRangeRef.to != null && priceRangeRef.to > priceRangeRef.from) {
-        pBot = priceRangeRef.from;
-        pTop = priceRangeRef.to;
-      } else {
-        try {
-          const t = s.coordinateToPrice?.(1);
-          const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
-          if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
-            pTop = Math.max(Number(t), Number(b));
-            pBot = Math.min(Number(t), Number(b));
-          }
-        } catch {}
-      }
-      if (pTop == null || pBot == null || !(pTop > pBot)) return;
-      const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
-      const priceAtCursor = pTop - relY * (pTop - pBot);
-      const factor = delta < 0 ? 0.85 : 1.18;
-      const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
-      const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
-      const newTop = priceAtCursor + newRange * aboveRatio;
-      const newBot = priceAtCursor - newRange * (1 - aboveRatio);
-      if (!(newTop > newBot)) return;
-      priceRangeRef.from = newBot;
-      priceRangeRef.to = newTop;
-      try {
-        const ps = s.priceScale?.() || chart.priceScale("right");
-        ps?.setAutoScale?.(false);
-        ps?.setVisibleRange?.({ from: newBot, to: newTop });
-        ps?.applyOptions?.({ autoScale: false });
-      } catch {}
-    };
-    ref.current.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
-    (chart as any).__priceWheel = onWheelPrice;
+    const priceOverride = { current: null as { from: number; to: number } | null };
 
     if (lineMode) {
       lineRef.current = chart.addAreaSeries({
@@ -397,7 +348,18 @@ function DetailChart({
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: true,
-      });
+        autoscaleInfoProvider: (original: any) => {
+          const ov = priceOverride.current;
+          if (ov && ov.to > ov.from) {
+            return { priceRange: { minValue: ov.from, maxValue: ov.to } };
+          }
+          try {
+            return typeof original === "function" ? original() : original;
+          } catch {
+            return null;
+          }
+        },
+      } as any);
     } else {
       candleRef.current = chart.addCandlestickSeries({
         upColor: "#22c55e",
@@ -407,8 +369,97 @@ function DetailChart({
         wickDownColor: "#ef4444",
         priceLineVisible: false,
         lastValueVisible: true,
-      });
+        autoscaleInfoProvider: (original: any) => {
+          const ov = priceOverride.current;
+          if (ov && ov.to > ov.from) {
+            return { priceRange: { minValue: ov.from, maxValue: ov.to } };
+          }
+          try {
+            return typeof original === "function" ? original() : original;
+          } catch {
+            return null;
+          }
+        },
+      } as any);
     }
+
+    // اسکرول روی نوار قیمت سمت راست — مثل چارت اصلی
+    const onWheelPrice = (e: WheelEvent) => {
+      const container = ref.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const fromRight = rect.right - e.clientX;
+      // کل نوار قیمت (~120px از راست)
+      if (fromRight > 120 || fromRight < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const s = (candleRef.current || lineRef.current) as any;
+      if (!s) return;
+
+      let delta = e.deltaY;
+      if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
+      if (e.deltaMode === 1) delta *= 16;
+      if (delta === 0) return;
+
+      let pTop: number | null = null;
+      let pBot: number | null = null;
+      const ov0 = priceOverride.current;
+      if (ov0 && ov0.to > ov0.from) {
+        pBot = ov0.from;
+        pTop = ov0.to;
+      } else {
+        try {
+          const t = s.coordinateToPrice?.(8);
+          const b = s.coordinateToPrice?.(Math.max(16, container.clientHeight - 8));
+          if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
+            pTop = Math.max(Number(t), Number(b));
+            pBot = Math.min(Number(t), Number(b));
+          }
+        } catch {}
+      }
+      if (pTop == null || pBot == null || !(pTop > pBot)) return;
+
+      const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+      const priceAtCursor = pTop - relY * (pTop - pBot);
+      // بالا = بزرگ (zoom in) · پایین = کوچک (zoom out)
+      const factor = delta < 0 ? 0.82 : 1.22;
+      const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+      const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
+      const newTop = priceAtCursor + newRange * aboveRatio;
+      const newBot = priceAtCursor - newRange * (1 - aboveRatio);
+      if (!(newTop > newBot)) return;
+
+      priceOverride.current = { from: newBot, to: newTop };
+      try {
+        const ps = s.priceScale?.() || chart.priceScale("right");
+        // autoScale روشن تا provider اعمال شود
+        ps?.applyOptions?.({ autoScale: true });
+        ps?.setAutoScale?.(true);
+        // فورس رفرش با یک setData/applyOptions خنثی
+        try {
+          s.applyOptions?.({});
+        } catch {}
+      } catch {}
+    };
+    // دابل‌کلیک روی قیمت = ریست زوم
+    const onDblPrice = (e: MouseEvent) => {
+      const container = ref.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.right - e.clientX > 120 || rect.right - e.clientX < 0) return;
+      priceOverride.current = null;
+      try {
+        const s = (candleRef.current || lineRef.current) as any;
+        const ps = s?.priceScale?.() || chart.priceScale("right");
+        ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+        ps?.setAutoScale?.(true);
+        s?.applyOptions?.({});
+      } catch {}
+    };
+    ref.current.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+    ref.current.addEventListener("dblclick", onDblPrice, { capture: true });
+    (chart as any).__priceWheel = onWheelPrice;
+    (chart as any).__priceDbl = onDblPrice;
 
     const onResize = () => {
       if (ref.current && chartRef.current) {
@@ -421,7 +472,9 @@ function DetailChart({
       window.removeEventListener("resize", onResize);
       try {
         const w = (chart as any).__priceWheel;
+        const d = (chart as any).__priceDbl;
         if (w && ref.current) ref.current.removeEventListener("wheel", w, true as any);
+        if (d && ref.current) ref.current.removeEventListener("dblclick", d, true as any);
       } catch {}
       chart.remove();
       chartRef.current = null;
@@ -1402,18 +1455,108 @@ export default function WatchlistPage() {
       {/* Header — بدون Sign in تکراری (فقط در SiteNavbar بالاست) */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <h1 className="text-xl font-bold">Watchlist</h1>
-        <button
-          type="button"
-          onClick={() => setShowSearch((v) => !v)}
-          className="w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10"
-          title="Search symbols"
-          data-search-btn
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-        </button>
+        <div className="relative z-[60]" data-search-root>
+          <button
+            type="button"
+            onClick={() => setShowSearch((v) => !v)}
+            className="w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10"
+            title="Search symbols"
+            data-search-btn
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
+            </svg>
+          </button>
+          {showSearch && (
+            <div className="absolute left-0 top-full mt-2 w-[min(92vw,420px)] bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-2xl">
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
+                <span className="text-gray-500 text-sm">🔍</span>
+                <input
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(e) => runSearch(e.target.value)}
+                  placeholder="Search symbol (BTC, ETH…)"
+                  className="flex-1 bg-transparent outline-none text-white text-sm py-1"
+                />
+                {searching && (
+                  <span className="text-xs text-orange-400 animate-pulse">…</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSearch(false);
+                    setSearchQuery("");
+                    setSearchHits([]);
+                  }}
+                  className="text-gray-400 text-sm px-2 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="max-h-72 overflow-y-auto">
+                {!searchQuery.trim() && (
+                  <p className="text-gray-500 text-sm p-4">Type a symbol…</p>
+                )}
+                {searchQuery.trim() && !searching && searchHits.length === 0 && (
+                  <p className="text-gray-500 text-sm p-4">No results</p>
+                )}
+                {searchHits.map((hit) => {
+                  const added = inList(hit.symbol, hit.exchange);
+                  const flash = justAdded === storageSymbol(hit.symbol, hit.exchange);
+                  const p = prices[hit.symbol];
+                  const pct = pcts[hit.symbol];
+                  return (
+                    <div
+                      key={`${hit.exchange || "X"}-${hit.market}-${hit.symbol}`}
+                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
+                    >
+                      <CoinIcon symbol={hit.symbol} size={28} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-sm">{hit.symbol}</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded ${
+                              hit.market === "Spot"
+                                ? "bg-blue-900/60 text-blue-300"
+                                : "bg-purple-900/60 text-purple-300"
+                            }`}
+                          >
+                            {hit.market}
+                          </span>
+                          {hit.exchange && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-orange-300 border border-gray-700 font-medium">
+                              {hit.exchange}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 min-w-[72px]">
+                        {p != null ? (
+                          <div className="text-sm text-gray-100 font-medium">{formatPrice(p)}</div>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => toggleSymbol(hit.symbol, hit.exchange)}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                          added || flash
+                            ? "bg-green-500/20 text-green-400 border border-green-500/50"
+                            : "bg-gray-800 text-gray-200 border border-gray-600 hover:bg-orange-500 hover:text-black"
+                        }`}
+                      >
+                        {added || flash ? "✓" : "+"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className="flex-1" />
 
@@ -1439,8 +1582,8 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* My List — open/close only via this button; lists expand horizontally */}
-      <div className="mb-3" data-lists-menu-root>
+      {/* My List — absolute panel so layout doesn't jump */}
+      <div className="mb-3 relative z-[50]" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -1457,92 +1600,87 @@ export default function WatchlistPage() {
             </span>
           </button>
 
-          <div
-            className={`flex flex-wrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
-              listsMenuOpen
-                ? "max-w-[900px] opacity-100"
-                : "max-w-0 opacity-0 pointer-events-none"
-            }`}
-          >
-            {lists.map((l) => (
-              <div
-                key={l.id}
-                data-list-id={l.id}
-                className={`relative flex items-center shrink-0 rounded-full transition-all ${
-                  listDraggingId === l.id ? "opacity-40 scale-95" : ""
-                } ${
-                  listDropTargetId === l.id && listDraggingId && listDraggingId !== l.id
-                    ? "ring-2 ring-orange-500/60"
-                    : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setActiveListId(l.id)}
-                  className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
-                    activeListId === l.id
-                      ? "bg-orange-500/25 text-orange-300 border border-orange-500/50"
-                      : "bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700"
+          {listsMenuOpen && (
+            <div className="absolute left-0 top-full mt-1.5 flex flex-wrap items-center gap-1.5 max-w-[min(92vw,640px)] p-2 rounded-xl bg-gray-950/95 border border-gray-700 shadow-2xl backdrop-blur-sm">
+              {lists.map((l) => (
+                <div
+                  key={l.id}
+                  data-list-id={l.id}
+                  className={`relative flex items-center shrink-0 rounded-full transition-all ${
+                    listDraggingId === l.id ? "opacity-40 scale-95" : ""
+                  } ${
+                    listDropTargetId === l.id && listDraggingId && listDraggingId !== l.id
+                      ? "ring-2 ring-orange-500/60"
+                      : ""
                   }`}
                 >
-                  {l.name}
-                </button>
-                <div
-                  data-menu-root
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    let dragged = false;
-                    const timer = window.setTimeout(() => {
-                      dragged = true;
-                      setListMenuId(null);
-                      startListDrag(l.id);
-                    }, 160);
-                    const onUp = () => {
-                      clearTimeout(timer);
-                      if (!dragged) {
-                        setListMenuId((prev) => (prev === l.id ? null : l.id));
-                      }
-                      window.removeEventListener("pointerup", onUp);
-                    };
-                    window.addEventListener("pointerup", onUp);
-                  }}
-                  className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-sm cursor-grab touch-none"
-                  style={{ touchAction: "none" }}
-                  title="Drag to reorder · click for menu"
-                >
-                  ⋮⋮
-                </div>
-                {listMenuId === l.id && (
-                  <div
-                    className="absolute top-full left-0 mt-1 z-[80] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[130px]"
-                    onClick={(e) => e.stopPropagation()}
+                  <button
+                    type="button"
+                    onClick={() => setActiveListId(l.id)}
+                    className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
+                      activeListId === l.id
+                        ? "bg-orange-500/25 text-orange-300 border border-orange-500/50"
+                        : "bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700"
+                    }`}
                   >
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteList(l.id);
+                    {l.name}
+                  </button>
+                  <button
+                    type="button"
+                    data-menu-root
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setListMenuId((prev) => (prev === l.id ? null : l.id));
+                    }}
+                    onPointerDown={(e) => {
+                      // long-press → drag reorder
+                      if (e.button !== 0) return;
+                      const timer = window.setTimeout(() => {
                         setListMenuId(null);
-                      }}
-                      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                        startListDrag(l.id);
+                      }, 380);
+                      const onUp = () => {
+                        clearTimeout(timer);
+                        window.removeEventListener("pointerup", onUp);
+                      };
+                      window.addEventListener("pointerup", onUp);
+                    }}
+                    className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-sm cursor-grab touch-none"
+                    style={{ touchAction: "none" }}
+                    title="Click: delete · Hold: reorder"
+                  >
+                    ⋮⋮
+                  </button>
+                  {listMenuId === l.id && (
+                    <div
+                      className="absolute top-full left-0 mt-1 z-[90] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[120px]"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      Delete
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-            {!lists.length && (
-              <span className="text-xs text-gray-500 px-1">No lists yet</span>
-            )}
-          </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteList(l.id);
+                          setListMenuId(null);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!lists.length && (
+                <span className="text-xs text-gray-500 px-2 py-1">No lists yet</span>
+              )}
+            </div>
+          )}
 
           <button
             type="button"
-            onClick={() => {
-              setShowNewList(true);
-            }}
+            onClick={() => setShowNewList(true)}
             title="New list"
             className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-semibold transition-all duration-200 ${
               showNewList
@@ -1619,118 +1757,6 @@ export default function WatchlistPage() {
             />
             Line
           </label>
-        </div>
-      )}
-
-      {showSearch && (
-        <div className="mb-6 relative" data-search-root>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-xl">
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
-              <span className="text-gray-500">🔍</span>
-              <input
-                autoFocus
-                value={searchQuery}
-                onChange={(e) => runSearch(e.target.value)}
-                placeholder="Search symbol (BTC, ETH…)"
-                className="flex-1 bg-transparent outline-none text-white text-sm py-1"
-              />
-              {searching && (
-                <span className="text-xs text-orange-400 animate-pulse">Searching…</span>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSearch(false);
-                  setSearchQuery("");
-                  setSearchHits([]);
-                }}
-                className="text-gray-400 text-sm px-2"
-              >
-                Close
-              </button>
-            </div>
-            <div className="max-h-72 overflow-y-auto">
-              {!searchQuery.trim() && (
-                <p className="text-gray-500 text-sm p-4">Type a symbol to search…</p>
-              )}
-              {searchQuery.trim() && !searching && searchHits.length === 0 && (
-                <p className="text-gray-500 text-sm p-4">No results</p>
-              )}
-              {searchHits.map((hit) => {
-                const added = inList(hit.symbol, hit.exchange);
-                const flash = justAdded === storageSymbol(hit.symbol, hit.exchange);
-                const p = prices[hit.symbol];
-                const pct = pcts[hit.symbol];
-                return (
-                  <div
-                    key={`${hit.exchange || "X"}-${hit.market}-${hit.symbol}`}
-                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800 border-b border-gray-800/50"
-                  >
-                    <CoinIcon symbol={hit.symbol} size={28} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-sm">{hit.symbol}</span>
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded ${
-                            hit.market === "Spot"
-                              ? "bg-blue-900/60 text-blue-300"
-                              : "bg-purple-900/60 text-purple-300"
-                          }`}
-                        >
-                          {hit.market}
-                        </span>
-                        {hit.exchange && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-orange-300 border border-gray-700 font-medium">
-                            {hit.exchange}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {hit.baseCoin}/{hit.quoteCoin}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0 min-w-[88px]">
-                      {p != null ? (
-                        <>
-                          <div className="text-sm text-gray-100 font-medium">
-                            {formatPrice(p)}
-                          </div>
-                          {pct != null && !Number.isNaN(pct) && (
-                            <div
-                              className={`text-[11px] font-medium ${
-                                pct >= 0 ? "text-green-400" : "text-red-400"
-                              }`}
-                            >
-                              {formatPct(pct)}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-xs text-gray-600">—</span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => toggleSymbol(hit.symbol, hit.exchange)}
-                      title={added ? "Remove from list" : "Add to list"}
-                      className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-                        added || flash
-                          ? "bg-green-500/20 text-green-400 border border-green-500/50 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/50"
-                          : "bg-gray-800 text-gray-200 border border-gray-600 hover:bg-orange-500 hover:border-orange-400 hover:text-black"
-                      }`}
-                    >
-                      {added || flash ? (
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>
-                      ) : (
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
         </div>
       )}
 
