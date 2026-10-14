@@ -553,9 +553,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 900;
+const FUTURE_BARS = 3000;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 280;
+const FUTURE_VISIBLE = 500;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -2089,60 +2089,59 @@ export default function DashboardPage() {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // فقط نوار قیمت سمت راست (~80px)
-          if (fromRight > 100 || fromRight < 0) return;
-          // جلوگیری از اسکرول افقی پیش‌فرض روی محور قیمت
+          // فقط نوار قیمت سمت راست (~90px)
+          if (fromRight > 90 || fromRight < 0) return;
           e.preventDefault();
           e.stopPropagation();
           const s = seriesRef.current as any;
           if (!s) return;
 
+          // جهت: اسکرول بالا = بزرگ‌تر (zoom in) | پایین = کوچک‌تر (zoom out)
+          // روی بعضی ترک‌پدها deltaY برعکس یا صفر است
+          let delta = e.deltaY;
+          if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
+          if (e.deltaMode === 1) delta *= 16; // line mode
+          if (e.deltaMode === 2) delta *= 400; // page mode
+          if (delta === 0) return;
+
           let pTop: number | null = null;
           let pBot: number | null = null;
-          try {
-            const t = s.coordinateToPrice?.(1);
-            const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
-            if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
-              pTop = Math.max(Number(t), Number(b));
-              pBot = Math.min(Number(t), Number(b));
-            }
-          } catch {}
-          if (pTop == null || pBot == null || !(pTop > pBot)) {
-            const ov = priceRangeOverrideRef.current;
-            if (ov) {
-              pBot = ov.from;
-              pTop = ov.to;
-            }
+          const ov0 = priceRangeOverrideRef.current;
+          if (ov0 && ov0.to > ov0.from) {
+            pBot = ov0.from;
+            pTop = ov0.to;
+          } else {
+            try {
+              const t = s.coordinateToPrice?.(1);
+              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
+                pTop = Math.max(Number(t), Number(b));
+                pBot = Math.min(Number(t), Number(b));
+              }
+            } catch {}
           }
-          if (pTop == null || pBot == null || !(pTop > pBot)) {
-            const bars = candlesRef.current;
-            if (!bars.length) return;
-            let lo = Infinity, hi = -Infinity;
-            for (const c of bars.slice(-120)) {
-              if (c.low < lo) lo = c.low;
-              if (c.high > hi) hi = c.high;
-            }
-            if (!(hi > lo)) return;
-            pBot = lo;
-            pTop = hi;
-          }
+          if (pTop == null || pBot == null || !(pTop > pBot)) return;
 
-          // زوم حول قیمت زیر موس
           const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          const factor = e.deltaY < 0 ? 0.82 : 1.22;
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00008 + 0.5);
-          const aboveRatio = (pTop - priceAtCursor) / (pTop - pBot);
+          // delta < 0 → اسکرول به بالا → زوم این (بازه قیمت تنگ‌تر = کندل بزرگ‌تر)
+          const zoomIn = delta < 0;
+          const factor = zoomIn ? 0.85 : 1.18;
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+          const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
+          if (!(newTop > newBot)) return;
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
+            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
+            // اگر API setVisibleRange داشت، مستقیم هم ست کن
+            try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
-        // دابل‌کلیک روی محور قیمت = ریست به autoScale
         const onDblPrice = (e: MouseEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
