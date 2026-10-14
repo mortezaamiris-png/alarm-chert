@@ -169,10 +169,12 @@ function MiniChart({
   symbol,
   interval,
   pct,
+  candleMode = false,
 }: {
   symbol: string;
   interval: string;
   pct?: number | null;
+  candleMode?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -209,15 +211,6 @@ function MiniChart({
       handleScroll: false,
       handleScale: false,
     });
-    const series = chart.addAreaSeries({
-      lineColor,
-      topColor,
-      bottomColor,
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
 
     (async () => {
       try {
@@ -227,11 +220,44 @@ function MiniChart({
         const json = await res.json();
         const list = Array.isArray(json) ? json : json?.data || json?.result?.list || [];
         if (!list?.length) return;
-        const rows = list.map((item: any) => ({
-          time: typeof item.time === "number" ? item.time : Math.floor(Number(item[0] || item.time) / (Number(item[0]) > 1e12 ? 1000 : 1)),
-          value: Number(item.value ?? item.close ?? item[4]),
-        })).filter((r: any) => r.time && Number.isFinite(r.value));
-        series.setData(rows as any);
+        if (candleMode) {
+          const series = chart.addCandlestickSeries({
+            upColor: "#22c55e",
+            downColor: "#ef4444",
+            borderVisible: false,
+            wickUpColor: "#22c55e",
+            wickDownColor: "#ef4444",
+            priceLineVisible: false,
+            lastValueVisible: false,
+          });
+          const rows = list
+            .map((item: any) => ({
+              time: typeof item.time === "number" ? item.time : Math.floor(Number(item[0] || item.time) / (Number(item[0]) > 1e12 ? 1000 : 1)),
+              open: Number(item.open ?? item[1]),
+              high: Number(item.high ?? item[2]),
+              low: Number(item.low ?? item[3]),
+              close: Number(item.close ?? item.value ?? item[4]),
+            }))
+            .filter((r: any) => r.time && Number.isFinite(r.close));
+          series.setData(rows as any);
+        } else {
+          const series = chart.addAreaSeries({
+            lineColor,
+            topColor,
+            bottomColor,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          const rows = list
+            .map((item: any) => ({
+              time: typeof item.time === "number" ? item.time : Math.floor(Number(item[0] || item.time) / (Number(item[0]) > 1e12 ? 1000 : 1)),
+              value: Number(item.value ?? item.close ?? item[4]),
+            }))
+            .filter((r: any) => r.time && Number.isFinite(r.value));
+          series.setData(rows as any);
+        }
         chart.timeScale().fitContent();
       } catch {}
     })();
@@ -239,7 +265,7 @@ function MiniChart({
     return () => {
       chart.remove();
     };
-  }, [symbol, interval, pct]);
+  }, [symbol, interval, pct, candleMode]);
 
   return <div ref={ref} className="w-full h-20 pointer-events-none" />;
 }
@@ -282,20 +308,86 @@ function DetailChart({
         vertLines: { color: "#1f2937" },
         horzLines: { color: "#1f2937" },
       },
-      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.12 } },
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0.08, bottom: 0.12 },
+        autoScale: true,
+      },
       timeScale: {
         borderVisible: false,
         timeVisible: true,
         rightOffset: 80,
-        barSpacing: 7,
-        minBarSpacing: 2,
+        barSpacing: 6,
+        minBarSpacing: 0.5,
         fixLeftEdge: false,
         fixRightEdge: false,
+        shiftVisibleRangeOnScroll: false as any,
       },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-    });
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: { time: true, price: true },
+        axisDoubleClickReset: true,
+        mouseWheel: true,
+        pinch: true,
+      },
+    } as any);
     chartRef.current = chart;
+
+    // اسکرول روی قیمت: بالا بزرگ · پایین کوچک (بدون آهنربا)
+    const priceRangeRef = { from: null as number | null, to: null as number | null };
+    const onWheelPrice = (e: WheelEvent) => {
+      const container = ref.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const fromRight = rect.right - e.clientX;
+      if (fromRight > 90 || fromRight < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const s = (candleRef.current || lineRef.current) as any;
+      if (!s) return;
+      let delta = e.deltaY;
+      if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
+      if (delta === 0) return;
+      let pTop: number | null = null;
+      let pBot: number | null = null;
+      if (priceRangeRef.from != null && priceRangeRef.to != null && priceRangeRef.to > priceRangeRef.from) {
+        pBot = priceRangeRef.from;
+        pTop = priceRangeRef.to;
+      } else {
+        try {
+          const t = s.coordinateToPrice?.(1);
+          const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+          if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
+            pTop = Math.max(Number(t), Number(b));
+            pBot = Math.min(Number(t), Number(b));
+          }
+        } catch {}
+      }
+      if (pTop == null || pBot == null || !(pTop > pBot)) return;
+      const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+      const priceAtCursor = pTop - relY * (pTop - pBot);
+      const factor = delta < 0 ? 0.85 : 1.18;
+      const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+      const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
+      const newTop = priceAtCursor + newRange * aboveRatio;
+      const newBot = priceAtCursor - newRange * (1 - aboveRatio);
+      if (!(newTop > newBot)) return;
+      priceRangeRef.from = newBot;
+      priceRangeRef.to = newTop;
+      try {
+        const ps = s.priceScale?.() || chart.priceScale("right");
+        ps?.setAutoScale?.(false);
+        ps?.setVisibleRange?.({ from: newBot, to: newTop });
+        ps?.applyOptions?.({ autoScale: false });
+      } catch {}
+    };
+    ref.current.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+    (chart as any).__priceWheel = onWheelPrice;
 
     if (lineMode) {
       lineRef.current = chart.addAreaSeries({
@@ -327,6 +419,10 @@ function DetailChart({
 
     return () => {
       window.removeEventListener("resize", onResize);
+      try {
+        const w = (chart as any).__priceWheel;
+        if (w && ref.current) ref.current.removeEventListener("wheel", w, true as any);
+      } catch {}
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
@@ -778,6 +874,10 @@ export default function WatchlistPage() {
   const [lists, setLists] = useState<WatchList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [listsMenuOpen, setListsMenuOpen] = useState(false);
+  const [listDraggingId, setListDraggingId] = useState<string | null>(null);
+  const [listDropTargetId, setListDropTargetId] = useState<string | null>(null);
+  const listDragIdRef = useRef<string | null>(null);
+  const listDropIdRef = useRef<string | null>(null);
   const [items, setItems] = useState<WatchItem[]>([]);
   const [newListName, setNewListName] = useState("");
   const [showNewList, setShowNewList] = useState(false);
@@ -840,22 +940,7 @@ export default function WatchlistPage() {
     };
   }, [showSearch]);
 
-  useEffect(() => {
-    if (!listsMenuOpen) return;
-    const onDown = (e: MouseEvent | TouchEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (!t) return;
-      if (t.closest?.("[data-lists-menu-root]")) return;
-      setListsMenuOpen(false);
-      setListMenuId(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown, { passive: true });
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-    };
-  }, [listsMenuOpen]);
+
   const listScrollRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1242,6 +1327,55 @@ export default function WatchlistPage() {
     window.addEventListener("pointerup", onUp);
   };
 
+  const startListDrag = (id: string) => {
+    listDragIdRef.current = id;
+    setListDraggingId(id);
+    listDropIdRef.current = null;
+    setListDropTargetId(null);
+
+    const onMove = (e: PointerEvent) => {
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const row = under?.closest?.("[data-list-id]") as HTMLElement | null;
+      const tid = row?.dataset?.listId || null;
+      listDropIdRef.current = tid;
+      setListDropTargetId(tid);
+    };
+    const onUp = async () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const fromId = listDragIdRef.current;
+      const toId = listDropIdRef.current;
+      setListDraggingId(null);
+      setListDropTargetId(null);
+      listDragIdRef.current = null;
+      listDropIdRef.current = null;
+      if (!fromId || !toId || fromId === toId) return;
+      const arr = [...listsRef.current];
+      const fromIdx = arr.findIndex((x) => x.id === fromId);
+      const toIdx = arr.findIndex((x) => x.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const [moved] = arr.splice(fromIdx, 1);
+      arr.splice(toIdx, 0, moved);
+      setLists(arr);
+      listsRef.current = arr;
+      try {
+        saveLS(
+          "wl_list_order",
+          arr.map((x) => x.id)
+        );
+      } catch {}
+      try {
+        await Promise.all(
+          arr.map((x, i) =>
+            supabase.from("watchlist_lists").update({ sort_order: i }).eq("id", x.id)
+          )
+        );
+      } catch {}
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   const PriceBlock = ({ sym }: { sym: string }) => {
     const bare = bareSymbol(sym);
     const p = prices[bare];
@@ -1311,7 +1445,7 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {/* My List — horizontal expand + compact + for new list */}
+      {/* My List — open/close only via this button; lists expand horizontally */}
       <div className="mb-3" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -1321,30 +1455,36 @@ export default function WatchlistPage() {
           >
             My List
             <span
-              className={`inline-block text-[10px] transition-transform duration-300 ${
-                listsMenuOpen ? "rotate-180" : ""
+              className={`inline-block text-xs transition-transform duration-300 ${
+                listsMenuOpen ? "rotate-90" : ""
               }`}
             >
-              ▼
+              ›
             </span>
           </button>
 
-          {/* lists expand horizontally with fade/slide */}
           <div
             className={`flex flex-wrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
               listsMenuOpen
-                ? "max-w-[900px] opacity-100 translate-x-0"
-                : "max-w-0 opacity-0 -translate-x-2 pointer-events-none"
+                ? "max-w-[900px] opacity-100"
+                : "max-w-0 opacity-0 pointer-events-none"
             }`}
           >
             {lists.map((l) => (
-              <div key={l.id} className="relative flex items-center shrink-0">
+              <div
+                key={l.id}
+                data-list-id={l.id}
+                className={`relative flex items-center shrink-0 rounded-full transition-all ${
+                  listDraggingId === l.id ? "opacity-40 scale-95" : ""
+                } ${
+                  listDropTargetId === l.id && listDraggingId && listDraggingId !== l.id
+                    ? "ring-2 ring-orange-500/60"
+                    : ""
+                }`}
+              >
                 <button
                   type="button"
-                  onClick={() => {
-                    setActiveListId(l.id);
-                    setListsMenuOpen(false);
-                  }}
+                  onClick={() => setActiveListId(l.id)}
                   className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
                     activeListId === l.id
                       ? "bg-orange-500/25 text-orange-300 border border-orange-500/50"
@@ -1358,12 +1498,26 @@ export default function WatchlistPage() {
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    setListMenuId((prev) => (prev === l.id ? null : l.id));
+                    let dragged = false;
+                    const timer = window.setTimeout(() => {
+                      dragged = true;
+                      setListMenuId(null);
+                      startListDrag(l.id);
+                    }, 160);
+                    const onUp = () => {
+                      clearTimeout(timer);
+                      if (!dragged) {
+                        setListMenuId((prev) => (prev === l.id ? null : l.id));
+                      }
+                      window.removeEventListener("pointerup", onUp);
+                    };
+                    window.addEventListener("pointerup", onUp);
                   }}
-                  className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-sm cursor-pointer"
-                  title="List menu"
+                  className="ml-0.5 w-7 h-7 flex items-center justify-center rounded-full text-gray-500 hover:text-white hover:bg-gray-800 text-sm cursor-grab touch-none"
+                  style={{ touchAction: "none" }}
+                  title="Drag to reorder · click for menu"
                 >
-                  ⋮
+                  ⋮⋮
                 </div>
                 {listMenuId === l.id && (
                   <div
@@ -1379,7 +1533,7 @@ export default function WatchlistPage() {
                       }}
                       className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-800"
                     >
-                      Delete list
+                      Delete
                     </button>
                   </div>
                 )}
@@ -1390,12 +1544,10 @@ export default function WatchlistPage() {
             )}
           </div>
 
-          {/* + only — expands input with animation */}
           <button
             type="button"
             onClick={() => {
               setShowNewList(true);
-              setListsMenuOpen(false);
             }}
             title="New list"
             className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-semibold transition-all duration-200 ${
@@ -1409,9 +1561,7 @@ export default function WatchlistPage() {
 
           <div
             className={`flex items-center gap-2 overflow-hidden transition-all duration-300 ease-out ${
-              showNewList
-                ? "max-w-[280px] opacity-100 ml-1"
-                : "max-w-0 opacity-0 ml-0"
+              showNewList ? "max-w-[280px] opacity-100 ml-1" : "max-w-0 opacity-0 ml-0"
             }`}
           >
             <input
@@ -1451,7 +1601,7 @@ export default function WatchlistPage() {
       </div>
 
       {viewMode === "grid" && (
-        <div className="flex flex-wrap gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-2 mb-4">
           {TIMEFRAMES.map((tf) => (
             <button
               key={tf.value}
@@ -1466,6 +1616,15 @@ export default function WatchlistPage() {
               {tf.label}
             </button>
           ))}
+          <label className="ml-auto flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={lineMode}
+              onChange={(e) => setLineMode(e.target.checked)}
+              className="accent-orange-500"
+            />
+            Line
+          </label>
         </div>
       )}
 
@@ -1677,6 +1836,7 @@ export default function WatchlistPage() {
                     symbol={bareSymbol(item.symbol)}
                     interval={interval}
                     pct={pcts[bareSymbol(item.symbol)]}
+                    candleMode={!lineMode}
                   />
                 )}
                 <div className="flex justify-end mt-1">
