@@ -902,12 +902,6 @@ export default function WatchlistPage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const [draggingListId, setDraggingListId] = useState<string | null>(null);
-  const [listDropTargetId, setListDropTargetId] = useState<string | null>(null);
-  const [listFloatPos, setListFloatPos] = useState<{ x: number; y: number } | null>(null);
-  const [listFloatSize, setListFloatSize] = useState<{ w: number; h: number }>({ w: 100, h: 36 });
-  const listDragIdRef = useRef<string | null>(null);
-  const listOffsetRef = useRef({ x: 0, y: 0 });
   const listsRef = useRef<WatchList[]>([]);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
