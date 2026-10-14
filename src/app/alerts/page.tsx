@@ -57,10 +57,18 @@ export default function AlertsPage() {
     setFetching(true);
     setErrorMsg(null);
     try {
+      const { data: sess } = await supabase.auth.getSession();
+      const uid = sess?.session?.user?.id;
+      if (!uid) {
+        setAlerts([]);
+        setFetching(false);
+        setErrorMsg("Please sign in to see your alerts");
+        return;
+      }
       const { data, error } = await supabase
         .from("alarms")
         .select("*")
-        .eq("user_id", (await supabase.auth.getSession()).data.session?.user?.id || "none")
+        .eq("user_id", uid)
         .order("created_at", { ascending: false });
 
       if (error) {
