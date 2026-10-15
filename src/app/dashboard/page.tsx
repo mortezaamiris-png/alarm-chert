@@ -1127,7 +1127,7 @@ export default function DashboardPage() {
       });
     } catch {}
     try {
-      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     } catch {}
@@ -2039,6 +2039,11 @@ export default function DashboardPage() {
           horzTouchDrag: true,
           vertTouchDrag: true,
         },
+        // موبایل: اینرسی اسکرول افقی/عمودی (بدون این، درSafari/Chrome موبایل چارت «گیر» می‌کند)
+        kineticScroll: {
+          touch: true,
+          mouse: true,
+        },
         handleScale: {
           // چرخ ماوس روی محور راست قیمت → زوم عمودی مثل TradingView
           axisPressedMouseMove: { time: true, price: true },
@@ -2072,6 +2077,10 @@ export default function DashboardPage() {
             horzTouchDrag: true,
             vertTouchDrag: true,
           },
+          kineticScroll: {
+            touch: true,
+            mouse: true,
+          },
           handleScale: {
             axisPressedMouseMove: { time: true, price: true },
             axisDoubleClickReset: { time: true, price: true },
@@ -2079,8 +2088,10 @@ export default function DashboardPage() {
             pinch: true,
           },
         });
-        // iPad/Safari: allow horizontal pan on chart body
-        container.style.touchAction = "pan-x pan-y";
+        // موبایل: touch-action none تا ژست‌ها به LWC برسد (نه اسکرول صفحه)
+        container.style.touchAction = "none";
+        container.style.webkitUserSelect = "none";
+        (container.style as any).userSelect = "none";
         (container.style as any).webkitUserSelect = "none";
         (container.style as any).userSelect = "none";
         // اطمینان از باز بودن اسکرول لمسی
@@ -2227,7 +2238,8 @@ export default function DashboardPage() {
           if (!e.touches.length) return;
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.touches[0].clientX;
-          if (fromRight > 100 || fromRight < 0) {
+          // فقط نوار باریک محور قیمت (نه کل چارت) — وگرنه در موبایل pan کندل‌ها قفل می‌شود
+          if (fromRight > 56 || fromRight < 0) {
             priceTouchActive = false;
             return;
           }
@@ -2256,8 +2268,8 @@ export default function DashboardPage() {
         };
         const onTouchMovePrice = (e: TouchEvent) => {
           if (!priceTouchActive || !priceTouchRange || !e.touches.length) return;
-          e.preventDefault();
-          e.stopPropagation();
+          // فقط preventDefault — stopPropagation نکن تا LWC روی بقیه ژست‌ها بماند
+          try { e.preventDefault(); } catch {}
           const dy = e.touches[0].clientY - priceTouchY0;
           // drag down = zoom out, drag up = zoom in
           const factor = Math.exp(dy / 280);
@@ -4133,7 +4145,7 @@ export default function DashboardPage() {
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
         handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
       });
-      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
+      if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     } catch {}
@@ -4892,8 +4904,8 @@ export default function DashboardPage() {
         <div className="flex-1 min-w-0 relative">
           <div
             ref={chartContainerRef}
-            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden"
-            style={{ height: 640 }}
+            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+            style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -5143,7 +5155,7 @@ export default function DashboardPage() {
                           handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                           handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
                         });
-                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
+                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
                         document.body.style.overflow = "";
                         document.documentElement.style.overflow = "";
                       } catch {}
@@ -5607,7 +5619,7 @@ export default function DashboardPage() {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
                             document.documentElement.style.overflow = "";
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                               handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
@@ -5789,7 +5801,7 @@ export default function DashboardPage() {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
                             document.documentElement.style.overflow = "";
-                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "pan-x pan-y";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
                             chartRef.current?.applyOptions({
                               handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
                               handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
