@@ -418,7 +418,7 @@ export default function SiteNavbar() {
 
   return (
     <>
-      <header className="sticky top-0 z-50 w-full border-b border-white/5 bg-[#0b0e11]/90 backdrop-blur-md">
+      <header className="sticky top-0 z-[100] w-full border-b border-white/5 bg-[#0b0e11]/95 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-3 h-12 flex items-center gap-2">
           {/* LEFT: Sign in / Profile + Messages */}
           <div className="flex items-center gap-1.5 shrink-0 min-w-[88px]">
@@ -444,7 +444,7 @@ export default function SiteNavbar() {
                     )}
                   </button>
                   {menuOpen && (
-                    <div className="absolute left-0 top-full mt-1.5 z-[90] w-52 bg-gray-950 border border-gray-700 rounded-xl shadow-xl py-1">
+                    <div className="absolute left-0 top-full mt-1.5 z-[200] w-52 bg-[#0b0e11] border-2 border-orange-500/40 rounded-xl shadow-2xl py-1">
                       <div className="px-3 py-2 border-b border-gray-800">
                         <p className="text-sm font-medium text-white truncate">
                           {displayName}
@@ -487,7 +487,7 @@ export default function SiteNavbar() {
                   type="button"
                   onClick={() => router.push("/messages")}
                   title="Messages"
-                  className="relative w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10 hover:text-white"
+                  className="relative w-9 h-9 rounded-full bg-gray-800 border-2 border-orange-500/60 hover:border-orange-400 flex items-center justify-center text-orange-300 hover:text-orange-200"
                 >
                   <svg
                     width="17"
