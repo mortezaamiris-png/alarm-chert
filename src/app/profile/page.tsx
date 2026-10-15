@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 
-/** یوزرنیم بات بدون @ — ترجیحاً در Vercel: NEXT_PUBLIC_TELEGRAM_BOT_USERNAME */
+/** Bot username without @ — set NEXT_PUBLIC_TELEGRAM_BOT_USERNAME in Vercel */
 const BOT_USERNAME =
   (typeof process !== "undefined" &&
     process.env?.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME) ||
@@ -101,12 +101,12 @@ export default function ProfilePage() {
   const connectTelegram = () => {
     const url = `https://t.me/${BOT_USERNAME}?start=${user.id}`;
     window.open(url, "_blank", "noopener,noreferrer");
-    setMsg("در تلگرام Start را بزن، بعد اینجا «بررسی وضعیت» را بزن.");
+    setMsg("Press Start in Telegram, then tap Check status here.");
   };
 
   const refreshTg = async () => {
     await loadTg(user.id);
-    setMsg("وضعیت تلگرام به‌روز شد");
+    setMsg("Telegram status updated");
   };
 
   const unlinkTelegram = async () => {
@@ -116,7 +116,7 @@ export default function ProfilePage() {
       .eq("id", user.id);
     setTgLinked(false);
     setTgChatId(null);
-    setMsg("اتصال تلگرام قطع شد");
+    setMsg("Telegram unlinked");
   };
 
   return (
@@ -147,10 +147,10 @@ export default function ProfilePage() {
           />
         </div>
 
-        {/* اتصال تلگرام — لینک اختصاصی /start USER_ID */}
+        {/* Connect Telegram — deep link /start USER_ID */}
         <div className="rounded-2xl border border-gray-800 bg-gray-900/50 p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-medium">تلگرام آلارم</p>
+            <p className="text-sm font-medium">Telegram alerts</p>
             <span
               className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                 tgLinked
@@ -158,11 +158,11 @@ export default function ProfilePage() {
                   : "bg-gray-800 text-gray-400"
               }`}
             >
-              {tgLinked === null ? "…" : tgLinked ? "وصل ✅" : "وصل نیست"}
+              {tgLinked === null ? "…" : tgLinked ? "Linked ✅" : "Not linked"}
             </span>
           </div>
           <p className="text-xs text-gray-500 leading-relaxed">
-            دکمه زیر را بزن → در تلگرام Start کن تا آلارم‌ها فقط برای تو ارسال شود.
+            Tap the button below, then press Start in Telegram so alarms go only to your chat.
           </p>
           <div className="flex flex-wrap gap-2">
             <button
@@ -170,14 +170,14 @@ export default function ProfilePage() {
               onClick={connectTelegram}
               className="px-3 py-2 rounded-xl bg-[#229ED9] text-white text-sm font-semibold"
             >
-              اتصال تلگرام
+              Connect Telegram
             </button>
             <button
               type="button"
               onClick={refreshTg}
               className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 text-sm"
             >
-              بررسی وضعیت
+              Check status
             </button>
             {tgLinked && (
               <button
@@ -185,7 +185,7 @@ export default function ProfilePage() {
                 onClick={unlinkTelegram}
                 className="px-3 py-2 rounded-xl bg-gray-800 text-red-400 text-sm"
               >
-                قطع اتصال
+                Unlink
               </button>
             )}
           </div>
