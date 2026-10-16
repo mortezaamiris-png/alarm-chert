@@ -200,7 +200,7 @@ function MiniChart({
 
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth || 160,
-      height: 80,
+      height: 96,
       layout: {
         background: { color: "transparent" },
         textColor: "#6b7280",
@@ -269,7 +269,7 @@ function MiniChart({
     };
   }, [symbol, interval, pct, candleMode]);
 
-  return <div ref={ref} className="w-full h-20 pointer-events-none" />;
+  return <div ref={ref} className="w-full h-24 pointer-events-none" />;
 }
 
 function DetailChart({
@@ -300,7 +300,7 @@ function DetailChart({
 
     const chart = createChart(ref.current, {
       width: ref.current.clientWidth,
-      height: 420,
+      height: Math.max(520, Math.floor(window.innerHeight * 0.55)),
       layout: {
         background: { color: "#0f0f0f" },
         textColor: "#d1d5db",
@@ -329,8 +329,9 @@ function DetailChart({
         mouseWheel: true,
         pressedMouseMove: true,
         horzTouchDrag: true,
-        vertTouchDrag: false,
+        vertTouchDrag: true,
       },
+      kineticScroll: { touch: true, mouse: true } as any,
       handleScale: {
         axisPressedMouseMove: { time: true, price: true },
         axisDoubleClickReset: true,
@@ -339,6 +340,10 @@ function DetailChart({
       },
     } as any);
     chartRef.current = chart;
+    try {
+      ref.current.style.touchAction = "none";
+      (ref.current.style as any).webkitUserSelect = "none";
+    } catch {}
 
     const priceOverride = { current: null as { from: number; to: number } | null };
 
@@ -936,6 +941,25 @@ export default function WatchlistPage() {
   const [items, setItems] = useState<WatchItem[]>([]);
   const [newListName, setNewListName] = useState("");
   const [showNewList, setShowNewList] = useState(false);
+
+  // بستن فرم New List با کلیک بیرون
+  useEffect(() => {
+    if (!showNewList) return;
+    const onDown = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("[data-newlist-root]")) return;
+      if (t?.closest?.("[data-newlist-btn]")) return;
+      setShowNewList(false);
+      setNewListName("");
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true } as any);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [showNewList]);
+
   const [interval, setIntervalTf] = useState(() => loadLS("wl_tf", "60"));
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadLS("wl_view", "grid"));
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
@@ -1574,11 +1598,11 @@ export default function WatchlistPage() {
       {/* Header — بدون Sign in تکراری (فقط در SiteNavbar بالاست) */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <h1 className="text-xl font-bold">Watchlist</h1>
-        <div className="relative z-30" data-search-root>
+        <div className="relative z-[80]" data-search-root>
           <button
             type="button"
             onClick={() => setShowSearch((v) => !v)}
-            className="w-9 h-9 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-gray-300 hover:bg-white/10"
+            className="w-9 h-9 rounded-full bg-gray-800 border-2 border-orange-500/60 hover:border-orange-400 flex items-center justify-center text-orange-300"
             title="Search symbols"
             data-search-btn
           >
@@ -1588,7 +1612,7 @@ export default function WatchlistPage() {
             </svg>
           </button>
           {showSearch && (
-            <div className="absolute left-0 top-full mt-2 w-[min(92vw,420px)] bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-2xl">
+            <div className="absolute left-0 top-full mt-2 w-[min(96vw,560px)] min-h-[280px] max-h-[70vh] bg-gray-950 border-2 border-orange-500/30 rounded-2xl overflow-hidden shadow-2xl z-[90]">
               <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
                 <span className="text-gray-500 text-sm">🔍</span>
                 <input
@@ -1688,7 +1712,7 @@ export default function WatchlistPage() {
         <div className="flex-1" />
 
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          {/* Clock → timeframes (grid + list) */}
+          {/* Clock → timeframes */}
           <div className="relative" data-tf-menu-root>
             <button
               type="button"
@@ -1703,7 +1727,7 @@ export default function WatchlistPage() {
               <span>{TIMEFRAMES.find((t) => t.value === interval)?.label || interval}</span>
             </button>
             {tfMenuOpen && (
-              <div className="absolute right-0 top-full mt-1.5 z-40 flex flex-wrap gap-1 p-2 w-[220px] rounded-xl bg-[#0b0e11] border-2 border-orange-500/40 shadow-2xl">
+              <div className="absolute right-0 top-full mt-1.5 z-[90] flex flex-wrap gap-1 p-2 w-[220px] rounded-xl bg-[#0b0e11] border-2 border-orange-500/40 shadow-2xl">
                 {TIMEFRAMES.map((tf) => (
                   <button
                     key={tf.value}
@@ -1724,16 +1748,6 @@ export default function WatchlistPage() {
               </div>
             )}
           </div>
-
-          <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none px-1">
-            <input
-              type="checkbox"
-              checked={lineMode}
-              onChange={(e) => setLineMode(e.target.checked)}
-              className="accent-orange-500"
-            />
-            Line
-          </label>
 
           <button
             type="button"
@@ -1757,16 +1771,29 @@ export default function WatchlistPage() {
           >
             ≡ List
           </button>
+
+          {/* Line فقط در حالت List — کنار List */}
+          {viewMode === "list" && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none h-9 px-2.5 rounded-full bg-gray-800 border-2 border-orange-500/40">
+              <input
+                type="checkbox"
+                checked={lineMode}
+                onChange={(e) => setLineMode(e.target.checked)}
+                className="accent-orange-500"
+              />
+              Line
+            </label>
+          )}
         </div>
       </div>
 
       {/* My List — absolute panel so layout doesn't jump */}
-      <div className="mb-3 relative z-30" data-lists-menu-root>
+      <div className="mb-3 relative z-40" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setListsMenuOpen((v) => !v)}
-            className="px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 bg-gray-800 text-orange-300 border-2 border-orange-500/60 hover:border-orange-400"
+            className="px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 bg-gray-800 text-orange-300 border-2 border-orange-500/60 hover:border-orange-400 shrink-0"
           >
             My List
             <span
@@ -1778,8 +1805,14 @@ export default function WatchlistPage() {
             </span>
           </button>
 
-          {listsMenuOpen && (
-            <div className="absolute left-0 top-full mt-1.5 z-40 flex flex-wrap items-center gap-1.5 max-w-[min(92vw,640px)] p-2 rounded-xl bg-gray-950 border border-orange-500/30 shadow-2xl backdrop-blur-sm">
+          <div
+            className={`flex flex-wrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
+              listsMenuOpen
+                ? "max-w-[min(92vw,720px)] opacity-100 scale-100"
+                : "max-w-0 opacity-0 scale-95 pointer-events-none"
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-gray-950/95 border border-orange-500/30 shadow-xl">
               {lists.map((l) => (
                 <div
                   key={l.id}
@@ -1854,12 +1887,13 @@ export default function WatchlistPage() {
                 <span className="text-xs text-gray-500 px-2 py-1">No lists yet</span>
               )}
             </div>
-          )}
+          </div>
 
           <button
             type="button"
-            onClick={() => setShowNewList(true)}
+            onClick={() => setShowNewList((v) => !v)}
             title="New list"
+            data-newlist-btn
             className={`w-8 h-8 rounded-full flex items-center justify-center text-lg font-semibold transition-all duration-200 ${
               showNewList
                 ? "bg-orange-500 text-black scale-95"
@@ -1870,6 +1904,7 @@ export default function WatchlistPage() {
           </button>
 
           <div
+            data-newlist-root
             className={`flex items-center gap-2 overflow-hidden transition-all duration-300 ease-out ${
               showNewList ? "max-w-[280px] opacity-100 ml-1" : "max-w-0 opacity-0 ml-0"
             }`}
@@ -2144,7 +2179,7 @@ export default function WatchlistPage() {
             </div>
           </div>
 
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 min-h-[560px]">
             {selectedSymbol ? (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -2159,15 +2194,7 @@ export default function WatchlistPage() {
                       Open full chart →
                     </button>
                   </div>
-                  <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={lineMode}
-                      onChange={(e) => setLineMode(e.target.checked)}
-                      className="accent-orange-500"
-                    />
-                    Line chart
-                  </label>
+
                 </div>
 
                 <DetailChart
