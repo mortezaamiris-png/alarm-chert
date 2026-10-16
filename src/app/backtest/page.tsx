@@ -702,6 +702,16 @@ export default function BacktestPage() {
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const candlesRef = useRef<any[]>([]);
+
+  /** Bar Replay (TradingView-style) */
+  const [replayOn, setReplayOn] = useState(false);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replaySpeed, setReplaySpeed] = useState(5); // bars per second
+  const [replayIdx, setReplayIdx] = useState<number | null>(null);
+  const [replayPick, setReplayPick] = useState(false); // waiting for bar click
+  const fullCandlesRef = useRef<any[]>([]);
+  const replayTimerRef = useRef<number | null>(null);
+
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   const prevPricesRef = useRef<Record<string, number>>({});
   /** بعد از لود/عوض TF چند تیک صبر کن تا seed پایدار شود */
@@ -1032,7 +1042,7 @@ export default function BacktestPage() {
   }, [sideViewId, alarmSymbols, watchItems]);
 
   const sideViewLabel = useMemo(() => {
-    if (sideViewId === SIDE_VIEW_ALARMS) return "With alarms";
+    if (sideViewId === SIDE_VIEW_ALARMS) return "Tools";
     return watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist";
   }, [sideViewId, watchLists]);
 
@@ -1767,6 +1777,7 @@ export default function BacktestPage() {
       if (gen !== loadGenRef.current) return;
 
       candlesRef.current = candles;
+        if (!replayOn) fullCandlesRef.current = candles.slice();
       const lastClose = candles[candles.length - 1]?.close || 1;
       const lastTime = candles[candles.length - 1]?.time ?? null;
       setLastBarClose(lastClose);
@@ -2094,6 +2105,39 @@ export default function BacktestPage() {
         });
         // موبایل: touch-action none تا ژست‌ها به LWC برسد (نه اسکرول صفحه)
         container.style.touchAction = "none";
+        try {
+          chart.subscribeClick((param: any) => {
+            if (!replayPickRef.current && !replayOnRef.current) return;
+            // only when picking start bar
+            if (!replayPickRef.current) return;
+            const t = param?.time;
+            if (t == null) return;
+            const full = fullCandlesRef.current;
+            if (!full.length) return;
+            let idx = full.findIndex((c: any) => Number(c.time) === Number(t));
+            if (idx < 0) {
+              // nearest
+              let best = 0;
+              let bestD = Infinity;
+              const tt = Number(t);
+              full.forEach((c: any, i: number) => {
+                const d = Math.abs(Number(c.time) - tt);
+                if (d < bestD) { bestD = d; best = i; }
+              });
+              idx = best;
+            }
+            setReplayIdx(idx);
+            setReplayPick(false);
+            const slice = full.slice(0, idx + 1);
+            candlesRef.current = slice;
+            try {
+              seriesRef.current?.setData(slice as any);
+              chart.timeScale().scrollToPosition(0, false);
+            } catch {}
+            setStatusMsg(`Replay from bar ${idx + 1}/${full.length} — press Play`);
+          });
+        } catch {}
+
         container.style.webkitUserSelect = "none";
         (container.style as any).userSelect = "none";
         (container.style as any).webkitUserSelect = "none";
@@ -3850,6 +3894,7 @@ export default function BacktestPage() {
         return last ? { last, high: last.high, low: last.low } : null;
       }
       candlesRef.current = candles;
+        if (!replayOn) fullCandlesRef.current = candles.slice();
 
       // CRITICAL: never call setVisibleRange / setVisibleLogicalRange on live ticks.
       // That was the iPad jump. Append keeps zoom; only scrollToRealTime if pinned.
@@ -3861,7 +3906,7 @@ export default function BacktestPage() {
           const lastBar = candles[candles.length - 1];
           if (lastBar) {
             try {
-              series.update(lastBar as any);
+              if (!replayOnRef.current) series.update(lastBar as any);
             } catch {
               series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
               try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
@@ -4391,10 +4436,44 @@ export default function BacktestPage() {
       .slice(0, 30);
   }, [alarms, symbolUpper]);
 
-  return (
+  
+  // Replay play loop
+  useEffect(() => {
+    if (replayTimerRef.current) {
+      window.clearInterval(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+    if (!replayOn || !replayPlaying || replayIdx == null) return;
+    const ms = Math.max(50, Math.floor(1000 / Math.max(1, replaySpeed)));
+    replayTimerRef.current = window.setInterval(() => {
+      const full = fullCandlesRef.current;
+      setReplayIdx((prev) => {
+        if (prev == null) return prev;
+        const next = prev + 1;
+        if (next >= full.length) {
+          setReplayPlaying(false);
+          return prev;
+        }
+        const slice = full.slice(0, next + 1);
+        candlesRef.current = slice;
+        try {
+          seriesRef.current?.setData(slice as any);
+        } catch {}
+        return next;
+      });
+    }, ms);
+    return () => {
+      if (replayTimerRef.current) {
+        window.clearInterval(replayTimerRef.current);
+        replayTimerRef.current = null;
+      }
+    };
+  }, [replayOn, replayPlaying, replaySpeed, replayIdx == null]);
+
+return (
     <div className="min-h-screen backtest-page bg-[#0b0e11] text-gray-100 p-3"
 >
-      <style>{`.backtest-page .backtest-hide-alarms{display:none!important}`}</style>
+      <style>{`.backtest-page .backtest-hide-alarms,.backtest-page [data-alarms-panel],.backtest-page [data-history-panel],.backtest-page [data-with-alarms]{display:none!important}`}</style>
       <style>{`
         @keyframes tfPop{
           0%{opacity:0;transform:translateY(10px) scale(0.85)}
@@ -4409,6 +4488,101 @@ export default function BacktestPage() {
       {/* Header — Backtest + symbol search together on the left */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h1 className="text-lg font-semibold text-gray-200">Backtest</h1>
+        {/* Bar Replay controls */}
+        <div className="flex flex-wrap items-center gap-1.5 ml-1">
+          <button
+            type="button"
+            title="Bar Replay"
+            onClick={() => {
+              if (replayOn) {
+                // stop & restore full
+                setReplayOn(false);
+                setReplayPlaying(false);
+                setReplayPick(false);
+                setReplayIdx(null);
+                if (replayTimerRef.current) {
+                  window.clearInterval(replayTimerRef.current);
+                  replayTimerRef.current = null;
+                }
+                const full = fullCandlesRef.current;
+                if (full.length && seriesRef.current) {
+                  candlesRef.current = full;
+                  try {
+                    seriesRef.current.setData(
+                      appendFutureWhitespace(full, String(intervalRef.current)) as any
+                    );
+                  } catch {}
+                }
+                setStatusMsg("Replay off");
+              } else {
+                setReplayOn(true);
+                setReplayPlaying(false);
+                setReplayPick(true);
+                setStatusMsg("Replay: tap a bar on the chart to start from there");
+              }
+            }}
+            className={`h-8 px-2.5 rounded-full text-xs font-medium inline-flex items-center gap-1 border-2 ${
+              replayOn
+                ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                : "bg-gray-800 border-orange-500/50 text-orange-300 hover:border-orange-400"
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            Replay
+          </button>
+          {replayOn && (
+            <>
+              <button
+                type="button"
+                title={replayPlaying ? "Pause" : "Play"}
+                disabled={replayIdx == null}
+                onClick={() => setReplayPlaying((p) => !p)}
+                className="h-8 w-8 rounded-full bg-gray-800 border border-gray-600 text-gray-200 disabled:opacity-40 flex items-center justify-center"
+              >
+                {replayPlaying ? "⏸" : "▶"}
+              </button>
+              <button
+                type="button"
+                title="Step +1"
+                disabled={replayIdx == null}
+                onClick={() => {
+                  const full = fullCandlesRef.current;
+                  if (!full.length || replayIdx == null) return;
+                  const next = Math.min(full.length - 1, replayIdx + 1);
+                  setReplayIdx(next);
+                  const slice = full.slice(0, next + 1);
+                  candlesRef.current = slice;
+                  try {
+                    seriesRef.current?.setData(slice as any);
+                  } catch {}
+                }}
+                className="h-8 px-2 rounded-full bg-gray-800 border border-gray-600 text-xs text-gray-200 disabled:opacity-40"
+              >
+                +1
+              </button>
+              <select
+                value={replaySpeed}
+                onChange={(e) => setReplaySpeed(Number(e.target.value))}
+                className="h-8 rounded-full bg-gray-900 border border-gray-600 text-xs text-gray-200 px-2"
+                title="Bars per second"
+              >
+                {[1, 2, 3, 5, 7, 10].map((s) => (
+                  <option key={s} value={s}>{s}x</option>
+                ))}
+              </select>
+              {replayPick && (
+                <span className="text-[11px] text-orange-300 animate-pulse">Tap chart…</span>
+              )}
+              {replayIdx != null && (
+                <span className="text-[11px] text-gray-500">
+                  {replayIdx + 1}/{fullCandlesRef.current.length || "?"}
+                </span>
+              )}
+            </>
+          )}
+        </div>
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -4517,99 +4691,7 @@ export default function BacktestPage() {
 
             {/* Alarm — top of tool list */}
             <div className="relative">
-              <button
-                type="button"
-                title="Alarm"
-                onClick={() => {
-                  setAlarmMenuOpen((v) => !v);
-                  if (alarmMenuOpen) {
-                    setMode("none");
-                    setDiagStart(null);
-                  }
-                  setMovingId(null);
-                  setMovingType(null);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              </button>
-              {alarmMenuOpen && (
-                <div
-                  className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
-                  style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
-                >
-                  <button
-                    type="button"
-                    title="Full line alarm"
-                    onClick={() => {
-                      clearPreview();
-                      setMode("none");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("Tap chart for full-line alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm"
-                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="3" y1="12" x2="21" y2="12" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    title="Half-line (ray) alarm"
-                    onClick={() => {
-                      clearPreview();
-                      setMode("none");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("Tap chart for ray alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm-ray"
-                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="4" y1="12" x2="20" y2="12" />
-                      <circle cx="4" cy="12" r="2" fill="currentColor" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    title="Diagonal alarm"
-                    onClick={() => {
-                      clearPreview();
-                      setMode("none");
-                      setAlarmMenuOpen(false);
-                      setDiagStart(null);
-                      setStatusMsg("Tap two points for diagonal alarm");
-                    }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                      mode === "alarm-diag"
-                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                        : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                    }`}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="4" y1="18" x2="20" y2="6" />
-                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                      <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-                    </svg>
-                  </button>
-                </div>
-              )}
+              {/* Alarm tools removed on Backtest */}
             </div>
 
             {/* Horizontal line (draw) */}
@@ -5365,7 +5447,7 @@ export default function BacktestPage() {
               type="button"
               onClick={() => setShowSideWl(true)}
               className="absolute top-2 right-2 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300"
-              title="Show alarm list"
+              title="Tools" data-with-alarms="1"
             >
               Show list »
             </button>
@@ -5381,7 +5463,7 @@ export default function BacktestPage() {
                 className="flex-1 min-w-0 bg-transparent text-xs text-gray-300 outline-none cursor-pointer truncate"
                 title={sideViewLabel}
               >
-                <option value={SIDE_VIEW_ALARMS}>With alarms</option>
+                <option value={SIDE_VIEW_ALARMS}>Tools</option>
                 {watchLists.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name}
@@ -5470,10 +5552,10 @@ export default function BacktestPage() {
       </div>
 
       {/* Bottom lists: active alarms | lines | history */}
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div>
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-1 gap-4">
+        <div data-alarms-panel className="backtest-hide-alarms">
           <h3 className="text-sm font-medium text-green-400 mb-2">
-            Alarms — {symbolUpper} ({currentAlarms.length})
+            Alarms
           </h3>
           <div className="space-y-1.5">
             {currentAlarms.map((a) => (
@@ -5776,7 +5858,7 @@ export default function BacktestPage() {
                         </div>
                       )}
                     </div>
-                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                    
                     <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
                       className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
@@ -5865,8 +5947,8 @@ export default function BacktestPage() {
           </div>
         </div>
 
-        {/* Alarm history for current symbol */}
-        <div>
+        {/* Alarm history removed on Backtest */}
+        <div data-history-panel className="backtest-hide-alarms">
           <div className="flex items-center gap-2 mb-2 backtest-hide-alarms">
             <h3 className="text-sm font-medium text-gray-400">
               History — {symbolUpper} ({historyAlarms.length})
