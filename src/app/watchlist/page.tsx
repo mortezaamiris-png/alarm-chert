@@ -312,18 +312,36 @@ function DetailChart({
       },
       rightPriceScale: {
         borderVisible: false,
-        scaleMargins: { top: 0.08, bottom: 0.12 },
+        scaleMargins: { top: 0.06, bottom: 0.18 },
         autoScale: true,
       },
       timeScale: {
-        borderVisible: false,
+        borderVisible: true,
+        borderColor: "#2a2e39",
         timeVisible: true,
-        rightOffset: 80,
+        secondsVisible: false,
+        rightOffset: 40,
         barSpacing: 6,
         minBarSpacing: 0.5,
         fixLeftEdge: false,
         fixRightEdge: false,
         shiftVisibleRangeOnScroll: false as any,
+      },
+      localization: {
+        timeFormatter: (t: number) => {
+          try {
+            const d = new Date((typeof t === "number" ? t : 0) * 1000);
+            return d.toLocaleString(undefined, {
+              month: "short",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            });
+          } catch {
+            return String(t);
+          }
+        },
       },
       handleScroll: {
         mouseWheel: true,
@@ -1596,7 +1614,7 @@ export default function WatchlistPage() {
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3 md:p-4">
       {/* Header — بدون Sign in تکراری (فقط در SiteNavbar بالاست) */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
         <h1 className="text-xl font-bold">Watchlist</h1>
         <div className="relative z-[80]" data-search-root>
           <button
@@ -1772,23 +1790,20 @@ export default function WatchlistPage() {
             ≡ List
           </button>
 
-          {/* Line فقط در حالت List — کنار List */}
-          {viewMode === "list" && (
-            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none h-9 px-2.5 rounded-full bg-gray-800 border-2 border-orange-500/40">
-              <input
-                type="checkbox"
-                checked={lineMode}
-                onChange={(e) => setLineMode(e.target.checked)}
-                className="accent-orange-500"
-              />
-              Line
-            </label>
-          )}
+          <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none h-9 px-2.5 rounded-full bg-gray-800 border-2 border-orange-500/40">
+            <input
+              type="checkbox"
+              checked={lineMode}
+              onChange={(e) => setLineMode(e.target.checked)}
+              className="accent-orange-500"
+            />
+            Line
+          </label>
         </div>
       </div>
 
       {/* My List — absolute panel so layout doesn't jump */}
-      <div className="mb-3 relative z-40" data-lists-menu-root>
+      <div className="mb-1 relative z-40" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -1806,13 +1821,14 @@ export default function WatchlistPage() {
           </button>
 
           <div
-            className={`flex flex-wrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
+            className={`flex flex-nowrap items-center gap-1.5 overflow-hidden transition-all duration-300 ease-out ${
               listsMenuOpen
-                ? "max-w-[min(92vw,720px)] opacity-100 scale-100"
-                : "max-w-0 opacity-0 scale-95 pointer-events-none"
+                ? "max-w-[min(92vw,720px)] opacity-100"
+                : "max-w-0 w-0 opacity-0 pointer-events-none"
             }`}
+            style={{ maxHeight: listsMenuOpen ? 120 : 0 }}
           >
-            <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-gray-950/95 border border-orange-500/30 shadow-xl">
+            <div className="flex flex-nowrap items-center gap-1.5 py-0.5 px-1 rounded-xl bg-gray-950/95 border border-orange-500/30 shadow-xl">
               {lists.map((l) => (
                 <div
                   key={l.id}
@@ -1954,7 +1970,7 @@ export default function WatchlistPage() {
       {viewMode === "grid" && activeListId && (
         <div
           ref={gridScrollRef}
-          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[70vh] overflow-y-auto"
+          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-1 max-h-[70vh] overflow-y-auto"
         >
           {items.map((item) => (
             <div key={item.id}>
