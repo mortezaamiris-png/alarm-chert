@@ -711,6 +711,10 @@ export default function BacktestPage() {
   const [replayPick, setReplayPick] = useState(false); // waiting for bar click
   const fullCandlesRef = useRef<any[]>([]);
   const replayTimerRef = useRef<number | null>(null);
+  const replayPickRef = useRef(false);
+  const replayOnRef = useRef(false);
+  useEffect(() => { replayPickRef.current = replayPick; }, [replayPick]);
+  useEffect(() => { replayOnRef.current = replayOn; }, [replayOn]);
 
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   const prevPricesRef = useRef<Record<string, number>>({});
