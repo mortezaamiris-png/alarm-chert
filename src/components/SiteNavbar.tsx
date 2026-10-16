@@ -100,6 +100,7 @@ const NAV = [
   { href: "/watchlist", label: "Watchlist" },
   { href: "/dashboard", label: "Charts" },
   { href: "/alerts", label: "Alerts" },
+  { href: "/backtest", label: "Backtest" },
 ];
 
 function AuthModal({
