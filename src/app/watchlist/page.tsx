@@ -36,15 +36,19 @@ const TIMEFRAMES = [
   { label: "1h", value: "60" },
   { label: "4h", value: "240" },
   { label: "1D", value: "D" },
+  { label: "1W", value: "W" },
+  { label: "1M", value: "M" },
 ];
 
 type ViewMode = "grid" | "list";
 
 /** DB unique is (list_id, symbol) — encode exchange in symbol: BTCUSDT@BINANCE */
 function storageSymbol(sym: string, exchange?: string) {
-  // فقط نماد بدون صرافی — تا چارت و API درست کار کنند
+  // نماد + صرافی (اگر هست) تا فقط همان ردیف اد شود نه همهٔ صرافی‌ها
   const s = String(sym || "").toUpperCase().trim();
-  return s.split("@")[0].replace(/[^A-Z0-9]/g, "");
+  const bare = s.split("@")[0].replace(/[^A-Z0-9]/g, "");
+  const ex = (exchange || (s.includes("@") ? s.split("@")[1] : "") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return ex ? `${bare}@${ex}` : bare;
 }
 function bareSymbol(stored: string) {
   return stored.split("@")[0].toUpperCase();
@@ -936,6 +940,22 @@ export default function WatchlistPage() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadLS("wl_view", "grid"));
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [lineMode, setLineMode] = useState(false);
+  const [tfMenuOpen, setTfMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!tfMenuOpen) return;
+    const onDown = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest("[data-tf-menu-root]")) return;
+      setTfMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [tfMenuOpen]);
   const [saving, setSaving] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1299,32 +1319,47 @@ export default function WatchlistPage() {
     return items.some((i) => i.symbol === key);
   };
 
+  const togglingRef = useRef(false);
   const toggleSymbol = async (sym: string, exchange?: string) => {
     if (!activeListId) return;
+    // جلوگیری از double-fire لمس+کلیک در iPad
+    if (togglingRef.current || saving) return;
+    togglingRef.current = true;
     const key = storageSymbol(sym, exchange);
     const existing = items.find((i) => i.symbol === key);
     setSaving(true);
-    if (existing) {
-      await supabase.from("watchlist_items").delete().eq("id", existing.id);
-      setItems((prev) => prev.filter((i) => i.id !== existing.id));
-    } else {
-      const { data, error } = await supabase
-        .from("watchlist_items")
-        .insert([{
-          list_id: activeListId,
-          symbol: key,
-          sort_order: items.length,
-          user_id: (await supabase.auth.getSession()).data.session?.user?.id,
-        }])
-        .select()
-        .single();
-      if (!error && data) {
-        setItems((prev) => [...prev, data]);
-        setJustAdded(key);
-        setTimeout(() => setJustAdded(null), 1200);
+    try {
+      if (existing) {
+        await supabase.from("watchlist_items").delete().eq("id", existing.id);
+        setItems((prev) => prev.filter((i) => i.id !== existing.id));
+      } else {
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+        const { data, error } = await supabase
+          .from("watchlist_items")
+          .insert([{
+            list_id: activeListId,
+            symbol: key,
+            sort_order: items.length,
+            user_id: uid,
+          }])
+          .select()
+          .single();
+        if (!error && data) {
+          setItems((prev) => {
+            // اگر هم‌زمان چیزی با همین key آمده، تکراری نگذار
+            if (prev.some((x) => x.symbol === key)) return prev;
+            return [...prev, data];
+          });
+          setJustAdded(key);
+          setTimeout(() => setJustAdded(null), 1200);
+        }
       }
+    } finally {
+      setSaving(false);
+      window.setTimeout(() => {
+        togglingRef.current = false;
+      }, 400);
     }
-    setSaving(false);
   };
 
   const deleteItem = async (id: string) => {
@@ -1539,7 +1574,7 @@ export default function WatchlistPage() {
       {/* Header — بدون Sign in تکراری (فقط در SiteNavbar بالاست) */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <h1 className="text-xl font-bold">Watchlist</h1>
-        <div className="relative z-[60]" data-search-root>
+        <div className="relative z-30" data-search-root>
           <button
             type="button"
             onClick={() => setShowSearch((v) => !v)}
@@ -1625,7 +1660,15 @@ export default function WatchlistPage() {
                       <button
                         type="button"
                         disabled={saving}
-                        onClick={() => toggleSymbol(hit.symbol, hit.exchange)}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleSymbol(hit.symbol, hit.exchange);
+                        }}
+                        onPointerUp={(e) => {
+                          // iPad: prevent ghost click adding multiple
+                          e.preventDefault();
+                        }}
                         className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
                           added || flash
                             ? "bg-green-500/20 text-green-400 border border-green-500/50"
@@ -1644,12 +1687,61 @@ export default function WatchlistPage() {
 
         <div className="flex-1" />
 
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {/* Clock → timeframes (grid + list) */}
+          <div className="relative" data-tf-menu-root>
+            <button
+              type="button"
+              onClick={() => setTfMenuOpen((v) => !v)}
+              title="Timeframe"
+              className="h-9 px-2.5 rounded-full bg-gray-800 border-2 border-orange-500/60 hover:border-orange-400 text-orange-300 inline-flex items-center gap-1.5 text-xs font-medium"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+              <span>{TIMEFRAMES.find((t) => t.value === interval)?.label || interval}</span>
+            </button>
+            {tfMenuOpen && (
+              <div className="absolute right-0 top-full mt-1.5 z-40 flex flex-wrap gap-1 p-2 w-[220px] rounded-xl bg-[#0b0e11] border-2 border-orange-500/40 shadow-2xl">
+                {TIMEFRAMES.map((tf) => (
+                  <button
+                    key={tf.value}
+                    type="button"
+                    onClick={() => {
+                      setIntervalTf(tf.value);
+                      setTfMenuOpen(false);
+                    }}
+                    className={`px-2.5 py-1 rounded-full text-xs border ${
+                      interval === tf.value
+                        ? "bg-gray-800 text-orange-300 border-orange-500"
+                        : "bg-gray-900 text-gray-300 border-gray-700 hover:border-orange-500/50"
+                    }`}
+                  >
+                    {tf.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none px-1">
+            <input
+              type="checkbox"
+              checked={lineMode}
+              onChange={(e) => setLineMode(e.target.checked)}
+              className="accent-orange-500"
+            />
+            Line
+          </label>
+
           <button
             type="button"
             onClick={() => setViewMode("grid")}
-            className={`px-3 py-1.5 rounded-lg text-sm ${
-              viewMode === "grid" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
+            className={`px-3 py-1.5 rounded-full text-sm border-2 ${
+              viewMode === "grid"
+                ? "bg-gray-800 text-orange-300 border-orange-500"
+                : "bg-gray-800 text-gray-400 border-gray-700 hover:border-orange-500/50"
             }`}
           >
             Grid
@@ -1657,8 +1749,10 @@ export default function WatchlistPage() {
           <button
             type="button"
             onClick={() => setViewMode("list")}
-            className={`px-3 py-1.5 rounded-lg text-sm ${
-              viewMode === "list" ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"
+            className={`px-3 py-1.5 rounded-full text-sm border-2 ${
+              viewMode === "list"
+                ? "bg-gray-800 text-orange-300 border-orange-500"
+                : "bg-gray-800 text-gray-400 border-gray-700 hover:border-orange-500/50"
             }`}
           >
             ≡ List
@@ -1667,12 +1761,12 @@ export default function WatchlistPage() {
       </div>
 
       {/* My List — absolute panel so layout doesn't jump */}
-      <div className="mb-3 relative z-[50]" data-lists-menu-root>
+      <div className="mb-3 relative z-30" data-lists-menu-root>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setListsMenuOpen((v) => !v)}
-            className="px-3 py-1.5 rounded-full text-sm bg-orange-500 text-white font-medium inline-flex items-center gap-1.5 shadow-sm shadow-orange-500/20"
+            className="px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 bg-gray-800 text-orange-300 border-2 border-orange-500/60 hover:border-orange-400"
           >
             My List
             <span
@@ -1685,7 +1779,7 @@ export default function WatchlistPage() {
           </button>
 
           {listsMenuOpen && (
-            <div className="absolute left-0 top-full mt-1.5 flex flex-wrap items-center gap-1.5 max-w-[min(92vw,640px)] p-2 rounded-xl bg-gray-950/95 border border-gray-700 shadow-2xl backdrop-blur-sm">
+            <div className="absolute left-0 top-full mt-1.5 z-40 flex flex-wrap items-center gap-1.5 max-w-[min(92vw,640px)] p-2 rounded-xl bg-gray-950 border border-orange-500/30 shadow-2xl backdrop-blur-sm">
               {lists.map((l) => (
                 <div
                   key={l.id}
@@ -1738,7 +1832,7 @@ export default function WatchlistPage() {
                   </button>
                   {listMenuId === l.id && (
                     <div
-                      className="absolute top-full left-0 mt-1 z-[90] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[120px]"
+                      className="absolute top-full left-0 mt-1 z-40 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[120px]"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <button
@@ -1816,33 +1910,7 @@ export default function WatchlistPage() {
         </div>
       </div>
 
-      {viewMode === "grid" && (
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          {TIMEFRAMES.map((tf) => (
-            <button
-              key={tf.value}
-              type="button"
-              onClick={() => setIntervalTf(tf.value)}
-              className={`px-3 py-1.5 rounded text-sm ${
-                interval === tf.value
-                  ? "bg-orange-500 text-white"
-                  : "bg-gray-800 text-gray-300"
-              }`}
-            >
-              {tf.label}
-            </button>
-          ))}
-          <label className="ml-auto flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={lineMode}
-              onChange={(e) => setLineMode(e.target.checked)}
-              className="accent-orange-500"
-            />
-            Line
-          </label>
-        </div>
-      )}
+
 
       {!activeListId && (
         <p className="text-gray-500 text-sm">Create a list first, then add symbols.</p>
@@ -2115,10 +2183,10 @@ export default function WatchlistPage() {
                       key={tf.value}
                       type="button"
                       onClick={() => setIntervalTf(tf.value)}
-                      className={`px-3 py-1.5 rounded text-sm ${
+                      className={`px-3 py-1.5 rounded-full text-sm border-2 ${
                         interval === tf.value
-                          ? "bg-orange-500 text-white"
-                          : "bg-gray-800 text-gray-300"
+                          ? "bg-gray-800 text-orange-300 border-orange-500"
+                          : "bg-gray-800 text-gray-400 border-gray-700"
                       }`}
                     >
                       {tf.label}
