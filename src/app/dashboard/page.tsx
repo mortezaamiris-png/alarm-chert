@@ -304,6 +304,30 @@ function showLocalNotification(title: string, body: string) {
   playAlarmBeep();
 }
 
+
+function userFacingNote(note?: string | null): string {
+  if (!note) return "";
+  const s = String(note).trim();
+  if (!s) return "";
+  if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
+    const idx = s.indexOf("|");
+    if (idx >= 0) return s.slice(idx + 1).trim();
+    return "";
+  }
+  return s;
+}
+
+function alarmNotifyBody(
+  a: { price: number; note?: string | null },
+  price: number
+) {
+  let body = `Alarm hit @ ${a.price}  now ${price}`;
+  const n = userFacingNote(a.note);
+  if (n) body += `\n📝 ${n}`;
+  return body;
+}
+
+
 function formatRelativeTime(iso: string | null | undefined) {
   if (!iso) return "";
   const ms = Date.now() - new Date(iso).getTime();
@@ -351,11 +375,25 @@ function urlBase64ToUint8Array(base64String: string) {
 const VAPID_PUBLIC_KEY_FALLBACK =
   "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
 
-async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error"> {
+async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error" | "not-logged-in"> {
   if (typeof window === "undefined") return "unsupported";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     return "unsupported";
   }
+
+  let userId: string | null = null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    if (data?.user?.id) userId = data.user.id;
+  } catch {}
+  if (!userId) {
+    try {
+      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+      const json = await res.json();
+      if (json?.user?.id) userId = String(json.user.id);
+    } catch {}
+  }
+  if (!userId) return "not-logged-in";
 
   const vapid =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_VAPID_PUBLIC_KEY) ||
@@ -365,7 +403,6 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
   if (!vapid) return "no-key";
 
   try {
-    // Register SW at site root (file must live in /public/sw.js)
     const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
     await navigator.serviceWorker.ready;
 
@@ -389,7 +426,6 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
     const auth = json.keys?.auth || "";
     if (!endpoint || !p256dh || !auth) return "error";
 
-    // Upsert subscription so the server can send pushes when alarms fire
     const { data: existing } = await supabase
       .from("push_subscriptions")
       .select("id")
@@ -402,6 +438,7 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
         .update({
           p256dh,
           auth,
+          user_id: userId,
           user_agent: navigator.userAgent,
           updated_at: new Date().toISOString(),
         })
@@ -412,6 +449,7 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
           endpoint,
           p256dh,
           auth,
+          user_id: userId,
           user_agent: navigator.userAgent,
         },
       ]);
@@ -4048,7 +4086,7 @@ export default function DashboardPage() {
 
     if (!notifiedAlarmsRef.current.has(a.id)) {
       notifiedAlarmsRef.current.add(a.id);
-      showLocalNotification(`${a.symbol}`, `Alarm hit @ ${a.price}  now ${price}`);
+      showLocalNotification(`${a.symbol}`, alarmNotifyBody(a, price));
     }
 
     // Ask Edge Function to send Telegram + Web Push for this alarm (even though already marked)
@@ -4108,7 +4146,7 @@ export default function DashboardPage() {
                 const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
                 if (near && !notifiedAlarmsRef.current.has(local.id)) {
                   notifiedAlarmsRef.current.add(local.id);
-                  showLocalNotification(`${db.symbol}`, `Alarm hit @ ${db.price}`);
+                  showLocalNotification(`${db.symbol}`, alarmNotifyBody(db, Number(db.price)));
                 }
               }
               return {
