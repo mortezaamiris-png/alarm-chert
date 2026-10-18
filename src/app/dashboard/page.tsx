@@ -472,15 +472,16 @@ function didCross(
 ) {
   if (prev == null || Number.isNaN(prev) || Number.isNaN(price)) return false;
   if (!target || !Number.isFinite(target)) return false;
-  // پرش غیرواقعی قیمت (گلیچ API / عوض TF) را تریگر نکن
+  // عبور واقعی: سطح بین prev و price باشد. فقط گلیچ‌های خیلی بزرگ بدون عبور را رد کن
+  const lo = Math.min(prev, price);
+  const hi = Math.max(prev, price);
   const jump = Math.abs(price - prev);
-  const span = Math.max(Math.abs(target) * 0.015, 0.5);
-  if (jump > span * 12) return false;
-  // prev باید واقعاً یک طرف خط باشد (نه چسبیده)
+  const span = Math.max(Math.abs(target) * 0.02, 1e-8);
+  const throughLevel = target >= lo - span * 0.01 && target <= hi + span * 0.01;
+  if (jump > Math.max(span * 25, Math.abs(target) * 0.5) && !throughLevel) return false;
   const eps = Math.max(Math.abs(target) * 1e-8, 1e-8);
   if (condition === "above") return prev < target - eps && price >= target;
   if (condition === "below") return prev > target + eps && price <= target;
-  // cross: عبور واقعی از سطح
   return (prev < target - eps && price >= target) || (prev > target + eps && price <= target);
 }
 function toLineStyle(dash?: string | null) {
@@ -4179,30 +4180,50 @@ export default function DashboardPage() {
           .eq("is_active", true)
           .eq("triggered", false);
         const stillActive = (activeRows || []) as Alarm[];
-        const symbols = [...new Set(stillActive.map((a) => a.symbol.toUpperCase()))];
+        // Normalize keys so NEAR and NEARUSDT map the same
+        const symbols = [
+          ...new Set(
+            stillActive.map((a) => chartSymbol(String(a.symbol)).toUpperCase())
+          ),
+        ];
 
         for (const sym of symbols) {
           try {
             let price = 0;
             let high = 0;
             let low = 0;
-            if (sym === symbolRef.current.toUpperCase() && live?.last) {
+            const currentSym = chartSymbol(symbolRef.current).toUpperCase();
+            if (sym === currentSym && live?.last) {
               price = live.last.close;
               high = live.high;
               low = live.low;
             } else {
-              const res = await fetch(`/api/ticker?symbol=${sym}`);
-              const j = await res.json();
-              price = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
+              // try clean symbol + USDT form
+              const candidates = [sym];
+              if (!sym.endsWith("USDT") && !sym.endsWith("USDC")) {
+                candidates.push(sym + "USDT");
+              }
+              for (const c of candidates) {
+                try {
+                  const res = await fetch(`/api/ticker?symbol=${encodeURIComponent(c)}`);
+                  const j = await res.json();
+                  const p = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
+                  if (p && Number.isFinite(p)) {
+                    price = p;
+                    break;
+                  }
+                } catch {}
+              }
               high = price;
               low = price;
             }
             if (!price) continue;
             const prev = prevPricesRef.current[sym];
             // دقت: فقط عبور واقعی ticker/close — بدون high/low کندل
-            // (high/low روی TF بالاتر و حتی ۱m باعث آلارم زودرس می‌شد)
 
-            for (const a of stillActive.filter((x) => x.symbol.toUpperCase() === sym)) {
+            for (const a of stillActive.filter(
+              (x) => chartSymbol(String(x.symbol)).toUpperCase() === sym
+            )) {
               let target = a.price;
               if (isDiagonalLine(a)) {
                 const nowT = Math.floor(Date.now() / 1000);
@@ -4215,8 +4236,10 @@ export default function DashboardPage() {
               }
               let hit = false;
               const seeds = priceSeedCountRef.current[sym] || 0;
-              if (prev == null || Number.isNaN(prev) || seeds < 2) {
-                // حداقل ۲ نمونه پایدار بعد از لود/عوض TF — تریگر نکن
+              // 1 stable sample enough if we already had a prev price for this symbol
+              const needSeeds = prev != null && !Number.isNaN(prev) ? 1 : 2;
+              if (prev == null || Number.isNaN(prev) || seeds < needSeeds) {
+                // seed only — do not trigger on first ticks after load
               } else {
                 hit = didCross(a.condition, target, prev, price);
               }
@@ -4235,7 +4258,7 @@ export default function DashboardPage() {
       if (!alive) return;
       try { await refreshLiveCandles(); } catch {}
     }, 1000);
-    const id = window.setInterval(tick, 4000);
+    const id = window.setInterval(tick, 2500);
     return () => {
       alive = false;
       clearInterval(id);
