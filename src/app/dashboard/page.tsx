@@ -865,7 +865,13 @@ export default function DashboardPage() {
   const measureLastHudTs = useRef(0);
   /** Keep chart focused on history hit area across re-renders */
   const historyFocusRef = useRef<{ from: number; to: number } | null>(null);
-  const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
+  const [showSideWl, setShowSideWl] = useState(() => {
+    const saved = loadLS<boolean | null>("show_side_wl", null);
+    if (saved != null) return !!saved;
+    // موبایل عمودی: اول لیست بسته تا چارت تمام عرض باشد
+    if (typeof window !== "undefined" && window.innerWidth < 640) return false;
+    return true;
+  });
   const [statusMsg, setStatusMsg] = useState("");
   /** Show TradingView-style "go to live" chevron when user scrolled into history */
   const [showGoLive, setShowGoLive] = useState(false);
@@ -3813,18 +3819,47 @@ export default function DashboardPage() {
     } catch {}
   }, [timeZone]);
 
-  // Resize chart when side list is shown/hidden — فقط عرض/ارتفاع، رنج را دست نزن
+  // Resize chart: side/tools + orientation (عمودی/افقی گوشی)
   useEffect(() => {
-    const t = setTimeout(() => {
-      if (chartRef.current && chartContainerRef.current) {
-        chartRef.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-          height: chartContainerRef.current.clientHeight || 640,
-        });
-        // عمداً setVisibleLogicalRange نمی‌زنیم — باعث پرش/آهنربا می‌شد
+    const applySize = () => {
+      const el = chartContainerRef.current;
+      const chart = chartRef.current;
+      if (!el || !chart) return;
+      const w = el.clientWidth;
+      const h = el.clientHeight || 640;
+      if (w > 0) {
+        try {
+          chart.applyOptions({ width: w, height: h });
+        } catch {}
       }
-    }, 50);
-    return () => clearTimeout(t);
+    };
+    const t = setTimeout(applySize, 50);
+    const t2 = setTimeout(applySize, 250);
+    let ro: ResizeObserver | null = null;
+    try {
+      if (typeof ResizeObserver !== "undefined" && chartContainerRef.current) {
+        ro = new ResizeObserver(() => {
+          requestAnimationFrame(applySize);
+        });
+        ro.observe(chartContainerRef.current);
+      }
+    } catch {}
+    // چرخش گوشی عمودی ↔ افقی
+    const onOrient = () => {
+      setTimeout(applySize, 100);
+      setTimeout(applySize, 350);
+    };
+    window.addEventListener("orientationchange", onOrient);
+    window.addEventListener("resize", onOrient);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(t2);
+      try {
+        ro?.disconnect();
+      } catch {}
+      window.removeEventListener("orientationchange", onOrient);
+      window.removeEventListener("resize", onOrient);
+    };
   }, [showSideWl, showToolsPanel]);
 
   // Close TF / timezone / list / indicator menus when clicking outside
@@ -4890,7 +4925,7 @@ export default function DashboardPage() {
                   </div>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 w-full min-w-0">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
           <div className="flex flex-col gap-1 shrink-0">
@@ -5328,12 +5363,12 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Chart */}
-        <div className="flex-1 min-w-0 relative">
+        {/* Chart — always fill remaining width (mobile portrait/landscape) */}
+        <div className="flex-1 min-w-0 w-full relative">
           <div
             ref={chartContainerRef}
-            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
-            style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
+            className="w-full min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+            style={{ height: 640, width: "100%", touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -5808,7 +5843,10 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+          <div
+            className="w-44 sm:w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:z-40 max-sm:h-full max-sm:max-h-none max-sm:shadow-2xl"
+            style={{ maxHeight: 640 }}
+          >
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
               <select
                 value={sideViewId}
