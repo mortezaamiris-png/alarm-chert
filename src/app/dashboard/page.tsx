@@ -655,17 +655,8 @@ function intervalToSeconds(iv: string): number {
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
 const FUTURE_BARS = 800;
-/** How many future bars are visible on first load (rest remains scrollable).
- *  On narrow phones a large value leaves a big empty strip on the right. */
-function getFutureVisible(): number {
-  if (typeof window === "undefined") return 8;
-  const w = window.innerWidth || 400;
-  if (w < 400) return 3;
-  if (w < 640) return 5;
-  if (w < 900) return 8;
-  return 12;
-}
-const FUTURE_VISIBLE = 8; // fallback; prefer getFutureVisible() at runtime
+/** How many future bars are visible on first load (rest remains scrollable) */
+const FUTURE_VISIBLE = 14;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -874,13 +865,7 @@ export default function DashboardPage() {
   const measureLastHudTs = useRef(0);
   /** Keep chart focused on history hit area across re-renders */
   const historyFocusRef = useRef<{ from: number; to: number } | null>(null);
-  const [showSideWl, setShowSideWl] = useState(() => {
-    const saved = loadLS<boolean | null>("show_side_wl", null);
-    if (saved != null) return !!saved;
-    // موبایل عمودی: اول لیست بسته تا چارت تمام عرض باشد
-    if (typeof window !== "undefined" && window.innerWidth < 640) return false;
-    return true;
-  });
+  const [showSideWl, setShowSideWl] = useState(() => loadLS("show_side_wl", true));
   const [statusMsg, setStatusMsg] = useState("");
   /** Show TradingView-style "go to live" chevron when user scrolled into history */
   const [showGoLive, setShowGoLive] = useState(false);
@@ -2016,7 +2001,7 @@ export default function DashboardPage() {
                   chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
                   chart.timeScale().setVisibleLogicalRange({
                     from: Math.max(0, n - past),
-                    to: n - 1 + getFutureVisible(),
+                    to: n - 1 + Math.min(FUTURE_VISIBLE, 10),
                   });
                 } catch {}
               };
@@ -2182,7 +2167,7 @@ export default function DashboardPage() {
                       const past = Math.min(100, n);
                       chartRef.current.timeScale().setVisibleLogicalRange({
                         from: Math.max(0, n - past),
-                        to: n - 1 + getFutureVisible(),
+                        to: n - 1 + FUTURE_VISIBLE,
                       });
                       seriesRef.current.priceScale().applyOptions({ autoScale: true });
                       requestAnimationFrame(() => {
@@ -2231,7 +2216,6 @@ export default function DashboardPage() {
           mode: 0, // Normal — drag/scroll price axis freely (TV-style)
           invertScale: false,
           alignLabels: true,
-          minimumWidth: typeof window !== "undefined" && window.innerWidth < 640 ? 48 : 56,
         },
         // اسکرول روی محور قیمت = زوم عمودی؛ روی بدنه چارت = افقی
         handleScroll: {
@@ -2256,9 +2240,9 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          // موبایل: فضای خالی راست کمتر تا کندل‌ها تا لبه بیایند
-          rightOffset: getFutureVisible(),
-          barSpacing: typeof window !== "undefined" && window.innerWidth < 640 ? 5 : 8,
+          // فضای خالی آینده خیلی بیشتر (مثل TradingView)
+          rightOffset: 12,
+          barSpacing: 8,
           minBarSpacing: 1.5,
           fixLeftEdge: false,
           fixRightEdge: false,
@@ -2518,7 +2502,7 @@ export default function DashboardPage() {
           if (bars >= 2) {
             // لبه زنده = آخرین کندل واقعی + چند بار آیندهٔ کوتاه
             // اگر کاربر به گذشته رفته (range.to خیلی قبل از آخر)، فلش Go Live نشان بده
-            const liveEdge = bars - 1 + getFutureVisible();
+            const liveEdge = bars - 1 + FUTURE_VISIBLE;
             pinned = range.to >= liveEdge - 5;
           }
           pinnedToRightRef.current = pinned;
@@ -2544,7 +2528,7 @@ export default function DashboardPage() {
           // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + getFutureVisible(),
+            to: bars - 1 + FUTURE_VISIBLE,
           });
           requestAnimationFrame(() => { programmaticRangeRef.current = false; });
         } catch {
@@ -2662,7 +2646,7 @@ export default function DashboardPage() {
           const past = Math.min(120, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + getFutureVisible(),
+            to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
           });
           pinnedToRightRef.current = true;
           setShowGoLive(false);
@@ -2674,7 +2658,7 @@ export default function DashboardPage() {
             try {
               chart.timeScale().setVisibleLogicalRange({
                 from: Math.max(0, bars - past),
-                to: bars - 1 + getFutureVisible(),
+                to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
               });
             } catch {}
             programmaticRangeRef.current = false;
@@ -3829,47 +3813,18 @@ export default function DashboardPage() {
     } catch {}
   }, [timeZone]);
 
-  // Resize chart: side/tools + orientation (عمودی/افقی گوشی)
+  // Resize chart when side list is shown/hidden — فقط عرض/ارتفاع، رنج را دست نزن
   useEffect(() => {
-    const applySize = () => {
-      const el = chartContainerRef.current;
-      const chart = chartRef.current;
-      if (!el || !chart) return;
-      const w = el.clientWidth;
-      const h = el.clientHeight || 640;
-      if (w > 0) {
-        try {
-          chart.applyOptions({ width: w, height: h });
-        } catch {}
-      }
-    };
-    const t = setTimeout(applySize, 50);
-    const t2 = setTimeout(applySize, 250);
-    let ro: ResizeObserver | null = null;
-    try {
-      if (typeof ResizeObserver !== "undefined" && chartContainerRef.current) {
-        ro = new ResizeObserver(() => {
-          requestAnimationFrame(applySize);
+    const t = setTimeout(() => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight || 640,
         });
-        ro.observe(chartContainerRef.current);
+        // عمداً setVisibleLogicalRange نمی‌زنیم — باعث پرش/آهنربا می‌شد
       }
-    } catch {}
-    // چرخش گوشی عمودی ↔ افقی
-    const onOrient = () => {
-      setTimeout(applySize, 100);
-      setTimeout(applySize, 350);
-    };
-    window.addEventListener("orientationchange", onOrient);
-    window.addEventListener("resize", onOrient);
-    return () => {
-      clearTimeout(t);
-      clearTimeout(t2);
-      try {
-        ro?.disconnect();
-      } catch {}
-      window.removeEventListener("orientationchange", onOrient);
-      window.removeEventListener("resize", onOrient);
-    };
+    }, 50);
+    return () => clearTimeout(t);
   }, [showSideWl, showToolsPanel]);
 
   // Close TF / timezone / list / indicator menus when clicking outside
@@ -4836,7 +4791,7 @@ export default function DashboardPage() {
   }, [alarms, symbolUpper]);
 
   return (
-    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-1 sm:p-3 w-full max-w-full overflow-x-hidden">
+    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
       <style>{`
         @keyframes tfPop{
           0%{opacity:0;transform:translateY(10px) scale(0.85)}
@@ -4935,7 +4890,7 @@ export default function DashboardPage() {
                   </div>
       </div>
 
-      <div className="flex gap-2 w-full min-w-0 relative">
+      <div className="flex gap-2">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
           <div className="flex flex-col gap-1 shrink-0">
@@ -5373,12 +5328,12 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Chart — always fill remaining width (mobile portrait/landscape) */}
-        <div className="flex-1 min-w-0 w-full relative" style={{ width: "100%" }}>
+        {/* Chart */}
+        <div className="flex-1 min-w-0 relative">
           <div
             ref={chartContainerRef}
-            className="w-full min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
-            style={{ height: 640, width: "100%", touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
+            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+            style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -5417,7 +5372,7 @@ export default function DashboardPage() {
                     const past = Math.min(90, bars);
                     chart.timeScale().setVisibleLogicalRange({
                       from: Math.max(0, bars - past),
-                      to: bars - 1 + getFutureVisible(),
+                      to: bars - 1 + FUTURE_VISIBLE,
                     });
                     try {
                       seriesRef.current?.priceScale()?.applyOptions({ autoScale: true });
@@ -5853,10 +5808,7 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div
-            className="w-44 md:w-48 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col absolute right-0 top-0 z-40 h-full max-h-none shadow-2xl md:relative md:inset-auto md:z-auto md:h-auto md:max-h-[640px] md:shadow-none md:shrink-0"
-            style={{ maxHeight: 640 }}
-          >
+          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
               <select
                 value={sideViewId}
@@ -6455,7 +6407,7 @@ export default function DashboardPage() {
                           try {
                             chart.timeScale().setVisibleLogicalRange({
                               from: Math.max(0, i0 - 2),
-                              to: Math.min(candles.length - 1 + getFutureVisible(), i1 + 5),
+                              to: Math.min(candles.length - 1 + FUTURE_VISIBLE, i1 + 5),
                             });
                           } catch {}
                         }
@@ -6528,7 +6480,7 @@ export default function DashboardPage() {
                             try {
                               chart.timeScale().setVisibleLogicalRange({
                                 from: Math.max(0, iF - 40),
-                                to: Math.min(candles.length - 1 + getFutureVisible(), iF + 20),
+                                to: Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20),
                               });
                             } catch {}
                           }
@@ -6542,7 +6494,7 @@ export default function DashboardPage() {
                             const past = Math.min(90, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
-                              to: bars - 1 + getFutureVisible(),
+                              to: bars - 1 + FUTURE_VISIBLE,
                             });
                           } catch {}
                         }
