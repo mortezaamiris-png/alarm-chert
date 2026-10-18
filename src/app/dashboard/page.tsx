@@ -310,7 +310,6 @@ function showLocalNotification(
         body,
         icon: "/icon-192.png",
         tag: notifTag,
-        renotify: false,
       });
     }
   } catch {}
