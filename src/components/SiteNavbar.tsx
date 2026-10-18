@@ -15,6 +15,22 @@ type AuthUser = {
 const VAPID_PUBLIC_KEY_FALLBACK =
   "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
 
+/** با بستن مرورگر پاک نمی‌شود؛ فقط با Clear site data پاک می‌شود */
+const PUSH_PREF_KEY = "alarm_push_on";
+function getPushPref(): boolean {
+  try {
+    return localStorage.getItem(PUSH_PREF_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function setPushPref(on: boolean) {
+  try {
+    if (on) localStorage.setItem(PUSH_PREF_KEY, "1");
+    else localStorage.removeItem(PUSH_PREF_KEY);
+  } catch {}
+}
+
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -332,21 +348,55 @@ export default function SiteNavbar() {
   /** idle | ok | denied | unsupported | no-key | error */
   const [pushStatus, setPushStatus] = useState<string>("idle");
 
-  // Restore push status if permission already granted (iPad PWA)
+  /** اگر قبلاً On بوده یا permission هست → اشتراک را دوباره به Supabase وصل کن */
+  const syncPush = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setPushStatus("unsupported");
+      return "unsupported" as const;
+    }
+    if (Notification.permission === "denied") {
+      setPushStatus("denied");
+      return "denied" as const;
+    }
+    const wantOn =
+      getPushPref() || Notification.permission === "granted";
+    if (!wantOn) return "idle" as const;
+    const result = await ensurePushSubscription();
+    setPushStatus(result === "ok" ? "ok" : result);
+    if (result === "ok") setPushPref(true);
+    return result;
+  };
+
+  // لود صفحه + بعد لاگین + retry (سشن دسکتاپ دیر می‌آید)
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
       setPushStatus("unsupported");
       return;
     }
-    if (Notification.permission === "granted") {
-      ensurePushSubscription().then(setPushStatus);
-    } else if (Notification.permission === "denied") {
+    if (Notification.permission === "denied") {
       setPushStatus("denied");
+      return;
     }
-  }, []);
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      await syncPush();
+    };
+    run();
+    const t1 = window.setTimeout(run, 1500);
+    const t2 = window.setTimeout(run, 4000);
+    const iv = window.setInterval(run, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearInterval(iv);
+    };
+  }, [user?.id]);
 
   const togglePush = async () => {
     if (pushStatus === "ok") {
+      setPushPref(false);
       await disablePushSubscription();
       setPushStatus("idle");
       return;
@@ -359,9 +409,10 @@ export default function SiteNavbar() {
     const result = await ensurePushSubscription();
     setPushStatus(result);
     if (result === "ok") {
+      setPushPref(true);
       try {
         new Notification("Alarm Chart", {
-          body: "Notifications ON — you will get alerts when alarms hit",
+          body: "Notifications ON — stays on after browser restart",
           icon: "/icon-192.png",
         });
       } catch {}
@@ -369,15 +420,6 @@ export default function SiteNavbar() {
       setAuthOpen(true);
     }
   };
-
-  // After login, re-bind push subscription to this user_id
-  useEffect(() => {
-    if (!user?.id) return;
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (Notification.permission === "granted") {
-      ensurePushSubscription().then(setPushStatus);
-    }
-  }, [user?.id]);
 
   useEffect(() => {
     let mounted = true;
