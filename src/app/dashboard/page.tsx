@@ -4206,8 +4206,8 @@ export default function DashboardPage() {
       return;
     }
 
-    // اگر تب دیده می‌شود → نوتیف لوکال (و پوش نفرست تا دابل نشود)
-    // اگر تب مخفی/پس‌زمینه است → پوش بفرست تا روی دسکتاپ/موبایل بدون باز بودن سایت هم برسد
+    // همیشه پوش برای همه دستگاه‌ها (ایپد/گوشی/کامپیوتر)
+    // نوتیف لوکال فقط اگر تب جلو باشد؛ SW روی دستگاه فوکوس‌شده پوش را نشان نمی‌دهد
     const pageVisible =
       typeof document !== "undefined" &&
       document.visibilityState === "visible";
@@ -4225,8 +4225,8 @@ export default function DashboardPage() {
         body: {
           notify_alarm_id: a.id,
           price,
-          // تب باز: فقط تلگرام | تب بسته/پس‌زمینه: تلگرام + Web Push
-          skip_push: pageVisible,
+          // هرگز skip نکن — بقیه دستگاه‌ها باید پوش بگیرند
+          skip_push: false,
         },
       });
     } catch (e) {
@@ -4234,6 +4234,27 @@ export default function DashboardPage() {
     } finally {
       triggeringAlarmsRef.current.delete(a.id);
     }
+  }, []);
+
+  // پوش از SW وقتی تب فوکوس است (بدون دابل نوتیف سیستم)
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const onMsg = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== "ALARM_PUSH") return;
+      const id = String(data.alarmId || "");
+      if (id && notifiedAlarmsRef.current.has(id)) return;
+      if (id) notifiedAlarmsRef.current.add(id);
+      if (document.visibilityState === "visible") {
+        showLocalNotification(
+          data.title || "Alarm",
+          data.body || "Alarm triggered",
+          id ? `alarm-${id}` : "alarm-chert"
+        );
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onMsg);
+    return () => navigator.serviceWorker.removeEventListener("message", onMsg);
   }, []);
 
   // Sync alarms from DB (Telegram / server triggers) + price cross + live candles
