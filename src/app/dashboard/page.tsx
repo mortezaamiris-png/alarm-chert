@@ -391,6 +391,17 @@ function urlBase64ToUint8Array(base64String: string) {
 const VAPID_PUBLIC_KEY_FALLBACK =
   "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
 
+const PUSH_PREF_KEY = "alarm_push_on";
+function getPushPref(): boolean {
+  try { return localStorage.getItem(PUSH_PREF_KEY) === "1"; } catch { return false; }
+}
+function setPushPref(on: boolean) {
+  try {
+    if (on) localStorage.setItem(PUSH_PREF_KEY, "1");
+    else localStorage.removeItem(PUSH_PREF_KEY);
+  } catch {}
+}
+
 async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error" | "not-logged-in"> {
   if (typeof window === "undefined") return "unsupported";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
@@ -4706,11 +4717,25 @@ export default function DashboardPage() {
       setPushStatus("unsupported");
       return;
     }
-    if (Notification.permission === "granted") {
-      ensurePushSubscription().then(setPushStatus);
-    } else if (Notification.permission === "denied") {
-      setPushStatus("denied");
-    }
+    const run = () => {
+      if (Notification.permission === "denied") {
+        setPushStatus("denied");
+        return;
+      }
+      if (Notification.permission === "granted" || getPushPref()) {
+        ensurePushSubscription().then((r) => {
+          setPushStatus(r);
+          if (r === "ok") setPushPref(true);
+        });
+      }
+    };
+    run();
+    const t1 = window.setTimeout(run, 2000);
+    const t2 = window.setTimeout(run, 5000);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, []);
 
   const enablePushNotifications = async () => {
@@ -4719,6 +4744,7 @@ export default function DashboardPage() {
     const result = await ensurePushSubscription();
     setPushStatus(result);
     if (result === "ok") {
+      setPushPref(true);
       setStatusMsg("Push notifications ON");
       // Confirm to user (and wake iOS notification permission UX)
       try {
