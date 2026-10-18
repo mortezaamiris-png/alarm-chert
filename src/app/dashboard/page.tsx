@@ -655,8 +655,17 @@ function intervalToSeconds(iv: string): number {
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
 const FUTURE_BARS = 800;
-/** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 14;
+/** How many future bars are visible on first load (rest remains scrollable).
+ *  On narrow phones a large value leaves a big empty strip on the right. */
+function getFutureVisible(): number {
+  if (typeof window === "undefined") return 8;
+  const w = window.innerWidth || 400;
+  if (w < 400) return 3;
+  if (w < 640) return 5;
+  if (w < 900) return 8;
+  return 12;
+}
+const FUTURE_VISIBLE = 8; // fallback; prefer getFutureVisible() at runtime
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -2007,7 +2016,7 @@ export default function DashboardPage() {
                   chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
                   chart.timeScale().setVisibleLogicalRange({
                     from: Math.max(0, n - past),
-                    to: n - 1 + Math.min(FUTURE_VISIBLE, 10),
+                    to: n - 1 + getFutureVisible(),
                   });
                 } catch {}
               };
@@ -2173,7 +2182,7 @@ export default function DashboardPage() {
                       const past = Math.min(100, n);
                       chartRef.current.timeScale().setVisibleLogicalRange({
                         from: Math.max(0, n - past),
-                        to: n - 1 + FUTURE_VISIBLE,
+                        to: n - 1 + getFutureVisible(),
                       });
                       seriesRef.current.priceScale().applyOptions({ autoScale: true });
                       requestAnimationFrame(() => {
@@ -2222,6 +2231,7 @@ export default function DashboardPage() {
           mode: 0, // Normal — drag/scroll price axis freely (TV-style)
           invertScale: false,
           alignLabels: true,
+          minimumWidth: typeof window !== "undefined" && window.innerWidth < 640 ? 48 : 56,
         },
         // اسکرول روی محور قیمت = زوم عمودی؛ روی بدنه چارت = افقی
         handleScroll: {
@@ -2246,9 +2256,9 @@ export default function DashboardPage() {
           borderColor: "#2a2e39",
           timeVisible: true,
           secondsVisible: isIntraday,
-          // فضای خالی آینده خیلی بیشتر (مثل TradingView)
-          rightOffset: 12,
-          barSpacing: 8,
+          // موبایل: فضای خالی راست کمتر تا کندل‌ها تا لبه بیایند
+          rightOffset: getFutureVisible(),
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 640 ? 5 : 8,
           minBarSpacing: 1.5,
           fixLeftEdge: false,
           fixRightEdge: false,
@@ -2508,7 +2518,7 @@ export default function DashboardPage() {
           if (bars >= 2) {
             // لبه زنده = آخرین کندل واقعی + چند بار آیندهٔ کوتاه
             // اگر کاربر به گذشته رفته (range.to خیلی قبل از آخر)، فلش Go Live نشان بده
-            const liveEdge = bars - 1 + FUTURE_VISIBLE;
+            const liveEdge = bars - 1 + getFutureVisible();
             pinned = range.to >= liveEdge - 5;
           }
           pinnedToRightRef.current = pinned;
@@ -2534,7 +2544,7 @@ export default function DashboardPage() {
           // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + FUTURE_VISIBLE,
+            to: bars - 1 + getFutureVisible(),
           });
           requestAnimationFrame(() => { programmaticRangeRef.current = false; });
         } catch {
@@ -2652,7 +2662,7 @@ export default function DashboardPage() {
           const past = Math.min(120, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
+            to: bars - 1 + getFutureVisible(),
           });
           pinnedToRightRef.current = true;
           setShowGoLive(false);
@@ -2664,7 +2674,7 @@ export default function DashboardPage() {
             try {
               chart.timeScale().setVisibleLogicalRange({
                 from: Math.max(0, bars - past),
-                to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
+                to: bars - 1 + getFutureVisible(),
               });
             } catch {}
             programmaticRangeRef.current = false;
@@ -5407,7 +5417,7 @@ export default function DashboardPage() {
                     const past = Math.min(90, bars);
                     chart.timeScale().setVisibleLogicalRange({
                       from: Math.max(0, bars - past),
-                      to: bars - 1 + FUTURE_VISIBLE,
+                      to: bars - 1 + getFutureVisible(),
                     });
                     try {
                       seriesRef.current?.priceScale()?.applyOptions({ autoScale: true });
@@ -6445,7 +6455,7 @@ export default function DashboardPage() {
                           try {
                             chart.timeScale().setVisibleLogicalRange({
                               from: Math.max(0, i0 - 2),
-                              to: Math.min(candles.length - 1 + FUTURE_VISIBLE, i1 + 5),
+                              to: Math.min(candles.length - 1 + getFutureVisible(), i1 + 5),
                             });
                           } catch {}
                         }
@@ -6518,7 +6528,7 @@ export default function DashboardPage() {
                             try {
                               chart.timeScale().setVisibleLogicalRange({
                                 from: Math.max(0, iF - 40),
-                                to: Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20),
+                                to: Math.min(candles.length - 1 + getFutureVisible(), iF + 20),
                               });
                             } catch {}
                           }
@@ -6532,7 +6542,7 @@ export default function DashboardPage() {
                             const past = Math.min(90, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
-                              to: bars - 1 + FUTURE_VISIBLE,
+                              to: bars - 1 + getFutureVisible(),
                             });
                           } catch {}
                         }
