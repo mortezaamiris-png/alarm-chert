@@ -295,13 +295,30 @@ function playAlarmBeep() {
   } catch {}
 }
 
-function showLocalNotification(title: string, body: string) {
+/** جلوگیری از چند بیپ پشت‌سرهم */
+let _lastBeepAt = 0;
+function showLocalNotification(
+  title: string,
+  body: string,
+  tag?: string
+) {
+  const notifTag = tag || "alarm-chert";
   try {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification(title, { body, icon: "/icon-192.png", tag: "alarm-chert-" + Date.now() });
+      // tag ثابت → سیستم‌عامل نوتیف تکراری همان آلارم را یکی می‌کند
+      new Notification(title, {
+        body,
+        icon: "/icon-192.png",
+        tag: notifTag,
+        renotify: false,
+      });
     }
   } catch {}
-  playAlarmBeep();
+  const now = Date.now();
+  if (now - _lastBeepAt > 2500) {
+    _lastBeepAt = now;
+    playAlarmBeep();
+  }
 }
 
 
@@ -743,6 +760,9 @@ export default function DashboardPage() {
   const trendSeriesRef = useRef<any[]>([]);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
+  /** in-flight triggers — prevents concurrent double-fire */
+  const triggeringAlarmsRef = useRef<Set<string>>(new Set());
+  const tickInFlightRef = useRef(false);
   const prevPricesRef = useRef<Record<string, number>>({});
   /** بعد از لود/عوض TF چند تیک صبر کن تا seed پایدار شود */
   const priceSeedCountRef = useRef<Record<string, number>>({});
@@ -4134,14 +4154,38 @@ export default function DashboardPage() {
    * (Previously client marked triggered without notifying Telegram → missed messages.)
    */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
+    // فقط یک‌بار برای هر آلارم — قبل از هر await
+    if (
+      notifiedAlarmsRef.current.has(a.id) ||
+      triggeringAlarmsRef.current.has(a.id)
+    ) {
+      return;
+    }
+    notifiedAlarmsRef.current.add(a.id);
+    triggeringAlarmsRef.current.add(a.id);
+
     const nowIso = new Date().toISOString();
     setAlarms((p) =>
       p.map((x) =>
         x.id === a.id
-          ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
+          ? {
+              ...x,
+              triggered: true,
+              is_active: false,
+              last_price: price,
+              triggered_at: nowIso,
+            }
           : x
       )
     );
+
+    // یک نوتیف + یک بیپ (tag ثابت روی id)
+    showLocalNotification(
+      `${a.symbol}`,
+      alarmNotifyBody(a, price),
+      `alarm-${a.id}`
+    );
+
     try {
       await supabase
         .from("alarms")
@@ -4154,19 +4198,15 @@ export default function DashboardPage() {
         .eq("id", a.id);
     } catch {}
 
-    // One device notification only (local). Server sends Telegram, not Web Push.
-    if (!notifiedAlarmsRef.current.has(a.id)) {
-      notifiedAlarmsRef.current.add(a.id);
-      showLocalNotification(`${a.symbol}`, alarmNotifyBody(a, price));
-    }
-
-    // Server: Telegram only (skipPush) — avoids 2 system notifications on same device
+    // سرور فقط تلگرام (بدون Web Push دوباره)
     try {
       await supabase.functions.invoke("check-alarms", {
         body: { notify_alarm_id: a.id, price, skip_push: true },
       });
     } catch (e) {
       console.warn("notify invoke failed", e);
+    } finally {
+      triggeringAlarmsRef.current.delete(a.id);
     }
   }, []);
 
@@ -4175,6 +4215,9 @@ export default function DashboardPage() {
     let alive = true;
     const tick = async () => {
       if (!alive) return;
+      // جلوگیری از اجرای همزمان دو tick (باعث چندباره شدن آلارم می‌شد)
+      if (tickInFlightRef.current) return;
+      tickInFlightRef.current = true;
       try {
         // 1) Sync ALL recent alarms from DB so Telegram-triggered ones clear on chart
         const { data: allAlarms } = await supabase
@@ -4326,6 +4369,13 @@ export default function DashboardPage() {
                   nowT
                 );
               }
+              // قبلاً زده شده → رد شو
+              if (
+                notifiedAlarmsRef.current.has(a.id) ||
+                triggeringAlarmsRef.current.has(a.id)
+              ) {
+                continue;
+              }
               // بعد از ۱ نمونه پایدار می‌تواند تریگر شود
               let hit = false;
               if (
@@ -4345,7 +4395,10 @@ export default function DashboardPage() {
             );
           } catch {}
         }
-      } catch {}
+      } catch {
+      } finally {
+        tickInFlightRef.current = false;
+      }
     };
     tick();
     // کندل سریع‌تر؛ همگام‌سازی آلارم از DB کمی آهسته‌تر تا چارت گیر نکند
