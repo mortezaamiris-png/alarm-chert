@@ -472,24 +472,20 @@ function didCross(
 ) {
   if (prev == null || Number.isNaN(prev) || Number.isNaN(price)) return false;
   if (!target || !Number.isFinite(target)) return false;
-  // prev must be clearly on one side of the line (not already glued to it)
-  const clear = Math.max(Math.abs(target) * 0.00015, 1e-8); // ~0.015%
-  const eps = Math.max(Math.abs(target) * 1e-8, 1e-8);
-  // Ignore absurd single-tick glitches (bad ticker / wrong symbol data)
+  // فقط عبور واقعی: prev یک طرف خط، price طرف دیگر یا روی خط
+  const eps = Math.max(Math.abs(target) * 1e-10, 1e-10);
+  // گلیچ تیکر (پرش غیرعادی بدون عبور از سطح) را رد کن
   const jump = Math.abs(price - prev);
-  if (jump > Math.max(Math.abs(target) * 0.08, clear * 20)) return false;
+  const thru =
+    (prev < target && price >= target) || (prev > target && price <= target);
+  if (jump > Math.max(Math.abs(target) * 0.12, 50) && !thru) return false;
 
   const cond = String(condition || "cross").toLowerCase();
-  if (cond === "above") {
-    return prev < target - clear && price >= target - eps;
-  }
-  if (cond === "below") {
-    return prev > target + clear && price <= target + eps;
-  }
-  // cross: must come from clearly one side to the other / onto the level
+  if (cond === "above") return prev < target - eps && price >= target - eps;
+  if (cond === "below") return prev > target + eps && price <= target + eps;
   return (
-    (prev < target - clear && price >= target - eps) ||
-    (prev > target + clear && price <= target + eps)
+    (prev < target - eps && price >= target - eps) ||
+    (prev > target + eps && price <= target + eps)
   );
 }
 function toLineStyle(dash?: string | null) {
@@ -916,10 +912,11 @@ export default function DashboardPage() {
   useEffect(() => {
     symbolRef.current = symbol;
     localStorage.setItem("chart_symbol", symbol);
-    // تعویض کوین → چند ثانیه آلارم نزن + seed از نو
-    prevPricesRef.current = {};
-    priceSeedCountRef.current = {};
-    alarmCooldownUntilRef.current = Date.now() + 4000;
+    // فقط کوین فعلی seed از نو — بقیه نمادها prev خود را نگه دارند
+    const s = chartSymbol(symbol).toUpperCase();
+    delete prevPricesRef.current[s];
+    priceSeedCountRef.current[s] = 0;
+    alarmCooldownUntilRef.current = Date.now() + 1500;
   }, [symbol]);
   // Highlight a specific alarm when navigating from Alerts page (horizontal or diagonal)
   useEffect(() => {
@@ -982,10 +979,7 @@ export default function DashboardPage() {
   useEffect(() => {
     intervalRef.current = interval;
     localStorage.setItem("chart_interval", interval);
-    // تعویض تایم‌فریم → چند ثانیه آلارم نزن + seed از نو
-    prevPricesRef.current = {};
-    priceSeedCountRef.current = {};
-    alarmCooldownUntilRef.current = Date.now() + 4000;
+    // عوض TF نباید آلارم را قطع کند — prev قیمت‌ها را نگه دار
   }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
@@ -1803,10 +1797,7 @@ export default function DashboardPage() {
     }
     // Keep previous chart visible until new data is ready (no black flash on TF switch).
     // Capture symbol/interval + generation so a slow response never clobbers a newer request.
-    // TF/symbol عوض شد → prev و seed را پاک کن + چند ثانیه تریگر ممنوع
-    prevPricesRef.current = {};
-    priceSeedCountRef.current = {};
-    alarmCooldownUntilRef.current = Date.now() + 4000;
+    // فقط رنج قیمت دستی را ریست کن — prev آلارم‌ها را پاک نکن (دیر تریگر نشود)
     priceRangeOverrideRef.current = null;
     const gen = ++loadGenRef.current;
     const fetchSym = chartSymbol(symbolRef.current);
@@ -4278,13 +4269,14 @@ export default function DashboardPage() {
           ),
         ];
 
-        // After symbol/TF switch: only seed prices, never trigger
+        // فقط بعد از تعویض کوین کوتاه صبر کن (نه بعد از عوض TF)
         const inCooldown = Date.now() < (alarmCooldownUntilRef.current || 0);
+        const currentSym = chartSymbol(symbolRef.current).toUpperCase();
 
         for (const sym of symbols) {
           try {
-            // ALWAYS real-time ticker for alarms — never candle OHLC (TF switch false hits)
             let price = 0;
+            // 1) تیکر لحظه‌ای
             const candidates = [sym];
             if (!/USDT$|USDC$|BUSD$|USD$/i.test(sym)) {
               candidates.push(sym + "USDT");
@@ -4304,6 +4296,11 @@ export default function DashboardPage() {
                   break;
                 }
               } catch {}
+            }
+            // 2) اگر تیکر نداد و همین کوین روی چارت است → close کندل زنده
+            if (!price && sym === currentSym && live?.last?.close) {
+              const c = Number(live.last.close);
+              if (c && Number.isFinite(c)) price = c;
             }
             if (!price) continue;
 
@@ -4329,13 +4326,13 @@ export default function DashboardPage() {
                   nowT
                 );
               }
-              // Need 3 stable ticker samples; block during symbol/TF cooldown
+              // بعد از ۱ نمونه پایدار می‌تواند تریگر شود
               let hit = false;
               if (
                 !inCooldown &&
                 prev != null &&
                 !Number.isNaN(prev) &&
-                seeds >= 3
+                seeds >= 1
               ) {
                 hit = didCross(a.condition, target, prev, price);
               }
@@ -4357,7 +4354,7 @@ export default function DashboardPage() {
       if (!alive) return;
       try { await refreshLiveCandles(); } catch {}
     }, 1000);
-    const id = window.setInterval(tick, 2500);
+    const id = window.setInterval(tick, 1500);
     return () => {
       alive = false;
       clearInterval(id);
