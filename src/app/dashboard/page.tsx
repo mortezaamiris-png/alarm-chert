@@ -76,6 +76,7 @@ type ToolMode =
   | "draw"
   | "ray"
   | "diag"
+  | "vline"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -560,9 +561,9 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 3000;
+const FUTURE_BARS = 800;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 500;
+const FUTURE_VISIBLE = 14;
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1246,12 +1247,41 @@ export default function DashboardPage() {
         const noteClean =
           l.note &&
           !String(l.note).startsWith("__diag:") &&
-          !String(l.note).startsWith("__ray:")
+          !String(l.note).startsWith("__ray:") &&
+          l.note !== "__vline__"
             ? String(l.note)
             : "";
         const title = isMoving ? "MOVING" : noteClean;
+        const isVLine =
+          l.note === "__vline__" ||
+          (l.start_time != null &&
+            l.end_time != null &&
+            Number(l.start_time) === Number(l.end_time) &&
+            l.end_price != null);
         if (hideLines) {
           // skip drawing lines when eye-hide is on
+        } else if (isVLine) {
+          // Vertical line at start_time spanning price low→high
+          const t = Number(l.start_time);
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const v0 = Number(l.price);
+          const v1 = Number(l.end_price);
+          const t2 = t + Math.max(1, Math.floor(barSec / 120));
+          const ls: any = chart.addLineSeries({
+            color,
+            lineWidth: width,
+            lineStyle: style,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            title: title || "",
+            autoscaleInfoProvider: () => null as any,
+          });
+          ls.setData([
+            { time: t as any, value: v0 },
+            { time: t2 as any, value: v1 },
+          ]);
+          chartLinesRef.current.set(l.id, ls);
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
@@ -1814,19 +1844,20 @@ export default function DashboardPage() {
             chart.priceScale("right").applyOptions({ autoScale: true });
           } catch {}
 
-          // Symbol change: force fresh price scale + show latest candles
+          // Symbol change: price scale auto + jump to latest candles (not fitContent — that includes empty future)
           if (symbolChanged) {
             try {
-              series.priceScale().applyOptions({ autoScale: true });
+              series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
               chart.priceScale("right").applyOptions({ autoScale: true });
-              chart.timeScale().fitContent();
               const bars = candles.length;
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
-                const past = Math.min(80, bars);
+                pinnedToRightRef.current = true;
+                setShowGoLive(false);
+                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
+                const past = Math.min(90, bars);
                 chart.timeScale().setVisibleLogicalRange({
-                  from: bars - past,
+                  from: Math.max(0, bars - past),
                   to: bars - 1 + FUTURE_VISIBLE,
                 });
                 requestAnimationFrame(() => {
@@ -1858,8 +1889,8 @@ export default function DashboardPage() {
               const bars = candles.length;
               if (bars >= 2) {
                 programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
-                const past = Math.min(55, bars);
+                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
+                const past = Math.min(90, bars);
                 chart.timeScale().setVisibleLogicalRange({
                   from: bars - past,
                   to: bars - 1 + FUTURE_VISIBLE,
@@ -2056,7 +2087,7 @@ export default function DashboardPage() {
           timeVisible: true,
           secondsVisible: isIntraday,
           // فضای خالی آینده خیلی بیشتر (مثل TradingView)
-          rightOffset: 120,
+          rightOffset: 12,
           barSpacing: 8,
           minBarSpacing: 1.5,
           fixLeftEdge: false,
@@ -2315,10 +2346,10 @@ export default function DashboardPage() {
           const bars = candlesRef.current.length;
           let pinned = false;
           if (bars >= 2) {
-            // با FUTURE_VISIBLE، لبه زنده حدود bars-1+FUTURE_VISIBLE است
-            // فقط وقتی خیلی نزدیک لبه راست باشیم pinned بمان
+            // لبه زنده = آخرین کندل واقعی + چند بار آیندهٔ کوتاه
+            // اگر کاربر به گذشته رفته (range.to خیلی قبل از آخر)، فلش Go Live نشان بده
             const liveEdge = bars - 1 + FUTURE_VISIBLE;
-            pinned = range.to >= liveEdge - 2;
+            pinned = range.to >= liveEdge - 5;
           }
           pinnedToRightRef.current = pinned;
           setShowGoLive(!pinned);
@@ -2338,8 +2369,8 @@ export default function DashboardPage() {
           if (bars < 2) return;
           programmaticRangeRef.current = true;
           // rightOffset بزرگ = فضای خالی سمت راست (زمان آینده)
-          chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
-          const past = Math.min(55, bars);
+          chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
+          const past = Math.min(90, bars);
           // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
@@ -2447,21 +2478,31 @@ export default function DashboardPage() {
 
       // Double-click / double-tap on price axis (right edge) → same view as fresh chart open
       let lastPriceTapTs = 0;
-      const goToLatest = () => {
+            const goToLatest = () => {
         try {
           const bars = candlesRef.current.length;
           if (bars < 2) {
-            chart.timeScale().scrollToRealTime();
+            try { chart.timeScale().scrollToRealTime(); } catch {}
+            pinnedToRightRef.current = true;
+            setShowGoLive(false);
             return;
           }
-          // Same framing as initial load: last ~80 real bars + future strip
-          chart.timeScale().applyOptions({ rightOffset: 50, barSpacing: 8 });
-          const past = Math.min(55, bars);
+          programmaticRangeRef.current = true;
+          // فقط آخرین کندل‌های واقعی + نوار کوتاه آینده (نه فضای خالی دور)
+          chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
+          const past = Math.min(90, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
             to: bars - 1 + FUTURE_VISIBLE,
           });
+          pinnedToRightRef.current = true;
+          setShowGoLive(false);
+          try {
+            seriesRef.current?.priceScale()?.applyOptions({ autoScale: true });
+          } catch {}
+          requestAnimationFrame(() => { programmaticRangeRef.current = false; });
         } catch {
+          programmaticRangeRef.current = false;
           try { chart.timeScale().scrollToRealTime(); } catch {}
         }
       };
@@ -2998,6 +3039,82 @@ export default function DashboardPage() {
           setMode("none");
           clearPreview();
           setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Vertical line: one click → line at that time
+        if (m === "vline") {
+          const t = resolveTime(param);
+          if (t == null || Number.isNaN(t)) {
+            setStatusMsg("Could not read time — try on chart area");
+            return;
+          }
+          const bars = candlesRef.current;
+          let lo = Infinity, hi = -Infinity;
+          for (const c of bars) {
+            if (c.low < lo) lo = c.low;
+            if (c.high > hi) hi = c.high;
+          }
+          if (!(hi > lo)) {
+            lo = fp * 0.98;
+            hi = fp * 1.02;
+          }
+          const pad = (hi - lo) * 0.05;
+          const color = drawColorRef.current || DEFAULT_LINE_COLOR;
+          const width = drawWidthRef.current || 2;
+          const dash = drawDashRef.current || "solid";
+          try {
+            const { data, error } = await supabase.from("chart_lines").insert([{
+              symbol: symbolUpper,
+              price: lo - pad,
+              end_price: hi + pad,
+              start_time: t,
+              end_time: t,
+              color,
+              width,
+              style: dash,
+              dash,
+              note: "__vline__",
+            }]).select().single();
+            if (!error && data) {
+              setLines((prev) => [...prev, data as ChartLine]);
+              setStatusMsg("Vertical line added");
+            } else {
+              // local fallback id
+              const local: ChartLine = {
+                id: `local-vl-${Date.now()}`,
+                symbol: symbolUpper,
+                price: lo - pad,
+                end_price: hi + pad,
+                start_time: t,
+                end_time: t,
+                color,
+                width,
+                style: dash,
+                dash,
+                note: "__vline__",
+              };
+              setLines((prev) => [...prev, local]);
+              setStatusMsg("Vertical line added (local)");
+            }
+          } catch {
+            const local: ChartLine = {
+              id: `local-vl-${Date.now()}`,
+              symbol: symbolUpper,
+              price: lo - pad,
+              end_price: hi + pad,
+              start_time: t,
+              end_time: t,
+              color,
+              width,
+              style: dash,
+              dash,
+              note: "__vline__",
+            };
+            setLines((prev) => [...prev, local]);
+            setStatusMsg("Vertical line added (local)");
+          }
+          setMode("none");
           return;
         }
 
@@ -4673,6 +4790,31 @@ export default function DashboardPage() {
               </svg>
             </button>
 
+            {/* Vertical line */}
+            <button
+              type="button"
+              title="Vertical line"
+              onClick={() => {
+                setMode(mode === "vline" ? "none" : "vline");
+                setDiagStart(null);
+                setAlarmMenuOpen(false);
+                clearPreview();
+                if (mode !== "vline") setStatusMsg("Vertical line: tap on chart");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "vline"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="12" y1="3" x2="12" y2="21" />
+                <line x1="9" y1="3" x2="15" y2="3" />
+                <line x1="9" y1="21" x2="15" y2="21" />
+              </svg>
+            </button>
+
             {/* Indicators */}
             <button
               type="button"
@@ -4930,23 +5072,36 @@ export default function DashboardPage() {
           {showGoLive && (
             <button
               type="button"
-              title="Go to latest candles"
+              title="Jump to latest candles"
               onClick={() => {
                 const chart = chartRef.current;
                 if (!chart) return;
                 try {
-                  programmaticRangeRef.current = true;
-                  chart.timeScale().scrollToRealTime();
-                  requestAnimationFrame(() => {
-                    programmaticRangeRef.current = false;
-                  });
+                  const bars = candlesRef.current.length;
+                  if (bars < 2) {
+                    chart.timeScale().scrollToRealTime();
+                  } else {
+                    programmaticRangeRef.current = true;
+                    chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
+                    const past = Math.min(90, bars);
+                    chart.timeScale().setVisibleLogicalRange({
+                      from: Math.max(0, bars - past),
+                      to: bars - 1 + FUTURE_VISIBLE,
+                    });
+                    try {
+                      seriesRef.current?.priceScale()?.applyOptions({ autoScale: true });
+                    } catch {}
+                    requestAnimationFrame(() => {
+                      programmaticRangeRef.current = false;
+                    });
+                  }
                 } catch {
                   programmaticRangeRef.current = false;
                 }
                 pinnedToRightRef.current = true;
                 setShowGoLive(false);
               }}
-              className="absolute bottom-3 right-3 z-20 flex items-center justify-center w-9 h-9 rounded-full bg-gray-800/95 border border-gray-600 text-gray-100 shadow-lg hover:bg-orange-600 hover:border-orange-500 active:scale-95 transition"
+              className="absolute bottom-2 right-14 z-20 flex items-center justify-center w-9 h-9 rounded-full bg-gray-900/95 border border-gray-500 text-white shadow-lg hover:bg-orange-600 hover:border-orange-500 active:scale-95 transition"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="13 17 18 12 13 7" />
@@ -6050,7 +6205,7 @@ export default function DashboardPage() {
                           historyFocusRef.current = null;
                           try {
                             const bars = candles.length;
-                            const past = Math.min(55, bars);
+                            const past = Math.min(90, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
                               to: bars - 1 + FUTURE_VISIBLE,
