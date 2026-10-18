@@ -4085,16 +4085,15 @@ export default function DashboardPage() {
         .eq("id", a.id);
     } catch {}
 
-    // One device notification only (local). Server sends Telegram, not Web Push.
     if (!notifiedAlarmsRef.current.has(a.id)) {
       notifiedAlarmsRef.current.add(a.id);
       showLocalNotification(`${a.symbol}`, alarmNotifyBody(a, price));
     }
 
-    // Server: Telegram only (skipPush) — avoids 2 system notifications on same device
+    // Ask Edge Function to send Telegram + Web Push for this alarm (even though already marked)
     try {
       await supabase.functions.invoke("check-alarms", {
-        body: { notify_alarm_id: a.id, price, skip_push: true },
+        body: { notify_alarm_id: a.id, price },
       });
     } catch (e) {
       console.warn("notify invoke failed", e);
@@ -4142,25 +4141,13 @@ export default function DashboardPage() {
               const db = byId.get(local.id);
               if (!db) return local;
               if (db.triggered && !local.triggered) {
-                // فقط اگر هنوز نوتیف نداده باشیم و تریگر تازه باشد (کرون وقتی تب بسته بود)
-                if (!notifiedAlarmsRef.current.has(local.id)) {
-                  const trigAt = (db as any).triggered_at
-                    ? new Date((db as any).triggered_at).getTime()
-                    : 0;
-                  const fresh = trigAt > 0 && Date.now() - trigAt < 20000;
-                  const lp = Number((db as any).last_price ?? 0);
-                  const ap = Number(db.price);
-                  const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
-                  if (fresh && near) {
-                    notifiedAlarmsRef.current.add(local.id);
-                    showLocalNotification(
-                      `${db.symbol}`,
-                      alarmNotifyBody(db, Number(db.last_price ?? db.price))
-                    );
-                  } else {
-                    // already handled by client or too old — mark so we never double
-                    notifiedAlarmsRef.current.add(local.id);
-                  }
+                // فقط اگر قیمت برخورد نزدیک سطح آلارم باشد نوتیف بده (جلوگیری از تریگر دروغین سرور)
+                const lp = Number((db as any).last_price ?? 0);
+                const ap = Number(db.price);
+                const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
+                if (near && !notifiedAlarmsRef.current.has(local.id)) {
+                  notifiedAlarmsRef.current.add(local.id);
+                  showLocalNotification(`${db.symbol}`, alarmNotifyBody(db, Number(db.price)));
                 }
               }
               return {
