@@ -472,17 +472,25 @@ function didCross(
 ) {
   if (prev == null || Number.isNaN(prev) || Number.isNaN(price)) return false;
   if (!target || !Number.isFinite(target)) return false;
-  // عبور واقعی: سطح بین prev و price باشد. فقط گلیچ‌های خیلی بزرگ بدون عبور را رد کن
-  const lo = Math.min(prev, price);
-  const hi = Math.max(prev, price);
-  const jump = Math.abs(price - prev);
-  const span = Math.max(Math.abs(target) * 0.02, 1e-8);
-  const throughLevel = target >= lo - span * 0.01 && target <= hi + span * 0.01;
-  if (jump > Math.max(span * 25, Math.abs(target) * 0.5) && !throughLevel) return false;
+  // prev must be clearly on one side of the line (not already glued to it)
+  const clear = Math.max(Math.abs(target) * 0.00015, 1e-8); // ~0.015%
   const eps = Math.max(Math.abs(target) * 1e-8, 1e-8);
-  if (condition === "above") return prev < target - eps && price >= target;
-  if (condition === "below") return prev > target + eps && price <= target;
-  return (prev < target - eps && price >= target) || (prev > target + eps && price <= target);
+  // Ignore absurd single-tick glitches (bad ticker / wrong symbol data)
+  const jump = Math.abs(price - prev);
+  if (jump > Math.max(Math.abs(target) * 0.08, clear * 20)) return false;
+
+  const cond = String(condition || "cross").toLowerCase();
+  if (cond === "above") {
+    return prev < target - clear && price >= target - eps;
+  }
+  if (cond === "below") {
+    return prev > target + clear && price <= target + eps;
+  }
+  // cross: must come from clearly one side to the other / onto the level
+  return (
+    (prev < target - clear && price >= target - eps) ||
+    (prev > target + clear && price <= target + eps)
+  );
 }
 function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
@@ -742,6 +750,8 @@ export default function DashboardPage() {
   const prevPricesRef = useRef<Record<string, number>>({});
   /** بعد از لود/عوض TF چند تیک صبر کن تا seed پایدار شود */
   const priceSeedCountRef = useRef<Record<string, number>>({});
+  /** After symbol/TF change, block triggers briefly to avoid false hits */
+  const alarmCooldownUntilRef = useRef<number>(0);
   /** زوم عمودی دستی روی محور قیمت (null = autoScale) */
   const priceRangeOverrideRef = useRef<{ from: number; to: number } | null>(null);
   const clickLockRef = useRef(false);
@@ -903,7 +913,14 @@ export default function DashboardPage() {
   useEffect(() => { drawColorRef.current = drawColor; saveLS("draw_color", drawColor); }, [drawColor]);
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
-  useEffect(() => { symbolRef.current = symbol; localStorage.setItem("chart_symbol", symbol); }, [symbol]);
+  useEffect(() => {
+    symbolRef.current = symbol;
+    localStorage.setItem("chart_symbol", symbol);
+    // تعویض کوین → چند ثانیه آلارم نزن + seed از نو
+    prevPricesRef.current = {};
+    priceSeedCountRef.current = {};
+    alarmCooldownUntilRef.current = Date.now() + 4000;
+  }, [symbol]);
   // Highlight a specific alarm when navigating from Alerts page (horizontal or diagonal)
   useEffect(() => {
     try {
@@ -962,7 +979,14 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [highlightPrice, highlightAlarmId, highlightDiag, highlightRay]);
 
-  useEffect(() => { intervalRef.current = interval; localStorage.setItem("chart_interval", interval); }, [interval]);
+  useEffect(() => {
+    intervalRef.current = interval;
+    localStorage.setItem("chart_interval", interval);
+    // تعویض تایم‌فریم → چند ثانیه آلارم نزن + seed از نو
+    prevPricesRef.current = {};
+    priceSeedCountRef.current = {};
+    alarmCooldownUntilRef.current = Date.now() + 4000;
+  }, [interval]);
   useEffect(() => { timeZoneRef.current = timeZone; saveLS("chart_tz", timeZone); }, [timeZone]);
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
@@ -1779,9 +1803,10 @@ export default function DashboardPage() {
     }
     // Keep previous chart visible until new data is ready (no black flash on TF switch).
     // Capture symbol/interval + generation so a slow response never clobbers a newer request.
-    // TF عوض شد → prev قیمت‌ها را پاک کن تا آلارم دروغین نخورد
+    // TF/symbol عوض شد → prev و seed را پاک کن + چند ثانیه تریگر ممنوع
     prevPricesRef.current = {};
     priceSeedCountRef.current = {};
+    alarmCooldownUntilRef.current = Date.now() + 4000;
     priceRangeOverrideRef.current = null;
     const gen = ++loadGenRef.current;
     const fetchSym = chartSymbol(symbolRef.current);
@@ -1872,43 +1897,17 @@ export default function DashboardPage() {
             } catch {}
           }
 
+          // Clear old price-lines before data so autoscale is not stuck (TF + symbol)
+          try {
+            const pls = (series as any).priceLines?.() || [];
+            for (const pl of pls) {
+              try { series.removePriceLine(pl); } catch {}
+            }
+          } catch {}
+
           series.setData(appendFutureWhitespace(candles, fetchIv) as any);
           try { syncFutureAxis(candles, fetchIv); } catch {}
 
-          // Always re-enable autoScale after data swap
-          try {
-            series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
-          } catch {}
-          try {
-            chart.priceScale("right").applyOptions({ autoScale: true });
-          } catch {}
-
-          // Symbol change: price scale auto + jump to latest candles (not fitContent — that includes empty future)
-          if (symbolChanged) {
-            try {
-              series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
-              chart.priceScale("right").applyOptions({ autoScale: true });
-              const bars = candles.length;
-              if (bars >= 2) {
-                programmaticRangeRef.current = true;
-                pinnedToRightRef.current = true;
-                setShowGoLive(false);
-                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
-                const past = Math.min(90, bars);
-                chart.timeScale().setVisibleLogicalRange({
-                  from: Math.max(0, bars - past),
-                  to: bars - 1 + FUTURE_VISIBLE,
-                });
-                requestAnimationFrame(() => {
-                  try {
-                    series.priceScale().applyOptions({ autoScale: true });
-                    chart.priceScale("right").applyOptions({ autoScale: true });
-                  } catch {}
-                  programmaticRangeRef.current = false;
-                });
-              }
-            } catch {}
-          }
           chart.applyOptions({
             localization: makeLocalization(tz),
             timeScale: {
@@ -1916,29 +1915,81 @@ export default function DashboardPage() {
               tickMarkFormatter: makeTickMarkFormatter(tz) as any,
             },
           });
+
           const intervalChanged =
             lastLoadedIntervalRef.current !== "" &&
             lastLoadedIntervalRef.current !== fetchIv;
-          const shouldResetView = symbolChanged || intervalChanged || lastLoadedIntervalRef.current === "";
+          const shouldResetView =
+            symbolChanged ||
+            intervalChanged ||
+            lastLoadedIntervalRef.current === "";
           lastLoadedIntervalRef.current = fetchIv;
+
+          // مثل عوض کردن کوین: هر بار TF عوض شد برو آخرین کندل + autoScale قیمت
           if (shouldResetView) {
-            pinnedToRightRef.current = true;
-            setShowGoLive(false);
             try {
+              priceRangeOverrideRef.current = null;
+              pinnedToRightRef.current = true;
+              setShowGoLive(false);
+              programmaticRangeRef.current = true;
+
+              series.priceScale().applyOptions({
+                autoScale: true,
+                scaleMargins: { top: 0.08, bottom: 0.12 },
+              });
+              chart.priceScale("right").applyOptions({ autoScale: true });
+
               const bars = candles.length;
               if (bars >= 2) {
-                programmaticRangeRef.current = true;
-                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
-                const past = Math.min(90, bars);
+                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 6 });
+                const past = Math.min(100, bars);
                 chart.timeScale().setVisibleLogicalRange({
-                  from: bars - past,
+                  from: Math.max(0, bars - past),
                   to: bars - 1 + FUTURE_VISIBLE,
                 });
-                requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+                try {
+                  (chart.timeScale() as any).scrollToRealTime?.();
+                } catch {}
               }
+
+              // دوبار در فریم بعدی — LWC گاهی بعد از setData رنج را غلط می‌گذارد
+              const snapLatest = () => {
+                try {
+                  const n = (candlesRef.current || candles).length;
+                  if (n < 2) return;
+                  series.priceScale().applyOptions({
+                    autoScale: true,
+                    scaleMargins: { top: 0.08, bottom: 0.12 },
+                  });
+                  chart.priceScale("right").applyOptions({ autoScale: true });
+                  const past2 = Math.min(100, n);
+                  chart.timeScale().setVisibleLogicalRange({
+                    from: Math.max(0, n - past2),
+                    to: n - 1 + FUTURE_VISIBLE,
+                  });
+                  try {
+                    (chart.timeScale() as any).scrollToRealTime?.();
+                  } catch {}
+                } catch {}
+              };
+              requestAnimationFrame(() => {
+                snapLatest();
+                requestAnimationFrame(() => {
+                  snapLatest();
+                  programmaticRangeRef.current = false;
+                });
+              });
             } catch {
               programmaticRangeRef.current = false;
             }
+          } else {
+            try {
+              series.priceScale().applyOptions({
+                autoScale: true,
+                scaleMargins: { top: 0.08, bottom: 0.12 },
+              });
+              chart.priceScale("right").applyOptions({ autoScale: true });
+            } catch {}
           }
 
           // 2) Then clear overlays (chart already shows new TF candles)
@@ -2054,11 +2105,40 @@ export default function DashboardPage() {
                 } catch {}
                 seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
                 try { syncFutureAxis(all, fetchIv); } catch {}
-                if (savedTime && savedTime.from != null && savedTime.to != null) {
+                // اگر تازه TF/کوین عوض شده، رنج ذخیره‌شده را برنگردان — بمان روی آخرین کندل
+                const keepLatest =
+                  pinnedToRightRef.current ||
+                  Date.now() < (alarmCooldownUntilRef.current || 0) + 2000;
+                if (
+                  !keepLatest &&
+                  savedTime &&
+                  savedTime.from != null &&
+                  savedTime.to != null
+                ) {
                   try {
                     programmaticRangeRef.current = true;
                     (chartRef.current.timeScale() as any).setVisibleRange(savedTime);
-                    requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+                    requestAnimationFrame(() => {
+                      programmaticRangeRef.current = false;
+                    });
+                  } catch {
+                    programmaticRangeRef.current = false;
+                  }
+                } else if (keepLatest && chartRef.current && seriesRef.current) {
+                  try {
+                    const n = all.length;
+                    if (n >= 2) {
+                      programmaticRangeRef.current = true;
+                      const past = Math.min(100, n);
+                      chartRef.current.timeScale().setVisibleLogicalRange({
+                        from: Math.max(0, n - past),
+                        to: n - 1 + FUTURE_VISIBLE,
+                      });
+                      seriesRef.current.priceScale().applyOptions({ autoScale: true });
+                      requestAnimationFrame(() => {
+                        programmaticRangeRef.current = false;
+                      });
+                    }
                   } catch {
                     programmaticRangeRef.current = false;
                   }
@@ -4085,15 +4165,16 @@ export default function DashboardPage() {
         .eq("id", a.id);
     } catch {}
 
+    // One device notification only (local). Server sends Telegram, not Web Push.
     if (!notifiedAlarmsRef.current.has(a.id)) {
       notifiedAlarmsRef.current.add(a.id);
       showLocalNotification(`${a.symbol}`, alarmNotifyBody(a, price));
     }
 
-    // Ask Edge Function to send Telegram + Web Push for this alarm (even though already marked)
+    // Server: Telegram only (skipPush) — avoids 2 system notifications on same device
     try {
       await supabase.functions.invoke("check-alarms", {
-        body: { notify_alarm_id: a.id, price },
+        body: { notify_alarm_id: a.id, price, skip_push: true },
       });
     } catch (e) {
       console.warn("notify invoke failed", e);
@@ -4141,13 +4222,25 @@ export default function DashboardPage() {
               const db = byId.get(local.id);
               if (!db) return local;
               if (db.triggered && !local.triggered) {
-                // فقط اگر قیمت برخورد نزدیک سطح آلارم باشد نوتیف بده (جلوگیری از تریگر دروغین سرور)
-                const lp = Number((db as any).last_price ?? 0);
-                const ap = Number(db.price);
-                const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
-                if (near && !notifiedAlarmsRef.current.has(local.id)) {
-                  notifiedAlarmsRef.current.add(local.id);
-                  showLocalNotification(`${db.symbol}`, alarmNotifyBody(db, Number(db.price)));
+                // فقط اگر هنوز نوتیف نداده باشیم و تریگر تازه باشد (کرون وقتی تب بسته بود)
+                if (!notifiedAlarmsRef.current.has(local.id)) {
+                  const trigAt = (db as any).triggered_at
+                    ? new Date((db as any).triggered_at).getTime()
+                    : 0;
+                  const fresh = trigAt > 0 && Date.now() - trigAt < 20000;
+                  const lp = Number((db as any).last_price ?? 0);
+                  const ap = Number(db.price);
+                  const near = lp > 0 && ap > 0 && Math.abs(lp - ap) / ap < 0.008;
+                  if (fresh && near) {
+                    notifiedAlarmsRef.current.add(local.id);
+                    showLocalNotification(
+                      `${db.symbol}`,
+                      alarmNotifyBody(db, Number(db.last_price ?? db.price))
+                    );
+                  } else {
+                    // already handled by client or too old — mark so we never double
+                    notifiedAlarmsRef.current.add(local.id);
+                  }
                 }
               }
               return {
@@ -4187,44 +4280,42 @@ export default function DashboardPage() {
           ),
         ];
 
+        // After symbol/TF switch: only seed prices, never trigger
+        const inCooldown = Date.now() < (alarmCooldownUntilRef.current || 0);
+
         for (const sym of symbols) {
           try {
+            // ALWAYS real-time ticker for alarms — never candle OHLC (TF switch false hits)
             let price = 0;
-            let high = 0;
-            let low = 0;
-            const currentSym = chartSymbol(symbolRef.current).toUpperCase();
-            if (sym === currentSym && live?.last) {
-              price = live.last.close;
-              high = live.high;
-              low = live.low;
-            } else {
-              // try clean symbol + USDT form
-              const candidates = [sym];
-              if (!sym.endsWith("USDT") && !sym.endsWith("USDC")) {
-                candidates.push(sym + "USDT");
-              }
-              for (const c of candidates) {
-                try {
-                  const res = await fetch(`/api/ticker?symbol=${encodeURIComponent(c)}`);
-                  const j = await res.json();
-                  const p = parseFloat(j?.price || j?.lastPrice || j?.data?.price || 0);
-                  if (p && Number.isFinite(p)) {
-                    price = p;
-                    break;
-                  }
-                } catch {}
-              }
-              high = price;
-              low = price;
+            const candidates = [sym];
+            if (!/USDT$|USDC$|BUSD$|USD$/i.test(sym)) {
+              candidates.push(sym + "USDT");
+            }
+            for (const c of candidates) {
+              try {
+                const res = await fetch(
+                  `/api/ticker?symbol=${encodeURIComponent(c)}`,
+                  { cache: "no-store" }
+                );
+                const j = await res.json();
+                const p = parseFloat(
+                  j?.price || j?.lastPrice || j?.data?.price || 0
+                );
+                if (p && Number.isFinite(p)) {
+                  price = p;
+                  break;
+                }
+              } catch {}
             }
             if (!price) continue;
+
             const prev = prevPricesRef.current[sym];
-            // دقت: فقط عبور واقعی ticker/close — بدون high/low کندل
+            const seeds = priceSeedCountRef.current[sym] || 0;
 
             for (const a of stillActive.filter(
               (x) => chartSymbol(String(x.symbol)).toUpperCase() === sym
             )) {
-              let target = a.price;
+              let target = Number(a.price);
               if (isDiagonalLine(a)) {
                 const nowT = Math.floor(Date.now() / 1000);
                 const st = Number(a.start_time);
@@ -4232,21 +4323,31 @@ export default function DashboardPage() {
                 const tMin = Math.min(st, et);
                 const tMax = Math.max(st, et);
                 if (nowT < tMin || nowT > tMax + 60) continue;
-                target = projectedPriceOnDiag(st, Number(a.price), et, Number(a.end_price), nowT);
+                target = projectedPriceOnDiag(
+                  st,
+                  Number(a.price),
+                  et,
+                  Number(a.end_price),
+                  nowT
+                );
               }
+              // Need 3 stable ticker samples; block during symbol/TF cooldown
               let hit = false;
-              const seeds = priceSeedCountRef.current[sym] || 0;
-              // 1 stable sample enough if we already had a prev price for this symbol
-              const needSeeds = prev != null && !Number.isNaN(prev) ? 1 : 2;
-              if (prev == null || Number.isNaN(prev) || seeds < needSeeds) {
-                // seed only — do not trigger on first ticks after load
-              } else {
+              if (
+                !inCooldown &&
+                prev != null &&
+                !Number.isNaN(prev) &&
+                seeds >= 3
+              ) {
                 hit = didCross(a.condition, target, prev, price);
               }
               if (hit) await triggerAlarmLocal(a, price);
             }
             prevPricesRef.current[sym] = price;
-            priceSeedCountRef.current[sym] = Math.min(10, (priceSeedCountRef.current[sym] || 0) + 1);
+            priceSeedCountRef.current[sym] = Math.min(
+              20,
+              (priceSeedCountRef.current[sym] || 0) + 1
+            );
           } catch {}
         }
       } catch {}
