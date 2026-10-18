@@ -24,11 +24,31 @@ function urlBase64ToUint8Array(base64String: string) {
   return out;
 }
 
-async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error"> {
+/** Resolve logged-in user id (supabase client or cookie session) */
+async function resolveUserId(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    if (data?.user?.id) return data.user.id;
+  } catch {}
+  try {
+    const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+    const json = await res.json();
+    if (json?.user?.id) return String(json.user.id);
+  } catch {}
+  return null;
+}
+
+async function ensurePushSubscription(): Promise<
+  "ok" | "denied" | "unsupported" | "no-key" | "error" | "not-logged-in"
+> {
   if (typeof window === "undefined") return "unsupported";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     return "unsupported";
   }
+
+  const userId = await resolveUserId();
+  if (!userId) return "not-logged-in";
+
   const vapid =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_VAPID_PUBLIC_KEY) ||
     VAPID_PUBLIC_KEY_FALLBACK;
@@ -64,13 +84,20 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
         .update({
           p256dh,
           auth,
+          user_id: userId,
           user_agent: navigator.userAgent,
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id);
     } else {
       await supabase.from("push_subscriptions").insert([
-        { endpoint, p256dh, auth, user_agent: navigator.userAgent },
+        {
+          endpoint,
+          p256dh,
+          auth,
+          user_id: userId,
+          user_agent: navigator.userAgent,
+        },
       ]);
     }
     return "ok";
@@ -324,6 +351,10 @@ export default function SiteNavbar() {
       setPushStatus("idle");
       return;
     }
+    if (!user) {
+      setAuthOpen(true);
+      return;
+    }
     setPushStatus("idle");
     const result = await ensurePushSubscription();
     setPushStatus(result);
@@ -334,8 +365,19 @@ export default function SiteNavbar() {
           icon: "/icon-192.png",
         });
       } catch {}
+    } else if (result === "not-logged-in") {
+      setAuthOpen(true);
     }
   };
+
+  // After login, re-bind push subscription to this user_id
+  useEffect(() => {
+    if (!user?.id) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission === "granted") {
+      ensurePushSubscription().then(setPushStatus);
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     let mounted = true;
