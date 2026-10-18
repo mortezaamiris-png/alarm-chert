@@ -271,7 +271,7 @@ function findPivots(candles: any[], leftRight: number) {
   return { highs, lows };
 }
 
-/** یک AudioContext مشترک — روی دسکتاپ بدون کلیک گاهی suspended می‌ماند */
+/** AudioContext مشترک — روی دسکتاپ بدون resume صدا نمی‌دهد */
 let _alarmAudioCtx: AudioContext | null = null;
 function getAlarmAudioCtx(): AudioContext | null {
   try {
@@ -283,19 +283,18 @@ function getAlarmAudioCtx(): AudioContext | null {
     return null;
   }
 }
-/** با اولین کلیک/لمس صدا را از حالت suspended دربیار */
 if (typeof window !== "undefined") {
   const unlock = () => {
     try {
       const ctx = getAlarmAudioCtx();
-      if (ctx && ctx.state === "suspended") ctx.resume();
+      if (ctx && ctx.state === "suspended") void ctx.resume();
     } catch {}
   };
-  window.addEventListener("pointerdown", unlock, { once: true, capture: true });
-  window.addEventListener("keydown", unlock, { once: true, capture: true });
+  window.addEventListener("pointerdown", unlock, { capture: true });
+  window.addEventListener("keydown", unlock, { capture: true });
 }
 
-/** Desktop: چند نت بلند | موبایل: یک بیپ کوتاه */
+/** Desktop: چند نت بلند | موبایل: کوتاه */
 function playAlarmBeep() {
   try {
     const ctx = getAlarmAudioCtx();
@@ -305,7 +304,7 @@ function playAlarmBeep() {
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         const notes = isMobile ? [880, 988] : [660, 880, 1100, 880, 1320, 880];
         const gap = isMobile ? 0.32 : 0.22;
-        const vol = isMobile ? 0.32 : 0.35;
+        const vol = isMobile ? 0.35 : 0.4;
         notes.forEach((freq, i) => {
           const o = ctx.createOscillator();
           const g = ctx.createGain();
@@ -330,7 +329,6 @@ function playAlarmBeep() {
   } catch {}
 }
 
-/** جلوگیری از چند بیپ پشت‌سرهم */
 let _lastBeepAt = 0;
 function showLocalNotification(
   title: string,
@@ -348,9 +346,9 @@ function showLocalNotification(
       } as NotificationOptions);
     }
   } catch {}
-  // همیشه بیپ (حتی اگر نوتیف سیستم بی‌صدا باشد)
+  // همیشه بیپ وقتی صفحه باز است
   const now = Date.now();
-  if (now - _lastBeepAt > 1200) {
+  if (now - _lastBeepAt > 1000) {
     _lastBeepAt = now;
     playAlarmBeep();
   }
@@ -426,17 +424,6 @@ function urlBase64ToUint8Array(base64String: string) {
 /** Public VAPID key (safe in client). Must match VAPID_PRIVATE_KEY on server/Supabase. */
 const VAPID_PUBLIC_KEY_FALLBACK =
   "BNxMii5i6PgIObzAV3J3V0RHCKZMcsuraoOisgNXJL58IL9IzWKAClubnW8QFYtNFL07-D32iZctMZGGNw7LVpg";
-
-const PUSH_PREF_KEY = "alarm_push_on";
-function getPushPref(): boolean {
-  try { return localStorage.getItem(PUSH_PREF_KEY) === "1"; } catch { return false; }
-}
-function setPushPref(on: boolean) {
-  try {
-    if (on) localStorage.setItem(PUSH_PREF_KEY, "1");
-    else localStorage.removeItem(PUSH_PREF_KEY);
-  } catch {}
-}
 
 async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported" | "no-key" | "error" | "not-logged-in"> {
   if (typeof window === "undefined") return "unsupported";
@@ -4253,7 +4240,7 @@ export default function DashboardPage() {
       return;
     }
 
-    // تب باز است (حتی پشت‌زمینه) → نوتیف + صدا؛ پوش هم برای بقیه دستگاه‌ها
+    // سایت باز است → همیشه نوتیف + صدای بیپ روی کامپیوتر
     showLocalNotification(
       `${a.symbol}`,
       alarmNotifyBody(a, price),
@@ -4268,7 +4255,6 @@ export default function DashboardPage() {
         body: {
           notify_alarm_id: a.id,
           price,
-          // هرگز skip نکن — بقیه دستگاه‌ها باید پوش بگیرند
           skip_push: false,
         },
       });
@@ -4749,25 +4735,11 @@ export default function DashboardPage() {
       setPushStatus("unsupported");
       return;
     }
-    const run = () => {
-      if (Notification.permission === "denied") {
-        setPushStatus("denied");
-        return;
-      }
-      if (Notification.permission === "granted" || getPushPref()) {
-        ensurePushSubscription().then((r) => {
-          setPushStatus(r);
-          if (r === "ok") setPushPref(true);
-        });
-      }
-    };
-    run();
-    const t1 = window.setTimeout(run, 2000);
-    const t2 = window.setTimeout(run, 5000);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
+    if (Notification.permission === "granted") {
+      ensurePushSubscription().then(setPushStatus);
+    } else if (Notification.permission === "denied") {
+      setPushStatus("denied");
+    }
   }, []);
 
   const enablePushNotifications = async () => {
@@ -4776,7 +4748,6 @@ export default function DashboardPage() {
     const result = await ensurePushSubscription();
     setPushStatus(result);
     if (result === "ok") {
-      setPushPref(true);
       setStatusMsg("Push notifications ON");
       // Confirm to user (and wake iOS notification permission UX)
       try {
