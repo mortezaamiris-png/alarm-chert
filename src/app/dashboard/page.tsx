@@ -652,46 +652,6 @@ function intervalToSeconds(iv: string): number {
   return Number.isNaN(n) ? 3600 : n * 60;
 }
 
-function parseKlineTime(r: any): number {
-  const raw = r?.time ?? r?.[0] ?? r?.openTime ?? r?.t ?? r?.open_time;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
-}
-
-/** فقط حفره‌های کوچک (۱–۸ کندل) را پر کن — گپ واقعی بازار را دست نزن */
-function fillSmallCandleGaps(
-  candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[],
-  interval: string
-): typeof candles {
-  if (candles.length < 2) return candles;
-  const barSec = intervalToSeconds(String(interval));
-  if (barSec <= 0 || barSec >= 86400) return candles;
-  const sorted = candles.slice().sort((a, b) => a.time - b.time);
-  const out: typeof candles = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = out[out.length - 1];
-    const cur = sorted[i];
-    const gapBars = Math.round((cur.time - prev.time) / barSec);
-    if (gapBars > 1 && gapBars <= 8) {
-      for (let k = 1; k < gapBars; k++) {
-        const px = prev.close;
-        out.push({
-          time: prev.time + k * barSec,
-          open: px,
-          high: px,
-          low: px,
-          close: px,
-          volume: 0,
-        });
-      }
-    }
-    if (cur.time === out[out.length - 1].time) out[out.length - 1] = cur;
-    else out.push(cur);
-  }
-  return out;
-}
-
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
 const FUTURE_BARS = 800;
@@ -1920,9 +1880,12 @@ export default function DashboardPage() {
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
 
-      const candlesMapped = rows
+      const candles = rows
         .map((r: any) => {
-          const time = parseKlineTime(r);
+          const time = Math.floor(
+            Number(r.time || r[0] || r.openTime || r.t) /
+              (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+          );
           return {
             time,
             open: parseFloat(r.open ?? r[1]),
@@ -1932,21 +1895,8 @@ export default function DashboardPage() {
             volume: parseFloat(r.volume ?? r[5] ?? 0),
           };
         })
-        .filter(
-          (c: any) =>
-            c.time > 0 &&
-            Number.isFinite(c.open) &&
-            Number.isFinite(c.close) &&
-            !Number.isNaN(c.close)
-        )
+        .filter((c: any) => c.time && !Number.isNaN(c.close))
         .sort((a: any, b: any) => a.time - b.time);
-      const dedup: typeof candlesMapped = [];
-      for (const c of candlesMapped) {
-        if (dedup.length && dedup[dedup.length - 1].time === c.time) {
-          dedup[dedup.length - 1] = c;
-        } else dedup.push(c);
-      }
-      const candles = fillSmallCandleGaps(dedup, fetchIv);
 
       if (gen !== loadGenRef.current) return;
 
@@ -3863,36 +3813,18 @@ export default function DashboardPage() {
     } catch {}
   }, [timeZone]);
 
-  // Resize chart when side list / tools toggle — و همیشه با ResizeObserver (موبایل)
+  // Resize chart when side list is shown/hidden — فقط عرض/ارتفاع، رنج را دست نزن
   useEffect(() => {
-    const applySize = () => {
-      const el = chartContainerRef.current;
-      const chart = chartRef.current;
-      if (!el || !chart) return;
-      const w = el.clientWidth;
-      const h = el.clientHeight || 640;
-      if (w > 0) {
-        try {
-          chart.applyOptions({ width: w, height: h });
-        } catch {}
+    const t = setTimeout(() => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight || 640,
+        });
+        // عمداً setVisibleLogicalRange نمی‌زنیم — باعث پرش/آهنربا می‌شد
       }
-    };
-    const t = setTimeout(applySize, 50);
-    const t2 = setTimeout(applySize, 200);
-    let ro: ResizeObserver | null = null;
-    try {
-      if (typeof ResizeObserver !== "undefined" && chartContainerRef.current) {
-        ro = new ResizeObserver(() => applySize());
-        ro.observe(chartContainerRef.current);
-      }
-    } catch {}
-    return () => {
-      clearTimeout(t);
-      clearTimeout(t2);
-      try {
-        ro?.disconnect();
-      } catch {}
-    };
+    }, 50);
+    return () => clearTimeout(t);
   }, [showSideWl, showToolsPanel]);
 
   // Close TF / timezone / list / indicator menus when clicking outside
@@ -4126,10 +4058,13 @@ export default function DashboardPage() {
   }, []);
 
   /** Parse kline API rows into candle objects */
-  const parseKlineRows = useCallback((rows: any[], interval?: string) => {
-    const raw = rows
+  const parseKlineRows = useCallback((rows: any[]) => {
+    return rows
       .map((r: any) => {
-        const time = parseKlineTime(r);
+        const time = Math.floor(
+          Number(r.time || r[0] || r.openTime || r.t) /
+            (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+        );
         return {
           time,
           open: parseFloat(r.open ?? r[1]),
@@ -4139,20 +4074,8 @@ export default function DashboardPage() {
           volume: parseFloat(r.volume ?? r[5] ?? 0),
         };
       })
-      .filter(
-        (c: any) =>
-          c.time > 0 &&
-          Number.isFinite(c.open) &&
-          Number.isFinite(c.close) &&
-          !Number.isNaN(c.close)
-      )
+      .filter((c: any) => c.time && !Number.isNaN(c.close))
       .sort((a: any, b: any) => a.time - b.time);
-    const dedup: typeof raw = [];
-    for (const c of raw) {
-      if (dedup.length && dedup[dedup.length - 1].time === c.time) dedup[dedup.length - 1] = c;
-      else dedup.push(c);
-    }
-    return fillSmallCandleGaps(dedup, interval || String(intervalRef.current || "15"));
   }, []);
 
   /** Live candle update without destroying the chart */
@@ -5409,8 +5332,8 @@ export default function DashboardPage() {
         <div className="flex-1 min-w-0 relative">
           <div
             ref={chartContainerRef}
-            className="w-full min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
-            style={{ height: 640, width: "100%", touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
+            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+            style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -5885,7 +5808,7 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div className="w-44 sm:w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:z-40 max-sm:h-full max-sm:shadow-2xl" style={{ maxHeight: 640 }}>
+          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
               <select
                 value={sideViewId}
