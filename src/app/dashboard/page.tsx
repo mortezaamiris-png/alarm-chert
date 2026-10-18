@@ -4201,21 +4201,33 @@ export default function DashboardPage() {
     notifiedAlarmsRef.current.add(a.id);
 
     if (!claimed) {
-      // سرور/کرون قبلاً نوتیف (پوش) فرستاده — دوباره نوتیف لوکال نده
+      // سرور/کرون قبلاً نوتیف فرستاده — دوباره نده
       triggeringAlarmsRef.current.delete(a.id);
       return;
     }
 
-    // برنده claim: یک نوتیف لوکال + تلگرام (بدون پوش دوباره)
-    showLocalNotification(
-      `${a.symbol}`,
-      alarmNotifyBody(a, price),
-      `alarm-${a.id}`
-    );
+    // اگر تب دیده می‌شود → نوتیف لوکال (و پوش نفرست تا دابل نشود)
+    // اگر تب مخفی/پس‌زمینه است → پوش بفرست تا روی دسکتاپ/موبایل بدون باز بودن سایت هم برسد
+    const pageVisible =
+      typeof document !== "undefined" &&
+      document.visibilityState === "visible";
+
+    if (pageVisible) {
+      showLocalNotification(
+        `${a.symbol}`,
+        alarmNotifyBody(a, price),
+        `alarm-${a.id}`
+      );
+    }
 
     try {
       await supabase.functions.invoke("check-alarms", {
-        body: { notify_alarm_id: a.id, price, skip_push: true },
+        body: {
+          notify_alarm_id: a.id,
+          price,
+          // تب باز: فقط تلگرام | تب بسته/پس‌زمینه: تلگرام + Web Push
+          skip_push: pageVisible,
+        },
       });
     } catch (e) {
       console.warn("notify invoke failed", e);
