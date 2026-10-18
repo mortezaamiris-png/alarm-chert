@@ -652,6 +652,56 @@ function intervalToSeconds(iv: string): number {
   return Number.isNaN(n) ? 3600 : n * 60;
 }
 
+/** پر کردن کندل‌های جاافتاده تا گپ بصری روی چارت نماند */
+function fillCandleGaps(
+  candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[],
+  interval: string
+): typeof candles {
+  if (!candles.length) return candles;
+  const barSec = intervalToSeconds(String(interval));
+  if (barSec <= 0) return candles;
+  // برای ماهانه/هفتگی فاصله طبیعی بازار را پر نکن
+  if (barSec >= 604800) return candles;
+
+  const sorted = candles.slice().sort((a, b) => a.time - b.time);
+  const out: typeof candles = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = out[out.length - 1];
+    const cur = sorted[i];
+    let t = prev.time + barSec;
+    // حداکثر 50 کندل مصنوعی بین دو بار (جلوگیری از انفجار حافظه)
+    let guard = 0;
+    while (t < cur.time - barSec * 0.25 && guard < 50) {
+      const px = prev.close;
+      out.push({
+        time: t,
+        open: px,
+        high: px,
+        low: px,
+        close: px,
+        volume: 0,
+      });
+      t += barSec;
+      guard++;
+    }
+    // اگر دو بار روی یک time افتادند، آخری را نگه دار
+    if (cur.time === out[out.length - 1].time) {
+      out[out.length - 1] = cur;
+    } else {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+function parseKlineTime(r: any): number {
+  const raw = r?.time ?? r?.[0] ?? r?.openTime ?? r?.t ?? r?.open_time;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // ms vs sec
+  return n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
+}
+
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
 const FUTURE_BARS = 800;
@@ -1880,12 +1930,9 @@ export default function DashboardPage() {
       if (gen !== loadGenRef.current) return;
       if (!rows.length) { setStatusMsg("No data — change TF or retry"); return; }
 
-      const candles = rows
+      const candlesRaw = rows
         .map((r: any) => {
-          const time = Math.floor(
-            Number(r.time || r[0] || r.openTime || r.t) /
-              (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-          );
+          const time = parseKlineTime(r);
           return {
             time,
             open: parseFloat(r.open ?? r[1]),
@@ -1895,8 +1942,26 @@ export default function DashboardPage() {
             volume: parseFloat(r.volume ?? r[5] ?? 0),
           };
         })
-        .filter((c: any) => c.time && !Number.isNaN(c.close))
+        .filter(
+          (c: any) =>
+            c.time > 0 &&
+            Number.isFinite(c.open) &&
+            Number.isFinite(c.high) &&
+            Number.isFinite(c.low) &&
+            Number.isFinite(c.close) &&
+            !Number.isNaN(c.close)
+        )
         .sort((a: any, b: any) => a.time - b.time);
+      // حذف تکراری روی یک time
+      const dedup: typeof candlesRaw = [];
+      for (const c of candlesRaw) {
+        if (dedup.length && dedup[dedup.length - 1].time === c.time) {
+          dedup[dedup.length - 1] = c;
+        } else {
+          dedup.push(c);
+        }
+      }
+      const candles = fillCandleGaps(dedup, fetchIv);
 
       if (gen !== loadGenRef.current) return;
 
@@ -2110,10 +2175,7 @@ export default function DashboardPage() {
                 if (!Array.isArray(olderRaw) || !olderRaw.length) break;
                 const mapped = olderRaw
                   .map((r: any) => {
-                    const time = Math.floor(
-                      Number(r.time || r[0] || r.openTime || r.t) /
-                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-                    );
+                    const time = parseKlineTime(r);
                     return {
                       time,
                       open: parseFloat(r.open ?? r[1]),
@@ -4057,14 +4119,11 @@ export default function DashboardPage() {
     };
   }, []);
 
-  /** Parse kline API rows into candle objects */
-  const parseKlineRows = useCallback((rows: any[]) => {
-    return rows
+  /** Parse kline API rows into candle objects (+ fill gaps) */
+  const parseKlineRows = useCallback((rows: any[], interval?: string) => {
+    const raw = rows
       .map((r: any) => {
-        const time = Math.floor(
-          Number(r.time || r[0] || r.openTime || r.t) /
-            (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-        );
+        const time = parseKlineTime(r);
         return {
           time,
           open: parseFloat(r.open ?? r[1]),
@@ -4074,8 +4133,24 @@ export default function DashboardPage() {
           volume: parseFloat(r.volume ?? r[5] ?? 0),
         };
       })
-      .filter((c: any) => c.time && !Number.isNaN(c.close))
+      .filter(
+        (c: any) =>
+          c.time > 0 &&
+          Number.isFinite(c.open) &&
+          Number.isFinite(c.close) &&
+          !Number.isNaN(c.close)
+      )
       .sort((a: any, b: any) => a.time - b.time);
+    const dedup: typeof raw = [];
+    for (const c of raw) {
+      if (dedup.length && dedup[dedup.length - 1].time === c.time) {
+        dedup[dedup.length - 1] = c;
+      } else {
+        dedup.push(c);
+      }
+    }
+    const iv = interval || String(intervalRef.current || "15");
+    return fillCandleGaps(dedup, iv);
   }, []);
 
   /** Live candle update without destroying the chart */
