@@ -4153,17 +4153,38 @@ export default function DashboardPage() {
    * (Previously client marked triggered without notifying Telegram → missed messages.)
    */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
-    // فقط یک‌بار برای هر آلارم — قبل از هر await
+    // فقط یک‌بار برای هر آلارم
     if (
       notifiedAlarmsRef.current.has(a.id) ||
       triggeringAlarmsRef.current.has(a.id)
     ) {
       return;
     }
-    notifiedAlarmsRef.current.add(a.id);
     triggeringAlarmsRef.current.add(a.id);
 
     const nowIso = new Date().toISOString();
+
+    // Claim اتمیک در DB — اگر کرون زودتر زده باشد، نوتیف دوم نده (مشکل iPad)
+    let claimed = false;
+    try {
+      const { data: row } = await supabase
+        .from("alarms")
+        .update({
+          triggered: true,
+          is_active: false,
+          last_price: price,
+          triggered_at: nowIso,
+        })
+        .eq("id", a.id)
+        .eq("triggered", false)
+        .select("id")
+        .maybeSingle();
+      claimed = !!(row && (row as any).id);
+    } catch {
+      claimed = false;
+    }
+
+    // UI را در هر حالت آپدیت کن
     setAlarms((p) =>
       p.map((x) =>
         x.id === a.id
@@ -4177,27 +4198,21 @@ export default function DashboardPage() {
           : x
       )
     );
+    notifiedAlarmsRef.current.add(a.id);
 
-    // یک نوتیف + یک بیپ (tag ثابت روی id)
+    if (!claimed) {
+      // سرور/کرون قبلاً نوتیف (پوش) فرستاده — دوباره نوتیف لوکال نده
+      triggeringAlarmsRef.current.delete(a.id);
+      return;
+    }
+
+    // برنده claim: یک نوتیف لوکال + تلگرام (بدون پوش دوباره)
     showLocalNotification(
       `${a.symbol}`,
       alarmNotifyBody(a, price),
       `alarm-${a.id}`
     );
 
-    try {
-      await supabase
-        .from("alarms")
-        .update({
-          triggered: true,
-          is_active: false,
-          last_price: price,
-          triggered_at: nowIso,
-        })
-        .eq("id", a.id);
-    } catch {}
-
-    // سرور فقط تلگرام (بدون Web Push دوباره)
     try {
       await supabase.functions.invoke("check-alarms", {
         body: { notify_alarm_id: a.id, price, skip_push: true },
