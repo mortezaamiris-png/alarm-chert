@@ -27,11 +27,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-gray-950 text-white">
+      <body className="min-h-full flex flex-col bg-gray-950 text-white w-full max-w-full overflow-x-hidden">
         <ServiceWorkerRegister />
         <SiteNavbar />
         <AuthGate allowHome>
-          <main className="flex-1">{children}</main>
+          <main className="flex-1 w-full min-w-0 max-w-full overflow-x-hidden">{children}</main>
         </AuthGate>
         <footer className="border-t border-gray-800 py-8 mt-auto">
           <div className="max-w-7xl mx-auto px-4 text-center text-gray-500 text-sm">
