@@ -271,27 +271,62 @@ function findPivots(candles: any[], leftRight: number) {
   return { highs, lows };
 }
 
-/** Desktop gets a longer multi-tone; mobile a short beep */
+/** یک AudioContext مشترک — روی دسکتاپ بدون کلیک گاهی suspended می‌ماند */
+let _alarmAudioCtx: AudioContext | null = null;
+function getAlarmAudioCtx(): AudioContext | null {
+  try {
+    const AC = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AC) return null;
+    if (!_alarmAudioCtx) _alarmAudioCtx = new AC();
+    return _alarmAudioCtx;
+  } catch {
+    return null;
+  }
+}
+/** با اولین کلیک/لمس صدا را از حالت suspended دربیار */
+if (typeof window !== "undefined") {
+  const unlock = () => {
+    try {
+      const ctx = getAlarmAudioCtx();
+      if (ctx && ctx.state === "suspended") ctx.resume();
+    } catch {}
+  };
+  window.addEventListener("pointerdown", unlock, { once: true, capture: true });
+  window.addEventListener("keydown", unlock, { once: true, capture: true });
+}
+
+/** Desktop: چند نت بلند | موبایل: یک بیپ کوتاه */
 function playAlarmBeep() {
   try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    const notes = isMobile ? [880] : [660, 880, 1100, 880, 1320];
-    const gap = isMobile ? 0.35 : 0.28;
-    notes.forEach((freq, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.type = isMobile ? "sine" : "square";
-      o.frequency.value = freq;
-      const t0 = ctx.currentTime + i * gap;
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(isMobile ? 0.28 : 0.18, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + gap * 0.85);
-      o.start(t0);
-      o.stop(t0 + gap);
-    });
+    const ctx = getAlarmAudioCtx();
+    if (!ctx) return;
+    const start = () => {
+      try {
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const notes = isMobile ? [880, 988] : [660, 880, 1100, 880, 1320, 880];
+        const gap = isMobile ? 0.32 : 0.22;
+        const vol = isMobile ? 0.32 : 0.35;
+        notes.forEach((freq, i) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.type = isMobile ? "sine" : "square";
+          o.frequency.value = freq;
+          const t0 = ctx.currentTime + i * gap;
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + gap * 0.9);
+          o.start(t0);
+          o.stop(t0 + gap);
+        });
+      } catch {}
+    };
+    if (ctx.state === "suspended") {
+      ctx.resume().then(start).catch(() => start());
+    } else {
+      start();
+    }
   } catch {}
 }
 
@@ -305,16 +340,17 @@ function showLocalNotification(
   const notifTag = tag || "alarm-chert";
   try {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      // tag ثابت → سیستم‌عامل نوتیف تکراری همان آلارم را یکی می‌کند
       new Notification(title, {
         body,
         icon: "/icon-192.png",
         tag: notifTag,
-      });
+        silent: false,
+      } as NotificationOptions);
     }
   } catch {}
+  // همیشه بیپ (حتی اگر نوتیف سیستم بی‌صدا باشد)
   const now = Date.now();
-  if (now - _lastBeepAt > 2500) {
+  if (now - _lastBeepAt > 1200) {
     _lastBeepAt = now;
     playAlarmBeep();
   }
@@ -4217,19 +4253,15 @@ export default function DashboardPage() {
       return;
     }
 
-    // همیشه پوش برای همه دستگاه‌ها (ایپد/گوشی/کامپیوتر)
-    // نوتیف لوکال فقط اگر تب جلو باشد؛ SW روی دستگاه فوکوس‌شده پوش را نشان نمی‌دهد
-    const pageVisible =
-      typeof document !== "undefined" &&
-      document.visibilityState === "visible";
-
-    if (pageVisible) {
-      showLocalNotification(
-        `${a.symbol}`,
-        alarmNotifyBody(a, price),
-        `alarm-${a.id}`
-      );
-    }
+    // تب باز است (حتی پشت‌زمینه) → نوتیف + صدا؛ پوش هم برای بقیه دستگاه‌ها
+    showLocalNotification(
+      `${a.symbol}`,
+      alarmNotifyBody(a, price),
+      `alarm-${a.id}`
+    );
+    try {
+      playAlarmBeep();
+    } catch {}
 
     try {
       await supabase.functions.invoke("check-alarms", {
