@@ -117,6 +117,7 @@ self.addEventListener("push", (event) => {
         tag: data.tag || (data.alarmId ? "alarm-" + data.alarmId : "alarm-chert"),
         renotify: true,
         requireInteraction: true,
+        silent: false,
         data: { url: data.url || "/dashboard", alarmId: data.alarmId || "" },
         vibrate: [200, 100, 200],
       });
