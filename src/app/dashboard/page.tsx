@@ -1925,7 +1925,9 @@ export default function DashboardPage() {
             lastLoadedIntervalRef.current === "";
           lastLoadedIntervalRef.current = fetchIv;
 
-          // مثل عوض کردن کوین: هر بار TF عوض شد برو آخرین کندل + autoScale قیمت
+          // مثل عوض کوین: برو روی آخرین کندل‌های واقعی — نه ته فضای خالی آینده
+          // نکته: appendFutureWhitespace صدها بار خالی اضافه می‌کند؛
+          // scrollToRealTime می‌رود ته همان فضا → چارت خالی (باگ قبلی)
           if (shouldResetView) {
             try {
               priceRangeOverrideRef.current = null;
@@ -1939,43 +1941,32 @@ export default function DashboardPage() {
               });
               chart.priceScale("right").applyOptions({ autoScale: true });
 
-              const bars = candles.length;
-              if (bars >= 2) {
-                chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 6 });
-                const past = Math.min(100, bars);
-                chart.timeScale().setVisibleLogicalRange({
-                  from: Math.max(0, bars - past),
-                  to: bars - 1 + FUTURE_VISIBLE,
-                });
+              const snapToLastCandles = () => {
                 try {
-                  (chart.timeScale() as any).scrollToRealTime?.();
-                } catch {}
-              }
-
-              // دوبار در فریم بعدی — LWC گاهی بعد از setData رنج را غلط می‌گذارد
-              const snapLatest = () => {
-                try {
-                  const n = (candlesRef.current || candles).length;
+                  const n = (candlesRef.current && candlesRef.current.length
+                    ? candlesRef.current.length
+                    : candles.length);
                   if (n < 2) return;
                   series.priceScale().applyOptions({
                     autoScale: true,
                     scaleMargins: { top: 0.08, bottom: 0.12 },
                   });
                   chart.priceScale("right").applyOptions({ autoScale: true });
-                  const past2 = Math.min(100, n);
+                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
+                  const past = Math.min(120, n);
+                  chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
                   chart.timeScale().setVisibleLogicalRange({
-                    from: Math.max(0, n - past2),
-                    to: n - 1 + FUTURE_VISIBLE,
+                    from: Math.max(0, n - past),
+                    to: n - 1 + Math.min(FUTURE_VISIBLE, 10),
                   });
-                  try {
-                    (chart.timeScale() as any).scrollToRealTime?.();
-                  } catch {}
                 } catch {}
               };
+
+              snapToLastCandles();
               requestAnimationFrame(() => {
-                snapLatest();
+                snapToLastCandles();
                 requestAnimationFrame(() => {
-                  snapLatest();
+                  snapToLastCandles();
                   programmaticRangeRef.current = false;
                 });
               });
@@ -2601,28 +2592,35 @@ export default function DashboardPage() {
         try {
           const bars = candlesRef.current.length;
           if (bars < 2) {
-            try { chart.timeScale().scrollToRealTime(); } catch {}
             pinnedToRightRef.current = true;
             setShowGoLive(false);
             return;
           }
           programmaticRangeRef.current = true;
-          // فقط آخرین کندل‌های واقعی + نوار کوتاه آینده (نه فضای خالی دور)
-          chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
-          const past = Math.min(90, bars);
+          // آخرین کندل واقعی — نه scrollToRealTime (آن ته whitespace آینده می‌رود)
+          chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
+          const past = Math.min(120, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + FUTURE_VISIBLE,
+            to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
           });
           pinnedToRightRef.current = true;
           setShowGoLive(false);
           try {
             seriesRef.current?.priceScale()?.applyOptions({ autoScale: true });
+            chart.priceScale("right").applyOptions({ autoScale: true });
           } catch {}
-          requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+          requestAnimationFrame(() => {
+            try {
+              chart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, bars - past),
+                to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
+              });
+            } catch {}
+            programmaticRangeRef.current = false;
+          });
         } catch {
           programmaticRangeRef.current = false;
-          try { chart.timeScale().scrollToRealTime(); } catch {}
         }
       };
       const onDblNearPrice = (clientX: number) => {
@@ -5241,7 +5239,7 @@ export default function DashboardPage() {
                 try {
                   const bars = candlesRef.current.length;
                   if (bars < 2) {
-                    chart.timeScale().scrollToRealTime();
+                    /* scrollToRealTime removed */
                   } else {
                     programmaticRangeRef.current = true;
                     chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
