@@ -4836,7 +4836,7 @@ export default function DashboardPage() {
   }, [alarms, symbolUpper]);
 
   return (
-    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
+    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-1 sm:p-3 w-full max-w-full overflow-x-hidden">
       <style>{`
         @keyframes tfPop{
           0%{opacity:0;transform:translateY(10px) scale(0.85)}
@@ -4935,7 +4935,7 @@ export default function DashboardPage() {
                   </div>
       </div>
 
-      <div className="flex gap-2 w-full min-w-0">
+      <div className="flex gap-2 w-full min-w-0 relative">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
           <div className="flex flex-col gap-1 shrink-0">
@@ -5374,7 +5374,7 @@ export default function DashboardPage() {
         )}
 
         {/* Chart — always fill remaining width (mobile portrait/landscape) */}
-        <div className="flex-1 min-w-0 w-full relative">
+        <div className="flex-1 min-w-0 w-full relative" style={{ width: "100%" }}>
           <div
             ref={chartContainerRef}
             className="w-full min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
@@ -5854,7 +5854,7 @@ export default function DashboardPage() {
 
         {showSideWl && (
           <div
-            className="w-44 sm:w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:z-40 max-sm:h-full max-sm:max-h-none max-sm:shadow-2xl"
+            className="w-44 md:w-48 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col absolute right-0 top-0 z-40 h-full max-h-none shadow-2xl md:relative md:inset-auto md:z-auto md:h-auto md:max-h-[640px] md:shadow-none md:shrink-0"
             style={{ maxHeight: 640 }}
           >
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
