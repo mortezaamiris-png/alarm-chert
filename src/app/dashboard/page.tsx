@@ -657,6 +657,25 @@ function intervalToSeconds(iv: string): number {
 const FUTURE_BARS = 800;
 /** How many future bars are visible on first load (rest remains scrollable) */
 const FUTURE_VISIBLE = 14;
+
+/** Convert OHLC candles to Heikin-Ashi */
+function toHeikinAshi(candles: any[]): any[] {
+  if (!candles.length) return [];
+  const out: any[] = [];
+  let prevHa: any = null;
+  for (const c of candles) {
+    const haClose = (Number(c.open) + Number(c.high) + Number(c.low) + Number(c.close)) / 4;
+    const haOpen = prevHa
+      ? (Number(prevHa.open) + Number(prevHa.close)) / 2
+      : (Number(c.open) + Number(c.close)) / 2;
+    const haHigh = Math.max(Number(c.high), haOpen, haClose);
+    const haLow = Math.min(Number(c.low), haOpen, haClose);
+    const bar = { time: c.time, open: haOpen, high: haHigh, low: haLow, close: haClose };
+    out.push(bar);
+    prevHa = bar;
+  }
+  return out;
+}
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -747,7 +766,7 @@ function IndChip({
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null>(null);
   const futureSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
@@ -759,7 +778,9 @@ export default function DashboardPage() {
   const loadGenRef = useRef(0);
   const lastLoadedSymbolRef = useRef<string>("");
   const lastLoadedIntervalRef = useRef<string>("");
+
   const loadCandlesRef = useRef<() => Promise<void>>(async () => {});
+
   /** User is following the live edge — only then may we auto-scroll on new bars (stops iPad jump) */
   const pinnedToRightRef = useRef(true);
   /** True while finger/mouse is dragging the chart — freeze all auto range changes */
@@ -822,6 +843,11 @@ export default function DashboardPage() {
 
   const [lines, setLines] = useState<ChartLine[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const linesRef = useRef<ChartLine[]>([]);
+  const alarmsRef = useRef<Alarm[]>([]);
+  useEffect(() => { linesRef.current = lines; }, [lines]);
+  useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
+  const renderAllLinesAndAlarmsRef = useRef<(() => void) | null>(null);
   const [highlightAlarmId, setHighlightAlarmId] = useState<string | null>(null);
   const [highlightPrice, setHighlightPrice] = useState<number | null>(null);
   /** Temporary dashed diagonal flash from History click */
@@ -845,6 +871,62 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("cross");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
+  /** Chart series style: candles | hollow | line | area | heikin */
+  const [chartType, setChartType] = useState<"candles" | "hollow" | "line" | "area" | "heikin">(() =>
+    loadLS("chart_type", "candles")
+  );
+  const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
+  /** Multi-pane layout: 1 | 2h | 2v | 4 */
+  const [chartLayout, setChartLayout] = useState<"1" | "2h" | "2v" | "4">(() =>
+    loadLS("chart_layout", "1")
+  );
+  const [showLayoutMenu, setShowLayoutMenu] = useState(false);
+  /** Undo / Redo stacks (lines + active alarms snapshots) */
+  const undoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
+  const redoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
+  const [histTick, setHistTick] = useState(0); // force re-render for undo/redo button state
+  const pushUndo = useCallback(() => {
+    try {
+      undoStackRef.current.push({
+        lines: JSON.parse(JSON.stringify(linesRef.current || [])),
+        alarms: JSON.parse(JSON.stringify(alarmsRef.current || [])),
+      });
+      if (undoStackRef.current.length > 40) undoStackRef.current.shift();
+      redoStackRef.current = [];
+      setHistTick((n) => n + 1);
+    } catch {}
+  }, []);
+  const applySnapshot = useCallback((snap: { lines: ChartLine[]; alarms: Alarm[] }) => {
+    setLines(snap.lines || []);
+    setAlarms(snap.alarms || []);
+    try { linesRef.current = snap.lines || []; } catch {}
+    try { alarmsRef.current = snap.alarms || []; } catch {}
+    setTimeout(() => { try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }, 0);
+  }, []);
+  const undoChart = useCallback(() => {
+    if (!undoStackRef.current.length) return;
+    try {
+      redoStackRef.current.push({
+        lines: JSON.parse(JSON.stringify(linesRef.current || [])),
+        alarms: JSON.parse(JSON.stringify(alarmsRef.current || [])),
+      });
+      const snap = undoStackRef.current.pop()!;
+      applySnapshot(snap);
+      setHistTick((n) => n + 1);
+    } catch {}
+  }, [applySnapshot]);
+  const redoChart = useCallback(() => {
+    if (!redoStackRef.current.length) return;
+    try {
+      undoStackRef.current.push({
+        lines: JSON.parse(JSON.stringify(linesRef.current || [])),
+        alarms: JSON.parse(JSON.stringify(alarmsRef.current || [])),
+      });
+      const snap = redoStackRef.current.pop()!;
+      applySnapshot(snap);
+      setHistTick((n) => n + 1);
+    } catch {}
+  }, [applySnapshot]);
   /** Collapsible left drawing tools panel (TradingView-style) */
   const [showToolsPanel, setShowToolsPanel] = useState(() => loadLS("show_tools_panel", true));
   /** Alarm sub-menu: full / ray / diag placement */
@@ -1039,6 +1121,10 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fav_tfs", favTfs); }, [favTfs]);
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
   useEffect(() => { saveLS("show_side_wl", showSideWl); }, [showSideWl]);
+  useEffect(() => { saveLS("chart_type", chartType); }, [chartType]);
+  useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
+  const chartTypeRef = useRef(chartType);
+  useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
   useEffect(() => { saveLS("show_tools_panel", showToolsPanel); }, [showToolsPanel]);
   useEffect(() => { saveLS("side_view_id", sideViewId); }, [sideViewId]);
 
@@ -1624,6 +1710,8 @@ export default function DashboardPage() {
       } catch {}
     }
   }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, highlightRay, hideLines, hideAlarms]);
+  useEffect(() => { renderAllLinesAndAlarmsRef.current = renderAllLinesAndAlarms; }, [renderAllLinesAndAlarms]);
+
 
   const removeSMA = useCallback(() => {
     if (smaSeriesRef.current && chartRef.current) {
@@ -2290,17 +2378,54 @@ export default function DashboardPage() {
           },
         });
       } catch {}
-      const series = chart.addCandlestickSeries({
-        upColor: "#22c55e", downColor: "#ef4444",
-        borderUpColor: "#22c55e", borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e", wickDownColor: "#ef4444",
-        priceFormat: { type: "price", precision, minMove },
-        // Custom last-price badge via lastPriceLineRef — hide built-in (avoids double dashed line)
-        lastValueVisible: false,
-        priceLineVisible: false,
-      });
-      // Real candles + trailing whitespace so time labels continue past last bar
-      series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
+      const ctype = chartTypeRef.current || chartType;
+      const dataSrc = ctype === "heikin" ? toHeikinAshi(candles) : candles;
+      const withFuture = appendFutureWhitespace(dataSrc, String(intervalRef.current));
+      let series: any;
+      if (ctype === "line") {
+        series = chart.addLineSeries({
+          color: "#3b82f6",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(
+          withFuture
+            .filter((c: any) => c.open != null || c.close != null || c.value != null)
+            .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+        );
+      } else if (ctype === "area") {
+        series = chart.addAreaSeries({
+          lineColor: "#3b82f6",
+          topColor: "rgba(59,130,246,0.35)",
+          bottomColor: "rgba(59,130,246,0.02)",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(
+          withFuture
+            .filter((c: any) => c.open != null || c.close != null || c.value != null)
+            .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+        );
+      } else {
+        // candles | hollow | heikin
+        const hollow = ctype === "hollow";
+        series = chart.addCandlestickSeries({
+          upColor: hollow ? "transparent" : "#22c55e",
+          downColor: hollow ? "transparent" : "#ef4444",
+          borderUpColor: "#22c55e",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#22c55e",
+          wickDownColor: "#ef4444",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(withFuture as any);
+      }
               try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
       try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
       lastLoadedSymbolRef.current = fetchSym;
@@ -4130,16 +4255,38 @@ export default function DashboardPage() {
       // That was the iPad jump. Append keeps zoom; only scrollToRealTime if pinned.
       const chart = chartRef.current;
 
+      const mapBarForSeries = (bar: any) => {
+        const ct = chartTypeRef.current;
+        if (ct === "line" || ct === "area") {
+          return { time: bar.time, value: bar.close };
+        }
+        return bar;
+      };
+      const setSeriesFull = (bars: any[]) => {
+        const ct = chartTypeRef.current;
+        const src = ct === "heikin" ? toHeikinAshi(bars) : bars;
+        const withF = appendFutureWhitespace(src, String(intervalRef.current));
+        if (ct === "line" || ct === "area") {
+          series.setData(
+            withF
+              .filter((c: any) => c.close != null || c.value != null)
+              .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+          );
+        } else {
+          series.setData(withF as any);
+        }
+        try { syncFutureAxis(bars, String(intervalRef.current)); } catch {}
+      };
+
       if (addedNew) {
         try {
           // فقط داده را عوض کن — هیچ scroll / setVisibleRange نزن (جلوگیری از آهنربا و پرش)
           const lastBar = candles[candles.length - 1];
           if (lastBar) {
             try {
-              series.update(lastBar as any);
+              series.update(mapBarForSeries(lastBar) as any);
             } catch {
-              series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
+              setSeriesFull(candles);
             }
           }
         } catch {}
@@ -4148,15 +4295,14 @@ export default function DashboardPage() {
         const tail = fresh.slice(-3);
         let needFull = false;
         for (const c of tail) {
-          try { series.update(c as any); } catch {
+          try { series.update(mapBarForSeries(c) as any); } catch {
             needFull = true;
             break;
           }
         }
         if (needFull) {
           try {
-            series.setData(appendFutureWhitespace(candles, String(intervalRef.current)) as any);
-              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
+            setSeriesFull(candles);
             // still do not touch visible range
           } catch {}
         }
@@ -4493,10 +4639,12 @@ export default function DashboardPage() {
   }, [refreshLiveCandles, triggerAlarmLocal]);
 
   const deleteAlarm = async (id: string) => {
+    pushUndo();
     setAlarms((prev) => prev.filter((a) => a.id !== id));
     await supabase.from("alarms").delete().eq("id", id);
   };
   const deleteLine = async (id: string) => {
+    pushUndo();
     setLines((prev) => prev.filter((l) => l.id !== id));
     await supabase.from("chart_lines").delete().eq("id", id);
   };
@@ -4504,6 +4652,7 @@ export default function DashboardPage() {
     const list = lines.filter((l) => l.symbol.toUpperCase() === symbolUpper);
     if (!list.length) return;
     if (!confirm(`Delete all ${list.length} lines on ${symbolUpper}?`)) return;
+    pushUndo();
     const ids = list.map((l) => l.id);
     setLines((prev) => prev.filter((l) => !ids.includes(l.id)));
     try {
@@ -4516,6 +4665,7 @@ export default function DashboardPage() {
     );
     if (!list.length) return;
     if (!confirm(`Delete all ${list.length} active alarms on ${symbolUpper}?`)) return;
+    pushUndo();
     const ids = list.map((a) => a.id);
     setAlarms((prev) => prev.filter((a) => !ids.includes(a.id)));
     try {
@@ -4940,6 +5090,103 @@ export default function DashboardPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* Chart type (Candles / Line / Area / Heikin) */}
+          <div className="relative">
+            <button
+              type="button"
+              title="Chart type"
+              onClick={() => {
+                setShowChartTypeMenu((v) => !v);
+                setShowIndicatorMenu(false);
+                setTfMenuOpen(false);
+                setTzMenuOpen(false);
+                setOpenMenu(null);
+              }}
+              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
+                showChartTypeMenu
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300 shadow-lg"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="18" rx="1" />
+                <rect x="14" y="8" width="7" height="13" rx="1" />
+              </svg>
+              <span className="font-medium capitalize">{chartType === "heikin" ? "Heikin" : chartType}</span>
+            </button>
+            {showChartTypeMenu && (
+              <div
+                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[170px]"
+                style={{
+                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
+                  background: "rgba(20,20,22,0.42)",
+                  backdropFilter: "blur(40px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                }}
+              >
+                {([
+                  ["candles", "Candles"],
+                  ["hollow", "Hollow candles"],
+                  ["line", "Line"],
+                  ["area", "Area"],
+                  ["heikin", "Heikin Ashi"],
+                ] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      setChartType(k);
+                      setShowChartTypeMenu(false);
+                      setTimeout(() => loadCandlesRef.current?.(), 0);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      chartType === k ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{chartType === k ? "✓" : ""}</span>
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-0.5 ml-1" data-hist={histTick}>
+            <button
+              type="button"
+              title="Undo"
+              disabled={histTick >= 0 && !undoStackRef.current.length}
+              onClick={() => undoChart()}
+              className={`h-8 w-8 rounded-lg inline-flex items-center justify-center border transition-colors ${
+                undoStackRef.current.length
+                  ? "bg-gray-900 border-gray-700 text-gray-200 hover:bg-white/10"
+                  : "bg-gray-950 border-gray-800 text-gray-600 cursor-not-allowed"
+              }`}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 14 4 9 9 4" />
+                <path d="M20 20a8 8 0 0 0-8-8H4" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              title="Redo"
+              disabled={histTick >= 0 && !redoStackRef.current.length}
+              onClick={() => redoChart()}
+              className={`h-8 w-8 rounded-lg inline-flex items-center justify-center border transition-colors ${
+                redoStackRef.current.length
+                  ? "bg-gray-900 border-gray-700 text-gray-200 hover:bg-white/10"
+                  : "bg-gray-950 border-gray-800 text-gray-600 cursor-not-allowed"
+              }`}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 14 20 9 15 4" />
+                <path d="M4 20a8 8 0 0 1 8-8h8" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -5835,9 +6082,85 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
-              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white shrink-0">
-                « Hide
-              </button>
+              <div className="flex items-center gap-0.5 shrink-0">
+                {/* Multi-layout */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    title="Chart layout"
+                    onClick={() => { setShowLayoutMenu((v) => !v); setShowChartTypeMenu(false); }}
+                    className={`w-7 h-7 rounded-md inline-flex items-center justify-center border transition-colors ${
+                      showLayoutMenu ? "bg-orange-500/20 border-orange-500 text-orange-300" : "border-transparent text-gray-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <rect x="3" y="3" width="8" height="8" rx="1" />
+                      <rect x="13" y="3" width="8" height="8" rx="1" />
+                      <rect x="3" y="13" width="8" height="8" rx="1" />
+                      <rect x="13" y="13" width="8" height="8" rx="1" />
+                    </svg>
+                  </button>
+                  {showLayoutMenu && (
+                    <div
+                      className="absolute z-50 top-full right-0 mt-1 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
+                      style={{
+                        background: "rgba(20,20,22,0.92)",
+                        backdropFilter: "blur(24px)",
+                      }}
+                    >
+                      <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
+                      {([
+                        ["1", "1 chart"],
+                        ["2h", "2 horizontal"],
+                        ["2v", "2 vertical"],
+                        ["4", "4 charts"],
+                      ] as const).map(([k, label]) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
+                          className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
+                            chartLayout === k ? "text-orange-300" : "text-gray-200"
+                          }`}
+                        >
+                          {chartLayout === k ? "✓ " : ""}{label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {/* Camera / screenshot */}
+                <button
+                  type="button"
+                  title="Screenshot chart"
+                  onClick={() => {
+                    try {
+                      const chart = chartRef.current as any;
+                      if (!chart || typeof chart.takeScreenshot !== "function") {
+                        setStatusMsg("Screenshot not available");
+                        return;
+                      }
+                      const canvas = chart.takeScreenshot();
+                      const a = document.createElement("a");
+                      a.download = `${symbolUpper}_${interval}_${Date.now()}.png`;
+                      a.href = canvas.toDataURL("image/png");
+                      a.click();
+                      setStatusMsg("Screenshot saved");
+                    } catch {
+                      setStatusMsg("Screenshot failed");
+                    }
+                  }}
+                  className="w-7 h-7 rounded-md inline-flex items-center justify-center text-gray-400 hover:bg-white/10 hover:text-white border border-transparent"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                </button>
+                <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white px-1">
+                  « Hide
+                </button>
+              </div>
             </div>
             <div className="overflow-y-auto flex-1 p-1.5">
               {sidePanelSymbols.map((sym) => {
@@ -5881,7 +6204,7 @@ export default function DashboardPage() {
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`flex items-center gap-1.5 px-1.5 py-1.5 mb-1 rounded-lg text-xs select-none transition-all duration-150 ${
+                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 ${
                         canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
                       } ${
                         isDrag
@@ -5926,7 +6249,7 @@ export default function DashboardPage() {
                           })();
                         }}
                         onPointerDown={(e) => e.stopPropagation()}
-                        className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 hover:text-red-400 text-sm leading-none"
+                        className="shrink-0 w-3.5 h-3.5 flex items-center justify-center rounded text-red-500/90 hover:bg-red-500/25 hover:text-red-400 text-[11px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         ×
                       </button>
