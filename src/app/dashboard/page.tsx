@@ -2645,23 +2645,26 @@ export default function DashboardPage() {
               // shrink/grow pane height slightly
               const cur = inPane;
               const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
+              const nh = Math.min(0.35, Math.max(0.06, h * (zoomIn ? 1.22 : 0.78)));
               const top = 1 - cur.bot - nh;
               ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
               // also nudge visible range for true zoom feel (0-100 scale)
               try {
                 const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
-                if (ser && typeof ser.priceScale === "function") {
-                  // fixed range zoom around 50
-                  const factor = zoomIn ? 0.9 : 1.12;
-                  // use autoscale override via applyOptions on series
+                if (ser) {
+                  const key = inPane.id;
+                  const store = (window as any).__oscHalf || ((window as any).__oscHalf = {});
+                  let half = typeof store[key] === "number" ? store[key] : 50;
+                  half = zoomIn ? half * 0.72 : half * 1.35;
+                  half = Math.min(55, Math.max(8, half));
+                  store[key] = half;
                   const mid = 50;
-                  const half = zoomIn ? 40 : 55;
                   ser.applyOptions({
                     autoscaleInfoProvider: () => ({
-                      priceRange: { minValue: Math.max(0, mid - half * factor), maxValue: Math.min(100, mid + half * factor) },
+                      priceRange: { minValue: Math.max(0, mid - half), maxValue: Math.min(100, mid + half) },
                     }),
                   });
+                  try { ser.priceScale?.()?.applyOptions?.({ autoScale: true }); } catch {}
                 }
               } catch {}
             } catch {}
@@ -4154,7 +4157,7 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
   }, [showSideWl, showToolsPanel]);
 
-  // Close TF / timezone / list / indicator menus when clicking outside
+  // Close TF / timezone / list / indicator menus / note editor when clicking outside
   useEffect(() => {
     const anyIndPanel =
       showIndicatorMenu ||
@@ -4165,7 +4168,7 @@ export default function DashboardPage() {
       dmiSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -4173,6 +4176,11 @@ export default function DashboardPage() {
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
+      }
+      // Note editor: click anywhere outside the note row closes it
+      if (editingNoteId && !el.closest?.("[data-note-edit]")) {
+        setEditingNoteId(null);
+        setEditingNoteType(null);
       }
       // Indicator list + gear settings + hide/trash menus: close when clicking outside
       if (anyIndPanel && !el.closest?.("[data-ind-panel]")) {
@@ -4203,7 +4211,8 @@ export default function DashboardPage() {
     rsiSettings,
     dmiSettings,
     hideMenuOpen,
-    trashMenuOpen,
+    trashMenuOpen,,
+    editingNoteId,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -5398,9 +5407,11 @@ export default function DashboardPage() {
             </button>
           </div>
 
-          {/* Layout + Camera — aligned with Time / Indicators */}
-          <div className="flex items-center gap-0.5 ml-1">
-            <div className="relative">
+        </div>
+
+          {/* Layout + Camera — far right of header (near coin list) */}
+          <div className="flex items-center gap-0.5 ml-auto">
+            <div className="relative" data-menu>
               <button
                 type="button"
                 title="Chart layout"
@@ -5420,7 +5431,7 @@ export default function DashboardPage() {
               </button>
               {showLayoutMenu && (
                 <div
-                  className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
+                  className="absolute z-50 top-full right-0 mt-1.5 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
                   style={{ background: "rgba(20,20,22,0.92)", backdropFilter: "blur(24px)" }}
                 >
                   <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
@@ -5472,7 +5483,6 @@ export default function DashboardPage() {
               </svg>
             </button>
           </div>
-        </div>
       </div>
 
       <div className="flex gap-2">
@@ -6478,7 +6488,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Bottom lists: active alarms | lines | history */}
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
             Alarms — {symbolUpper} ({currentAlarms.length})
@@ -6531,14 +6541,54 @@ export default function DashboardPage() {
                       : ""}
                   </span>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {/* Round color */}
-                    <div className="relative w-6 h-6 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                      <input
-                        type="color"
-                        value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => { pushUndo(); updateAlarmColor(a.id, e.target.value); }}
-                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                    {/* Color — palette popup (desktop) + native picker */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        title="Color"
+                        onClick={() => setOpenMenu(openMenu === `a-color-${a.id}` ? null : `a-color-${a.id}`)}
+                        className="w-6 h-6 rounded-full border-2 border-gray-500 shadow shrink-0 hover:scale-110 transition-transform"
+                        style={{ background: a.color || DEFAULT_ALARM_COLOR }}
                       />
+                      {openMenu === `a-color-${a.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-2 right-0 p-3 rounded-2xl border border-white/20 shadow-[0_12px_48px_rgba(0,0,0,0.55)] isolate min-w-[200px]"
+                          style={{
+                            animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)",
+                            background: "rgba(22,22,26,0.92)",
+                            backdropFilter: "blur(28px) saturate(180%)",
+                            WebkitBackdropFilter: "blur(28px) saturate(180%)",
+                          }}
+                        >
+                          <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
+                          <div className="grid grid-cols-5 gap-1.5 mb-3">
+                            {["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"].map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => { pushUndo(); updateAlarmColor(a.id, c); setOpenMenu(null); }}
+                                className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                  (a.color || DEFAULT_ALARM_COLOR).toLowerCase() === c.toLowerCase()
+                                    ? "border-orange-400 ring-2 ring-orange-400/40"
+                                    : "border-white/10"
+                                }`}
+                                style={{ background: c }}
+                              />
+                            ))}
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
+                            <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                              <input
+                                type="color"
+                                value={a.color || DEFAULT_ALARM_COLOR}
+                                onChange={(e) => { pushUndo(); updateAlarmColor(a.id, e.target.value); }}
+                                className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                              />
+                            </span>
+                            Custom color
+                          </label>
+                        </div>
+                      )}
                     </div>
                     {/* Style = width + dash in one icon */}
                     <div className="relative" data-menu>
@@ -6659,7 +6709,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 {editingNoteId === a.id && editingNoteType === "alarm" && (
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex gap-2" data-note-edit>
                     <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
                       className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
                     <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
@@ -6693,14 +6743,54 @@ export default function DashboardPage() {
                       : ""}
                   </span>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {/* Round color */}
-                    <div className="relative w-6 h-6 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                      <input
-                        type="color"
-                        value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => { pushUndo(); updateLineColor(l.id, e.target.value); }}
-                        className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                    {/* Color — palette popup (desktop) + native picker */}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        title="Color"
+                        onClick={() => setOpenMenu(openMenu === `l-color-${l.id}` ? null : `l-color-${l.id}`)}
+                        className="w-6 h-6 rounded-full border-2 border-gray-500 shadow shrink-0 hover:scale-110 transition-transform"
+                        style={{ background: l.color || DEFAULT_LINE_COLOR }}
                       />
+                      {openMenu === `l-color-${l.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-2 right-0 p-3 rounded-2xl border border-white/20 shadow-[0_12px_48px_rgba(0,0,0,0.55)] isolate min-w-[200px]"
+                          style={{
+                            animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)",
+                            background: "rgba(22,22,26,0.92)",
+                            backdropFilter: "blur(28px) saturate(180%)",
+                            WebkitBackdropFilter: "blur(28px) saturate(180%)",
+                          }}
+                        >
+                          <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
+                          <div className="grid grid-cols-5 gap-1.5 mb-3">
+                            {["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"].map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineColor(l.id, c); setOpenMenu(null); }}
+                                className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
+                                    ? "border-orange-400 ring-2 ring-orange-400/40"
+                                    : "border-white/10"
+                                }`}
+                                style={{ background: c }}
+                              />
+                            ))}
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
+                            <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                              <input
+                                type="color"
+                                value={l.color || DEFAULT_LINE_COLOR}
+                                onChange={(e) => { pushUndo(); updateLineColor(l.id, e.target.value); }}
+                                className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                              />
+                            </span>
+                            Custom color
+                          </label>
+                        </div>
+                      )}
                     </div>
                     {/* Style = width + dash */}
                     <div className="relative" data-menu>
@@ -6823,7 +6913,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 {editingNoteId === l.id && editingNoteType === "line" && (
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex gap-2" data-note-edit>
                     <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
                       className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
                     <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
@@ -6865,7 +6955,7 @@ export default function DashboardPage() {
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-950 border border-gray-800/80 rounded-lg px-3 py-2 text-sm cursor-pointer hover:border-amber-600/50"
+                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-1.5 text-xs cursor-pointer hover:border-amber-600/50"
                   onClick={() => {
                     // Resolve diagonal geometry (columns or note fallback)
                     let st = a.start_time ?? null;
@@ -7082,23 +7172,54 @@ export default function DashboardPage() {
                     <span className="ml-auto text-[11px] text-gray-500 tabular-nums">
                       {formatRelativeTime(when)}
                     </span>
-                    <button
-                      type="button"
-                      title="Delete from history"
-                      onClick={async () => {
-                        setAlarms((prev) => prev.filter((x) => x.id !== a.id));
-                        try {
-                          await supabase.from("alarms").delete().eq("id", a.id);
-                        } catch {}
-                      }}
-                      className="text-gray-600 hover:text-red-400 text-xs leading-none px-1"
-                    >
-                      ×
-                    </button>
+                    <div className="flex flex-col items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        title="Delete from history"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setAlarms((prev) => prev.filter((x) => x.id !== a.id));
+                          try {
+                            await supabase.from("alarms").delete().eq("id", a.id);
+                          } catch {}
+                        }}
+                        className="text-gray-600 hover:text-red-400 text-xs leading-none px-1"
+                      >
+                        ×
+                      </button>
+                      <button
+                        type="button"
+                        title="Restore to active alarms"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            pushUndo();
+                            await supabase
+                              .from("alarms")
+                              .update({ triggered: false, triggered_at: null, is_active: true })
+                              .eq("id", a.id);
+                            setAlarms((prev) =>
+                              prev.map((x) =>
+                                x.id === a.id
+                                  ? { ...x, triggered: false, triggered_at: null, is_active: true }
+                                  : x
+                              )
+                            );
+                            setStatusMsg("Alarm restored");
+                          } catch {
+                            setStatusMsg("Restore failed");
+                          }
+                        }}
+                        className="text-emerald-500/80 hover:text-emerald-400 text-[10px] leading-none px-1"
+                      >
+                        ↩
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-gray-600 mt-0.5">
-                    {formatAlarmDate(when)}
-                    {a.note ? ` · ${a.note}` : ""}
+                  <div className="text-[11px] text-gray-500 mt-0.5 text-center truncate">
+                    {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:")
+                      ? userFacingNote(a.note)
+                      : formatAlarmDate(when)}
                   </div>
                 </div>
               );
