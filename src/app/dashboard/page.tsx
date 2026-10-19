@@ -2628,8 +2628,8 @@ export default function DashboardPage() {
           if (hasRsi) { const h = 0.14; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
           if (hasVol) { const h = 0.12; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
           const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
-          // روی خود پنل اسیلاتور یا لبه راست همان ناحیه
-          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && (fromRight <= 120 || yRatio > (1 - bot - 0.02))) {
+          // فقط لبه راست پنل اسیلاتور — تا اسکرول افقی چارت خراب نشود
+          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && fromRight <= 100) {
             e.preventDefault();
             e.stopPropagation();
             let delta = e.deltaY;
@@ -2642,29 +2642,25 @@ export default function DashboardPage() {
               const chart = chartRef.current;
               if (!chart) return;
               const ps = chart.priceScale(inPane.id) as any;
-              // shrink/grow pane height slightly
               const cur = inPane;
               const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.35, Math.max(0.06, h * (zoomIn ? 1.22 : 0.78)));
+              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
               const top = 1 - cur.bot - nh;
               ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
-              // also nudge visible range for true zoom feel (0-100 scale)
               try {
                 const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
-                if (ser) {
-                  const key = inPane.id;
-                  const store = (window as any).__oscHalf || ((window as any).__oscHalf = {});
-                  let half = typeof store[key] === "number" ? store[key] : 50;
-                  half = zoomIn ? half * 0.72 : half * 1.35;
-                  half = Math.min(55, Math.max(8, half));
-                  store[key] = half;
+                if (ser && typeof ser.priceScale === "function") {
+                  const factor = zoomIn ? 0.9 : 1.12;
                   const mid = 50;
+                  const half = zoomIn ? 40 : 55;
                   ser.applyOptions({
                     autoscaleInfoProvider: () => ({
-                      priceRange: { minValue: Math.max(0, mid - half), maxValue: Math.min(100, mid + half) },
+                      priceRange: {
+                        minValue: Math.max(0, mid - half * factor),
+                        maxValue: Math.min(100, mid + half * factor),
+                      },
                     }),
                   });
-                  try { ser.priceScale?.()?.applyOptions?.({ autoScale: true }); } catch {}
                 }
               } catch {}
             } catch {}
@@ -7172,54 +7168,54 @@ export default function DashboardPage() {
                     <span className="ml-auto text-[11px] text-gray-500 tabular-nums">
                       {formatRelativeTime(when)}
                     </span>
-                    <div className="flex flex-col items-center gap-0.5 shrink-0">
-                      <button
-                        type="button"
-                        title="Delete from history"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          setAlarms((prev) => prev.filter((x) => x.id !== a.id));
-                          try {
-                            await supabase.from("alarms").delete().eq("id", a.id);
-                          } catch {}
-                        }}
-                        className="text-gray-600 hover:text-red-400 text-xs leading-none px-1"
-                      >
-                        ×
-                      </button>
-                      <button
-                        type="button"
-                        title="Restore to active alarms"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            pushUndo();
-                            await supabase
-                              .from("alarms")
-                              .update({ triggered: false, triggered_at: null, is_active: true })
-                              .eq("id", a.id);
-                            setAlarms((prev) =>
-                              prev.map((x) =>
-                                x.id === a.id
-                                  ? { ...x, triggered: false, triggered_at: null, is_active: true }
-                                  : x
-                              )
-                            );
-                            setStatusMsg("Alarm restored");
-                          } catch {
-                            setStatusMsg("Restore failed");
-                          }
-                        }}
-                        className="text-emerald-500/80 hover:text-emerald-400 text-[10px] leading-none px-1"
-                      >
-                        ↩
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      title="Delete from history"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setAlarms((prev) => prev.filter((x) => x.id !== a.id));
+                        try {
+                          await supabase.from("alarms").delete().eq("id", a.id);
+                        } catch {}
+                      }}
+                      className="text-gray-600 hover:text-red-400 text-xs leading-none px-1 shrink-0"
+                    >
+                      ×
+                    </button>
                   </div>
                   <div className="text-[11px] text-gray-500 mt-0.5 text-center truncate">
                     {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:")
                       ? userFacingNote(a.note)
                       : formatAlarmDate(when)}
+                  </div>
+                  <div className="mt-1 flex justify-center">
+                    <button
+                      type="button"
+                      title="Restore to active alarms"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          pushUndo();
+                          await supabase
+                            .from("alarms")
+                            .update({ triggered: false, triggered_at: null, is_active: true })
+                            .eq("id", a.id);
+                          setAlarms((prev) =>
+                            prev.map((x) =>
+                              x.id === a.id
+                                ? { ...x, triggered: false, triggered_at: null, is_active: true }
+                                : x
+                            )
+                          );
+                          setStatusMsg("Alarm restored");
+                        } catch {
+                          setStatusMsg("Restore failed");
+                        }
+                      }}
+                      className="text-[10px] text-emerald-500/90 hover:text-emerald-400 px-2 py-0.5 rounded border border-emerald-800/50 hover:border-emerald-600/60"
+                    >
+                      ↩ Restore
+                    </button>
                   </div>
                 </div>
               );
