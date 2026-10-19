@@ -1,30 +1,26 @@
 /* Alarm Chart — Service Worker
- * Push notifications only. Do NOT cache app HTML/JS (always network for navigations).
- * On activate: drop any old Cache Storage so deploys show up after refresh.
- *
- * Multi-device:
- * - If a tab is focused → postMessage to page (no second system notification on that device)
- * - If no focused tab → show system notification (desktop closed / phone background)
+ * Push only. No Cache Storage for app shell.
+ * Version bump forces browsers to fetch a new SW file.
  */
-const SW_VERSION = "2026-10-19-v5-deploy";
+const SW_VERSION = "2026-10-19-v6-force";
 
 self.addEventListener("install", (event) => {
-  // Activate immediately on new deploy
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Delete every Cache Storage entry from older SW versions
       try {
         const keys = await caches.keys();
         await Promise.all(keys.map((k) => caches.delete(k)));
       } catch (_) {}
       await self.clients.claim();
-      // Tell open tabs a new SW is active → page should reload once
       try {
-        const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        const clients = await self.clients.matchAll({
+          type: "window",
+          includeUncontrolled: true,
+        });
         for (const c of clients) {
           c.postMessage({ type: "SW_UPDATED", version: SW_VERSION });
         }
@@ -33,35 +29,30 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Never serve stale HTML/JS from Cache Storage — always network for page loads
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
 
-  const url = new URL(req.url);
-  // Same-origin navigations + Next data: network only (no cache put)
   const isNavigate = req.mode === "navigate";
   const isDoc =
     req.destination === "document" ||
-    req.headers.get("accept")?.includes("text/html");
+    (req.headers.get("accept") || "").includes("text/html");
 
   if (isNavigate || isDoc) {
     event.respondWith(
-      fetch(req, { cache: "no-store" }).catch(() =>
-        caches.match(req).then((r) => r || Response.error())
-      )
+      fetch(req, { cache: "no-store" }).catch(() => Response.error())
     );
     return;
   }
 
-  // /_next/data (JSON for client navigations) — also prefer network, no Cache Storage
-  if (url.pathname.startsWith("/_next/data/")) {
-    event.respondWith(fetch(req, { cache: "no-store" }).catch(() => Response.error()));
-    return;
-  }
-
-  // Let browser handle static/_next with normal HTTP cache (hashed filenames)
-  // Do not put responses into Cache Storage
+  try {
+    const url = new URL(req.url);
+    if (url.pathname.startsWith("/_next/data/")) {
+      event.respondWith(
+        fetch(req, { cache: "no-store" }).catch(() => Response.error())
+      );
+    }
+  } catch (_) {}
 });
 
 self.addEventListener("push", (event) => {
@@ -85,8 +76,6 @@ self.addEventListener("push", (event) => {
 
   event.waitUntil(
     (async () => {
-      // تب فوکوس‌شده روی همین دستگاه؟ → نوتیف سیستم نده (صفحه خودش لوکال نشان می‌دهد)
-      // بقیه دستگاه‌ها (ایپد/گوشی) تب فوکوس ندارند → نوتیف سیستم می‌گیرند
       let focused = [];
       try {
         const all = await self.clients.matchAll({
