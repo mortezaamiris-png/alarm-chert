@@ -887,21 +887,33 @@ export default function DashboardPage() {
   const [histTick, setHistTick] = useState(0); // force re-render for undo/redo button state
   const pushUndo = useCallback(() => {
     try {
-      undoStackRef.current.push({
+      const snap = {
         lines: JSON.parse(JSON.stringify(linesRef.current || [])),
         alarms: JSON.parse(JSON.stringify(alarmsRef.current || [])),
-      });
+      };
+      const prev = undoStackRef.current[undoStackRef.current.length - 1];
+      // skip duplicate consecutive snapshots
+      if (prev && JSON.stringify(prev) === JSON.stringify(snap)) return;
+      undoStackRef.current.push(snap);
       if (undoStackRef.current.length > 40) undoStackRef.current.shift();
       redoStackRef.current = [];
       setHistTick((n) => n + 1);
     } catch {}
   }, []);
   const applySnapshot = useCallback((snap: { lines: ChartLine[]; alarms: Alarm[] }) => {
-    setLines(snap.lines || []);
-    setAlarms(snap.alarms || []);
-    try { linesRef.current = snap.lines || []; } catch {}
-    try { alarmsRef.current = snap.alarms || []; } catch {}
-    setTimeout(() => { try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }, 0);
+    const lines = snap.lines || [];
+    const alarms = snap.alarms || [];
+    linesRef.current = lines;
+    alarmsRef.current = alarms;
+    setLines(lines);
+    setAlarms(alarms);
+    // re-draw after React state flush
+    requestAnimationFrame(() => {
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    });
+    setTimeout(() => {
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 50);
   }, []);
   const undoChart = useCallback(() => {
     if (!undoStackRef.current.length) return;
@@ -1125,6 +1137,25 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
+  // Keyboard Undo / Redo
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoChart();
+      } else if (e.key === "y" || (e.key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        redoChart();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoChart, redoChart]);
+
   useEffect(() => { saveLS("show_tools_panel", showToolsPanel); }, [showToolsPanel]);
   useEffect(() => { saveLS("side_view_id", sideViewId); }, [sideViewId]);
 
@@ -1233,25 +1264,50 @@ export default function DashboardPage() {
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    let bottom = 0.05;
-    if (showVol && volVisible) {
-      try { chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } }); } catch {}
-      bottom = 0.2;
+    const hasVol = showVol && volVisible;
+    const hasRsi = showRSI && rsiVisible && !hideIndicators;
+    const hasDmi = showDMI && dmiVisible && !hideIndicators;
+    // Stack panes from bottom: DMI (lowest) → RSI → Volume → main chart
+    // Each pane ~12–14% height, TradingView-style
+    let used = 0;
+    if (hasDmi) {
+      const h = 0.13;
+      try {
+        chart.priceScale("dmi").applyOptions({
+          scaleMargins: { top: 1 - used - h, bottom: used },
+          borderVisible: false,
+        });
+      } catch {}
+      used += h;
     }
-    if (showRSI && rsiVisible) {
-      try { chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.72, bottom } }); } catch {}
+    if (hasRsi) {
+      const h = 0.14;
+      try {
+        chart.priceScale("rsi").applyOptions({
+          scaleMargins: { top: 1 - used - h, bottom: used },
+          borderVisible: false,
+        });
+      } catch {}
+      used += h;
     }
-    if (showDMI && dmiVisible) {
-      try { chart.priceScale("dmi").applyOptions({ scaleMargins: { top: 0.78, bottom } }); } catch {}
+    if (hasVol) {
+      const h = 0.12;
+      try {
+        chart.priceScale("volume").applyOptions({
+          scaleMargins: { top: 1 - used - h, bottom: used },
+          borderVisible: false,
+        });
+      } catch {}
+      used += h;
     }
-    // Do NOT force autoScale:true here — that was the "magnet" snapping price back to center
+    // Main price pane leaves room for lower panes
     chart.priceScale("right").applyOptions({
       scaleMargins: {
         top: 0.05,
-        bottom: Math.max(bottom, showRSI && rsiVisible ? 0.22 : 0.05, showVol && volVisible ? 0.2 : 0.05),
+        bottom: Math.max(0.05, used + 0.02),
       },
     });
-  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible]);
+  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible, hideIndicators]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -1746,10 +1802,44 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const s = chartRef.current.addLineSeries({
-      color: rsiColor, lineWidth: 1, priceScaleId: "rsi",
-      priceLineVisible: false, lastValueVisible: true,
+      color: rsiColor,
+      lineWidth: 2,
+      priceScaleId: "rsi",
+      priceLineVisible: false,
+      lastValueVisible: true,
+      // Fixed 0–100 range like TradingView RSI pane
+      autoscaleInfoProvider: () => ({
+        priceRange: { minValue: 0, maxValue: 100 },
+      }),
     });
     s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
+    // Overbought / mid / oversold dashed guides
+    try {
+      s.createPriceLine({
+        price: 70,
+        color: "rgba(148,163,184,0.55)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "",
+      });
+      s.createPriceLine({
+        price: 30,
+        color: "rgba(148,163,184,0.55)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "",
+      });
+      s.createPriceLine({
+        price: 50,
+        color: "rgba(148,163,184,0.28)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: false,
+        title: "",
+      });
+    } catch {}
     rsiSeriesRef.current = s;
     updateMargins();
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
@@ -1768,12 +1858,39 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
-    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 1, priceScaleId: "dmi", priceLineVisible: false, lastValueVisible: false });
+    const paneOpts = {
+      priceScaleId: "dmi",
+      priceLineVisible: false,
+      lastValueVisible: false,
+      autoscaleInfoProvider: () => ({
+        priceRange: { minValue: 0, maxValue: 100 },
+      }),
+    } as const;
+    const plus = chartRef.current.addLineSeries({ color: dmiPlusColor, lineWidth: 1, ...paneOpts });
+    const minus = chartRef.current.addLineSeries({ color: dmiMinusColor, lineWidth: 1, ...paneOpts });
+    const adxS = chartRef.current.addLineSeries({ color: dmiAdxColor, lineWidth: 2, ...paneOpts });
     plus.setData(plusDI as any);
     minus.setData(minusDI as any);
     adxS.setData(adx as any);
+    // ADX strength guides (20 / 40) — dashed like TV
+    try {
+      adxS.createPriceLine({
+        price: 20,
+        color: "rgba(148,163,184,0.45)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "",
+      });
+      adxS.createPriceLine({
+        price: 40,
+        color: "rgba(148,163,184,0.35)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: false,
+        title: "",
+      });
+    } catch {}
     dmiSeriesRef.current = { plus, minus, adx: adxS };
     updateMargins();
   }, [showDMI, dmiVisible, hideIndicators, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor, removeDMI, updateMargins]);
@@ -3364,6 +3481,7 @@ export default function DashboardPage() {
               note: "__vline__",
             }]).select().single();
             if (!error && data) {
+              pushUndo();
               setLines((prev) => [...prev, data as ChartLine]);
               setStatusMsg("Vertical line added");
             } else {
@@ -3513,7 +3631,8 @@ export default function DashboardPage() {
                   saved.end_price = Number(parts[2]);
                 }
               }
-              setAlarms((prev) => [saved, ...prev]);
+              pushUndo();
+            setAlarms((prev) => [saved, ...prev]);
               setStatusMsg("Diag alarm saved");
             } else setStatusMsg("Alarm save failed");
             diagStartRef.current = null;
@@ -3570,6 +3689,7 @@ export default function DashboardPage() {
                 saved.end_price = Number(parts[2]);
               }
             }
+            pushUndo();
             setLines((prev) => [saved, ...prev]);
             setStatusMsg("Diag saved (A→B) — Alarm to convert");
           } else setStatusMsg("Save failed");
@@ -3726,6 +3846,7 @@ export default function DashboardPage() {
             modeRef.current = "none";
             setMode("none");
             clearPreview();
+            pushUndo();
             setLines((prev) => [saved, ...prev]);
             setStatusMsg(m === "ray" ? "Ray saved" : "Line saved");
           } else {
@@ -3793,6 +3914,7 @@ export default function DashboardPage() {
             setMode("none");
             setAlarmMenuOpen(false);
             clearPreview();
+            pushUndo();
             setAlarms((prev) => [saved, ...prev]);
             setStatusMsg("Ray alarm saved");
           } else {
@@ -3845,6 +3967,7 @@ export default function DashboardPage() {
               width: (data as any).width || payload.width,
               dash: (data as any).dash || payload.dash,
             };
+            pushUndo();
             setAlarms((prev) => [saved, ...prev]);
             setStatusMsg("Alarm saved");
           } else setStatusMsg("Alarm save failed");
@@ -4853,7 +4976,8 @@ export default function DashboardPage() {
         const n = Number(saved.note.replace("__ray:", ""));
         if (!Number.isNaN(n)) saved.start_time = n;
       }
-      setAlarms((prev) => [saved, ...prev]);
+      pushUndo();
+            setAlarms((prev) => [saved, ...prev]);
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
       setStatusMsg(
@@ -6067,7 +6191,85 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+          <div className="w-48 shrink-0 flex flex-col gap-1.5" style={{ maxHeight: 640 }}>
+            {/* Layout + Camera ABOVE the coin list */}
+            <div className="flex items-center justify-end gap-1 px-0.5">
+              <div className="relative">
+                <button
+                  type="button"
+                  title="Chart layout"
+                  onClick={() => { setShowLayoutMenu((v) => !v); setShowChartTypeMenu(false); }}
+                  className={`w-8 h-8 rounded-lg inline-flex items-center justify-center border transition-colors ${
+                    showLayoutMenu
+                      ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                      : "bg-gray-900/80 border-gray-700 text-gray-300 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <rect x="3" y="3" width="8" height="8" rx="1" />
+                    <rect x="13" y="3" width="8" height="8" rx="1" />
+                    <rect x="3" y="13" width="8" height="8" rx="1" />
+                    <rect x="13" y="13" width="8" height="8" rx="1" />
+                  </svg>
+                </button>
+                {showLayoutMenu && (
+                  <div
+                    className="absolute z-50 top-full right-0 mt-1 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
+                    style={{
+                      background: "rgba(20,20,22,0.92)",
+                      backdropFilter: "blur(24px)",
+                    }}
+                  >
+                    <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
+                    {([
+                      ["1", "1 chart"],
+                      ["2h", "2 horizontal"],
+                      ["2v", "2 vertical"],
+                      ["4", "4 charts"],
+                    ] as const).map(([k, label]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
+                        className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
+                          chartLayout === k ? "text-orange-300" : "text-gray-200"
+                        }`}
+                      >
+                        {chartLayout === k ? "✓ " : ""}{label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                title="Screenshot chart"
+                onClick={() => {
+                  try {
+                    const chart = chartRef.current as any;
+                    if (!chart || typeof chart.takeScreenshot !== "function") {
+                      setStatusMsg("Screenshot not available");
+                      return;
+                    }
+                    const canvas = chart.takeScreenshot();
+                    const a = document.createElement("a");
+                    a.download = `${symbolUpper}_${interval}_${Date.now()}.png`;
+                    a.href = canvas.toDataURL("image/png");
+                    a.click();
+                    setStatusMsg("Screenshot saved");
+                  } catch {
+                    setStatusMsg("Screenshot failed");
+                  }
+                }}
+                className="w-8 h-8 rounded-lg inline-flex items-center justify-center bg-gray-900/80 border border-gray-700 text-gray-300 hover:bg-white/10 hover:text-white"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col">
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
               <select
                 value={sideViewId}
@@ -6082,85 +6284,9 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
-              <div className="flex items-center gap-0.5 shrink-0">
-                {/* Multi-layout */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    title="Chart layout"
-                    onClick={() => { setShowLayoutMenu((v) => !v); setShowChartTypeMenu(false); }}
-                    className={`w-7 h-7 rounded-md inline-flex items-center justify-center border transition-colors ${
-                      showLayoutMenu ? "bg-orange-500/20 border-orange-500 text-orange-300" : "border-transparent text-gray-400 hover:bg-white/10 hover:text-white"
-                    }`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <rect x="3" y="3" width="8" height="8" rx="1" />
-                      <rect x="13" y="3" width="8" height="8" rx="1" />
-                      <rect x="3" y="13" width="8" height="8" rx="1" />
-                      <rect x="13" y="13" width="8" height="8" rx="1" />
-                    </svg>
-                  </button>
-                  {showLayoutMenu && (
-                    <div
-                      className="absolute z-50 top-full right-0 mt-1 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
-                      style={{
-                        background: "rgba(20,20,22,0.92)",
-                        backdropFilter: "blur(24px)",
-                      }}
-                    >
-                      <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
-                      {([
-                        ["1", "1 chart"],
-                        ["2h", "2 horizontal"],
-                        ["2v", "2 vertical"],
-                        ["4", "4 charts"],
-                      ] as const).map(([k, label]) => (
-                        <button
-                          key={k}
-                          type="button"
-                          onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
-                          className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
-                            chartLayout === k ? "text-orange-300" : "text-gray-200"
-                          }`}
-                        >
-                          {chartLayout === k ? "✓ " : ""}{label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {/* Camera / screenshot */}
-                <button
-                  type="button"
-                  title="Screenshot chart"
-                  onClick={() => {
-                    try {
-                      const chart = chartRef.current as any;
-                      if (!chart || typeof chart.takeScreenshot !== "function") {
-                        setStatusMsg("Screenshot not available");
-                        return;
-                      }
-                      const canvas = chart.takeScreenshot();
-                      const a = document.createElement("a");
-                      a.download = `${symbolUpper}_${interval}_${Date.now()}.png`;
-                      a.href = canvas.toDataURL("image/png");
-                      a.click();
-                      setStatusMsg("Screenshot saved");
-                    } catch {
-                      setStatusMsg("Screenshot failed");
-                    }
-                  }}
-                  className="w-7 h-7 rounded-md inline-flex items-center justify-center text-gray-400 hover:bg-white/10 hover:text-white border border-transparent"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                    <circle cx="12" cy="13" r="4" />
-                  </svg>
-                </button>
-                <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white px-1">
-                  « Hide
-                </button>
-              </div>
+              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white px-1 shrink-0">
+                « Hide
+              </button>
             </div>
             <div className="overflow-y-auto flex-1 p-1.5">
               {sidePanelSymbols.map((sym) => {
@@ -6205,7 +6331,7 @@ export default function DashboardPage() {
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
                       className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 ${
-                        canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+                        canDrag ? "cursor-default" : "cursor-default"
                       } ${
                         isDrag
                           ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg"
@@ -6264,6 +6390,7 @@ export default function DashboardPage() {
                     : "Empty list — add symbols on Watchlist page"}
                 </p>
               )}
+            </div>
             </div>
           </div>
         )}
