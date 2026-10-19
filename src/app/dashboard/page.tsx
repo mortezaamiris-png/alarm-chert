@@ -847,6 +847,8 @@ export default function DashboardPage() {
   const alarmsRef = useRef<Alarm[]>([]);
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
+  const hideLinesRef = useRef(false);
+  const hideIndicatorsRef = useRef(false);
   const renderAllLinesAndAlarmsRef = useRef<(() => void) | null>(null);
   const [highlightAlarmId, setHighlightAlarmId] = useState<string | null>(null);
   const [highlightPrice, setHighlightPrice] = useState<number | null>(null);
@@ -887,33 +889,56 @@ export default function DashboardPage() {
   const [histTick, setHistTick] = useState(0); // force re-render for undo/redo button state
   const pushUndo = useCallback(() => {
     try {
-      const snap = {
+      const snap: any = {
         lines: JSON.parse(JSON.stringify(linesRef.current || [])),
         alarms: JSON.parse(JSON.stringify(alarmsRef.current || [])),
+        symbol: symbolRef.current || "",
+        interval: intervalRef.current || "",
+        chartType: chartTypeRef.current || "candles",
+        hideLines: !!hideLinesRef.current,
+        hideIndicators: !!hideIndicatorsRef.current,
       };
-      const prev = undoStackRef.current[undoStackRef.current.length - 1];
-      // skip duplicate consecutive snapshots
-      if (prev && JSON.stringify(prev) === JSON.stringify(snap)) return;
+      const prev = undoStackRef.current[undoStackRef.current.length - 1] as any;
+      if (prev && JSON.stringify({
+        lines: prev.lines, alarms: prev.alarms, symbol: prev.symbol,
+        interval: prev.interval, chartType: prev.chartType,
+        hideLines: prev.hideLines, hideIndicators: prev.hideIndicators,
+      }) === JSON.stringify({
+        lines: snap.lines, alarms: snap.alarms, symbol: snap.symbol,
+        interval: snap.interval, chartType: snap.chartType,
+        hideLines: snap.hideLines, hideIndicators: snap.hideIndicators,
+      })) return;
       undoStackRef.current.push(snap);
-      if (undoStackRef.current.length > 40) undoStackRef.current.shift();
+      if (undoStackRef.current.length > 50) undoStackRef.current.shift();
       redoStackRef.current = [];
       setHistTick((n) => n + 1);
     } catch {}
   }, []);
-  const applySnapshot = useCallback((snap: { lines: ChartLine[]; alarms: Alarm[] }) => {
+  const applySnapshot = useCallback((snap: any) => {
     const lines = snap.lines || [];
     const alarms = snap.alarms || [];
     linesRef.current = lines;
     alarmsRef.current = alarms;
     setLines(lines);
     setAlarms(alarms);
-    // re-draw after React state flush
+    if (typeof snap.hideLines === "boolean") setHideLines(snap.hideLines);
+    if (typeof snap.hideIndicators === "boolean") setHideIndicators(snap.hideIndicators);
+    if (snap.chartType && snap.chartType !== chartTypeRef.current) {
+      setChartType(snap.chartType);
+    }
+    if (snap.symbol && snap.symbol !== symbolRef.current) {
+      setSymbol(String(snap.symbol).toUpperCase());
+    }
+    if (snap.interval && snap.interval !== intervalRef.current) {
+      setIntervalTf(String(snap.interval));
+    }
     requestAnimationFrame(() => {
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     });
     setTimeout(() => {
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-    }, 50);
+      try { loadCandlesRef.current?.(); } catch {}
+    }, 60);
   }, []);
   const undoChart = useCallback(() => {
     if (!undoStackRef.current.length) return;
@@ -947,6 +972,8 @@ export default function DashboardPage() {
   const [hideMenuOpen, setHideMenuOpen] = useState(false);
   const [hideLines, setHideLines] = useState(false);
   const [hideIndicators, setHideIndicators] = useState(false);
+  useEffect(() => { hideLinesRef.current = hideLines; }, [hideLines]);
+  useEffect(() => { hideIndicatorsRef.current = hideIndicators; }, [hideIndicators]);
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -2589,7 +2616,58 @@ export default function DashboardPage() {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // فقط نوار قیمت سمت راست (~90px)
+          const yRatio = (e.clientY - rect.top) / Math.max(1, rect.height);
+          // پنل اسیلاتور: هرجای ارتفاع پنل + اسکرول = زوم عمودی همان پنل
+          const hasRsi = !!(rsiSeriesRef.current);
+          const hasDmi = !!(dmiSeriesRef.current);
+          const hasVol = !!(volumeSeriesRef.current);
+          // margins approx (must match updateMargins stacking from bottom)
+          let bot = 0;
+          const zones: { id: string; top: number; bot: number }[] = [];
+          if (hasDmi) { const h = 0.13; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasRsi) { const h = 0.14; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasVol) { const h = 0.12; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
+          const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
+          // روی خود پنل اسیلاتور یا لبه راست همان ناحیه
+          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && (fromRight <= 120 || yRatio > (1 - bot - 0.02))) {
+            e.preventDefault();
+            e.stopPropagation();
+            let delta = e.deltaY;
+            if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
+            if (e.deltaMode === 1) delta *= 16;
+            if (delta === 0) return;
+            const zoomIn = delta < 0;
+            // تغییر ارتفاع پنل با scaleMargins
+            try {
+              const chart = chartRef.current;
+              if (!chart) return;
+              const ps = chart.priceScale(inPane.id) as any;
+              // shrink/grow pane height slightly
+              const cur = inPane;
+              const h = (1 - cur.bot) - cur.top;
+              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
+              const top = 1 - cur.bot - nh;
+              ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
+              // also nudge visible range for true zoom feel (0-100 scale)
+              try {
+                const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
+                if (ser && typeof ser.priceScale === "function") {
+                  // fixed range zoom around 50
+                  const factor = zoomIn ? 0.9 : 1.12;
+                  // use autoscale override via applyOptions on series
+                  const mid = 50;
+                  const half = zoomIn ? 40 : 55;
+                  ser.applyOptions({
+                    autoscaleInfoProvider: () => ({
+                      priceRange: { minValue: Math.max(0, mid - half * factor), maxValue: Math.min(100, mid + half * factor) },
+                    }),
+                  });
+                }
+              } catch {}
+            } catch {}
+            return;
+          }
+          // فقط نوار قیمت سمت راست (~90px) برای چارت اصلی
           if (fromRight > 90 || fromRight < 0) return;
           e.preventDefault();
           e.stopPropagation();
@@ -4828,30 +4906,37 @@ export default function DashboardPage() {
     } catch {}
   };
   const updateAlarmCondition = async (id: string, condition: Alarm["condition"]) => {
+    pushUndo();
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, condition } : a)));
     await supabase.from("alarms").update({ condition }).eq("id", id);
   };
   const updateAlarmColor = async (id: string, color: string) => {
+    pushUndo();
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)));
     await supabase.from("alarms").update({ color }).eq("id", id);
   };
   const updateAlarmWidth = async (id: string, width: number) => {
+    pushUndo();
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, width } : a)));
     await supabase.from("alarms").update({ width }).eq("id", id);
   };
   const updateAlarmDash = async (id: string, dash: string) => {
+    pushUndo();
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, dash } : a)));
     await supabase.from("alarms").update({ dash }).eq("id", id);
   };
   const updateLineColor = async (id: string, color: string) => {
+    pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
     await supabase.from("chart_lines").update({ color }).eq("id", id);
   };
   const updateLineWidth = async (id: string, width: number) => {
+    pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
     await supabase.from("chart_lines").update({ width }).eq("id", id);
   };
   const updateLineDash = async (id: string, dash: string) => {
+    pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
     await supabase.from("chart_lines").update({ dash }).eq("id", id);
   };
@@ -5312,6 +5397,82 @@ export default function DashboardPage() {
               </svg>
             </button>
           </div>
+
+          {/* Layout + Camera — aligned with Time / Indicators */}
+          <div className="flex items-center gap-0.5 ml-1">
+            <div className="relative">
+              <button
+                type="button"
+                title="Chart layout"
+                onClick={() => { setShowLayoutMenu((v) => !v); setShowChartTypeMenu(false); setShowIndicatorMenu(false); }}
+                className={`h-8 w-8 rounded-lg inline-flex items-center justify-center border transition-colors ${
+                  showLayoutMenu
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="3" width="8" height="8" rx="1" />
+                  <rect x="13" y="3" width="8" height="8" rx="1" />
+                  <rect x="3" y="13" width="8" height="8" rx="1" />
+                  <rect x="13" y="13" width="8" height="8" rx="1" />
+                </svg>
+              </button>
+              {showLayoutMenu && (
+                <div
+                  className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
+                  style={{ background: "rgba(20,20,22,0.92)", backdropFilter: "blur(24px)" }}
+                >
+                  <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
+                  {([
+                    ["1", "1 chart"],
+                    ["2h", "2 horizontal"],
+                    ["2v", "2 vertical"],
+                    ["4", "4 charts"],
+                  ] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
+                      className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
+                        chartLayout === k ? "text-orange-300" : "text-gray-200"
+                      }`}
+                    >
+                      {chartLayout === k ? "✓ " : ""}{label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              title="Screenshot chart"
+              onClick={() => {
+                try {
+                  const chart = chartRef.current as any;
+                  if (!chart || typeof chart.takeScreenshot !== "function") {
+                    setStatusMsg("Screenshot not available");
+                    return;
+                  }
+                  const canvas = chart.takeScreenshot();
+                  const a = document.createElement("a");
+                  a.download = `${symbolUpper}_${interval}_${Date.now()}.png`;
+                  a.href = canvas.toDataURL("image/png");
+                  a.click();
+                  setStatusMsg("Screenshot saved");
+                } catch {
+                  setStatusMsg("Screenshot failed");
+                }
+              }}
+              className="h-8 w-8 rounded-lg inline-flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+            </button>
+          </div>
+</div>
         </div>
       </div>
 
@@ -6191,85 +6352,7 @@ export default function DashboardPage() {
         </div>
 
         {showSideWl && (
-          <div className="w-48 shrink-0 flex flex-col gap-1.5" style={{ maxHeight: 640 }}>
-            {/* Layout + Camera ABOVE the coin list */}
-            <div className="flex items-center justify-end gap-1 px-0.5">
-              <div className="relative">
-                <button
-                  type="button"
-                  title="Chart layout"
-                  onClick={() => { setShowLayoutMenu((v) => !v); setShowChartTypeMenu(false); }}
-                  className={`w-8 h-8 rounded-lg inline-flex items-center justify-center border transition-colors ${
-                    showLayoutMenu
-                      ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                      : "bg-gray-900/80 border-gray-700 text-gray-300 hover:bg-white/10 hover:text-white"
-                  }`}
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <rect x="3" y="3" width="8" height="8" rx="1" />
-                    <rect x="13" y="3" width="8" height="8" rx="1" />
-                    <rect x="3" y="13" width="8" height="8" rx="1" />
-                    <rect x="13" y="13" width="8" height="8" rx="1" />
-                  </svg>
-                </button>
-                {showLayoutMenu && (
-                  <div
-                    className="absolute z-50 top-full right-0 mt-1 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
-                    style={{
-                      background: "rgba(20,20,22,0.92)",
-                      backdropFilter: "blur(24px)",
-                    }}
-                  >
-                    <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
-                    {([
-                      ["1", "1 chart"],
-                      ["2h", "2 horizontal"],
-                      ["2v", "2 vertical"],
-                      ["4", "4 charts"],
-                    ] as const).map(([k, label]) => (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
-                        className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
-                          chartLayout === k ? "text-orange-300" : "text-gray-200"
-                        }`}
-                      >
-                        {chartLayout === k ? "✓ " : ""}{label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                title="Screenshot chart"
-                onClick={() => {
-                  try {
-                    const chart = chartRef.current as any;
-                    if (!chart || typeof chart.takeScreenshot !== "function") {
-                      setStatusMsg("Screenshot not available");
-                      return;
-                    }
-                    const canvas = chart.takeScreenshot();
-                    const a = document.createElement("a");
-                    a.download = `${symbolUpper}_${interval}_${Date.now()}.png`;
-                    a.href = canvas.toDataURL("image/png");
-                    a.click();
-                    setStatusMsg("Screenshot saved");
-                  } catch {
-                    setStatusMsg("Screenshot failed");
-                  }
-                }}
-                className="w-8 h-8 rounded-lg inline-flex items-center justify-center bg-gray-900/80 border border-gray-700 text-gray-300 hover:bg-white/10 hover:text-white"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                  <circle cx="12" cy="13" r="4" />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col">
+          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
               <select
                 value={sideViewId}
@@ -6391,7 +6474,6 @@ export default function DashboardPage() {
                 </p>
               )}
             </div>
-            </div>
           </div>
         )}
       </div>
@@ -6406,31 +6488,24 @@ export default function DashboardPage() {
             {currentAlarms.map((a) => (
               <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
+                  <span className="font-mono font-medium shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
                     {isDiagonalLine(a)
-                      ? `${getConditionSymbol(a.condition)} ↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
-                      : `${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`}
+                      ? `↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
+                      : formatPrice(a.price)}
                   </span>
-                  {isDiagonalLine(a) && (
-                    <span className="text-[10px] text-blue-400/80 shrink-0">Diag</span>
-                  )}
-                  {a.note && !a.note.startsWith("__diag:") && (
-                    <span className="text-gray-500 text-xs truncate max-w-[70px]">{a.note}</span>
-                  )}
-                  <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
-                    {/* Condition — same dark popover as timezone */}
-                    <div className="relative" data-menu>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenu(openMenu === `a-cond-${a.id}` ? null : `a-cond-${a.id}`)}
-                        className={`px-1.5 py-0.5 rounded border text-[11px] transition-all ${
-                          openMenu === `a-cond-${a.id}`
-                            ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-200"
-                        }`}
-                      >
-                        {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
-                      </button>
+                  {/* Condition next to price */}
+                  <div className="relative shrink-0" data-menu>
+                    <button
+                      type="button"
+                      onClick={() => setOpenMenu(openMenu === `a-cond-${a.id}` ? null : `a-cond-${a.id}`)}
+                      className={`px-1 py-0.5 rounded border text-[10px] transition-all ${
+                        openMenu === `a-cond-${a.id}`
+                          ? "bg-orange-500 text-black border-orange-400"
+                          : "bg-gray-900/95 border-gray-600 text-gray-300"
+                      }`}
+                    >
+                      {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
+                    </button>
                       {openMenu === `a-cond-${a.id}` && (
                         <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[100px]" style={{
                           animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
@@ -6450,70 +6525,59 @@ export default function DashboardPage() {
                         </div>
                       )}
                     </div>
+                  {/* Note centered */}
+                  <span className="flex-1 text-center text-gray-400 text-xs truncate px-1 min-w-0">
+                    {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:")
+                      ? userFacingNote(a.note)
+                      : ""}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
                     {/* Round color */}
-                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                    <div className="relative w-6 h-6 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
                       <input
                         type="color"
                         value={a.color || DEFAULT_ALARM_COLOR}
-                        onChange={(e) => updateAlarmColor(a.id, e.target.value)}
+                        onChange={(e) => { pushUndo(); updateAlarmColor(a.id, e.target.value); }}
                         className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                       />
                     </div>
-                    {/* Width popover */}
+                    {/* Style = width + dash in one icon */}
                     <div className="relative" data-menu>
                       <button
                         type="button"
-                        onClick={() => setOpenMenu(openMenu === `a-w-${a.id}` ? null : `a-w-${a.id}`)}
-                        className={`px-1.5 py-0.5 rounded border text-[11px] transition-all ${
-                          openMenu === `a-w-${a.id}`
+                        title="Line style"
+                        onClick={() => setOpenMenu(openMenu === `a-style-${a.id}` ? null : `a-style-${a.id}`)}
+                        className={`w-7 h-7 rounded-md border flex items-center justify-center text-[10px] transition-all ${
+                          openMenu === `a-style-${a.id}`
                             ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-200"
+                            : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
                         }`}
                       >
-                        W{a.width || 2} ▾
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="4" y1="12" x2="20" y2="12" strokeDasharray={a.dash === "dashed" ? "4 3" : "0"} strokeWidth={a.width || 2} />
+                        </svg>
                       </button>
-                      {openMenu === `a-w-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[80px]" style={{
+                      {openMenu === `a-style-${a.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
                           animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                          background: "rgba(20,20,22,0.92)",
+                          backdropFilter: "blur(24px)",
                         }}>
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
-                              onClick={() => { updateAlarmWidth(a.id, w); setOpenMenu(null); }}
+                              onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); setOpenMenu(null); }}
                               className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
                               W{w}
                             </button>
                           ))}
-                        </div>
-                      )}
-                    </div>
-                    {/* Dash popover */}
-                    <div className="relative" data-menu>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenu(openMenu === `a-d-${a.id}` ? null : `a-d-${a.id}`)}
-                        className={`px-1.5 py-0.5 rounded border text-[11px] transition-all ${
-                          openMenu === `a-d-${a.id}`
-                            ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-200"
-                        }`}
-                      >
-                        {a.dash === "dashed" ? "- -" : "——"} ▾
-                      </button>
-                      {openMenu === `a-d-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[110px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                        }}>
+                          <div className="border-t border-white/10 my-1" />
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
-                              onClick={() => { updateAlarmDash(a.id, d); setOpenMenu(null); }}
+                              onClick={() => { pushUndo(); updateAlarmDash(a.id, d); setOpenMenu(null); }}
                               className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
@@ -6523,7 +6587,7 @@ export default function DashboardPage() {
                         </div>
                       )}
                     </div>
-                    <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(a.note || ""); }}
+                    <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(userFacingNote(a.note) || ""); }}
                       className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
                       type="button"
@@ -6592,7 +6656,7 @@ export default function DashboardPage() {
                     >
                       Move
                     </button>
-                    <button type="button" onClick={() => deleteAlarm(a.id)} className="text-xs text-red-400 px-1">Delete</button>
+                    <button type="button" title="Delete" onClick={() => deleteAlarm(a.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
                 </div>
                 {editingNoteId === a.id && editingNoteType === "alarm" && (
@@ -6618,82 +6682,64 @@ export default function DashboardPage() {
             {currentLines.map((l) => (
               <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-mono font-medium min-w-[110px] shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
+                  <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
                     {isDiagonalLine(l)
                       ? `↗ ${formatPrice(l.price)}→${formatPrice(Number(l.end_price))}`
                       : formatPrice(l.price)}
+                    {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
                   </span>
-                  {isDiagonalLine(l) && (
-                    <span className="text-[10px] text-orange-400/80 shrink-0">Diag</span>
-                  )}
-                  {l.note && !l.note.startsWith("__diag:") && (
-                    <span className="text-gray-500 text-xs truncate max-w-[70px]">{l.note}</span>
-                  )}
-                  <div className="ml-auto flex flex-wrap items-center gap-1.5 justify-end">
+                  <span className="flex-1 text-center text-gray-400 text-xs truncate px-1 min-w-0">
+                    {l.note && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:")
+                      ? userFacingNote(l.note)
+                      : ""}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
                     {/* Round color */}
-                    <div className="relative w-7 h-7 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
+                    <div className="relative w-6 h-6 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
                       <input
                         type="color"
                         value={l.color || DEFAULT_LINE_COLOR}
-                        onChange={(e) => updateLineColor(l.id, e.target.value)}
+                        onChange={(e) => { pushUndo(); updateLineColor(l.id, e.target.value); }}
                         className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                       />
                     </div>
-                    {/* Width */}
+                    {/* Style = width + dash */}
                     <div className="relative" data-menu>
                       <button
                         type="button"
-                        onClick={() => setOpenMenu(openMenu === `l-w-${l.id}` ? null : `l-w-${l.id}`)}
-                        className={`px-1.5 py-0.5 rounded border text-[11px] transition-all ${
-                          openMenu === `l-w-${l.id}`
+                        title="Line style"
+                        onClick={() => setOpenMenu(openMenu === `l-style-${l.id}` ? null : `l-style-${l.id}`)}
+                        className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
+                          openMenu === `l-style-${l.id}`
                             ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-200"
+                            : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
                         }`}
                       >
-                        W{l.width || 2} ▾
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="4" y1="12" x2="20" y2="12" strokeDasharray={(l.dash || l.style) === "dashed" ? "4 3" : "0"} strokeWidth={l.width || 2} />
+                        </svg>
                       </button>
-                      {openMenu === `l-w-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[80px]" style={{
+                      {openMenu === `l-style-${l.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
                           animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                          background: "rgba(20,20,22,0.92)",
+                          backdropFilter: "blur(24px)",
                         }}>
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
                           {LINE_WIDTHS.map((w) => (
                             <button key={w} type="button"
-                              onClick={() => { updateLineWidth(l.id, w); setOpenMenu(null); }}
+                              onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
                               className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
                               W{w}
                             </button>
                           ))}
-                        </div>
-                      )}
-                    </div>
-                    {/* Dash */}
-                    <div className="relative" data-menu>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenu(openMenu === `l-d-${l.id}` ? null : `l-d-${l.id}`)}
-                        className={`px-1.5 py-0.5 rounded border text-[11px] transition-all ${
-                          openMenu === `l-d-${l.id}`
-                            ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-200"
-                        }`}
-                      >
-                        {(l.dash || l.style) === "dashed" ? "- -" : "——"} ▾
-                      </button>
-                      {openMenu === `l-d-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 left-1/2 -translate-x-1/2 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[110px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                        }}>
+                          <div className="border-t border-white/10 my-1" />
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
                           {(["solid", "dashed"] as const).map((d) => (
                             <button key={d} type="button"
-                              onClick={() => { updateLineDash(l.id, d); setOpenMenu(null); }}
+                              onClick={() => { pushUndo(); updateLineDash(l.id, d); setOpenMenu(null); }}
                               className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
                             >
                               <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
@@ -6774,7 +6820,7 @@ export default function DashboardPage() {
                     >
                       Move
                     </button>
-                    <button type="button" onClick={() => deleteLine(l.id)} className="text-xs text-red-400 px-1">Delete</button>
+                    <button type="button" title="Delete" onClick={() => deleteLine(l.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
                 </div>
                 {editingNoteId === l.id && editingNoteType === "line" && (
