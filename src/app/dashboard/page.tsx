@@ -5472,7 +5472,6 @@ export default function DashboardPage() {
               </svg>
             </button>
           </div>
-</div>
         </div>
       </div>
 
