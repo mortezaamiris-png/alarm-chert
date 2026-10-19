@@ -706,12 +706,13 @@ function formatCountdownRemaining(openTime: number, iv: string): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function CoinIcon({ symbol }: { symbol: string }) {
+function CoinIcon({ symbol, size = 20 }: { symbol: string; size?: number }) {
   const base = symbol.replace(/USDT$|USD$|PERP$/i, "").toLowerCase();
+  const cls = size <= 16 ? "w-4 h-4" : size <= 18 ? "w-[18px] h-[18px]" : "w-5 h-5";
   return (
     <img
       src={`https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${base}.png`}
-      alt="" width={20} height={20} className="w-5 h-5 rounded-full shrink-0"
+      alt="" width={size} height={size} className={`${cls} rounded-full shrink-0`}
       onError={(e) => {
         (e.target as HTMLImageElement).src =
           `https://ui-avatars.com/api/?name=${base}&background=374151&color=fff&size=32`;
@@ -4803,9 +4804,8 @@ export default function DashboardPage() {
         input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
         input[type="color"]::-moz-color-swatch{border:none;border-radius:9999px}
       `}</style>
-      {/* Header — Live Chart + symbol search together on the left */}
+      {/* Header — symbol search + timeframes + indicators on the left */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <h1 className="text-lg font-semibold text-gray-200">Live Chart</h1>
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -4818,7 +4818,6 @@ export default function DashboardPage() {
           className="bg-gray-900/90 border border-gray-600 rounded-full px-4 py-1.5 text-sm w-32 font-mono text-center tracking-wide shadow-inner focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/40 transition-colors"
           title="Symbol"
         />
-        <div className="flex-1" />
         <div className="flex items-center gap-1">
           {favTfButtons.map((t) => (
             <button
@@ -4887,7 +4886,62 @@ export default function DashboardPage() {
             )}
           </div>
 
-                  </div>
+          {/* Indicators — next to timeframe tools */}
+          <div className="relative" data-ind-panel>
+            <button
+              type="button"
+              data-ind-panel
+              title="Indicators"
+              onClick={() => { setShowIndicatorMenu((v) => !v); setTfMenuOpen(false); setTzMenuOpen(false); setOpenMenu(null); }}
+              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
+                showIndicatorMenu
+                  ? "bg-blue-500/20 border-blue-500 text-blue-300 shadow-lg"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="20" x2="6" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="18" y1="20" x2="18" y2="14" />
+              </svg>
+              <span className="font-medium">Indicators</span>
+            </button>
+            {showIndicatorMenu && (
+              <div
+                data-ind-panel
+                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[150px]"
+                style={{
+                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
+                  background: "rgba(20,20,22,0.42)",
+                  backdropFilter: "blur(40px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                }}
+              >
+                {[
+                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
+                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
+                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
+                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
+                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
+                  { key: "vol", label: "Volume", on: showVol, set: setShowVol },
+                ].map((it) => (
+                  <button
+                    key={it.key}
+                    type="button"
+                    data-ind-panel
+                    onClick={() => it.set((v: boolean) => !v)}
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      it.on ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
+                    <span>{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="flex gap-2">
@@ -5098,25 +5152,6 @@ export default function DashboardPage() {
                 <line x1="12" y1="3" x2="12" y2="21" />
                 <line x1="9" y1="3" x2="15" y2="3" />
                 <line x1="9" y1="21" x2="15" y2="21" />
-              </svg>
-            </button>
-
-            {/* Indicators */}
-            <button
-              type="button"
-              data-ind-panel
-              title="Indicators"
-              onClick={() => setShowIndicatorMenu((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                showIndicatorMenu
-                  ? "bg-blue-500/20 border-blue-500 text-blue-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="20" x2="6" y2="10" />
-                <line x1="12" y1="20" x2="12" y2="4" />
-                <line x1="18" y1="20" x2="18" y2="14" />
               </svg>
             </button>
 
@@ -5430,29 +5465,6 @@ export default function DashboardPage() {
             style={{ display: "none" }}
           />
 
-          {showIndicatorMenu && (
-            <div data-ind-panel className="absolute top-2 left-14 z-20 bg-gray-900/95 border border-gray-700 rounded-xl p-2 shadow-xl w-40">
-              {[
-                { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
-                { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
-                { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
-                { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
-                { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
-                { key: "vol", label: "Volume", on: showVol, set: setShowVol },
-              ].map((it) => (
-                <button
-                  key={it.key}
-                  type="button"
-                  onClick={() => it.set((v: boolean) => !v)}
-                  className={`w-full text-left px-2 py-1.5 rounded text-sm mb-0.5 ${
-                    it.on ? "bg-orange-500/20 text-orange-300" : "hover:bg-white/10"
-                  }`}
-                >
-                  {it.on ? "✓ " : ""}{it.label}
-                </button>
-              ))}
-            </div>
-          )}
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
           {(mode === "draw" ||
@@ -5880,14 +5892,44 @@ export default function DashboardPage() {
                       }`}
                       style={{ touchAction: canDrag ? "none" : "auto" }}
                     >
-                      <CoinIcon symbol={sym} />
+                      <CoinIcon symbol={sym} size={16} />
                       <div className="min-w-0 flex-1">
-                        <div className="font-medium truncate">{sym.replace("USDT", "")}</div>
-                        <div className="text-[10px] text-gray-500">
+                        <div className="text-xs font-medium truncate leading-tight">{sym.replace("USDT", "")}</div>
+                        <div className="text-[9px] text-gray-500 leading-tight">
                           {alarmCountBySym[sym] || 0} alarm
                           {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        title="Remove from list"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          void (async () => {
+                            const s = sym;
+                            if (sideViewId === SIDE_VIEW_ALARMS) {
+                              setSideOrder((prev) => {
+                                const base = (prev.length ? prev : alarmSymbols).filter((x) => x !== s);
+                                return base;
+                              });
+                              return;
+                            }
+                            const item = watchItems.find(
+                              (w) => w.list_id === sideViewId && chartSymbol(w.symbol) === s
+                            );
+                            if (!item) return;
+                            setWatchItems((prev) => prev.filter((w) => w.id !== item.id));
+                            try {
+                              await supabase.from("watch_items").delete().eq("id", item.id);
+                            } catch {}
+                          })();
+                        }}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 hover:text-red-400 text-sm leading-none"
+                      >
+                        ×
+                      </button>
                     </div>
                   </div>
                 );
