@@ -6,7 +6,7 @@
  * - If a tab is focused → postMessage to page (no second system notification on that device)
  * - If no focused tab → show system notification (desktop closed / phone background)
  */
-const SW_VERSION = "2026-10-18-v4-multidevice";
+const SW_VERSION = "2026-10-19-v5-deploy";
 
 self.addEventListener("install", (event) => {
   // Activate immediately on new deploy
@@ -22,9 +22,9 @@ self.addEventListener("activate", (event) => {
         await Promise.all(keys.map((k) => caches.delete(k)));
       } catch (_) {}
       await self.clients.claim();
-      // Tell open tabs a new SW is active
+      // Tell open tabs a new SW is active → page should reload once
       try {
-        const clients = await self.clients.matchAll({ type: "window" });
+        const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
         for (const c of clients) {
           c.postMessage({ type: "SW_UPDATED", version: SW_VERSION });
         }
@@ -41,15 +41,22 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   // Same-origin navigations + Next data: network only (no cache put)
   const isNavigate = req.mode === "navigate";
-  const isNext = url.pathname.startsWith("/_next/");
   const isDoc =
     req.destination === "document" ||
     req.headers.get("accept")?.includes("text/html");
 
   if (isNavigate || isDoc) {
     event.respondWith(
-      fetch(req).catch(() => caches.match(req).then((r) => r || Response.error()))
+      fetch(req, { cache: "no-store" }).catch(() =>
+        caches.match(req).then((r) => r || Response.error())
+      )
     );
+    return;
+  }
+
+  // /_next/data (JSON for client navigations) — also prefer network, no Cache Storage
+  if (url.pathname.startsWith("/_next/data/")) {
+    event.respondWith(fetch(req, { cache: "no-store" }).catch(() => Response.error()));
     return;
   }
 
