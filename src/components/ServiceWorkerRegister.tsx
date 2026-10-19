@@ -12,19 +12,28 @@ export default function ServiceWorkerRegister() {
 
     let reloading = false;
 
-    const onControllerChange = () => {
-      // New SW took control → one reload to pick up new assets
+    const safeReload = (version?: string) => {
       if (reloading) return;
+      // جلوگیری از رفرش بی‌نهایت در یک نشست
+      const key = "sw_reloaded_" + (version || "once");
+      try {
+        if (sessionStorage.getItem(key)) return;
+        sessionStorage.setItem(key, "1");
+      } catch (_) {}
       reloading = true;
       window.location.reload();
+    };
+
+    const onControllerChange = () => {
+      // New SW took control → one reload to pick up new assets
+      safeReload("controller");
     };
 
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
     const onMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === "SW_UPDATED" && !reloading) {
-        reloading = true;
-        window.location.reload();
+      if (event.data && event.data.type === "SW_UPDATED") {
+        safeReload(String(event.data.version || "updated"));
       }
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
@@ -56,7 +65,7 @@ export default function ServiceWorkerRegister() {
         });
       })
       .catch(() => {
-        /* ignore */
+        /* ignore — مثلاً وقتی سایت اصلاً لود نشده / آفلاین */
       });
 
     // Periodic update check while tab stays open (every 5 min)
