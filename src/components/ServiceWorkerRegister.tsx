@@ -3,73 +3,69 @@
 import { useEffect } from "react";
 
 /**
- * Registers /sw.js with cache-bust, forces update, activates waiting SW, one reload.
+ * Register SW for push + soft update.
+ * Reloads at most ONCE per browser tab session after a new SW takes control.
+ * Avoids the infinite refresh loop (waiting → skipWaiting → controllerchange → reload → …).
  */
 export default function ServiceWorkerRegister() {
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
 
-    let reloading = false;
+    const RELOAD_KEY = "sw_one_reload_v6";
 
-    const safeReload = () => {
-      if (reloading) return;
-      reloading = true;
-      // full reload bypassing HTTP cache
-      const url = new URL(window.location.href);
-      url.searchParams.set("_sw", String(Date.now()));
-      window.location.replace(url.toString());
+    const reloadOnce = () => {
+      try {
+        if (sessionStorage.getItem(RELOAD_KEY)) return;
+        sessionStorage.setItem(RELOAD_KEY, "1");
+      } catch (_) {
+        return;
+      }
+      // Normal reload — not replace with changing query (that felt like endless refresh)
+      window.location.reload();
     };
 
     const onControllerChange = () => {
-      safeReload();
+      reloadOnce();
     };
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
-    const onMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === "SW_UPDATED") {
-        safeReload();
-      }
-    };
-    navigator.serviceWorker.addEventListener("message", onMessage);
-
-    // Cache-bust so browser must re-fetch sw.js after each deploy (version in query)
     const SW_URL = "/sw.js?v=2026-10-19-v6";
 
     navigator.serviceWorker
       .register(SW_URL, { scope: "/", updateViaCache: "none" })
-      .then(async (reg) => {
+      .then((reg) => {
+        const kickWaiting = () => {
+          if (reg.waiting) {
+            reg.waiting.postMessage({ type: "SKIP_WAITING" });
+          }
+        };
+
         try {
-          await reg.update();
+          reg.update();
         } catch (_) {}
 
-        if (reg.waiting) {
-          reg.waiting.postMessage({ type: "SKIP_WAITING" });
-        }
+        kickWaiting();
 
         reg.addEventListener("updatefound", () => {
           const nw = reg.installing;
           if (!nw) return;
           nw.addEventListener("statechange", () => {
             if (nw.state === "installed") {
-              if (reg.waiting) {
-                reg.waiting.postMessage({ type: "SKIP_WAITING" });
-              }
+              kickWaiting();
             }
           });
         });
       })
       .catch(() => {});
 
+    // Soft update check every 10 minutes (not every minute — reduces churn)
     const t = window.setInterval(() => {
       navigator.serviceWorker.getRegistration().then((reg) => {
         try {
           reg?.update();
-          if (reg?.waiting) {
-            reg.waiting.postMessage({ type: "SKIP_WAITING" });
-          }
         } catch (_) {}
       });
-    }, 60 * 1000);
+    }, 10 * 60 * 1000);
 
     return () => {
       window.clearInterval(t);
@@ -77,7 +73,6 @@ export default function ServiceWorkerRegister() {
         "controllerchange",
         onControllerChange
       );
-      navigator.serviceWorker.removeEventListener("message", onMessage);
     };
   }, []);
 
