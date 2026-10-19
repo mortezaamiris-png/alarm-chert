@@ -2616,57 +2616,7 @@ export default function DashboardPage() {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          const yRatio = (e.clientY - rect.top) / Math.max(1, rect.height);
-          // پنل اسیلاتور: هرجای ارتفاع پنل + اسکرول = زوم عمودی همان پنل
-          const hasRsi = !!(rsiSeriesRef.current);
-          const hasDmi = !!(dmiSeriesRef.current);
-          const hasVol = !!(volumeSeriesRef.current);
-          // margins approx (must match updateMargins stacking from bottom)
-          let bot = 0;
-          const zones: { id: string; top: number; bot: number }[] = [];
-          if (hasDmi) { const h = 0.13; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasRsi) { const h = 0.14; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasVol) { const h = 0.12; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
-          const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
-          // فقط لبه راست پنل اسیلاتور — تا اسکرول افقی چارت خراب نشود
-          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && fromRight <= 100) {
-            e.preventDefault();
-            e.stopPropagation();
-            let delta = e.deltaY;
-            if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
-            if (e.deltaMode === 1) delta *= 16;
-            if (delta === 0) return;
-            const zoomIn = delta < 0;
-            // تغییر ارتفاع پنل با scaleMargins
-            try {
-              const chart = chartRef.current;
-              if (!chart) return;
-              const ps = chart.priceScale(inPane.id) as any;
-              const cur = inPane;
-              const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
-              const top = 1 - cur.bot - nh;
-              ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
-              try {
-                const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
-                if (ser && typeof ser.priceScale === "function") {
-                  const factor = zoomIn ? 0.9 : 1.12;
-                  const mid = 50;
-                  const half = zoomIn ? 40 : 55;
-                  ser.applyOptions({
-                    autoscaleInfoProvider: () => ({
-                      priceRange: {
-                        minValue: Math.max(0, mid - half * factor),
-                        maxValue: Math.min(100, mid + half * factor),
-                      },
-                    }),
-                  });
-                }
-              } catch {}
-            } catch {}
-            return;
-          }
-          // فقط نوار قیمت سمت راست (~90px) برای چارت اصلی
+          // فقط نوار قیمت سمت راست (~90px) — مثل chart akhar
           if (fromRight > 90 || fromRight < 0) return;
           e.preventDefault();
           e.stopPropagation();
@@ -2674,15 +2624,12 @@ export default function DashboardPage() {
           if (!s) return;
 
           // جهت: اسکرول بالا = بزرگ‌تر (zoom in) | پایین = کوچک‌تر (zoom out)
-          // نرمال‌سازی delta تا هر تیک موس یک پله ملایم باشد (نه پرش شدید)
+          // روی بعضی ترک‌پدها deltaY برعکس یا صفر است
           let delta = e.deltaY;
           if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
           if (e.deltaMode === 1) delta *= 16; // line mode
-          if (e.deltaMode === 2) delta *= 40; // page mode — قبلاً 400 خیلی تند بود
+          if (e.deltaMode === 2) delta *= 400; // page mode
           if (delta === 0) return;
-          // هر چقدر delta بزرگ باشد فقط یک پله (±1) حساب کن تا پرش نکند
-          const steps = Math.max(1, Math.min(3, Math.round(Math.abs(delta) / 100)));
-          const zoomIn = delta < 0;
 
           let pTop: number | null = null;
           let pBot: number | null = null;
@@ -2704,11 +2651,9 @@ export default function DashboardPage() {
 
           const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
-          let factor = 1;
-          for (let i = 0; i < steps; i++) {
-            factor *= zoomIn ? 0.94 : 1.06;
-          }
+          // delta < 0 → اسکرول به بالا → زوم این (بازه قیمت تنگ‌تر = کندل بزرگ‌تر)
+          const zoomIn = delta < 0;
+          const factor = zoomIn ? 0.85 : 1.18;
           const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
