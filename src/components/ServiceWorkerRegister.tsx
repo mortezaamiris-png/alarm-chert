@@ -3,8 +3,7 @@
 import { useEffect } from "react";
 
 /**
- * Registers /sw.js and forces update check on every load.
- * When a new SW activates, reloads once so users get the new deploy without a new URL.
+ * Registers /sw.js with cache-bust, forces update, activates waiting SW, one reload.
  */
 export default function ServiceWorkerRegister() {
   useEffect(() => {
@@ -12,41 +11,37 @@ export default function ServiceWorkerRegister() {
 
     let reloading = false;
 
-    const safeReload = (version?: string) => {
+    const safeReload = () => {
       if (reloading) return;
-      // جلوگیری از رفرش بی‌نهایت در یک نشست
-      const key = "sw_reloaded_" + (version || "once");
-      try {
-        if (sessionStorage.getItem(key)) return;
-        sessionStorage.setItem(key, "1");
-      } catch (_) {}
       reloading = true;
-      window.location.reload();
+      // full reload bypassing HTTP cache
+      const url = new URL(window.location.href);
+      url.searchParams.set("_sw", String(Date.now()));
+      window.location.replace(url.toString());
     };
 
     const onControllerChange = () => {
-      // New SW took control → one reload to pick up new assets
-      safeReload("controller");
+      safeReload();
     };
-
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
     const onMessage = (event: MessageEvent) => {
       if (event.data && event.data.type === "SW_UPDATED") {
-        safeReload(String(event.data.version || "updated"));
+        safeReload();
       }
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
 
+    // Cache-bust so browser must re-fetch sw.js after each deploy (version in query)
+    const SW_URL = "/sw.js?v=2026-10-19-v6";
+
     navigator.serviceWorker
-      .register("/sw.js", { scope: "/" })
-      .then((reg) => {
-        // Check for updates on every page load
+      .register(SW_URL, { scope: "/", updateViaCache: "none" })
+      .then(async (reg) => {
         try {
-          reg.update();
+          await reg.update();
         } catch (_) {}
 
-        // If there's a waiting worker, activate it
         if (reg.waiting) {
           reg.waiting.postMessage({ type: "SKIP_WAITING" });
         }
@@ -55,8 +50,7 @@ export default function ServiceWorkerRegister() {
           const nw = reg.installing;
           if (!nw) return;
           nw.addEventListener("statechange", () => {
-            if (nw.state === "installed" && navigator.serviceWorker.controller) {
-              // New version ready → activate
+            if (nw.state === "installed") {
               if (reg.waiting) {
                 reg.waiting.postMessage({ type: "SKIP_WAITING" });
               }
@@ -64,18 +58,18 @@ export default function ServiceWorkerRegister() {
           });
         });
       })
-      .catch(() => {
-        /* ignore — مثلاً وقتی سایت اصلاً لود نشده / آفلاین */
-      });
+      .catch(() => {});
 
-    // Periodic update check while tab stays open (every 5 min)
     const t = window.setInterval(() => {
       navigator.serviceWorker.getRegistration().then((reg) => {
         try {
           reg?.update();
+          if (reg?.waiting) {
+            reg.waiting.postMessage({ type: "SKIP_WAITING" });
+          }
         } catch (_) {}
       });
-    }, 5 * 60 * 1000);
+    }, 60 * 1000);
 
     return () => {
       window.clearInterval(t);
