@@ -4236,10 +4236,9 @@ export default function DashboardPage() {
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
       }
-      // Note editor: click anywhere outside the note row closes it
+      // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
-        setEditingNoteId(null);
-        setEditingNoteType(null);
+        void saveNote();
       }
       // Indicator list + gear settings + hide/trash menus: close when clicking outside
       if (anyIndPanel && !el.closest?.("[data-ind-panel]")) {
@@ -4270,8 +4269,10 @@ export default function DashboardPage() {
     rsiSettings,
     dmiSettings,
     hideMenuOpen,
-    trashMenuOpen,,
+    trashMenuOpen,
     editingNoteId,
+    noteDraft,
+    editingNoteType,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -6715,8 +6716,12 @@ export default function DashboardPage() {
                   return (
                     <div key={`sec-${row.id}`}>
                       {isOver && (
-                        <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
-                      )}
+                        draggingSym?.startsWith("__SEC__") ? (
+                          <div className="h-0.5 mb-1 mx-1 rounded-full bg-orange-400/80" />
+                        ) : (
+                          <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                        )
+                      }
                       <div
                         data-sym={secKey}
                         data-item-id={row.id}
@@ -6823,7 +6828,7 @@ export default function DashboardPage() {
                           } catch {}
                         }}
                         onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                        className={`mb-1.5 mt-0.5 px-1 py-1 rounded-md group/sec cursor-default select-none border border-transparent hover:border-gray-700/80 hover:bg-gray-800/40 ${isDrag ? "opacity-50" : ""}`}
+                        className={`mb-1.5 mt-0.5 px-1 py-1 rounded-md group/sec cursor-default select-none border ${isDrag ? "opacity-70 border-orange-500/50 bg-orange-500/5" : "border-transparent hover:border-gray-700/80 hover:bg-gray-800/40"}`}
                       >
                         <div className="flex items-center gap-1 mb-0.5">
                           {secRenameId === row.id ? (
@@ -6933,8 +6938,12 @@ export default function DashboardPage() {
                 return (
                   <div key={`${sym}-${row.itemId || rowIdx}`}>
                     {isOver && (
-                      <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
-                    )}
+                      draggingSym?.startsWith("__SEC__") ? (
+                        <div className="h-0.5 mb-1 mx-1 rounded-full bg-orange-400/80" />
+                      ) : (
+                        <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                      )
+                    }
                     <div
                       data-sym={sym}
                       data-item-id={row.itemId || ""}
@@ -7114,13 +7123,19 @@ export default function DashboardPage() {
                 <div
                   data-sym="__END__"
                   onPointerEnter={() => setDragOverSym("__END__")}
-                  className={`h-10 mt-1 rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
-                    dragOverSym === "__END__"
-                      ? "border-orange-500 bg-orange-500/15 text-orange-300"
-                      : "border-gray-700 text-gray-600"
-                  }`}
+                  className={
+                    draggingSym.startsWith("__SEC__")
+                      ? `h-1 mt-1 mx-1 rounded-full ${
+                          dragOverSym === "__END__" ? "bg-orange-400" : "bg-gray-700"
+                        }`
+                      : `h-10 mt-1 rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
+                          dragOverSym === "__END__"
+                            ? "border-orange-500 bg-orange-500/15 text-orange-300"
+                            : "border-gray-700 text-gray-600"
+                        }`
+                  }
                 >
-                  Drop at end
+                  {draggingSym.startsWith("__SEC__") ? null : "Drop at end"}
                 </div>
               )}
               {!sidePanelRows.length && (
@@ -7182,12 +7197,39 @@ export default function DashboardPage() {
                         </div>
                       )}
                     </div>
-                  {/* Note centered */}
-                  <span className="flex-1 text-center text-gray-400 text-xs truncate px-1 min-w-0">
-                    {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:")
-                      ? userFacingNote(a.note)
-                      : ""}
-                  </span>
+                  {/* Note centered — click to edit */}
+                  <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
+                    {editingNoteId === a.id && editingNoteType === "alarm" ? (
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); void saveNote(); }
+                          if (e.key === "Escape") { setEditingNoteId(null); setEditingNoteType(null); }
+                        }}
+                        className="w-full max-w-[140px] bg-gray-800 rounded px-2 py-0.5 text-xs text-center text-gray-100 outline-none border border-gray-600"
+                        placeholder="Note..."
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingNoteId(a.id);
+                          setEditingNoteType("alarm");
+                          setNoteDraft(userFacingNote(a.note) || "");
+                        }}
+                        className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
+                        title="Note"
+                      >
+                        {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:") && userFacingNote(a.note)
+                          ? userFacingNote(a.note)
+                          : "Note"}
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
                     {/* Color — palette popup (desktop) + native picker */}
                     <div className="relative" data-menu>
@@ -7284,8 +7326,6 @@ export default function DashboardPage() {
                         </div>
                       )}
                     </div>
-                    <button type="button" onClick={() => { setEditingNoteId(a.id); setEditingNoteType("alarm"); setNoteDraft(userFacingNote(a.note) || ""); }}
-                      className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
                       type="button"
                       onClick={() => {
@@ -7356,15 +7396,6 @@ export default function DashboardPage() {
                     <button type="button" title="Delete" onClick={() => deleteAlarm(a.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
                 </div>
-                {editingNoteId === a.id && editingNoteType === "alarm" && (
-                  <div className="mt-2 flex gap-2" data-note-edit>
-                    <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                    <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
-                      className="text-gray-500 text-sm">Cancel</button>
-                  </div>
-                )}
               </div>
             ))}
             {!currentAlarms.length && <p className="text-gray-600 text-sm">No alarms</p>}
@@ -7385,11 +7416,38 @@ export default function DashboardPage() {
                       : formatPrice(l.price)}
                     {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
                   </span>
-                  <span className="flex-1 text-center text-gray-400 text-xs truncate px-1 min-w-0">
-                    {l.note && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:")
-                      ? userFacingNote(l.note)
-                      : ""}
-                  </span>
+                  <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
+                    {editingNoteId === l.id && editingNoteType === "line" ? (
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); void saveNote(); }
+                          if (e.key === "Escape") { setEditingNoteId(null); setEditingNoteType(null); }
+                        }}
+                        className="w-full max-w-[140px] bg-gray-800 rounded px-2 py-0.5 text-xs text-center text-gray-100 outline-none border border-gray-600"
+                        placeholder="Note..."
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingNoteId(l.id);
+                          setEditingNoteType("line");
+                          setNoteDraft(userFacingNote(l.note) || "");
+                        }}
+                        className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
+                        title="Note"
+                      >
+                        {l.note && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:") && userFacingNote(l.note)
+                          ? userFacingNote(l.note)
+                          : "Note"}
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
                     {/* Color — palette popup (desktop) + native picker */}
                     <div className="relative" data-menu>
@@ -7487,8 +7545,6 @@ export default function DashboardPage() {
                       )}
                     </div>
                     <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
-                    <button type="button" onClick={() => { setEditingNoteId(l.id); setEditingNoteType("line"); setNoteDraft(l.note || ""); }}
-                      className="text-xs text-gray-400 hover:text-white px-1">Note</button>
                     <button
                       type="button"
                       onClick={() => {
@@ -7560,15 +7616,6 @@ export default function DashboardPage() {
                     <button type="button" title="Delete" onClick={() => deleteLine(l.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
                 </div>
-                {editingNoteId === l.id && editingNoteType === "line" && (
-                  <div className="mt-2 flex gap-2" data-note-edit>
-                    <input value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
-                      className="flex-1 bg-gray-800 rounded px-2 py-1 text-sm" placeholder="Note..." />
-                    <button type="button" onClick={saveNote} className="text-green-400 text-sm">Save</button>
-                    <button type="button" onClick={() => { setEditingNoteId(null); setEditingNoteType(null); }}
-                      className="text-gray-500 text-sm">Cancel</button>
-                  </div>
-                )}
               </div>
             ))}
             {!currentLines.length && <p className="text-gray-600 text-sm">No lines</p>}
@@ -7577,32 +7624,34 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-1 min-w-0 justify-center">
-              <button
-                type="button"
-                onClick={() => setHistoryMode("coin")}
-                className={`text-sm font-medium px-2 py-0.5 rounded-full border transition-colors ${
-                  historyMode === "coin"
-                    ? "text-orange-400 border-orange-500 bg-orange-500/15"
-                    : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
-                }`}
-              >
-                History — {symbolUpper}
-              </button>
-              <button
-                type="button"
-                title="All history"
-                onClick={() => setHistoryMode("all")}
-                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
-                  historyMode === "all"
-                    ? "text-orange-400 border-orange-500 bg-orange-500/15"
-                    : "text-orange-400/90 border-orange-500/70 bg-transparent hover:border-orange-400 hover:bg-orange-500/10"
-                }`}
-              >
-                All History
-              </button>
-              <span className="text-xs text-gray-600">({historyAlarms.length})</span>
+          <div className="relative flex items-center mb-2 min-h-[28px]">
+            <button
+              type="button"
+              onClick={() => setHistoryMode("coin")}
+              className={`relative z-10 text-sm font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 ${
+                historyMode === "coin"
+                  ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                  : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
+              }`}
+            >
+              History — {symbolUpper}
+            </button>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="pointer-events-auto flex items-center gap-1.5">
+                <button
+                  type="button"
+                  title="All history"
+                  onClick={() => setHistoryMode("all")}
+                  className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
+                    historyMode === "all"
+                      ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                      : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
+                  }`}
+                >
+                  All History
+                </button>
+                <span className="text-xs text-gray-600">({historyAlarms.length})</span>
+              </div>
             </div>
             {historyAlarms.length > 0 && (
               <button
