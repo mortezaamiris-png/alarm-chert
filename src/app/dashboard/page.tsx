@@ -1001,6 +1001,10 @@ export default function DashboardPage() {
   const [sideViewId, setSideViewId] = useState<string>(() =>
     loadLS("side_view_id", SIDE_VIEW_ALARMS)
   );
+  /** Watchlist panel: ⋮ menu + rename */
+  const [wlMenuOpen, setWlMenuOpen] = useState(false);
+  const [wlRenameOpen, setWlRenameOpen] = useState(false);
+  const [wlRenameDraft, setWlRenameDraft] = useState("");
   /** pushStatus: idle | ok | denied | unsupported | no-key | error */
   const [pushStatus, setPushStatus] = useState<string>("idle");
   const tfMenuRef = useRef<HTMLDivElement>(null);
@@ -1284,7 +1288,7 @@ export default function DashboardPage() {
   }, [sideViewId, alarmSymbols, watchItems]);
 
   const sideViewLabel = useMemo(() => {
-    if (sideViewId === SIDE_VIEW_ALARMS) return "With alarms";
+    if (sideViewId === SIDE_VIEW_ALARMS) return "Alarms";
     return watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist";
   }, [sideViewId, watchLists]);
 
@@ -6363,23 +6367,190 @@ export default function DashboardPage() {
 
         {showSideWl && (
           <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
-            <div className="px-2 py-1.5 border-b border-gray-800 flex items-center justify-between gap-1">
-              <select
-                value={sideViewId}
-                onChange={(e) => setSideViewId(e.target.value)}
-                className="flex-1 min-w-0 bg-transparent text-xs text-gray-300 outline-none cursor-pointer truncate"
-                title={sideViewLabel}
-              >
-                <option value={SIDE_VIEW_ALARMS}>With alarms</option>
-                {watchLists.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-              <button type="button" onClick={() => setShowSideWl(false)} className="text-xs text-gray-500 hover:text-white px-1 shrink-0">
-                « Hide
-              </button>
+            <div className="px-2 py-1.5 border-b border-gray-800 flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-xs font-medium text-gray-200 truncate" title={sideViewLabel}>
+                  {sideViewId === SIDE_VIEW_ALARMS ? "Alarms" : (watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist")}
+                </span>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <button
+                    type="button"
+                    title="All alarms"
+                    onClick={() => { setSideViewId(SIDE_VIEW_ALARMS); setWlMenuOpen(false); setWlRenameOpen(false); }}
+                    className={`w-6 h-6 flex items-center justify-center rounded-full text-[11px] transition-colors ${
+                      sideViewId === SIDE_VIEW_ALARMS
+                        ? "bg-orange-500/25 text-orange-400 ring-1 ring-orange-500/50"
+                        : "text-gray-400 hover:text-white hover:bg-gray-800"
+                    }`}
+                  >
+                    🕐
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSideWl(false)}
+                    className="text-xs text-gray-500 hover:text-white px-1 shrink-0"
+                  >
+                    « Hide
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-wrap">
+                {watchLists.map((l) => {
+                  const letter = (l.name || "?").trim().charAt(0).toUpperCase() || "?";
+                  const active = sideViewId === l.id;
+                  return (
+                    <button
+                      key={l.id}
+                      type="button"
+                      title={l.name}
+                      onClick={() => { setSideViewId(l.id); setWlMenuOpen(false); setWlRenameOpen(false); }}
+                      className={`w-6 h-6 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0 transition-all ${
+                        active
+                          ? "bg-amber-500 text-black ring-1 ring-amber-300"
+                          : "bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white"
+                      }`}
+                    >
+                      {letter}
+                    </button>
+                  );
+                })}
+                <div className="relative ml-auto" data-menu>
+                  <button
+                    type="button"
+                    title="List options"
+                    onClick={() => { setWlMenuOpen((v) => !v); setWlRenameOpen(false); }}
+                    className={`w-6 h-6 flex items-center justify-center rounded-full text-sm leading-none ${
+                      wlMenuOpen ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+                    }`}
+                  >
+                    ⋮
+                  </button>
+                  {wlMenuOpen && (
+                    <div className="absolute z-50 top-full right-0 mt-1 min-w-[150px] border border-white/15 rounded-xl py-1 shadow-[0_8px_32px_rgba(0,0,0,0.55)] bg-gray-950 overflow-hidden">
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40"
+                        disabled={sideViewId === SIDE_VIEW_ALARMS}
+                        onClick={() => {
+                          const name = watchLists.find((x) => x.id === sideViewId)?.name || "";
+                          setWlRenameDraft(name);
+                          setWlRenameOpen(true);
+                          setWlMenuOpen(false);
+                        }}
+                      >
+                        ✏ Rename
+                      </button>
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800"
+                        onClick={async () => {
+                          setWlMenuOpen(false);
+                          const name = window.prompt("New section name", "New list");
+                          if (!name || !name.trim()) return;
+                          try {
+                            const { data: sess } = await supabase.auth.getSession();
+                            const uid = sess?.session?.user?.id;
+                            if (!uid) { setStatusMsg("Login required"); return; }
+                            const { data, error } = await supabase
+                              .from("watchlist_lists")
+                              .insert([{ name: name.trim(), user_id: uid }])
+                              .select("*")
+                              .single();
+                            if (error) throw error;
+                            if (data) {
+                              setWatchLists((prev) => [...prev, data as WatchList]);
+                              setSideViewId((data as WatchList).id);
+                              setStatusMsg("Section added");
+                            }
+                          } catch {
+                            setStatusMsg("Add section failed");
+                          }
+                        }}
+                      >
+                        ≡ Add section
+                      </button>
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-gray-800 disabled:opacity-40"
+                        disabled={sideViewId === SIDE_VIEW_ALARMS}
+                        onClick={async () => {
+                          setWlMenuOpen(false);
+                          if (sideViewId === SIDE_VIEW_ALARMS) return;
+                          if (!window.confirm("Clear all symbols from this list?")) return;
+                          try {
+                            const ids = watchItems
+                              .filter((w) => w.list_id === sideViewId)
+                              .map((w) => w.id);
+                            setWatchItems((prev) => prev.filter((w) => w.list_id !== sideViewId));
+                            if (ids.length) {
+                              await supabase.from("watchlist_items").delete().in("id", ids);
+                            }
+                            setStatusMsg("List cleared");
+                          } catch {
+                            setStatusMsg("Clear failed");
+                          }
+                        }}
+                      >
+                        🧹 Clear list
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {wlRenameOpen && sideViewId !== SIDE_VIEW_ALARMS && (
+                <div className="flex items-center gap-1" data-note-edit>
+                  <input
+                    value={wlRenameDraft}
+                    onChange={(e) => setWlRenameDraft(e.target.value)}
+                    className="flex-1 min-w-0 bg-gray-800 rounded px-1.5 py-0.5 text-[11px] text-gray-100 outline-none border border-gray-700"
+                    placeholder="List name"
+                    autoFocus
+                    onKeyDown={async (e) => {
+                      if (e.key === "Escape") { setWlRenameOpen(false); return; }
+                      if (e.key !== "Enter") return;
+                      const name = wlRenameDraft.trim();
+                      if (!name) return;
+                      try {
+                        await supabase.from("watchlist_lists").update({ name }).eq("id", sideViewId);
+                        setWatchLists((prev) =>
+                          prev.map((l) => (l.id === sideViewId ? { ...l, name } : l))
+                        );
+                        setWlRenameOpen(false);
+                        setStatusMsg("Renamed");
+                      } catch {
+                        setStatusMsg("Rename failed");
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="text-[10px] text-emerald-400 px-1"
+                    onClick={async () => {
+                      const name = wlRenameDraft.trim();
+                      if (!name) return;
+                      try {
+                        await supabase.from("watchlist_lists").update({ name }).eq("id", sideViewId);
+                        setWatchLists((prev) =>
+                          prev.map((l) => (l.id === sideViewId ? { ...l, name } : l))
+                        );
+                        setWlRenameOpen(false);
+                        setStatusMsg("Renamed");
+                      } catch {
+                        setStatusMsg("Rename failed");
+                      }
+                    }}
+                  >
+                    ✓
+                  </button>
+                  <button
+                    type="button"
+                    className="text-[10px] text-gray-500 px-1"
+                    onClick={() => setWlRenameOpen(false)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
             </div>
             <div className="overflow-y-auto flex-1 p-1.5">
               {sidePanelSymbols.map((sym) => {
@@ -6463,7 +6634,7 @@ export default function DashboardPage() {
                             if (!item) return;
                             setWatchItems((prev) => prev.filter((w) => w.id !== item.id));
                             try {
-                              await supabase.from("watch_items").delete().eq("id", item.id);
+                              await supabase.from("watchlist_items").delete().eq("id", item.id);
                             } catch {}
                           })();
                         }}
