@@ -7162,7 +7162,8 @@ export default function DashboardPage() {
       <div className="mt-4 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
-            Alarms — {symbolUpper} ({currentAlarms.length})
+            Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
+            <span className="text-gray-500">({currentAlarms.length})</span>
           </h3>
           <div className="space-y-1.5">
             {currentAlarms.map((a) => (
@@ -7412,7 +7413,8 @@ export default function DashboardPage() {
 
         <div>
           <h3 className="text-sm font-medium text-orange-400 mb-2">
-            Lines — {symbolUpper} ({currentLines.length})
+            Lines — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
+            <span className="text-gray-500">({currentLines.length})</span>
           </h3>
           <div className="space-y-1.5">
             {currentLines.map((l) => (
@@ -7867,11 +7869,9 @@ export default function DashboardPage() {
                   title="Tap to jump to hit area on chart"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
-                    {historyMode === "all" && (
-                      <span className="text-[10px] font-semibold text-orange-400/90 shrink-0">
-                        {chartSymbol(a.symbol)}
-                      </span>
-                    )}
+                    <span className="text-[10px] font-semibold text-gray-400 shrink-0">
+                      {chartSymbol(a.symbol)}
+                    </span>
                     <span className="font-mono font-medium text-gray-400">
                       {(() => {
                         let et = a.end_time ?? null;
