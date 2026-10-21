@@ -1295,30 +1295,34 @@ export default function DashboardPage() {
     const hasRsi = showRSI && rsiVisible && !hideIndicators;
     const hasDmi = showDMI && dmiVisible && !hideIndicators;
     // Stack panes from bottom: DMI (lowest) → RSI → Volume → main chart
-    // Each pane ~12–14% height, TradingView-style
+    // Main chart bottom margin MUST cover all lower panes so candles never draw "behind" RSI
     let used = 0;
     if (hasDmi) {
-      const h = 0.13;
+      const h = 0.14;
       try {
         chart.priceScale("dmi").applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
-          borderVisible: false,
+          borderVisible: true,
+          borderColor: "#2a2e39",
+          entireTextOnly: true,
         });
       } catch {}
       used += h;
     }
     if (hasRsi) {
-      const h = 0.14;
+      const h = 0.16;
       try {
         chart.priceScale("rsi").applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
-          borderVisible: false,
+          borderVisible: true,
+          borderColor: "#2a2e39",
+          entireTextOnly: true,
         });
       } catch {}
       used += h;
     }
     if (hasVol) {
-      const h = 0.12;
+      const h = 0.11;
       try {
         chart.priceScale("volume").applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
@@ -1327,11 +1331,11 @@ export default function DashboardPage() {
       } catch {}
       used += h;
     }
-    // Main price pane leaves room for lower panes
+    // Main price pane leaves room for lower panes (+ gap so candles never bleed into RSI)
     chart.priceScale("right").applyOptions({
       scaleMargins: {
-        top: 0.05,
-        bottom: Math.max(0.05, used + 0.02),
+        top: 0.04,
+        bottom: Math.max(0.06, used + 0.03),
       },
     });
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible, hideIndicators]);
@@ -2230,8 +2234,8 @@ export default function DashboardPage() {
                   });
                   chart.priceScale("right").applyOptions({ autoScale: true });
                   // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
-                  const past = Math.min(120, n);
-                  chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
+                  const past = Math.min(600, n);
+                  chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
                     from: Math.max(0, n - past),
                     to: n - 1 + Math.min(FUTURE_VISIBLE, 10),
@@ -2397,7 +2401,7 @@ export default function DashboardPage() {
                     const n = all.length;
                     if (n >= 2) {
                       programmaticRangeRef.current = true;
-                      const past = Math.min(100, n);
+                      const past = Math.min(600, n);
                       chartRef.current.timeScale().setVisibleLogicalRange({
                         from: Math.max(0, n - past),
                         to: n - 1 + FUTURE_VISIBLE,
@@ -2475,8 +2479,8 @@ export default function DashboardPage() {
           secondsVisible: isIntraday,
           // فضای خالی آینده خیلی بیشتر (مثل TradingView)
           rightOffset: 12,
-          barSpacing: 8,
-          minBarSpacing: 1.5,
+          barSpacing: 2.5,
+          minBarSpacing: 1.2,
           fixLeftEdge: false,
           fixRightEdge: false,
           lockVisibleTimeRangeOnResize: false,
@@ -2558,12 +2562,12 @@ export default function DashboardPage() {
         // candles | hollow | heikin
         const hollow = ctype === "hollow";
         series = chart.addCandlestickSeries({
-          upColor: hollow ? "transparent" : "#22c55e",
-          downColor: hollow ? "transparent" : "#ef4444",
-          borderUpColor: "#22c55e",
-          borderDownColor: "#ef4444",
-          wickUpColor: "#22c55e",
-          wickDownColor: "#ef4444",
+          upColor: hollow ? "transparent" : "#26a69a",
+          downColor: hollow ? "transparent" : "#ef5350",
+          borderUpColor: "#26a69a",
+          borderDownColor: "#ef5350",
+          wickUpColor: "#26a69a",
+          wickDownColor: "#ef5350",
           priceFormat: { type: "price", precision, minMove },
           lastValueVisible: false,
           priceLineVisible: false,
@@ -2624,44 +2628,62 @@ export default function DashboardPage() {
           // margins approx (must match updateMargins stacking from bottom)
           let bot = 0;
           const zones: { id: string; top: number; bot: number }[] = [];
-          if (hasDmi) { const h = 0.13; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasRsi) { const h = 0.14; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasVol) { const h = 0.12; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
+          if (hasDmi) { const h = 0.14; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasRsi) { const h = 0.16; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasVol) { const h = 0.11; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
           const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
           // فقط لبه راست پنل اسیلاتور — تا اسکرول افقی چارت خراب نشود
-          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && fromRight <= 100) {
+          // کل عرض پنل RSI/DMI — مثل TradingView اسکرول عمودی روی اسیلاتور
+          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi")) {
             e.preventDefault();
             e.stopPropagation();
             let delta = e.deltaY;
             if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
             if (e.deltaMode === 1) delta *= 16;
+            if (e.deltaMode === 2) delta *= 40;
             if (delta === 0) return;
             const zoomIn = delta < 0;
-            // تغییر ارتفاع پنل با scaleMargins
+            const steps = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 80)));
             try {
               const chart = chartRef.current;
               if (!chart) return;
+              const ser =
+                inPane.id === "rsi"
+                  ? rsiSeriesRef.current
+                  : dmiSeriesRef.current?.adx || dmiSeriesRef.current?.plus;
+              // زوم عمودی قوی‌تر روی مقیاس اسیلاتور (نه فقط ارتفاع پنل)
+              const storeKey = inPane.id === "rsi" ? "rsiZoomHalf" : "dmiZoomHalf";
+              const w = window as any;
+              let half = typeof w[storeKey] === "number" ? w[storeKey] : 50;
+              for (let i = 0; i < steps; i++) {
+                half *= zoomIn ? 0.82 : 1.22;
+              }
+              half = Math.min(55, Math.max(8, half));
+              w[storeKey] = half;
+              const mid = 50;
+              if (ser) {
+                ser.applyOptions({
+                  autoscaleInfoProvider: () => ({
+                    priceRange: {
+                      minValue: Math.max(0, mid - half),
+                      maxValue: Math.min(100, mid + half),
+                    },
+                  }),
+                });
+              }
+              // کمی ارتفاع پنل هم عوض شود تا حس TradingView بدهد
               const ps = chart.priceScale(inPane.id) as any;
               const cur = inPane;
               const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
-              const top = 1 - cur.bot - nh;
-              ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
+              const nh = Math.min(0.32, Math.max(0.1, h * (zoomIn ? 1.06 : 0.94)));
+              const top = Math.max(0.35, Math.min(0.92, 1 - cur.bot - nh));
+              ps.applyOptions({ scaleMargins: { top, bottom: cur.bot } });
+              // فضای چارت اصلی را با پنل هماهنگ کن تا کندل زیر RSI نیاید
               try {
-                const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
-                if (ser && typeof ser.priceScale === "function") {
-                  const factor = zoomIn ? 0.9 : 1.12;
-                  const mid = 50;
-                  const half = zoomIn ? 40 : 55;
-                  ser.applyOptions({
-                    autoscaleInfoProvider: () => ({
-                      priceRange: {
-                        minValue: Math.max(0, mid - half * factor),
-                        maxValue: Math.min(100, mid + half * factor),
-                      },
-                    }),
-                  });
-                }
+                const mainBot = 1 - top + 0.02;
+                chart.priceScale("right").applyOptions({
+                  scaleMargins: { top: 0.05, bottom: Math.min(0.55, mainBot) },
+                });
               } catch {}
             } catch {}
             return;
@@ -2848,8 +2870,8 @@ export default function DashboardPage() {
           if (bars < 2) return;
           programmaticRangeRef.current = true;
           // rightOffset بزرگ = فضای خالی سمت راست (زمان آینده)
-          chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
-          const past = Math.min(90, bars);
+          chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
+          const past = Math.min(600, bars);
           // bars = تعداد کندل واقعی؛ whitespace بعد از آن اضافه شده
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
@@ -2967,8 +2989,8 @@ export default function DashboardPage() {
           }
           programmaticRangeRef.current = true;
           // آخرین کندل واقعی — نه scrollToRealTime (آن ته whitespace آینده می‌رود)
-          chart.timeScale().applyOptions({ rightOffset: 6, barSpacing: 6 });
-          const past = Math.min(120, bars);
+          chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 2.5 });
+          const past = Math.min(600, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
             to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
@@ -5912,6 +5934,31 @@ export default function DashboardPage() {
             className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
             style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
           />
+          {/* جداکننده پنل RSI/DMI — مثل TradingView خط مرز پنل */}
+          {!hideIndicators && showRSI && rsiVisible && (
+            <div
+              className="absolute left-0 right-14 pointer-events-none z-[5]"
+              style={{
+                bottom: showDMI && dmiVisible ? "14%" : "0%",
+                height: "16%",
+                borderTop: "1px solid rgba(42,46,57,0.95)",
+                background: "linear-gradient(to bottom, rgba(11,14,17,0.55) 0%, rgba(11,14,17,0.12) 40%, transparent 100%)",
+              }}
+              aria-hidden
+            />
+          )}
+          {!hideIndicators && showDMI && dmiVisible && (
+            <div
+              className="absolute left-0 right-14 pointer-events-none z-[5]"
+              style={{
+                bottom: "0%",
+                height: "14%",
+                borderTop: "1px solid rgba(42,46,57,0.95)",
+                background: "linear-gradient(to bottom, rgba(11,14,17,0.55) 0%, rgba(11,14,17,0.12) 40%, transparent 100%)",
+              }}
+              aria-hidden
+            />
+          )}
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
               <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
@@ -5945,8 +5992,8 @@ export default function DashboardPage() {
                     /* scrollToRealTime removed */
                   } else {
                     programmaticRangeRef.current = true;
-                    chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 8 });
-                    const past = Math.min(90, bars);
+                    chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
+                    const past = Math.min(600, bars);
                     chart.timeScale().setVisibleLogicalRange({
                       from: Math.max(0, bars - past),
                       to: bars - 1 + FUTURE_VISIBLE,
@@ -7119,7 +7166,7 @@ export default function DashboardPage() {
                           historyFocusRef.current = null;
                           try {
                             const bars = candles.length;
-                            const past = Math.min(90, bars);
+                            const past = Math.min(600, bars);
                             chart.timeScale().setVisibleLogicalRange({
                               from: bars - past,
                               to: bars - 1 + FUTURE_VISIBLE,
