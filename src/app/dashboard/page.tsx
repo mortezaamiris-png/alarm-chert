@@ -4227,7 +4227,7 @@ export default function DashboardPage() {
       dmiSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -4235,6 +4235,9 @@ export default function DashboardPage() {
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
+      }
+      if (wlMenuOpen && !el.closest?.("[data-menu]")) {
+        setWlMenuOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -4273,6 +4276,7 @@ export default function DashboardPage() {
     editingNoteId,
     noteDraft,
     editingNoteType,
+    wlMenuOpen,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -6893,17 +6897,19 @@ export default function DashboardPage() {
                               }}
                             />
                           ) : (
-                            <span
-                              title="Drag to move · double-click to rename"
-                              onDoubleClick={(e) => {
+                            <button
+                              type="button"
+                              title="Click to rename"
+                              onClick={(e) => {
                                 e.stopPropagation();
                                 setSecRenameId(row.id);
                                 setSecRenameDraft(row.name);
                               }}
-                              className="text-[10px] font-medium text-gray-300 truncate flex-1 text-left py-0.5"
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="text-[10px] font-medium text-gray-300 hover:text-orange-300 truncate flex-1 text-left py-0.5 rounded px-0.5 hover:bg-gray-800/80"
                             >
                               {row.name}
-                            </span>
+                            </button>
                           )}
                           <button
                             type="button"
@@ -7059,11 +7065,13 @@ export default function DashboardPage() {
                       }`}
                     >
                       <span
-                        className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
+                        className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-semibold shrink-0 border"
                         style={{
                           background:
-                            symbolUpper === sym ? "rgba(249,115,22,0.25)" : "rgba(55,65,81,0.9)",
-                          color: symbolUpper === sym ? "#fb923c" : "#9ca3af",
+                            symbolUpper === sym ? "rgba(249,115,22,0.18)" : "rgba(75,85,99,0.45)",
+                          borderColor:
+                            symbolUpper === sym ? "rgba(249,115,22,0.45)" : "rgba(107,114,128,0.55)",
+                          color: symbolUpper === sym ? "#fdba74" : "#9ca3af",
                         }}
                       >
                         {(sym || "?").replace(/USDT$|USD$|PERP$/i, "").slice(0, 2)}
@@ -7630,7 +7638,7 @@ export default function DashboardPage() {
               onClick={() => setHistoryMode("coin")}
               className={`relative z-10 text-sm font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 ${
                 historyMode === "coin"
-                  ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                  ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
                   : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
               }`}
             >
@@ -7644,7 +7652,7 @@ export default function DashboardPage() {
                   onClick={() => setHistoryMode("all")}
                   className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
                     historyMode === "all"
-                      ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                      ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
                       : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
                   }`}
                 >
@@ -7941,7 +7949,7 @@ export default function DashboardPage() {
                           setStatusMsg("Restore failed");
                         }
                       }}
-                      className="text-[10px] text-emerald-500/90 hover:text-emerald-400 px-2 py-0.5 rounded border border-emerald-800/50 hover:border-emerald-600/60"
+                      className="text-[10px] text-orange-400/70 hover:text-orange-300 px-2 py-0.5 rounded border border-orange-800/40 hover:border-orange-600/50 bg-orange-500/5"
                     >
                       ↩ Restore
                     </button>
