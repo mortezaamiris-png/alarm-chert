@@ -1007,6 +1007,16 @@ export default function DashboardPage() {
   const [wlRenameDraft, setWlRenameDraft] = useState("");
   /** "delete" = show × on list letters | null = normal */
   const [wlManageMode, setWlManageMode] = useState<null | "delete">(null);
+  /** Sections inside Alarms panel (localStorage — no DB table) */
+  const [alarmSections, setAlarmSections] = useState<
+    { id: string; name: string; sort_order: number }[]
+  >(() => loadLS("alarm_sections_v1", []));
+  const [secRenameId, setSecRenameId] = useState<string | null>(null);
+  const [secRenameDraft, setSecRenameDraft] = useState("");
+  /** History panel: current coin vs all symbols */
+  const [historyMode, setHistoryMode] = useState<"coin" | "all">(() =>
+    loadLS("history_mode", "coin")
+  );
   /** pushStatus: idle | ok | denied | unsupported | no-key | error */
   const [pushStatus, setPushStatus] = useState<string>("idle");
   const tfMenuRef = useRef<HTMLDivElement>(null);
@@ -1191,6 +1201,8 @@ export default function DashboardPage() {
 
   useEffect(() => { saveLS("show_tools_panel", showToolsPanel); }, [showToolsPanel]);
   useEffect(() => { saveLS("side_view_id", sideViewId); }, [sideViewId]);
+  useEffect(() => { saveLS("alarm_sections_v1", alarmSections); }, [alarmSections]);
+  useEffect(() => { saveLS("history_mode", historyMode); }, [historyMode]);
 
   // If selected watchlist was deleted, fall back to alarms view
   useEffect(() => {
@@ -1296,7 +1308,23 @@ export default function DashboardPage() {
   /** Full rows for watchlist panel (symbols + named section dividers) */
   const sidePanelRows = useMemo(() => {
     if (sideViewId === SIDE_VIEW_ALARMS) {
-      return alarmSymbols.map((s) => ({ kind: "sym" as const, symbol: s, itemId: "" }));
+      type Out =
+        | { kind: "sym"; symbol: string; itemId: string }
+        | { kind: "section"; id: string; name: string };
+      const rows: Out[] = alarmSymbols.map((s) => ({
+        kind: "sym",
+        symbol: s,
+        itemId: "",
+      }));
+      const secs = [...(alarmSections || [])].sort(
+        (a, b) => (a.sort_order || 0) - (b.sort_order || 0)
+      );
+      // insert from highest index so earlier inserts stay stable
+      for (const sec of [...secs].reverse()) {
+        const idx = Math.min(Math.max(0, (Number(sec.sort_order) || 1) - 1), rows.length);
+        rows.splice(idx, 0, { kind: "section", id: sec.id, name: sec.name });
+      }
+      return rows;
     }
     const listItems = watchItems
       .filter((i) => i.list_id === sideViewId)
@@ -1311,7 +1339,7 @@ export default function DashboardPage() {
       }
       return { kind: "sym" as const, symbol: chartSymbol(i.symbol), itemId: i.id };
     });
-  }, [sideViewId, alarmSymbols, watchItems]);
+  }, [sideViewId, alarmSymbols, watchItems, alarmSections]);
 
   const sideViewLabel = useMemo(() => {
     if (sideViewId === SIDE_VIEW_ALARMS) return "Alarms";
@@ -5181,14 +5209,18 @@ export default function DashboardPage() {
 
   const historyAlarms = useMemo(() => {
     return alarms
-      .filter((a) => a.symbol.toUpperCase() === symbolUpper && a.triggered)
+      .filter((a) => {
+        if (!a.triggered) return false;
+        if (historyMode === "all") return true;
+        return a.symbol.toUpperCase() === symbolUpper;
+      })
       .sort((a, b) => {
         const ta = new Date(a.triggered_at || a.created_at || 0).getTime();
         const tb = new Date(b.triggered_at || b.created_at || 0).getTime();
         return tb - ta;
       })
-      .slice(0, 30);
-  }, [alarms, symbolUpper]);
+      .slice(0, historyMode === "all" ? 80 : 30);
+  }, [alarms, symbolUpper, historyMode]);
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
@@ -6416,13 +6448,13 @@ export default function DashboardPage() {
                     setWlRenameOpen(false);
                     setWlManageMode(null);
                   }}
-                  className={`w-8 h-8 flex items-center justify-center rounded-full shrink-0 transition-colors ${
+                  className={`w-9 h-9 flex items-center justify-center rounded-full shrink-0 transition-colors ${
                     sideViewId === SIDE_VIEW_ALARMS
                       ? "text-orange-400 ring-1 ring-orange-500/60 bg-orange-500/10"
                       : "text-gray-500 hover:text-orange-400 hover:bg-gray-800/80"
                   }`}
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <circle cx="12" cy="13" r="8" />
                     <path d="M12 9v4l2.5 1.5" />
                     <path d="M9 3h6" />
@@ -6443,7 +6475,7 @@ export default function DashboardPage() {
                           setWlMenuOpen(false);
                           setWlRenameOpen(false);
                         }}
-                        className={`w-6 h-6 rounded-full text-[10px] font-semibold flex items-center justify-center transition-all border ${
+                        className={`w-5 h-5 rounded-full text-[9px] font-semibold flex items-center justify-center transition-all border ${
                           active
                             ? "bg-orange-500/20 text-orange-400 border-orange-500 shadow-[0_0_0_1px_rgba(249,115,22,0.25)]"
                             : "bg-transparent text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
@@ -6514,15 +6546,26 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40 flex items-center gap-2"
-                        disabled={sideViewId === SIDE_VIEW_ALARMS}
                         onClick={async () => {
                           setWlMenuOpen(false);
-                          if (sideViewId === SIDE_VIEW_ALARMS) {
-                            setStatusMsg("Open a watchlist first");
-                            return;
-                          }
                           const name = window.prompt("Section name", "Section");
                           if (!name || !name.trim()) return;
+                          const label = name.trim().slice(0, 40);
+                          // Alarms panel: local sections
+                          if (sideViewId === SIDE_VIEW_ALARMS) {
+                            const maxOrder = Math.max(
+                              alarmSymbols.length,
+                              ...(alarmSections || []).map((s) => Number(s.sort_order) || 0),
+                              0
+                            );
+                            const id = `asec-${Date.now()}`;
+                            setAlarmSections((prev) => [
+                              ...prev,
+                              { id, name: label, sort_order: maxOrder + 1 },
+                            ]);
+                            setStatusMsg("Section added");
+                            return;
+                          }
                           try {
                             const { data: sess } = await supabase.auth.getSession();
                             const uid = sess?.session?.user?.id;
@@ -6533,8 +6576,8 @@ export default function DashboardPage() {
                             const payload: Record<string, unknown> = {
                               list_id: sideViewId,
                               user_id: uid,
-                              symbol: `__SECTION__:${name.trim().slice(0, 40)}`,
-                              note: name.trim(),
+                              symbol: `__SECTION__:${label}`,
+                              note: label,
                               sort_order: maxOrder + 1,
                             };
                             let { data, error } = await supabase
@@ -6559,8 +6602,8 @@ export default function DashboardPage() {
                                 {
                                   id: localId,
                                   list_id: sideViewId,
-                                  symbol: `__SECTION__:${name.trim().slice(0, 40)}`,
-                                  note: name.trim(),
+                                  symbol: `__SECTION__:${label}`,
+                                  note: label,
                                   sort_order: maxOrder + 1,
                                 } as WatchItem,
                               ]);
@@ -6666,28 +6709,223 @@ export default function DashboardPage() {
             <div className="overflow-y-auto flex-1 p-1.5">
               {sidePanelRows.map((row, rowIdx) => {
                 if (row.kind === "section") {
+                  const secKey = `__SEC__:${row.id}`;
+                  const isDrag = draggingSym === secKey;
+                  const isOver = dragOverSym === secKey && draggingSym != null && draggingSym !== secKey;
                   return (
-                    <div key={`sec-${row.id}`} className="mb-1.5 mt-1 px-0.5 group/sec">
-                      <div className="flex items-center gap-1 mb-0.5">
-                        <span className="text-[10px] font-medium text-gray-400 truncate flex-1">{row.name}</span>
-                        <button
-                          type="button"
-                          title="Remove section"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            setWatchItems((prev) => prev.filter((w) => w.id !== row.id));
-                            try {
-                              if (!String(row.id).startsWith("local-")) {
-                                await supabase.from("watchlist_items").delete().eq("id", row.id);
+                    <div key={`sec-${row.id}`}>
+                      {isOver && (
+                        <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                      )}
+                      <div
+                        data-sym={secKey}
+                        data-item-id={row.id}
+                        onPointerDown={(e) => {
+                          if ((e.target as HTMLElement).closest("button,input")) return;
+                          e.preventDefault();
+                          try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+                          setDraggingSym(secKey);
+                          setDragOverSym(null);
+                        }}
+                        onPointerMove={(e) => {
+                          if (!draggingSym) return;
+                          const el = document.elementFromPoint(e.clientX, e.clientY);
+                          const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
+                          const target = rowEl?.dataset?.sym || null;
+                          if (target && target !== draggingSym) setDragOverSym(target);
+                        }}
+                        onPointerUp={async () => {
+                          // reuse same handler path via synthetic - fall through by calling shared logic below after state clear
+                          // handled in symbol onPointerUp if we duplicate — instead trigger reorder here
+                          if (!draggingSym) {
+                            setDraggingSym(null);
+                            setDragOverSym(null);
+                            return;
+                          }
+                          const fromSym = draggingSym;
+                          const toSym = dragOverSym;
+                          setDraggingSym(null);
+                          setDragOverSym(null);
+                          if (!toSym || fromSym === toSym) return;
+
+                          if (sideViewId === SIDE_VIEW_ALARMS) {
+                            // rebuild ordered list of keys: symbols + sec ids
+                            const keys: string[] = [];
+                            sidePanelRows.forEach((r) => {
+                              if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
+                              else keys.push(r.symbol);
+                            });
+                            const without = keys.filter((k) => k !== fromSym);
+                            let insertAt = without.length;
+                            if (toSym !== "__END__") {
+                              const ti = without.indexOf(toSym);
+                              if (ti >= 0) insertAt = ti;
+                            }
+                            without.splice(insertAt, 0, fromSym);
+                            // apply: symbols order + section sort_orders
+                            const newSymOrder: string[] = [];
+                            const newSecs: { id: string; name: string; sort_order: number }[] = [];
+                            without.forEach((k, i) => {
+                              if (k.startsWith("__SEC__:")) {
+                                const id = k.slice("__SEC__:".length);
+                                const prev = alarmSections.find((s) => s.id === id);
+                                newSecs.push({ id, name: prev?.name || "Section", sort_order: i + 1 });
+                              } else {
+                                newSymOrder.push(k);
                               }
-                            } catch {}
-                          }}
-                          className="text-gray-600 hover:text-red-400 text-[10px] opacity-0 group-hover/sec:opacity-100 px-0.5"
-                        >
-                          ×
-                        </button>
+                            });
+                            // interleave: section sort_order is absolute index; symbols keep relative sideOrder
+                            setSideOrder(newSymOrder);
+                            setAlarmSections(newSecs);
+                            return;
+                          }
+
+                          // watchlist: reorder items including section rows
+                          const listRows = watchItems
+                            .filter((w) => w.list_id === sideViewId)
+                            .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+                          const fromItem = listRows.find((w) => w.id === row.id);
+                          if (!fromItem) return;
+                          const without = listRows.filter((w) => w.id !== fromItem.id);
+                          let insertAt = without.length;
+                          if (toSym && toSym !== "__END__") {
+                            if (toSym.startsWith("__SEC__:")) {
+                              const tid = toSym.slice("__SEC__:".length);
+                              const ti = without.findIndex((w) => w.id === tid);
+                              if (ti >= 0) insertAt = ti;
+                            } else {
+                              const ti = without.findIndex(
+                                (w) =>
+                                  chartSymbol(w.symbol) === toSym &&
+                                  !String(w.symbol).startsWith("__SECTION__")
+                              );
+                              if (ti >= 0) insertAt = ti;
+                            }
+                          }
+                          const next = [...without];
+                          next.splice(insertAt, 0, fromItem);
+                          const withOrder = next.map((w, i) => ({ ...w, sort_order: i + 1 }));
+                          setWatchItems((prev) => {
+                            const others = prev.filter((w) => w.list_id !== sideViewId);
+                            return [...others, ...withOrder];
+                          });
+                          try {
+                            await Promise.all(
+                              withOrder
+                                .filter((w) => !String(w.id).startsWith("local-"))
+                                .map((w) =>
+                                  supabase
+                                    .from("watchlist_items")
+                                    .update({ sort_order: w.sort_order })
+                                    .eq("id", w.id)
+                                )
+                            );
+                          } catch {}
+                        }}
+                        onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
+                        className={`mb-1.5 mt-0.5 px-0.5 group/sec cursor-grab active:cursor-grabbing ${isDrag ? "opacity-40" : ""}`}
+                      >
+                        <div className="flex items-center gap-1 mb-0.5">
+                          {secRenameId === row.id ? (
+                            <input
+                              value={secRenameDraft}
+                              onChange={(e) => setSecRenameDraft(e.target.value)}
+                              className="flex-1 min-w-0 bg-gray-800 rounded px-1 py-0.5 text-[10px] text-gray-100 outline-none border border-gray-600"
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onKeyDown={async (e) => {
+                                if (e.key === "Escape") { setSecRenameId(null); return; }
+                                if (e.key !== "Enter") return;
+                                const nm = secRenameDraft.trim() || "Section";
+                                if (sideViewId === SIDE_VIEW_ALARMS) {
+                                  setAlarmSections((prev) =>
+                                    prev.map((s) => (s.id === row.id ? { ...s, name: nm } : s))
+                                  );
+                                } else {
+                                  setWatchItems((prev) =>
+                                    prev.map((w) =>
+                                      w.id === row.id
+                                        ? { ...w, note: nm, symbol: `__SECTION__:${nm}` }
+                                        : w
+                                    )
+                                  );
+                                  try {
+                                    if (!String(row.id).startsWith("local-")) {
+                                      await supabase
+                                        .from("watchlist_items")
+                                        .update({ note: nm, symbol: `__SECTION__:${nm}` })
+                                        .eq("id", row.id);
+                                    }
+                                  } catch {}
+                                }
+                                setSecRenameId(null);
+                              }}
+                              onBlur={async () => {
+                                const nm = secRenameDraft.trim() || "Section";
+                                if (sideViewId === SIDE_VIEW_ALARMS) {
+                                  setAlarmSections((prev) =>
+                                    prev.map((s) => (s.id === row.id ? { ...s, name: nm } : s))
+                                  );
+                                } else {
+                                  setWatchItems((prev) =>
+                                    prev.map((w) =>
+                                      w.id === row.id
+                                        ? { ...w, note: nm, symbol: `__SECTION__:${nm}` }
+                                        : w
+                                    )
+                                  );
+                                  try {
+                                    if (!String(row.id).startsWith("local-")) {
+                                      await supabase
+                                        .from("watchlist_items")
+                                        .update({ note: nm, symbol: `__SECTION__:${nm}` })
+                                        .eq("id", row.id);
+                                    }
+                                  } catch {}
+                                }
+                                setSecRenameId(null);
+                              }}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              title="Rename section"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSecRenameId(row.id);
+                                setSecRenameDraft(row.name);
+                              }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="text-[10px] font-medium text-gray-400 hover:text-orange-300 truncate flex-1 text-left"
+                            >
+                              {row.name}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            title="Remove section"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (sideViewId === SIDE_VIEW_ALARMS) {
+                                setAlarmSections((prev) => prev.filter((s) => s.id !== row.id));
+                                return;
+                              }
+                              setWatchItems((prev) => prev.filter((w) => w.id !== row.id));
+                              try {
+                                if (!String(row.id).startsWith("local-")) {
+                                  await supabase.from("watchlist_items").delete().eq("id", row.id);
+                                }
+                              } catch {}
+                            }}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className="text-gray-600 hover:text-red-400 text-[10px] opacity-0 group-hover/sec:opacity-100 px-0.5"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="border-t border-dashed border-gray-600/80" />
                       </div>
-                      <div className="border-t border-dashed border-gray-600/80" />
                     </div>
                   );
                 }
@@ -6729,15 +6967,32 @@ export default function DashboardPage() {
                         if (!toSym || fromSym === toSym) return;
 
                         if (sideViewId === SIDE_VIEW_ALARMS) {
-                          setSideOrder((prev) => {
-                            const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== fromSym);
-                            if (toSym === "__END__") return [...base, fromSym];
-                            const idx = base.indexOf(toSym);
-                            if (idx < 0) return [...base, fromSym];
-                            const next = [...base];
-                            next.splice(idx, 0, fromSym);
-                            return next;
+                          const keys: string[] = [];
+                          sidePanelRows.forEach((r) => {
+                            if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
+                            else keys.push(r.symbol);
                           });
+                          if (!keys.includes(fromSym)) keys.push(fromSym);
+                          const without = keys.filter((k) => k !== fromSym);
+                          let insertAt = without.length;
+                          if (toSym && toSym !== "__END__") {
+                            const ti = without.indexOf(toSym);
+                            if (ti >= 0) insertAt = ti;
+                          }
+                          without.splice(insertAt, 0, fromSym);
+                          const newSymOrder: string[] = [];
+                          const newSecs: { id: string; name: string; sort_order: number }[] = [];
+                          without.forEach((k, i) => {
+                            if (k.startsWith("__SEC__:")) {
+                              const id = k.slice("__SEC__:".length);
+                              const prev = alarmSections.find((s) => s.id === id);
+                              newSecs.push({ id, name: prev?.name || "Section", sort_order: i + 1 });
+                            } else {
+                              newSymOrder.push(k);
+                            }
+                          });
+                          setSideOrder(newSymOrder);
+                          setAlarmSections(newSecs);
                           return;
                         }
 
@@ -6752,13 +7007,19 @@ export default function DashboardPage() {
                         if (!fromItem) return;
                         const without = listRows.filter((w) => w.id !== fromItem.id);
                         let insertAt = without.length;
-                        if (toSym !== "__END__") {
-                          const toIdx = without.findIndex(
-                            (w) =>
-                              chartSymbol(w.symbol) === toSym &&
-                              !String(w.symbol).startsWith("__SECTION__")
-                          );
-                          if (toIdx >= 0) insertAt = toIdx;
+                        if (toSym && toSym !== "__END__") {
+                          if (toSym.startsWith("__SEC__:")) {
+                            const tid = toSym.slice("__SEC__:".length);
+                            const toIdx = without.findIndex((w) => w.id === tid);
+                            if (toIdx >= 0) insertAt = toIdx;
+                          } else {
+                            const toIdx = without.findIndex(
+                              (w) =>
+                                chartSymbol(w.symbol) === toSym &&
+                                !String(w.symbol).startsWith("__SECTION__")
+                            );
+                            if (toIdx >= 0) insertAt = toIdx;
+                          }
                         }
                         const next = [...without];
                         next.splice(insertAt, 0, fromItem);
@@ -7318,10 +7579,33 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <h3 className="text-sm font-medium text-gray-400">
-              History — {symbolUpper} ({historyAlarms.length})
-            </h3>
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setHistoryMode("coin")}
+                className={`text-sm font-medium px-2 py-0.5 rounded-md transition-colors ${
+                  historyMode === "coin"
+                    ? "text-amber-300 bg-amber-500/15"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                History — {symbolUpper}
+              </button>
+              <button
+                type="button"
+                title="All history"
+                onClick={() => setHistoryMode("all")}
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border transition-colors ${
+                  historyMode === "all"
+                    ? "text-amber-300 border-amber-500/50 bg-amber-500/15"
+                    : "text-gray-500 border-gray-700 hover:text-gray-300"
+                }`}
+              >
+                All
+              </button>
+              <span className="text-xs text-gray-600">({historyAlarms.length})</span>
+            </div>
             {historyAlarms.length > 0 && (
               <button
                 type="button"
@@ -7528,6 +7812,11 @@ export default function DashboardPage() {
                   title="Tap to jump to hit area on chart"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
+                    {historyMode === "all" && (
+                      <span className="text-[10px] font-semibold text-orange-400/90 shrink-0">
+                        {chartSymbol(a.symbol)}
+                      </span>
+                    )}
                     <span className="font-mono font-medium text-gray-400">
                       {(() => {
                         let et = a.end_time ?? null;
