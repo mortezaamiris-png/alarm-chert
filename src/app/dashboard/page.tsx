@@ -6732,7 +6732,7 @@ export default function DashboardPage() {
                           const el = document.elementFromPoint(e.clientX, e.clientY);
                           const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
                           const target = rowEl?.dataset?.sym || null;
-                          if (target && target !== draggingSym) setDragOverSym(target);
+                          if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                         }}
                         onPointerUp={async () => {
                           // reuse same handler path via synthetic - fall through by calling shared logic below after state clear
@@ -6823,7 +6823,7 @@ export default function DashboardPage() {
                           } catch {}
                         }}
                         onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                        className={`mb-1.5 mt-0.5 px-0.5 group/sec cursor-grab active:cursor-grabbing ${isDrag ? "opacity-40" : ""}`}
+                        className={`mb-1.5 mt-0.5 px-1 py-1 rounded-md group/sec cursor-default select-none border border-transparent hover:border-gray-700/80 hover:bg-gray-800/40 ${isDrag ? "opacity-50" : ""}`}
                       >
                         <div className="flex items-center gap-1 mb-0.5">
                           {secRenameId === row.id ? (
@@ -6888,19 +6888,17 @@ export default function DashboardPage() {
                               }}
                             />
                           ) : (
-                            <button
-                              type="button"
-                              title="Rename section"
-                              onClick={(e) => {
+                            <span
+                              title="Drag to move · double-click to rename"
+                              onDoubleClick={(e) => {
                                 e.stopPropagation();
                                 setSecRenameId(row.id);
                                 setSecRenameDraft(row.name);
                               }}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              className="text-[10px] font-medium text-gray-400 hover:text-orange-300 truncate flex-1 text-left"
+                              className="text-[10px] font-medium text-gray-300 truncate flex-1 text-left py-0.5"
                             >
                               {row.name}
-                            </button>
+                            </span>
                           )}
                           <button
                             type="button"
@@ -6952,7 +6950,7 @@ export default function DashboardPage() {
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
                         const target = rowEl?.dataset?.sym || null;
-                        if (target && target !== draggingSym) setDragOverSym(target);
+                        if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                       }}
                       onPointerUp={async () => {
                         if (!draggingSym) {
@@ -7043,9 +7041,9 @@ export default function DashboardPage() {
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 cursor-grab active:cursor-grabbing ${
+                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none cursor-default ${
                         isDrag
-                          ? "opacity-40 scale-[0.98]"
+                          ? "opacity-45"
                           : symbolUpper === sym
                             ? "bg-orange-500/15 ring-1 ring-orange-500/40"
                             : "hover:bg-gray-800/80"
@@ -7580,14 +7578,14 @@ export default function DashboardPage() {
         {/* Alarm history for current symbol */}
         <div>
           <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5 flex-1 min-w-0 justify-center">
               <button
                 type="button"
                 onClick={() => setHistoryMode("coin")}
-                className={`text-sm font-medium px-2 py-0.5 rounded-md transition-colors ${
+                className={`text-sm font-medium px-2 py-0.5 rounded-full border transition-colors ${
                   historyMode === "coin"
-                    ? "text-amber-300 bg-amber-500/15"
-                    : "text-gray-500 hover:text-gray-300"
+                    ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                    : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
                 }`}
               >
                 History — {symbolUpper}
@@ -7596,13 +7594,13 @@ export default function DashboardPage() {
                 type="button"
                 title="All history"
                 onClick={() => setHistoryMode("all")}
-                className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border transition-colors ${
+                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
                   historyMode === "all"
-                    ? "text-amber-300 border-amber-500/50 bg-amber-500/15"
-                    : "text-gray-500 border-gray-700 hover:text-gray-300"
+                    ? "text-orange-400 border-orange-500 bg-orange-500/15"
+                    : "text-orange-400/90 border-orange-500/70 bg-transparent hover:border-orange-400 hover:bg-orange-500/10"
                 }`}
               >
-                All
+                All History
               </button>
               <span className="text-xs text-gray-600">({historyAlarms.length})</span>
             </div>
