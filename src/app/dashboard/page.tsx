@@ -1001,10 +1001,12 @@ export default function DashboardPage() {
   const [sideViewId, setSideViewId] = useState<string>(() =>
     loadLS("side_view_id", SIDE_VIEW_ALARMS)
   );
-  /** Watchlist panel: ⋮ menu + rename */
+  /** Watchlist panel: ⋮ menu + rename / delete-list mode */
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
   const [wlRenameOpen, setWlRenameOpen] = useState(false);
   const [wlRenameDraft, setWlRenameDraft] = useState("");
+  /** "delete" = show × on list letters | null = normal */
+  const [wlManageMode, setWlManageMode] = useState<null | "delete">(null);
   /** pushStatus: idle | ok | denied | unsupported | no-key | error */
   const [pushStatus, setPushStatus] = useState<string>("idle");
   const tfMenuRef = useRef<HTMLDivElement>(null);
@@ -1283,8 +1285,32 @@ export default function DashboardPage() {
     if (sideViewId === SIDE_VIEW_ALARMS) return alarmSymbols;
     const listItems = watchItems
       .filter((i) => i.list_id === sideViewId)
+      .filter((i) => {
+        const s = String(i.symbol || "");
+        return s !== "__SECTION__" && !s.startsWith("__SECTION__:");
+      })
       .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
     return listItems.map((i) => chartSymbol(i.symbol));
+  }, [sideViewId, alarmSymbols, watchItems]);
+
+  /** Full rows for watchlist panel (symbols + named section dividers) */
+  const sidePanelRows = useMemo(() => {
+    if (sideViewId === SIDE_VIEW_ALARMS) {
+      return alarmSymbols.map((s) => ({ kind: "sym" as const, symbol: s, itemId: "" }));
+    }
+    const listItems = watchItems
+      .filter((i) => i.list_id === sideViewId)
+      .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+    return listItems.map((i) => {
+      const s = String(i.symbol || "");
+      if (s === "__SECTION__" || s.startsWith("__SECTION__:")) {
+        const name =
+          (i.note && String(i.note).trim()) ||
+          (s.startsWith("__SECTION__:") ? s.slice("__SECTION__:".length) : "Section");
+        return { kind: "section" as const, id: i.id, name };
+      }
+      return { kind: "sym" as const, symbol: chartSymbol(i.symbol), itemId: i.id };
+    });
   }, [sideViewId, alarmSymbols, watchItems]);
 
   const sideViewLabel = useMemo(() => {
@@ -6368,57 +6394,100 @@ export default function DashboardPage() {
         {showSideWl && (
           <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-xs font-medium text-gray-200 truncate" title={sideViewLabel}>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-gray-200 truncate flex-1 min-w-0" title={sideViewLabel}>
                   {sideViewId === SIDE_VIEW_ALARMS ? "Alarms" : (watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist")}
                 </span>
-                <div className="flex items-center gap-0.5 shrink-0">
-                  <button
-                    type="button"
-                    title="All alarms"
-                    onClick={() => { setSideViewId(SIDE_VIEW_ALARMS); setWlMenuOpen(false); setWlRenameOpen(false); }}
-                    className={`w-6 h-6 flex items-center justify-center rounded-full text-[11px] transition-colors ${
-                      sideViewId === SIDE_VIEW_ALARMS
-                        ? "bg-orange-500/25 text-orange-400 ring-1 ring-orange-500/50"
-                        : "text-gray-400 hover:text-white hover:bg-gray-800"
-                    }`}
-                  >
-                    🕐
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowSideWl(false)}
-                    className="text-xs text-gray-500 hover:text-white px-1 shrink-0"
-                  >
-                    « Hide
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  title="All alarms"
+                  onClick={() => {
+                    setSideViewId(SIDE_VIEW_ALARMS);
+                    setWlMenuOpen(false);
+                    setWlRenameOpen(false);
+                    setWlManageMode(null);
+                  }}
+                  className={`w-7 h-7 flex items-center justify-center rounded-full shrink-0 transition-colors ${
+                    sideViewId === SIDE_VIEW_ALARMS
+                      ? "text-orange-400 ring-1 ring-orange-500/60 bg-orange-500/10"
+                      : "text-gray-400 hover:text-orange-400 hover:bg-gray-800/80"
+                  }`}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <circle cx="12" cy="13" r="8" />
+                    <path d="M12 9v4l2.5 1.5" />
+                    <path d="M9 3h6" />
+                    <path d="M5.5 5.5l1.5 1.5M18.5 5.5l-1.5 1.5" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSideWl(false)}
+                  className="text-xs text-gray-500 hover:text-white px-1 shrink-0"
+                >
+                  « Hide
+                </button>
               </div>
-              <div className="flex items-center gap-1 flex-wrap">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 {watchLists.map((l) => {
                   const letter = (l.name || "?").trim().charAt(0).toUpperCase() || "?";
                   const active = sideViewId === l.id;
                   return (
-                    <button
-                      key={l.id}
-                      type="button"
-                      title={l.name}
-                      onClick={() => { setSideViewId(l.id); setWlMenuOpen(false); setWlRenameOpen(false); }}
-                      className={`w-6 h-6 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0 transition-all ${
-                        active
-                          ? "bg-amber-500 text-black ring-1 ring-amber-300"
-                          : "bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white"
-                      }`}
-                    >
-                      {letter}
-                    </button>
+                    <div key={l.id} className="relative shrink-0">
+                      <button
+                        type="button"
+                        title={l.name}
+                        onClick={() => {
+                          if (wlManageMode === "delete") return;
+                          setSideViewId(l.id);
+                          setWlMenuOpen(false);
+                          setWlRenameOpen(false);
+                        }}
+                        className={`w-7 h-7 rounded-full text-[11px] font-semibold flex items-center justify-center transition-all border ${
+                          active
+                            ? "bg-orange-500/15 text-orange-400 border-orange-500"
+                            : "bg-transparent text-orange-400/90 border-orange-500/70 hover:border-orange-400 hover:bg-orange-500/10"
+                        }`}
+                      >
+                        {letter}
+                      </button>
+                      {wlManageMode === "delete" && (
+                        <button
+                          type="button"
+                          title={`Delete list ${l.name}`}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!window.confirm(`Delete list "${l.name}"?`)) return;
+                            try {
+                              const itemIds = watchItems.filter((w) => w.list_id === l.id).map((w) => w.id);
+                              if (itemIds.length) {
+                                await supabase.from("watchlist_items").delete().in("id", itemIds);
+                              }
+                              await supabase.from("watchlist_lists").delete().eq("id", l.id);
+                              setWatchItems((prev) => prev.filter((w) => w.list_id !== l.id));
+                              setWatchLists((prev) => prev.filter((x) => x.id !== l.id));
+                              if (sideViewId === l.id) setSideViewId(SIDE_VIEW_ALARMS);
+                              setStatusMsg("List deleted");
+                            } catch {
+                              setStatusMsg("Delete failed");
+                            }
+                          }}
+                          className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-red-600 text-white text-[9px] leading-none flex items-center justify-center shadow"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
                 <div className="relative ml-auto" data-menu>
                   <button
                     type="button"
                     title="List options"
-                    onClick={() => { setWlMenuOpen((v) => !v); setWlRenameOpen(false); }}
+                    onClick={() => {
+                      setWlMenuOpen((v) => !v);
+                      setWlRenameOpen(false);
+                    }}
                     className={`w-6 h-6 flex items-center justify-center rounded-full text-sm leading-none ${
                       wlMenuOpen ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
                     }`}
@@ -6429,37 +6498,49 @@ export default function DashboardPage() {
                     <div className="absolute z-50 top-full right-0 mt-1 min-w-[150px] border border-white/15 rounded-xl py-1 shadow-[0_8px_32px_rgba(0,0,0,0.55)] bg-gray-950 overflow-hidden">
                       <button
                         type="button"
-                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40"
+                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40 flex items-center gap-2"
                         disabled={sideViewId === SIDE_VIEW_ALARMS}
                         onClick={() => {
                           const name = watchLists.find((x) => x.id === sideViewId)?.name || "";
                           setWlRenameDraft(name);
                           setWlRenameOpen(true);
                           setWlMenuOpen(false);
+                          setWlManageMode(null);
                         }}
                       >
-                        ✏ Rename
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="opacity-80"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                        Rename
                       </button>
                       <button
                         type="button"
-                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800"
+                        className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40 flex items-center gap-2"
+                        disabled={sideViewId === SIDE_VIEW_ALARMS}
                         onClick={async () => {
                           setWlMenuOpen(false);
-                          const name = window.prompt("New section name", "New list");
+                          if (sideViewId === SIDE_VIEW_ALARMS) return;
+                          const name = window.prompt("Section name", "Section");
                           if (!name || !name.trim()) return;
                           try {
                             const { data: sess } = await supabase.auth.getSession();
                             const uid = sess?.session?.user?.id;
                             if (!uid) { setStatusMsg("Login required"); return; }
+                            const maxOrder = watchItems
+                              .filter((w) => w.list_id === sideViewId)
+                              .reduce((m, w) => Math.max(m, w.sort_order ?? 0), 0);
                             const { data, error } = await supabase
-                              .from("watchlist_lists")
-                              .insert([{ name: name.trim(), user_id: uid }])
+                              .from("watchlist_items")
+                              .insert([{
+                                list_id: sideViewId,
+                                user_id: uid,
+                                symbol: "__SECTION__",
+                                note: name.trim(),
+                                sort_order: maxOrder + 1,
+                              }])
                               .select("*")
                               .single();
                             if (error) throw error;
                             if (data) {
-                              setWatchLists((prev) => [...prev, data as WatchList]);
-                              setSideViewId((data as WatchList).id);
+                              setWatchItems((prev) => [...prev, data as WatchItem]);
                               setStatusMsg("Section added");
                             }
                           } catch {
@@ -6467,36 +6548,36 @@ export default function DashboardPage() {
                           }
                         }}
                       >
-                        ≡ Add section
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="opacity-80">
+                          <path d="M4 7h16M4 12h10M4 17h16" />
+                        </svg>
+                        Add section
                       </button>
                       <button
                         type="button"
-                        className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-gray-800 disabled:opacity-40"
-                        disabled={sideViewId === SIDE_VIEW_ALARMS}
-                        onClick={async () => {
+                        className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-gray-800 flex items-center gap-2"
+                        onClick={() => {
                           setWlMenuOpen(false);
-                          if (sideViewId === SIDE_VIEW_ALARMS) return;
-                          if (!window.confirm("Clear all symbols from this list?")) return;
-                          try {
-                            const ids = watchItems
-                              .filter((w) => w.list_id === sideViewId)
-                              .map((w) => w.id);
-                            setWatchItems((prev) => prev.filter((w) => w.list_id !== sideViewId));
-                            if (ids.length) {
-                              await supabase.from("watchlist_items").delete().in("id", ids);
-                            }
-                            setStatusMsg("List cleared");
-                          } catch {
-                            setStatusMsg("Clear failed");
-                          }
+                          setWlManageMode((m) => (m === "delete" ? null : "delete"));
+                          setStatusMsg(wlManageMode === "delete" ? "" : "Tap × on a list letter to delete");
                         }}
                       >
-                        🧹 Clear list
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="opacity-80"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                        Clear list
                       </button>
                     </div>
                   )}
                 </div>
               </div>
+              {wlManageMode === "delete" && (
+                <button
+                  type="button"
+                  className="text-[10px] text-gray-400 hover:text-white self-start"
+                  onClick={() => setWlManageMode(null)}
+                >
+                  Done deleting
+                </button>
+              )}
               {wlRenameOpen && sideViewId !== SIDE_VIEW_ALARMS && (
                 <div className="flex items-center gap-1" data-note-edit>
                   <input
@@ -6553,12 +6634,37 @@ export default function DashboardPage() {
               )}
             </div>
             <div className="overflow-y-auto flex-1 p-1.5">
-              {sidePanelSymbols.map((sym) => {
+              {sidePanelRows.map((row, rowIdx) => {
+                if (row.kind === "section") {
+                  return (
+                    <div key={`sec-${row.id}`} className="mb-1.5 mt-1 px-0.5 group/sec">
+                      <div className="flex items-center gap-1 mb-0.5">
+                        <span className="text-[10px] font-medium text-gray-400 truncate flex-1">{row.name}</span>
+                        <button
+                          type="button"
+                          title="Remove section"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setWatchItems((prev) => prev.filter((w) => w.id !== row.id));
+                            try {
+                              await supabase.from("watchlist_items").delete().eq("id", row.id);
+                            } catch {}
+                          }}
+                          className="text-gray-600 hover:text-red-400 text-[10px] opacity-0 group-hover/sec:opacity-100 px-0.5"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="border-t border-dashed border-gray-600/80" />
+                    </div>
+                  );
+                }
+                const sym = row.symbol;
                 const isDrag = draggingSym === sym;
                 const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
                 const canDrag = sideViewId === SIDE_VIEW_ALARMS;
                 return (
-                  <div key={sym}>
+                  <div key={`${sym}-${row.itemId || rowIdx}`}>
                     {isOver && canDrag && (
                       <div className="h-10 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
                     )}
@@ -6574,8 +6680,8 @@ export default function DashboardPage() {
                       onPointerMove={(e) => {
                         if (!canDrag || !draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
-                        const row = el?.closest?.("[data-sym]") as HTMLElement | null;
-                        const target = row?.dataset?.sym || null;
+                        const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
+                        const target = rowEl?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym(target);
                       }}
                       onPointerUp={() => {
@@ -6594,22 +6700,28 @@ export default function DashboardPage() {
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 ${
-                        canDrag ? "cursor-default" : "cursor-default"
-                      } ${
+                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 cursor-default ${
                         isDrag
-                          ? "opacity-40 scale-[0.97] bg-orange-500/20 border border-orange-500 shadow-lg"
+                          ? "opacity-40 scale-[0.98]"
                           : symbolUpper === sym
-                          ? "bg-orange-500/20 border border-orange-500/50"
-                          : "hover:bg-white/10 border border-transparent"
+                            ? "bg-orange-500/15 ring-1 ring-orange-500/40"
+                            : "hover:bg-gray-800/80"
                       }`}
-                      style={{ touchAction: canDrag ? "none" : "auto" }}
                     >
-                      <CoinIcon symbol={sym} size={16} />
+                      <span
+                        className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
+                        style={{
+                          background:
+                            symbolUpper === sym ? "rgba(249,115,22,0.25)" : "rgba(55,65,81,0.9)",
+                          color: symbolUpper === sym ? "#fb923c" : "#9ca3af",
+                        }}
+                      >
+                        {(sym || "?").replace(/USDT$|USD$|PERP$/i, "").slice(0, 2)}
+                      </span>
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-medium truncate leading-tight">{sym.replace("USDT", "")}</div>
-                        <div className="text-[9px] text-gray-500 leading-tight">
-                          {alarmCountBySym[sym] || 0} alarm
+                        <div className="font-medium text-gray-200 truncate leading-tight">{sym.replace(/USDT$/i, "")}</div>
+                        <div className="text-[9px] text-gray-500 truncate leading-tight">
+                          {(alarmCountBySym[sym] || 0) > 0 ? `${alarmCountBySym[sym]} alarm` : "0 alarm"}
                           {(lineCountBySym[sym] || 0) > 0 ? ` · ${lineCountBySym[sym]} line` : ""}
                         </div>
                       </div>
@@ -6626,6 +6738,14 @@ export default function DashboardPage() {
                                 const base = (prev.length ? prev : alarmSymbols).filter((x) => x !== s);
                                 return base;
                               });
+                              return;
+                            }
+                            const itemId = row.itemId;
+                            if (itemId) {
+                              setWatchItems((prev) => prev.filter((w) => w.id !== itemId));
+                              try {
+                                await supabase.from("watchlist_items").delete().eq("id", itemId);
+                              } catch {}
                               return;
                             }
                             const item = watchItems.find(
@@ -6647,7 +6767,7 @@ export default function DashboardPage() {
                   </div>
                 );
               })}
-              {!sidePanelSymbols.length && (
+              {!sidePanelRows.length && (
                 <p className="text-gray-600 text-xs text-center py-4">
                   {sideViewId === SIDE_VIEW_ALARMS
                     ? "No active alarms"
