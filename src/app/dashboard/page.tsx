@@ -656,7 +656,7 @@ function intervalToSeconds(iv: string): number {
  *  Large buffer so user can scroll/draw far past the last price bar. */
 const FUTURE_BARS = 800;
 /** How many future bars are visible on first load (rest remains scrollable) */
-const FUTURE_VISIBLE = 14;
+const FUTURE_VISIBLE = 55;
 
 /** Convert OHLC candles to Heikin-Ashi */
 function toHeikinAshi(candles: any[]): any[] {
@@ -1461,7 +1461,7 @@ export default function DashboardPage() {
     const last = candles[candles.length - 1];
     if (!last || last.close == null || last.time == null) return;
     const up = last.close >= last.open;
-    const color = up ? "#26a69a" : "#ef5350";
+    const color = up ? "#089981" : "#f23645";
     // Countdown remaining until candle close (TradingView style)
     const title = formatCountdownRemaining(Number(last.time), String(intervalRef.current));
     try {
@@ -2218,7 +2218,7 @@ export default function DashboardPage() {
 
               series.priceScale().applyOptions({
                 autoScale: true,
-                scaleMargins: { top: 0.08, bottom: 0.12 },
+                scaleMargins: { top: 0.05, bottom: 0.32 },
               });
               chart.priceScale("right").applyOptions({ autoScale: true });
 
@@ -2230,7 +2230,7 @@ export default function DashboardPage() {
                   if (n < 2) return;
                   series.priceScale().applyOptions({
                     autoScale: true,
-                    scaleMargins: { top: 0.08, bottom: 0.12 },
+                    scaleMargins: { top: 0.05, bottom: 0.32 },
                   });
                   chart.priceScale("right").applyOptions({ autoScale: true });
                   // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
@@ -2238,7 +2238,7 @@ export default function DashboardPage() {
                   chart.timeScale().applyOptions({ rightOffset: 8, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
                     from: Math.max(0, n - past),
-                    to: n - 1 + Math.min(FUTURE_VISIBLE, 10),
+                    to: n - 1 + FUTURE_VISIBLE,
                   });
                 } catch {}
               };
@@ -2258,7 +2258,7 @@ export default function DashboardPage() {
             try {
               series.priceScale().applyOptions({
                 autoScale: true,
-                scaleMargins: { top: 0.08, bottom: 0.12 },
+                scaleMargins: { top: 0.05, bottom: 0.32 },
               });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
@@ -2447,7 +2447,7 @@ export default function DashboardPage() {
         crosshair: { mode: CrosshairMode.Normal },
         rightPriceScale: {
           borderColor: "#2a2e39",
-          scaleMargins: { top: 0.06, bottom: 0.08 },
+          scaleMargins: { top: 0.05, bottom: 0.32 },
           entireTextOnly: false,
           autoScale: true,
           mode: 0, // Normal — drag/scroll price axis freely (TV-style)
@@ -2562,12 +2562,14 @@ export default function DashboardPage() {
         // candles | hollow | heikin
         const hollow = ctype === "hollow";
         series = chart.addCandlestickSeries({
-          upColor: hollow ? "transparent" : "#26a69a",
-          downColor: hollow ? "transparent" : "#ef5350",
-          borderUpColor: "#26a69a",
-          borderDownColor: "#ef5350",
-          wickUpColor: "#26a69a",
-          wickDownColor: "#ef5350",
+          // TradingView classic dark-theme candles
+          upColor: hollow ? "transparent" : "#089981",
+          downColor: hollow ? "transparent" : "#f23645",
+          borderUpColor: hollow ? "#089981" : "#089981",
+          borderDownColor: hollow ? "#f23645" : "#f23645",
+          wickUpColor: "#089981",
+          wickDownColor: "#f23645",
+          borderVisible: true,
           priceFormat: { type: "price", precision, minMove },
           lastValueVisible: false,
           priceLineVisible: false,
@@ -2633,7 +2635,7 @@ export default function DashboardPage() {
           if (hasVol) { const h = 0.11; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
           const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
           // فقط لبه راست پنل اسیلاتور — تا اسکرول افقی چارت خراب نشود
-          // کل عرض پنل RSI/DMI — مثل TradingView اسکرول عمودی روی اسیلاتور
+          // کل عرض پنل RSI/DMI — مثل TradingView: فقط مقیاس اسیلاتور زوم شود، ارتفاع پنل ثابت
           if (inPane && (inPane.id === "rsi" || inPane.id === "dmi")) {
             e.preventDefault();
             e.stopPropagation();
@@ -2643,48 +2645,35 @@ export default function DashboardPage() {
             if (e.deltaMode === 2) delta *= 40;
             if (delta === 0) return;
             const zoomIn = delta < 0;
-            const steps = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 80)));
+            const steps = Math.max(1, Math.min(5, Math.round(Math.abs(delta) / 60)));
             try {
-              const chart = chartRef.current;
-              if (!chart) return;
               const ser =
                 inPane.id === "rsi"
                   ? rsiSeriesRef.current
                   : dmiSeriesRef.current?.adx || dmiSeriesRef.current?.plus;
-              // زوم عمودی قوی‌تر روی مقیاس اسیلاتور (نه فقط ارتفاع پنل)
               const storeKey = inPane.id === "rsi" ? "rsiZoomHalf" : "dmiZoomHalf";
+              const midKey = inPane.id === "rsi" ? "rsiZoomMid" : "dmiZoomMid";
               const w = window as any;
               let half = typeof w[storeKey] === "number" ? w[storeKey] : 50;
+              let mid = typeof w[midKey] === "number" ? w[midKey] : 50;
               for (let i = 0; i < steps; i++) {
-                half *= zoomIn ? 0.82 : 1.22;
+                half *= zoomIn ? 0.78 : 1.28;
               }
-              half = Math.min(55, Math.max(8, half));
+              half = Math.min(55, Math.max(5, half));
               w[storeKey] = half;
-              const mid = 50;
+              w[midKey] = mid;
               if (ser) {
                 ser.applyOptions({
                   autoscaleInfoProvider: () => ({
                     priceRange: {
-                      minValue: Math.max(0, mid - half),
-                      maxValue: Math.min(100, mid + half),
+                      minValue: Math.max(-10, mid - half),
+                      maxValue: Math.min(110, mid + half),
                     },
                   }),
                 });
               }
-              // کمی ارتفاع پنل هم عوض شود تا حس TradingView بدهد
-              const ps = chart.priceScale(inPane.id) as any;
-              const cur = inPane;
-              const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.32, Math.max(0.1, h * (zoomIn ? 1.06 : 0.94)));
-              const top = Math.max(0.35, Math.min(0.92, 1 - cur.bot - nh));
-              ps.applyOptions({ scaleMargins: { top, bottom: cur.bot } });
-              // فضای چارت اصلی را با پنل هماهنگ کن تا کندل زیر RSI نیاید
-              try {
-                const mainBot = 1 - top + 0.02;
-                chart.priceScale("right").applyOptions({
-                  scaleMargins: { top: 0.05, bottom: Math.min(0.55, mainBot) },
-                });
-              } catch {}
+              // ارتفاع پنل را تغییر نده — فقط updateMargins تا کندل پشت RSI نیاید
+              try { updateMargins(); } catch {}
             } catch {}
             return;
           }
@@ -2755,11 +2744,80 @@ export default function DashboardPage() {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
             ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.05, bottom: 0.32 } });
+          try { updateMargins(); } catch {}
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+
+        // Drag روی پنل RSI/DMI مثل TradingView: بالا/پایین = pan مقیاس اسیلاتور
+        let oscDrag: null | { id: string; y0: number; mid0: number; half0: number } = null;
+        const oscZones = () => {
+          const hasRsi = !!(rsiSeriesRef.current);
+          const hasDmi = !!(dmiSeriesRef.current);
+          const hasVol = !!(volumeSeriesRef.current);
+          let bot = 0;
+          const zones: { id: string; top: number; bot: number }[] = [];
+          if (hasDmi) { const h = 0.14; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasRsi) { const h = 0.16; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
+          if (hasVol) { const h = 0.11; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
+          return zones;
+        };
+        const applyOscRange = (id: string, mid: number, half: number) => {
+          const w = window as any;
+          w[id === "rsi" ? "rsiZoomMid" : "dmiZoomMid"] = mid;
+          w[id === "rsi" ? "rsiZoomHalf" : "dmiZoomHalf"] = half;
+          const ser = id === "rsi" ? rsiSeriesRef.current : (dmiSeriesRef.current?.adx || dmiSeriesRef.current?.plus);
+          if (!ser) return;
+          ser.applyOptions({
+            autoscaleInfoProvider: () => ({
+              priceRange: {
+                minValue: Math.max(-10, mid - half),
+                maxValue: Math.min(110, mid + half),
+              },
+            }),
+          });
+        };
+        const onOscPointerDown = (e: PointerEvent) => {
+          if (e.button !== 0) return;
+          const rect = container.getBoundingClientRect();
+          const yRatio = (e.clientY - rect.top) / Math.max(1, rect.height);
+          const fromRight = rect.right - e.clientX;
+          // روی محور قیمت اصلی دخالت نکن
+          if (fromRight <= 90) return;
+          const z = oscZones().find((x) => yRatio >= x.top - 0.01 && yRatio <= 1 - x.bot + 0.01);
+          if (!z || (z.id !== "rsi" && z.id !== "dmi")) return;
+          const w = window as any;
+          const half0 = typeof w[z.id === "rsi" ? "rsiZoomHalf" : "dmiZoomHalf"] === "number"
+            ? w[z.id === "rsi" ? "rsiZoomHalf" : "dmiZoomHalf"] : 50;
+          const mid0 = typeof w[z.id === "rsi" ? "rsiZoomMid" : "dmiZoomMid"] === "number"
+            ? w[z.id === "rsi" ? "rsiZoomMid" : "dmiZoomMid"] : 50;
+          oscDrag = { id: z.id, y0: e.clientY, mid0, half0 };
+          try { container.setPointerCapture(e.pointerId); } catch {}
+          e.preventDefault();
+          e.stopPropagation();
+        };
+        const onOscPointerMove = (e: PointerEvent) => {
+          if (!oscDrag) return;
+          const rect = container.getBoundingClientRect();
+          const paneH = Math.max(40, rect.height * 0.16);
+          const dy = e.clientY - oscDrag.y0;
+          // drag = جابه‌جایی mid (مثل TV)
+          const mid = oscDrag.mid0 + (dy / paneH) * oscDrag.half0 * 2;
+          applyOscRange(oscDrag.id, mid, oscDrag.half0);
+          e.preventDefault();
+          e.stopPropagation();
+        };
+        const onOscPointerUp = (e: PointerEvent) => {
+          if (!oscDrag) return;
+          oscDrag = null;
+          try { container.releasePointerCapture(e.pointerId); } catch {}
+        };
+        container.addEventListener("pointerdown", onOscPointerDown, { capture: true });
+        container.addEventListener("pointermove", onOscPointerMove, { capture: true });
+        container.addEventListener("pointerup", onOscPointerUp, { capture: true });
+        container.addEventListener("pointercancel", onOscPointerUp, { capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
 
         // iPad / touch: درگ عمودی روی محور قیمت = زوم عمودی
@@ -2830,6 +2888,10 @@ export default function DashboardPage() {
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
+          try { container.removeEventListener("pointerdown", onOscPointerDown); } catch {}
+          try { container.removeEventListener("pointermove", onOscPointerMove); } catch {}
+          try { container.removeEventListener("pointerup", onOscPointerUp); } catch {}
+          try { container.removeEventListener("pointercancel", onOscPointerUp); } catch {}
           try { container.removeEventListener("dblclick", onDblPrice); } catch {}
           try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
           try { container.removeEventListener("touchmove", onTouchMovePrice); } catch {}
@@ -2993,7 +3055,7 @@ export default function DashboardPage() {
           const past = Math.min(600, bars);
           chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, bars - past),
-            to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
+            to: bars - 1 + FUTURE_VISIBLE,
           });
           pinnedToRightRef.current = true;
           setShowGoLive(false);
@@ -3005,7 +3067,7 @@ export default function DashboardPage() {
             try {
               chart.timeScale().setVisibleLogicalRange({
                 from: Math.max(0, bars - past),
-                to: bars - 1 + Math.min(FUTURE_VISIBLE, 10),
+                to: bars - 1 + FUTURE_VISIBLE,
               });
             } catch {}
             programmaticRangeRef.current = false;
