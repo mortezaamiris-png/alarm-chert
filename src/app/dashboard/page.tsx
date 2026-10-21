@@ -6715,13 +6715,13 @@ export default function DashboardPage() {
                   const isOver = dragOverSym === secKey && draggingSym != null && draggingSym !== secKey;
                   return (
                     <div key={`sec-${row.id}`}>
-                      {isOver && (
-                        draggingSym?.startsWith("__SEC__") ? (
+                      {isOver ? (
+                        draggingSym && String(draggingSym).startsWith("__SEC__") ? (
                           <div className="h-0.5 mb-1 mx-1 rounded-full bg-orange-400/80" />
                         ) : (
                           <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
                         )
-                      }
+                      ) : null}
                       <div
                         data-sym={secKey}
                         data-item-id={row.id}
@@ -6937,13 +6937,13 @@ export default function DashboardPage() {
                 const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
                 return (
                   <div key={`${sym}-${row.itemId || rowIdx}`}>
-                    {isOver && (
-                      draggingSym?.startsWith("__SEC__") ? (
+                    {isOver ? (
+                      draggingSym && String(draggingSym).startsWith("__SEC__") ? (
                         <div className="h-0.5 mb-1 mx-1 rounded-full bg-orange-400/80" />
                       ) : (
                         <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
                       )
-                    }
+                    ) : null}
                     <div
                       data-sym={sym}
                       data-item-id={row.itemId || ""}
@@ -7119,12 +7119,12 @@ export default function DashboardPage() {
                   </div>
                 );
               })}
-              {draggingSym && (
+              {draggingSym ? (
                 <div
                   data-sym="__END__"
                   onPointerEnter={() => setDragOverSym("__END__")}
                   className={
-                    draggingSym.startsWith("__SEC__")
+                    String(draggingSym).startsWith("__SEC__")
                       ? `h-1 mt-1 mx-1 rounded-full ${
                           dragOverSym === "__END__" ? "bg-orange-400" : "bg-gray-700"
                         }`
@@ -7135,9 +7135,9 @@ export default function DashboardPage() {
                         }`
                   }
                 >
-                  {draggingSym.startsWith("__SEC__") ? null : "Drop at end"}
+                  {String(draggingSym).startsWith("__SEC__") ? null : "Drop at end"}
                 </div>
-              )}
+              ) : null}
               {!sidePanelRows.length && (
                 <p className="text-gray-600 text-xs text-center py-4">
                   {sideViewId === SIDE_VIEW_ALARMS
