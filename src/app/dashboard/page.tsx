@@ -6394,10 +6394,19 @@ export default function DashboardPage() {
         {showSideWl && (
           <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
             <div className="px-2 py-1.5 border-b border-gray-800 flex flex-col gap-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-gray-200 truncate flex-1 min-w-0" title={sideViewLabel}>
+              <div className="flex items-center gap-1">
+                <span className="text-[11px] font-medium text-gray-300 truncate flex-1 min-w-0" title={sideViewLabel}>
                   {sideViewId === SIDE_VIEW_ALARMS ? "Alarms" : (watchLists.find((l) => l.id === sideViewId)?.name || "Watchlist")}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => setShowSideWl(false)}
+                  className="text-[11px] text-gray-500 hover:text-white px-1 shrink-0"
+                >
+                  « Hide
+                </button>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <button
                   type="button"
                   title="All alarms"
@@ -6407,28 +6416,19 @@ export default function DashboardPage() {
                     setWlRenameOpen(false);
                     setWlManageMode(null);
                   }}
-                  className={`w-7 h-7 flex items-center justify-center rounded-full shrink-0 transition-colors ${
+                  className={`w-8 h-8 flex items-center justify-center rounded-full shrink-0 transition-colors ${
                     sideViewId === SIDE_VIEW_ALARMS
                       ? "text-orange-400 ring-1 ring-orange-500/60 bg-orange-500/10"
-                      : "text-gray-400 hover:text-orange-400 hover:bg-gray-800/80"
+                      : "text-gray-500 hover:text-orange-400 hover:bg-gray-800/80"
                   }`}
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <circle cx="12" cy="13" r="8" />
                     <path d="M12 9v4l2.5 1.5" />
                     <path d="M9 3h6" />
                     <path d="M5.5 5.5l1.5 1.5M18.5 5.5l-1.5 1.5" />
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowSideWl(false)}
-                  className="text-xs text-gray-500 hover:text-white px-1 shrink-0"
-                >
-                  « Hide
-                </button>
-              </div>
-              <div className="flex items-center gap-1.5 flex-wrap">
                 {watchLists.map((l) => {
                   const letter = (l.name || "?").trim().charAt(0).toUpperCase() || "?";
                   const active = sideViewId === l.id;
@@ -6443,10 +6443,10 @@ export default function DashboardPage() {
                           setWlMenuOpen(false);
                           setWlRenameOpen(false);
                         }}
-                        className={`w-7 h-7 rounded-full text-[11px] font-semibold flex items-center justify-center transition-all border ${
+                        className={`w-6 h-6 rounded-full text-[10px] font-semibold flex items-center justify-center transition-all border ${
                           active
-                            ? "bg-orange-500/15 text-orange-400 border-orange-500"
-                            : "bg-transparent text-orange-400/90 border-orange-500/70 hover:border-orange-400 hover:bg-orange-500/10"
+                            ? "bg-orange-500/20 text-orange-400 border-orange-500 shadow-[0_0_0_1px_rgba(249,115,22,0.25)]"
+                            : "bg-transparent text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
                         }`}
                       >
                         {letter}
@@ -6517,7 +6517,10 @@ export default function DashboardPage() {
                         disabled={sideViewId === SIDE_VIEW_ALARMS}
                         onClick={async () => {
                           setWlMenuOpen(false);
-                          if (sideViewId === SIDE_VIEW_ALARMS) return;
+                          if (sideViewId === SIDE_VIEW_ALARMS) {
+                            setStatusMsg("Open a watchlist first");
+                            return;
+                          }
                           const name = window.prompt("Section name", "Section");
                           if (!name || !name.trim()) return;
                           try {
@@ -6526,24 +6529,51 @@ export default function DashboardPage() {
                             if (!uid) { setStatusMsg("Login required"); return; }
                             const maxOrder = watchItems
                               .filter((w) => w.list_id === sideViewId)
-                              .reduce((m, w) => Math.max(m, w.sort_order ?? 0), 0);
-                            const { data, error } = await supabase
+                              .reduce((m, w) => Math.max(m, Number(w.sort_order) || 0), 0);
+                            const payload: Record<string, unknown> = {
+                              list_id: sideViewId,
+                              user_id: uid,
+                              symbol: `__SECTION__:${name.trim().slice(0, 40)}`,
+                              note: name.trim(),
+                              sort_order: maxOrder + 1,
+                            };
+                            let { data, error } = await supabase
                               .from("watchlist_items")
-                              .insert([{
-                                list_id: sideViewId,
-                                user_id: uid,
-                                symbol: "__SECTION__",
-                                note: name.trim(),
-                                sort_order: maxOrder + 1,
-                              }])
+                              .insert([payload])
                               .select("*")
-                              .single();
-                            if (error) throw error;
+                              .maybeSingle();
+                            if (error) {
+                              const { user_id: _u, ...rest } = payload;
+                              const r2 = await supabase
+                                .from("watchlist_items")
+                                .insert([rest])
+                                .select("*")
+                                .maybeSingle();
+                              data = r2.data;
+                              error = r2.error;
+                            }
+                            if (error) {
+                              const localId = `local-sec-${Date.now()}`;
+                              setWatchItems((prev) => [
+                                ...prev,
+                                {
+                                  id: localId,
+                                  list_id: sideViewId,
+                                  symbol: `__SECTION__:${name.trim().slice(0, 40)}`,
+                                  note: name.trim(),
+                                  sort_order: maxOrder + 1,
+                                } as WatchItem,
+                              ]);
+                              setStatusMsg("Section added (local)");
+                              console.warn("Add section DB error", error);
+                              return;
+                            }
                             if (data) {
                               setWatchItems((prev) => [...prev, data as WatchItem]);
                               setStatusMsg("Section added");
                             }
-                          } catch {
+                          } catch (e) {
+                            console.warn(e);
                             setStatusMsg("Add section failed");
                           }
                         }}
@@ -6647,7 +6677,9 @@ export default function DashboardPage() {
                             e.stopPropagation();
                             setWatchItems((prev) => prev.filter((w) => w.id !== row.id));
                             try {
-                              await supabase.from("watchlist_items").delete().eq("id", row.id);
+                              if (!String(row.id).startsWith("local-")) {
+                                await supabase.from("watchlist_items").delete().eq("id", row.id);
+                              }
                             } catch {}
                           }}
                           className="text-gray-600 hover:text-red-400 text-[10px] opacity-0 group-hover/sec:opacity-100 px-0.5"
@@ -6662,45 +6694,95 @@ export default function DashboardPage() {
                 const sym = row.symbol;
                 const isDrag = draggingSym === sym;
                 const isOver = dragOverSym === sym && draggingSym != null && draggingSym !== sym;
-                const canDrag = sideViewId === SIDE_VIEW_ALARMS;
                 return (
                   <div key={`${sym}-${row.itemId || rowIdx}`}>
-                    {isOver && canDrag && (
-                      <div className="h-10 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
+                    {isOver && (
+                      <div className="h-8 mb-1 rounded-lg border-2 border-dashed border-orange-500/60 bg-orange-500/10" />
                     )}
                     <div
                       data-sym={sym}
+                      data-item-id={row.itemId || ""}
                       onPointerDown={(e) => {
-                        if (!canDrag) return;
+                        if ((e.target as HTMLElement).closest("button")) return;
                         e.preventDefault();
-                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
                         setDraggingSym(sym);
                         setDragOverSym(null);
                       }}
                       onPointerMove={(e) => {
-                        if (!canDrag || !draggingSym) return;
+                        if (!draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
                         const target = rowEl?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym(target);
                       }}
-                      onPointerUp={() => {
-                        if (canDrag && draggingSym && dragOverSym && draggingSym !== dragOverSym) {
-                          setSideOrder((prev) => {
-                            const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== draggingSym);
-                            const idx = base.indexOf(dragOverSym);
-                            if (idx < 0) return [...base, draggingSym];
-                            const next = [...base];
-                            next.splice(idx, 0, draggingSym);
-                            return next;
-                          });
+                      onPointerUp={async () => {
+                        if (!draggingSym) {
+                          setDraggingSym(null);
+                          setDragOverSym(null);
+                          return;
                         }
+                        const fromSym = draggingSym;
+                        const toSym = dragOverSym;
                         setDraggingSym(null);
                         setDragOverSym(null);
+                        if (!toSym || fromSym === toSym) return;
+
+                        if (sideViewId === SIDE_VIEW_ALARMS) {
+                          setSideOrder((prev) => {
+                            const base = (prev.length ? prev : alarmSymbols).filter((s) => s !== fromSym);
+                            if (toSym === "__END__") return [...base, fromSym];
+                            const idx = base.indexOf(toSym);
+                            if (idx < 0) return [...base, fromSym];
+                            const next = [...base];
+                            next.splice(idx, 0, fromSym);
+                            return next;
+                          });
+                          return;
+                        }
+
+                        const listRows = watchItems
+                          .filter((w) => w.list_id === sideViewId)
+                          .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+                        const fromItem = listRows.find(
+                          (w) =>
+                            chartSymbol(w.symbol) === fromSym &&
+                            !String(w.symbol).startsWith("__SECTION__")
+                        );
+                        if (!fromItem) return;
+                        const without = listRows.filter((w) => w.id !== fromItem.id);
+                        let insertAt = without.length;
+                        if (toSym !== "__END__") {
+                          const toIdx = without.findIndex(
+                            (w) =>
+                              chartSymbol(w.symbol) === toSym &&
+                              !String(w.symbol).startsWith("__SECTION__")
+                          );
+                          if (toIdx >= 0) insertAt = toIdx;
+                        }
+                        const next = [...without];
+                        next.splice(insertAt, 0, fromItem);
+                        const withOrder = next.map((w, i) => ({ ...w, sort_order: i + 1 }));
+                        setWatchItems((prev) => {
+                          const others = prev.filter((w) => w.list_id !== sideViewId);
+                          return [...others, ...withOrder];
+                        });
+                        try {
+                          await Promise.all(
+                            withOrder
+                              .filter((w) => !String(w.id).startsWith("local-"))
+                              .map((w) =>
+                                supabase
+                                  .from("watchlist_items")
+                                  .update({ sort_order: w.sort_order })
+                                  .eq("id", w.id)
+                              )
+                          );
+                        } catch {}
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 cursor-default ${
+                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none transition-all duration-150 cursor-grab active:cursor-grabbing ${
                         isDrag
                           ? "opacity-40 scale-[0.98]"
                           : symbolUpper === sym
@@ -6744,7 +6826,9 @@ export default function DashboardPage() {
                             if (itemId) {
                               setWatchItems((prev) => prev.filter((w) => w.id !== itemId));
                               try {
-                                await supabase.from("watchlist_items").delete().eq("id", itemId);
+                                if (!String(itemId).startsWith("local-")) {
+                                  await supabase.from("watchlist_items").delete().eq("id", itemId);
+                                }
                               } catch {}
                               return;
                             }
@@ -6767,6 +6851,19 @@ export default function DashboardPage() {
                   </div>
                 );
               })}
+              {draggingSym && (
+                <div
+                  data-sym="__END__"
+                  onPointerEnter={() => setDragOverSym("__END__")}
+                  className={`h-10 mt-1 rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
+                    dragOverSym === "__END__"
+                      ? "border-orange-500 bg-orange-500/15 text-orange-300"
+                      : "border-gray-700 text-gray-600"
+                  }`}
+                >
+                  Drop at end
+                </div>
+              )}
               {!sidePanelRows.length && (
                 <p className="text-gray-600 text-xs text-center py-4">
                   {sideViewId === SIDE_VIEW_ALARMS
