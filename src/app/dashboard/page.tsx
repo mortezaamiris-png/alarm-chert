@@ -1635,7 +1635,7 @@ export default function DashboardPage() {
     // Lock vertical scale so adding/removing diagonals cannot stretch candles
     let lockedPriceRange: { from: number; to: number } | null = null;
     try {
-      const pr = series.priceScale().getVisibleRange?.();
+      const pr = (series.priceScale() as any).getVisibleRange?.();
       if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
         lockedPriceRange = { from: Number(pr.from), to: Number(pr.to) };
       }
@@ -1969,7 +1969,7 @@ export default function DashboardPage() {
     // Restore price scale so diagonals never stretch candles
     if (lockedPriceRange) {
       try {
-        series.priceScale().setVisibleRange(lockedPriceRange);
+        (series.priceScale() as any).setVisibleRange(lockedPriceRange);
         priceRangeOverrideRef.current = lockedPriceRange;
       } catch {}
     }
@@ -3689,7 +3689,7 @@ export default function DashboardPage() {
                   const bars = candlesRef.current;
                   let lo = Infinity, hi = -Infinity;
                   try {
-                    const pr = series.priceScale().getVisibleRange?.();
+                    const pr = (series.priceScale() as any).getVisibleRange?.();
                     if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
                       lo = Number(pr.from);
                       hi = Number(pr.to);
@@ -3806,7 +3806,7 @@ export default function DashboardPage() {
           let lo = Infinity, hi = -Infinity;
           // Prefer visible price range so the vertical line spans the whole chart pane
           try {
-            const pr = series.priceScale().getVisibleRange?.();
+            const pr = (series.priceScale() as any).getVisibleRange?.();
             if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
               lo = Number(pr.from);
               hi = Number(pr.to);
