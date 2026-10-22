@@ -1681,6 +1681,8 @@ export default function DashboardPage() {
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
+            // prevent diagonal from pulling price scale / stretching candles
+            autoscaleInfoProvider: () => null as any,
           });
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
@@ -1761,6 +1763,7 @@ export default function DashboardPage() {
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
+            autoscaleInfoProvider: () => null as any,
           });
           // Dense points — continuous on any TF (hit detection still uses projectedPriceOnDiag)
           ls.setData(
@@ -3745,7 +3748,7 @@ export default function DashboardPage() {
             }]).select().single();
             if (!error && data) {
               pushUndo();
-              setLines((prev) => [...prev, data as ChartLine]);
+              setLines((prev) => [data as ChartLine, ...prev]);
               setStatusMsg("Vertical line added");
             } else {
               // local fallback id
@@ -3762,7 +3765,7 @@ export default function DashboardPage() {
                 dash,
                 note: "__vline__",
               };
-              setLines((prev) => [...prev, local]);
+              setLines((prev) => [local, ...prev]);
               setStatusMsg("Vertical line added (local)");
             }
           } catch {
@@ -3779,7 +3782,7 @@ export default function DashboardPage() {
               dash,
               note: "__vline__",
             };
-            setLines((prev) => [...prev, local]);
+            setLines((prev) => [local, ...prev]);
             setStatusMsg("Vertical line added (local)");
           }
           setMode("none");
@@ -6910,11 +6913,16 @@ export default function DashboardPage() {
                               if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
                               else keys.push(r.symbol);
                             });
+                            const fromIdx = keys.indexOf(fromSym);
+                            const toIdxOrig = toSym === "__END__" ? keys.length : keys.indexOf(toSym);
                             const without = keys.filter((k) => k !== fromSym);
                             let insertAt = without.length;
                             if (toSym !== "__END__") {
                               const ti = without.indexOf(toSym);
-                              if (ti >= 0) insertAt = ti;
+                              if (ti >= 0) {
+                                // moving down → insert after target so drop position matches finger
+                                insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
+                              }
                             }
                             without.splice(insertAt, 0, fromSym);
                             // apply: symbols order + section sort_orders
@@ -6941,20 +6949,30 @@ export default function DashboardPage() {
                             .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
                           const fromItem = listRows.find((w) => w.id === row.id);
                           if (!fromItem) return;
+                          const fromIdx = listRows.findIndex((w) => w.id === fromItem.id);
                           const without = listRows.filter((w) => w.id !== fromItem.id);
                           let insertAt = without.length;
                           if (toSym && toSym !== "__END__") {
+                            let ti = -1;
+                            let toIdxOrig = -1;
                             if (toSym.startsWith("__SEC__:")) {
                               const tid = toSym.slice("__SEC__:".length);
-                              const ti = without.findIndex((w) => w.id === tid);
-                              if (ti >= 0) insertAt = ti;
+                              toIdxOrig = listRows.findIndex((w) => w.id === tid);
+                              ti = without.findIndex((w) => w.id === tid);
                             } else {
-                              const ti = without.findIndex(
+                              toIdxOrig = listRows.findIndex(
                                 (w) =>
                                   chartSymbol(w.symbol) === toSym &&
                                   !String(w.symbol).startsWith("__SECTION__")
                               );
-                              if (ti >= 0) insertAt = ti;
+                              ti = without.findIndex(
+                                (w) =>
+                                  chartSymbol(w.symbol) === toSym &&
+                                  !String(w.symbol).startsWith("__SECTION__")
+                              );
+                            }
+                            if (ti >= 0) {
+                              insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
                             }
                           }
                           const next = [...without];
@@ -7132,11 +7150,15 @@ export default function DashboardPage() {
                             else keys.push(r.symbol);
                           });
                           if (!keys.includes(fromSym)) keys.push(fromSym);
+                          const fromIdx = keys.indexOf(fromSym);
+                          const toIdxOrig = toSym === "__END__" ? keys.length : keys.indexOf(toSym);
                           const without = keys.filter((k) => k !== fromSym);
                           let insertAt = without.length;
                           if (toSym && toSym !== "__END__") {
                             const ti = without.indexOf(toSym);
-                            if (ti >= 0) insertAt = ti;
+                            if (ti >= 0) {
+                              insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
+                            }
                           }
                           without.splice(insertAt, 0, fromSym);
                           const newSymOrder: string[] = [];
@@ -7164,20 +7186,30 @@ export default function DashboardPage() {
                             !String(w.symbol).startsWith("__SECTION__")
                         );
                         if (!fromItem) return;
+                        const fromIdx = listRows.findIndex((w) => w.id === fromItem.id);
                         const without = listRows.filter((w) => w.id !== fromItem.id);
                         let insertAt = without.length;
                         if (toSym && toSym !== "__END__") {
+                          let ti = -1;
+                          let toIdxOrig = -1;
                           if (toSym.startsWith("__SEC__:")) {
                             const tid = toSym.slice("__SEC__:".length);
-                            const toIdx = without.findIndex((w) => w.id === tid);
-                            if (toIdx >= 0) insertAt = toIdx;
+                            toIdxOrig = listRows.findIndex((w) => w.id === tid);
+                            ti = without.findIndex((w) => w.id === tid);
                           } else {
-                            const toIdx = without.findIndex(
+                            toIdxOrig = listRows.findIndex(
                               (w) =>
                                 chartSymbol(w.symbol) === toSym &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
-                            if (toIdx >= 0) insertAt = toIdx;
+                            ti = without.findIndex(
+                              (w) =>
+                                chartSymbol(w.symbol) === toSym &&
+                                !String(w.symbol).startsWith("__SECTION__")
+                            );
+                          }
+                          if (ti >= 0) {
+                            insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
                           }
                         }
                         const next = [...without];
