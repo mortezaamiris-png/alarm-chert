@@ -78,9 +78,13 @@ type ToolMode =
   | "diag"
   | "vline"
   | "arrow"
+  | "arrow-up"
+  | "arrow-down"
+  | "arrow-marker"
   | "path"
   | "brush"
   | "curve"
+  | "rect"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -851,7 +855,8 @@ export default function DashboardPage() {
   /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
   const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
-  const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([]);
+  const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
@@ -1676,6 +1681,7 @@ export default function DashboardPage() {
     const extend = Math.max(1, Math.floor((lastTime - firstTime) * 0.15));
 
     vlineItemsRef.current = [];
+    rayItemsRef.current = [];
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -1751,6 +1757,46 @@ export default function DashboardPage() {
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
+        } else if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
+          const raw = l.note.replace(/^__rect:/, "");
+          const parts = raw.split("|");
+          if (parts.length >= 2) {
+            const [a, b] = parts;
+            const [t0s, p0s] = a.split(",");
+            const [t1s, p1s] = b.split(",");
+            const t0 = Number(t0s), t1 = Number(t1s), p0 = Number(p0s), p1 = Number(p1s);
+            if (t1 > t0 && p1 !== p0) {
+              const ls: any = chart.addLineSeries({
+                color, lineWidth: width, lineStyle: style,
+                priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+                autoscaleInfoProvider: () => null as any,
+              });
+              // rectangle as 4 edges via two horizontal + connecting (simplified box outline)
+              ls.setData([
+                { time: t0 as any, value: p0 },
+                { time: t1 as any, value: p0 },
+                { time: t1 as any, value: p1 },
+                { time: t0 as any, value: p1 },
+                { time: (t0 + 1) as any, value: p0 },
+              ]);
+              chartLinesRef.current.set(l.id, ls);
+            }
+          }
+        } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
+          const t = Number(l.start_time || 0);
+          if (t > 0) {
+            const ls: any = chart.addLineSeries({
+              color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+              crosshairMarkerVisible: false, autoscaleInfoProvider: () => null as any,
+            });
+            ls.setData([{ time: t as any, value: l.price }]);
+            try {
+              const shape =
+                l.note === "__arrow_up__" ? "arrowUp" : l.note === "__arrow_down__" ? "arrowDown" : "circle";
+              ls.setMarkers([{ time: t as any, position: "inBar", color, shape, size: 2 }]);
+            } catch {}
+            chartLinesRef.current.set(l.id, ls);
+          }
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
           const raw = l.note.replace(/^__(?:path|curve):/, "");
           const pairs = raw.split("|").map((s) => {
@@ -1776,36 +1822,19 @@ export default function DashboardPage() {
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (l.start_time != null) {
-          // Horizontal ray: snap origin to current TF bars so higher TF has no gap
-          const barSec = intervalToSeconds(String(intervalRef.current));
+          // Horizontal half-line via DOM overlay (no LWC gap on any TF)
           const bars = candlesRef.current || [];
           const t0 = snapTimeToBars(Number(l.start_time), bars);
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : Number(lastTime);
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
-          const ls: any = chart.addLineSeries({
-            color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            crosshairMarkerVisible: false,
-            title: title || "",
-            autoscaleInfoProvider: () => null as any,
-          });
-          // Mid-points along the ray so LWC always has bar-aligned times on any TF
-          const rayPts: { time: any; value: number }[] = [{ time: t0 as any, value: l.price }];
-          const span = rayEnd - t0;
-          const steps = Math.max(2, Math.min(60, Math.ceil(span / Math.max(barSec, 1))));
-          for (let i = 1; i <= steps; i++) {
-            const tt = t0 + (span * i) / steps;
-            rayPts.push({ time: Math.round(tt) as any, value: l.price });
+          if (!Number.isNaN(t0) && t0 > 0) {
+            rayItemsRef.current.push({
+              id: String(l.id),
+              time: t0,
+              price: Number(l.price),
+              color: color,
+              width: Math.max(1, Number(width) || 2),
+              dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
+            });
           }
-          // ensure strictly increasing
-          for (let i = 1; i < rayPts.length; i++) {
-            if (Number(rayPts[i].time) <= Number(rayPts[i - 1].time)) {
-              rayPts[i].time = (Number(rayPts[i - 1].time) + 1) as any;
-            }
-          }
-          ls.setData(rayPts);
-          chartLinesRef.current.set(l.id, ls);
         } else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
@@ -1873,32 +1902,19 @@ export default function DashboardPage() {
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Horizontal ray alarm — snap to current TF bars (no gap on higher TF)
-          const barSec = intervalToSeconds(String(intervalRef.current));
+          // Horizontal half-line alarm via DOM overlay
           const bars = candlesRef.current || [];
           const t0 = snapTimeToBars(Number(a.start_time), bars);
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : Number(lastTime);
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
-          const ls: any = chart.addLineSeries({
-            color, lineWidth: width, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
-            title: title || "",
-            autoscaleInfoProvider: () => null as any,
-          });
-          const rayPts: { time: any; value: number }[] = [{ time: t0 as any, value: a.price }];
-          const span = rayEnd - t0;
-          const steps = Math.max(2, Math.min(60, Math.ceil(span / Math.max(barSec, 1))));
-          for (let i = 1; i <= steps; i++) {
-            const tt = t0 + (span * i) / steps;
-            rayPts.push({ time: Math.round(tt) as any, value: a.price });
+          if (!Number.isNaN(t0) && t0 > 0) {
+            rayItemsRef.current.push({
+              id: `alarm-ray-${a.id}`,
+              time: t0,
+              price: Number(a.price),
+              color: color,
+              width: Math.max(1, Number(width) || 2),
+              dash: isMoving ? "dashed" : String(a.dash || "solid"),
+            });
           }
-          for (let i = 1; i < rayPts.length; i++) {
-            if (Number(rayPts[i].time) <= Number(rayPts[i - 1].time)) {
-              rayPts[i].time = (Number(rayPts[i - 1].time) + 1) as any;
-            }
-          }
-          ls.setData(rayPts);
-          chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
         } else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
@@ -1944,7 +1960,50 @@ export default function DashboardPage() {
         host.appendChild(el);
       }
     };
+
+    const paintRays = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      // remove previous ray divs only
+      host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      if (hideLines) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width;
+      for (const r of rayItemsRef.current) {
+        let x: number | null = null;
+        let y: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(r.time as any);
+        } catch { x = null; }
+        try {
+          y = ser.priceToCoordinate(r.price);
+        } catch { y = null; }
+        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
+        if (x > hostW) continue;
+        const el = document.createElement("div");
+        el.dataset.rayId = r.id;
+        el.style.position = "absolute";
+        el.style.left = `${Math.max(0, x)}px`;
+        el.style.top = `${y}px`;
+        el.style.width = `${Math.max(0, hostW - Math.max(0, x))}px`;
+        el.style.height = `${Math.max(1, r.width)}px`;
+        el.style.transform = "translateY(-50%)";
+        el.style.background = r.color;
+        el.style.opacity = "0.95";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        if (r.dash === "dashed") {
+          el.style.background = "transparent";
+          el.style.borderTop = `${Math.max(1, r.width)}px dashed ${r.color}`;
+          el.style.height = "0px";
+        }
+        host.appendChild(el);
+      }
+    };
+
     paintVLines();
+    paintRays();
     try {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
         requestAnimationFrame(paintVLines);
@@ -3091,18 +3150,36 @@ export default function DashboardPage() {
           try {
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
-            if (host && chart2 && vlineItemsRef.current.length) {
+            if (host && chart2) {
+              const ser = seriesRef.current;
+              const hostW = host.clientWidth || host.getBoundingClientRect().width;
               for (const child of Array.from(host.children) as HTMLElement[]) {
-                const id = child.dataset.vlineId;
-                const item = vlineItemsRef.current.find((v) => v.id === id);
-                if (!item) continue;
-                let x: number | null = null;
-                try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-                if (x == null || Number.isNaN(x)) {
-                  child.style.display = "none";
-                } else {
-                  child.style.display = "block";
-                  child.style.left = `${x}px`;
+                if (child.dataset.vlineId) {
+                  const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
+                  if (!item) continue;
+                  let x: number | null = null;
+                  try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+                  if (x == null || Number.isNaN(x)) {
+                    child.style.display = "none";
+                  } else {
+                    child.style.display = "block";
+                    child.style.left = `${x}px`;
+                  }
+                } else if (child.dataset.rayId && ser) {
+                  const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
+                  if (!item) continue;
+                  let x: number | null = null;
+                  let y: number | null = null;
+                  try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+                  try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+                  if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y) || x > hostW) {
+                    child.style.display = "none";
+                  } else {
+                    child.style.display = "block";
+                    child.style.left = `${Math.max(0, x)}px`;
+                    child.style.top = `${y}px`;
+                    child.style.width = `${Math.max(0, hostW - Math.max(0, x))}px`;
+                  }
                 }
               }
             }
@@ -4237,6 +4314,94 @@ export default function DashboardPage() {
         }
 
 
+
+        // Arrow mark up / down / marker — single click
+        if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
+          clickLockRef.current = true;
+          setSaving(true);
+          const t = resolveTime(param);
+          const note =
+            m === "arrow-up" ? "__arrow_up__" : m === "arrow-down" ? "__arrow_down__" : "__arrow_marker__";
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: fp,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            start_time: t,
+            end_time: t,
+            end_price: fp,
+            note,
+          };
+          (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+          if (error) {
+            const fb = { symbol: base.symbol, price: base.price, color: base.color, note };
+            (fb as any).user_id = base.user_id;
+            ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+          }
+          if (!error && data) {
+            pushUndo();
+            setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+            setStatusMsg("Mark placed");
+          } else setStatusMsg("Save failed");
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Rectangle: 2 corners
+        if (m === "rect") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const start = diagStartRef.current;
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            setStatusMsg("Rectangle: tap opposite corner");
+            return;
+          }
+          clickLockRef.current = true;
+          setSaving(true);
+          const t0 = Math.min(start.time, t);
+          const t1 = Math.max(start.time, t);
+          const p0 = Math.min(start.price, fp);
+          const p1 = Math.max(start.price, fp);
+          const note = `__rect:${t0},${p0}|${t1},${p1}`;
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: p0,
+            end_price: p1,
+            start_time: t0,
+            end_time: t1,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+            note,
+          };
+          (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+          if (error) {
+            const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: t0, note };
+            (fb as any).user_id = base.user_id;
+            ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+          }
+          if (!error && data) {
+            pushUndo();
+            setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+            setStatusMsg("Rectangle saved");
+          } else setStatusMsg("Save failed");
+          diagStartRef.current = null;
+          setDiagStart(null);
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
         // Path: multi-point polyline (double-click finishes)
         if (m === "path") {
           const t = resolveTime(param);
@@ -4683,6 +4848,9 @@ export default function DashboardPage() {
       if (wlMenuOpen && !el.closest?.("[data-menu]")) {
         setWlMenuOpen(false);
       }
+      if (drawToolsOpen && !el.closest?.("[data-menu]")) {
+        setDrawToolsOpen(false);
+      }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
         void saveNote();
@@ -4723,6 +4891,7 @@ export default function DashboardPage() {
     noteDraft,
     editingNoteType,
     wlMenuOpen,
+    drawToolsOpen,
   ]);
 
   // Refresh last-price axis label when timezone / TF changes
@@ -6210,142 +6379,96 @@ export default function DashboardPage() {
               </svg>
             </button>
 
-            {/* Separator — advanced drawing tools */}
+            {/* Separator + shapes menu (TradingView-style) */}
             <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
-
-            {/* Arrow */}
-            <button
-              type="button"
-              title="Arrow"
-              onClick={() => {
-                clearPreview();
-                setMode(mode === "arrow" ? "none" : "arrow");
-                setDiagStart(null);
-                setMovingId(null);
-                if (mode !== "arrow") setStatusMsg("Arrow: first point, then tip");
-                else setStatusMsg("");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "arrow"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="5" y1="19" x2="19" y2="5" />
-                <polyline points="9,5 19,5 19,15" />
-              </svg>
-            </button>
-
-            {/* Path */}
-            <button
-              type="button"
-              title="Path"
-              onClick={async () => {
-                if (mode === "path" && pathPointsRef.current.length >= 2) {
-                  // Finish current path
-                  const pts = pathPointsRef.current;
-                  const first = pts[0];
-                  const last = pts[pts.length - 1];
-                  const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
-                  const base: any = {
-                    symbol: symbol.toUpperCase(),
-                    price: first.price,
-                    color: drawColor,
-                    width: drawWidth,
-                    dash: drawDash,
-                    start_time: first.time,
-                    end_time: last.time,
-                    end_price: last.price,
-                    note,
-                  };
-                  try {
-                    (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-                    let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
-                    if (error) {
-                      const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
-                      (fb as any).user_id = base.user_id;
-                      ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-                    }
-                    if (!error && data) {
-                      pushUndo();
-                      setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-                      setStatusMsg("Path saved");
-                    }
-                  } catch {}
-                  pathPointsRef.current = [];
-                  clearPreview();
-                  setMode("none");
-                  return;
-                }
-                clearPreview();
-                setMode(mode === "path" ? "none" : "path");
-                setDiagStart(null);
-                setMovingId(null);
-                pathPointsRef.current = [];
-                if (mode !== "path") setStatusMsg("Path: click points, click Path again to finish");
-                else setStatusMsg("");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "path"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4,18 8,10 13,14 20,6" />
-                <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-              </svg>
-            </button>
-
-            {/* Brush */}
-            <button
-              type="button"
-              title="Brush"
-              onClick={() => {
-                clearPreview();
-                setMode(mode === "brush" ? "none" : "brush");
-                setDiagStart(null);
-                setMovingId(null);
-                if (mode !== "brush") setStatusMsg("Brush: drag on chart");
-                else setStatusMsg("");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "brush"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 20l4-1 9-9a2.5 2.5 0 10-3.5-3.5L4.5 15.5 4 20z" />
-                <path d="M13.5 6.5l3.5 3.5" />
-              </svg>
-            </button>
-
-            {/* Curve */}
-            <button
-              type="button"
-              title="Curve"
-              onClick={() => {
-                clearPreview();
-                setMode(mode === "curve" ? "none" : "curve");
-                setDiagStart(null);
-                setMovingId(null);
-                pathPointsRef.current = [];
-                if (mode !== "curve") setStatusMsg("Curve: 3 points (start, control, end)");
-                else setStatusMsg("");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "curve"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 18C8 18 10 6 14 6s4 12 8 12" />
-              </svg>
-            </button>
+            <div className="relative" data-menu>
+              <button
+                type="button"
+                title="Shapes & tools"
+                onClick={() => setDrawToolsOpen((v) => !v)}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  drawToolsOpen || mode === "arrow" || mode === "path" || mode === "brush" || mode === "curve" || mode === "rect"
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1" />
+                  <rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" />
+                  <rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
+              </button>
+              {drawToolsOpen && (
+                <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Arrows</div>
+                  {[
+                    { id: "arrow", label: "Arrow", icon: "↗" },
+                    { id: "arrow-up", label: "Arrow mark up", icon: "↑" },
+                    { id: "arrow-down", label: "Arrow mark down", icon: "↓" },
+                    { id: "arrow-marker", label: "Arrow marker", icon: "➤" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
+                      onClick={() => {
+                        clearPreview();
+                        setDrawToolsOpen(false);
+                        setDiagStart(null);
+                        setMovingId(null);
+                        pathPointsRef.current = [];
+                        setMode(t.id as any);
+                        setStatusMsg(
+                          t.id === "arrow"
+                            ? "Arrow: first point, then tip"
+                            : t.id === "arrow-up" || t.id === "arrow-down"
+                            ? "Tap chart to place mark"
+                            : "Arrow marker: tap on chart"
+                        );
+                      }}
+                    >
+                      <span className="w-4 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
+                  {[
+                    { id: "rect", label: "Rectangle", icon: "▭" },
+                    { id: "path", label: "Path", icon: "∿" },
+                    { id: "curve", label: "Curve", icon: "◠" },
+                    { id: "brush", label: "Brush", icon: "✎" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
+                      onClick={() => {
+                        clearPreview();
+                        setDrawToolsOpen(false);
+                        setDiagStart(null);
+                        setMovingId(null);
+                        pathPointsRef.current = [];
+                        setMode(t.id as any);
+                        setStatusMsg(
+                          t.id === "rect"
+                            ? "Rectangle: corner 1, then corner 2"
+                            : t.id === "path"
+                            ? "Path: click points, click menu again to finish"
+                            : t.id === "curve"
+                            ? "Curve: 3 points"
+                            : "Brush: drag on chart"
+                        );
+                      }}
+                    >
+                      <span className="w-4 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
             <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
