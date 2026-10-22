@@ -850,6 +850,7 @@ export default function DashboardPage() {
   const chartLinesRef = useRef<Map<string, any>>(new Map());
   /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
+  const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
