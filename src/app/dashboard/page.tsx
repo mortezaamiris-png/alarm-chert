@@ -543,7 +543,11 @@ function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
 }
 
-/** Points along a diagonal — keep endpoints exact; fill only when span is long */
+/**
+ * Diagonal = exactly 2 points (A→B).
+ * Mid-points caused drift/skew deeper in history (times forced +1s).
+ * LWC draws a true straight segment between two points on a linear time scale.
+ */
 function denseDiagPoints(
   t0: number,
   t1: number,
@@ -556,42 +560,24 @@ function denseDiagPoints(
   let bT = Number(t1);
   let aV = Number(v0);
   let bV = Number(v1);
+  if (!(aT > 0) || !(bT > 0) || Number.isNaN(aV) || Number.isNaN(bV)) {
+    return [];
+  }
   if (bT < aT) {
     const tmpT = aT; aT = bT; bT = tmpT;
     const tmpV = aV; aV = bV; bV = tmpV;
   }
+  // Same bar: nudge end by a fraction of bar so LWC accepts strictly increasing times
   if (bT <= aT) {
     return [
       { time: aT as any, value: aV },
-      { time: (aT + Math.max(1, Math.floor(bs / 4))) as any, value: bV },
+      { time: (aT + Math.max(1, Math.floor(bs / 8))) as any, value: bV },
     ];
   }
-  // Always include exact endpoints; add mid points only for long segments
-  const spanBars = (bT - aT) / bs;
-  const steps = spanBars <= 2 ? 1 : Math.max(2, Math.min(48, Math.ceil(spanBars)));
-  const pts: { time: any; value: number }[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const r = i / steps;
-    const tt = Math.round(aT + (bT - aT) * r);
-    const vv = aV + (bV - aV) * r;
-    if (pts.length && Number(pts[pts.length - 1].time) >= tt) {
-      pts.push({ time: (Number(pts[pts.length - 1].time) + 1) as any, value: vv });
-    } else {
-      pts.push({ time: tt as any, value: vv });
-    }
-  }
-  // Force exact end values on last point
-  if (pts.length) {
-    pts[0] = { time: aT as any, value: aV };
-    const lastT = Math.max(bT, Number(pts[pts.length - 1].time));
-    pts[pts.length - 1] = { time: lastT as any, value: bV };
-    for (let i = 1; i < pts.length; i++) {
-      if (Number(pts[i].time) <= Number(pts[i - 1].time)) {
-        pts[i].time = (Number(pts[i - 1].time) + 1) as any;
-      }
-    }
-  }
-  return pts;
+  return [
+    { time: aT as any, value: aV },
+    { time: bT as any, value: bV },
+  ];
 }
 
 /** Format unix seconds in a given IANA timezone */
@@ -3086,8 +3072,9 @@ export default function DashboardPage() {
             if (logical < -0.05) {
               return candles[0].time + Math.round(logical) * barSec;
             }
+            // Snap to nearest bar, but keep exact candle time (critical for long diags in the past)
             const idx = Math.max(0, Math.min(lastIdx, Math.round(logical)));
-            return candles[idx].time;
+            return Number(candles[idx].time);
           }
           // Fallback: library time (only when inside data range)
           if (param.time != null) {
