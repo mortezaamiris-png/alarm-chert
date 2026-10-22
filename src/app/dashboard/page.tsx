@@ -3308,7 +3308,7 @@ export default function DashboardPage() {
         // Only block page scroll while actively drawing / dragging an endpoint
         const md = moveDiagRef.current;
         const dragging =
-          ((modeRef.current === "diag" || modeRef.current === "alarm-diag") &&
+          ((modeRef.current === "diag" || modeRef.current === "alarm-diag" || modeRef.current === "arrow") &&
             !!diagStartRef.current) ||
           (modeRef.current === "move" && md && (md.phase === "drag-a" || md.phase === "drag-b")) ||
           (modeRef.current === "measure" && !!measureStartRef.current);
@@ -3320,7 +3320,7 @@ export default function DashboardPage() {
       const onPointerMove = (e: PointerEvent) => {
         const m0 = modeRef.current;
         const isDiagDraw =
-          (m0 === "diag" || m0 === "alarm-diag") && !!diagStartRef.current;
+          (m0 === "diag" || m0 === "alarm-diag" || m0 === "arrow") && !!diagStartRef.current;
         const isDiagMove = m0 === "move" && !!moveDiagRef.current;
         const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
         const isMeasure =
@@ -3464,7 +3464,7 @@ export default function DashboardPage() {
             return;
           }
 
-          if ((modeNow === "diag" || modeNow === "alarm-diag" || modeNow === "arrow") && diagStartRef.current) {
+          if (((modeNow as ToolMode) === "diag" || (modeNow as ToolMode) === "alarm-diag" || (modeNow as ToolMode) === "arrow") && diagStartRef.current) {
             updateDiagPreview(tCursor, price);
             return;
           }
