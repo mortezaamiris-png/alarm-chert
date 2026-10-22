@@ -359,6 +359,7 @@ function userFacingNote(note?: string | null): string {
   if (!note) return "";
   const s = String(note).trim();
   if (!s) return "";
+  if (s === "__vline__") return "";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
     if (idx >= 0) return s.slice(idx + 1).trim();
@@ -808,6 +809,9 @@ export default function DashboardPage() {
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
+  /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
+  const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
+  const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
@@ -1622,6 +1626,7 @@ export default function DashboardPage() {
     const firstTime = candles[0].time;
     const extend = Math.max(1, Math.floor((lastTime - firstTime) * 0.15));
 
+    vlineItemsRef.current = [];
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -1646,33 +1651,17 @@ export default function DashboardPage() {
         if (hideLines) {
           // skip drawing lines when eye-hide is on
         } else if (isVLine) {
-          // Vertical line at start_time spanning price low→high
-          // LWC needs strictly increasing times; use many steps so it reads as a vertical bar
+          // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
-          const barSec = intervalToSeconds(String(intervalRef.current));
-          const v0 = Number(l.price);
-          const v1 = Number(l.end_price);
-          const dt = Math.max(1, Math.floor(barSec / 200));
-          const steps = 24;
-          const pts: { time: any; value: number }[] = [];
-          for (let i = 0; i <= steps; i++) {
-            pts.push({
-              time: (t + i * dt) as any,
-              value: v0 + ((v1 - v0) * i) / steps,
+          if (!Number.isNaN(t) && t > 0) {
+            vlineItemsRef.current.push({
+              id: String(l.id),
+              time: t,
+              color: color,
+              width: Math.max(1, Number(width) || 2),
+              dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
             });
           }
-          const ls: any = chart.addLineSeries({
-            color,
-            lineWidth: Math.max(2, width) as 1 | 2 | 3 | 4,
-            lineStyle: style,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-            title: title || "",
-            autoscaleInfoProvider: () => null as any,
-          });
-          ls.setData(pts);
-          chartLinesRef.current.set(l.id, ls);
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
@@ -1804,7 +1793,47 @@ export default function DashboardPage() {
     });
 
     // History / temp highlight: yellow dashed HORIZONTAL line (full)
-    if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag && !highlightRay) {
+    // Paint true-vertical DOM lines
+    const paintVLines = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      if (!host || !chart2) return;
+      host.innerHTML = "";
+      if (hideLines) return;
+      for (const v of vlineItemsRef.current) {
+        let x: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(v.time as any);
+        } catch { x = null; }
+        if (x == null || Number.isNaN(x)) continue;
+        const el = document.createElement("div");
+        el.dataset.vlineId = v.id;
+        el.style.position = "absolute";
+        el.style.top = "0";
+        el.style.bottom = "0";
+        el.style.left = `${x}px`;
+        el.style.width = `${Math.max(1, v.width)}px`;
+        el.style.transform = "translateX(-50%)";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        if (v.dash === "dashed" || v.dash === "dotted") {
+          el.style.background = "transparent";
+          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
+          el.style.width = "0";
+        } else {
+          el.style.background = v.color;
+        }
+        host.appendChild(el);
+      }
+    };
+    paintVLines();
+    try {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        requestAnimationFrame(paintVLines);
+      });
+    } catch {}
+
+        if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag && !highlightRay) {
       try {
         const pl = series.createPriceLine({
           price: highlightPrice,
@@ -2933,6 +2962,26 @@ export default function DashboardPage() {
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
           if (!range || programmaticRangeRef.current) return;
           userInteractingRef.current = true;
+          // Reposition DOM vertical lines while scrolling/zooming
+          try {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            if (host && chart2 && vlineItemsRef.current.length) {
+              for (const child of Array.from(host.children) as HTMLElement[]) {
+                const id = child.dataset.vlineId;
+                const item = vlineItemsRef.current.find((v) => v.id === id);
+                if (!item) continue;
+                let x: number | null = null;
+                try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+                if (x == null || Number.isNaN(x)) {
+                  child.style.display = "none";
+                } else {
+                  child.style.display = "block";
+                  child.style.left = `${x}px`;
+                }
+              }
+            }
+          } catch {}
           const bars = candlesRef.current.length;
           let pinned = false;
           if (bars >= 2) {
@@ -5630,7 +5679,7 @@ export default function DashboardPage() {
       <div className="flex gap-2">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
-          <div className="flex flex-col gap-1 shrink-0 self-stretch" style={{ minHeight: 640 }}>
+          <div className="flex flex-col gap-1 shrink-0 self-stretch" style={{ minHeight: 420 }}>
             {/* Hide tools — same idea as « Hide on coin list */}
             <button
               type="button"
@@ -5838,9 +5887,9 @@ export default function DashboardPage() {
               </svg>
             </button>
 
-            {/* Spacer — push measure / hide / trash to bottom of tools */}
-            <div className="flex-1 min-h-3" />
-            <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
+            {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
+            <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
+            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
 
             {/* Measure — classic ruler icon */}
             <button
@@ -6069,6 +6118,12 @@ export default function DashboardPage() {
                       ? "crosshair"
                       : "default",
             }}
+          />
+          {/* True vertical lines overlay (DOM) */}
+          <div
+            ref={vlineOverlayRef}
+            className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
+            style={{ zIndex: 4 }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -7512,10 +7567,13 @@ export default function DashboardPage() {
               <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
-                    {isDiagonalLine(l)
+                    {l.note === "__vline__"
+                      ? "Vertical"
+                      : isDiagonalLine(l)
                       ? `↗ ${formatPrice(l.price)}→${formatPrice(Number(l.end_price))}`
                       : formatPrice(l.price)}
                     {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
+                    {l.note === "__vline__" ? <span className="text-[10px] text-orange-400/80 ml-1">V</span> : null}
                   </span>
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === l.id && editingNoteType === "line" ? (
@@ -7543,7 +7601,7 @@ export default function DashboardPage() {
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {l.note && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:") && userFacingNote(l.note)
+                        {l.note && l.note !== "__vline__" && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:") && userFacingNote(l.note)
                           ? userFacingNote(l.note)
                           : "Note"}
                       </button>
