@@ -1632,6 +1632,15 @@ export default function DashboardPage() {
       if (lr) savedRange = { from: lr.from, to: lr.to };
     } catch {}
 
+    // Lock vertical scale so adding/removing diagonals cannot stretch candles
+    let lockedPriceRange: { from: number; to: number } | null = null;
+    try {
+      const pr = series.priceScale().getVisibleRange?.();
+      if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
+        lockedPriceRange = { from: Number(pr.from), to: Number(pr.to) };
+      }
+    } catch {}
+
     alarmLinesRef.current.forEach((pl) => {
       try { series.removePriceLine(pl); } catch {}
     });
@@ -1719,6 +1728,7 @@ export default function DashboardPage() {
             lastValueVisible: true,
             crosshairMarkerVisible: false,
             title: title || "",
+            autoscaleInfoProvider: () => null as any,
           });
           ls.setData([
             { time: l.start_time as any, value: l.price },
@@ -1954,6 +1964,13 @@ export default function DashboardPage() {
     } else if (savedRange) {
       try {
         chart.timeScale().setVisibleLogicalRange(savedRange);
+      } catch {}
+    }
+    // Restore price scale so diagonals never stretch candles
+    if (lockedPriceRange) {
+      try {
+        series.priceScale().setVisibleRange(lockedPriceRange);
+        priceRangeOverrideRef.current = lockedPriceRange;
       } catch {}
     }
   }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, highlightRay, hideLines, hideAlarms]);
@@ -4457,11 +4474,13 @@ export default function DashboardPage() {
         setTrashMenuOpen(false);
       }
     };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown);
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("touchstart", onDown, true);
+    document.addEventListener("pointerdown", onDown, true);
     return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("touchstart", onDown, true);
+      document.removeEventListener("pointerdown", onDown, true);
     };
   }, [
     tfMenuOpen,
