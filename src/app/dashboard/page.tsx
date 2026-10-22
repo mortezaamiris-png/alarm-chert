@@ -77,6 +77,10 @@ type ToolMode =
   | "ray"
   | "diag"
   | "vline"
+  | "arrow"
+  | "path"
+  | "brush"
+  | "curve"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -360,6 +364,9 @@ function userFacingNote(note?: string | null): string {
   const s = String(note).trim();
   if (!s) return "";
   if (s === "__vline__") return "";
+  if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
+  if (s.startsWith("__path:")) return "Path";
+  if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
     if (idx >= 0) return s.slice(idx + 1).trim();
@@ -581,6 +588,31 @@ function denseDiagPoints(
 }
 
 /** Format unix seconds in a given IANA timezone */
+
+/** Snap unix time to the candle that contains it (floor) — critical for rays on higher TFs */
+function snapTimeToBars(t: number, candles: { time: number }[]): number {
+  const n = Number(t);
+  if (!candles.length || Number.isNaN(n)) return n;
+  const first = Number(candles[0].time);
+  const last = Number(candles[candles.length - 1].time);
+  if (n <= first) return first;
+  if (n >= last) return last;
+  // binary search: largest candle.time <= n
+  let lo = 0, hi = candles.length - 1, best = first;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const ct = Number(candles[mid].time);
+    if (ct <= n) {
+      best = ct;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}
+
+
 function formatInTz(
   unixSec: number,
   tz: string,
@@ -1688,6 +1720,7 @@ export default function DashboardPage() {
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
+          const isArrow = l.note === "__arrow__" || (typeof l.note === "string" && l.note.startsWith("__arrow"));
           // Diagonals always solid continuous segment (dash looks like "gaps" on higher TF)
           const ls: any = chart.addLineSeries({
             color,
@@ -1703,11 +1736,51 @@ export default function DashboardPage() {
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
+          if (isArrow) {
+            try {
+              ls.setMarkers([
+                {
+                  time: et as any,
+                  position: "inBar",
+                  color,
+                  shape: "arrowUp",
+                  size: 2,
+                },
+              ]);
+            } catch {}
+          }
           chartLinesRef.current.set(l.id, ls);
+        } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
+          const raw = l.note.replace(/^__(?:path|curve):/, "");
+          const pairs = raw.split("|").map((s) => {
+            const [tt, pp] = s.split(",");
+            return { time: Number(tt), value: Number(pp) };
+          }).filter((p) => p.time > 0 && !Number.isNaN(p.value));
+          pairs.sort((a, b) => a.time - b.time);
+          for (let i = 1; i < pairs.length; i++) {
+            if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
+          }
+          if (pairs.length >= 2) {
+            const ls: any = chart.addLineSeries({
+              color,
+              lineWidth: width,
+              lineStyle: style,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              title: title || "",
+              autoscaleInfoProvider: () => null as any,
+            });
+            ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
+            chartLinesRef.current.set(l.id, ls);
+          }
         } else if (l.start_time != null) {
-          // Horizontal ray from start_time → far into future (to price scale edge)
+          // Horizontal ray: snap origin to current TF bars so higher TF has no gap
           const barSec = intervalToSeconds(String(intervalRef.current));
-          const rayEnd = lastTime + FUTURE_BARS * barSec;
+          const bars = candlesRef.current || [];
+          const t0 = snapTimeToBars(Number(l.start_time), bars);
+          const lastT = bars.length ? Number(bars[bars.length - 1].time) : Number(lastTime);
+          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false,
@@ -1716,10 +1789,21 @@ export default function DashboardPage() {
             title: title || "",
             autoscaleInfoProvider: () => null as any,
           });
-          ls.setData([
-            { time: l.start_time as any, value: l.price },
-            { time: rayEnd as any, value: l.price },
-          ]);
+          // Mid-points along the ray so LWC always has bar-aligned times on any TF
+          const rayPts: { time: any; value: number }[] = [{ time: t0 as any, value: l.price }];
+          const span = rayEnd - t0;
+          const steps = Math.max(2, Math.min(60, Math.ceil(span / Math.max(barSec, 1))));
+          for (let i = 1; i <= steps; i++) {
+            const tt = t0 + (span * i) / steps;
+            rayPts.push({ time: Math.round(tt) as any, value: l.price });
+          }
+          // ensure strictly increasing
+          for (let i = 1; i < rayPts.length; i++) {
+            if (Number(rayPts[i].time) <= Number(rayPts[i - 1].time)) {
+              rayPts[i].time = (Number(rayPts[i - 1].time) + 1) as any;
+            }
+          }
+          ls.setData(rayPts);
           chartLinesRef.current.set(l.id, ls);
         } else {
           const pl = series.createPriceLine({
@@ -1788,18 +1872,31 @@ export default function DashboardPage() {
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Horizontal ray alarm: from start_time → far future (to price scale)
+          // Horizontal ray alarm — snap to current TF bars (no gap on higher TF)
           const barSec = intervalToSeconds(String(intervalRef.current));
-          const rayEnd = lastTime + FUTURE_BARS * barSec;
+          const bars = candlesRef.current || [];
+          const t0 = snapTimeToBars(Number(a.start_time), bars);
+          const lastT = bars.length ? Number(bars[bars.length - 1].time) : Number(lastTime);
+          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           const ls: any = chart.addLineSeries({
             color, lineWidth: width, lineStyle: style,
             priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
             title: title || "",
+            autoscaleInfoProvider: () => null as any,
           });
-          ls.setData([
-            { time: Number(a.start_time) as any, value: a.price },
-            { time: rayEnd as any, value: a.price },
-          ]);
+          const rayPts: { time: any; value: number }[] = [{ time: t0 as any, value: a.price }];
+          const span = rayEnd - t0;
+          const steps = Math.max(2, Math.min(60, Math.ceil(span / Math.max(barSec, 1))));
+          for (let i = 1; i <= steps; i++) {
+            const tt = t0 + (span * i) / steps;
+            rayPts.push({ time: Math.round(tt) as any, value: a.price });
+          }
+          for (let i = 1; i < rayPts.length; i++) {
+            if (Number(rayPts[i].time) <= Number(rayPts[i - 1].time)) {
+              rayPts[i].time = (Number(rayPts[i - 1].time) + 1) as any;
+            }
+          }
+          ls.setData(rayPts);
           chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
         } else {
           const pl = series.createPriceLine({
@@ -3367,7 +3464,7 @@ export default function DashboardPage() {
             return;
           }
 
-          if ((modeNow === "diag" || modeNow === "alarm-diag") && diagStartRef.current) {
+          if ((modeNow === "diag" || modeNow === "alarm-diag" || modeNow === "arrow") && diagStartRef.current) {
             updateDiagPreview(tCursor, price);
             return;
           }
@@ -3870,7 +3967,7 @@ export default function DashboardPage() {
         }
 
         // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
-        if (m === "diag" || m === "alarm-diag") {
+        if (m === "diag" || m === "alarm-diag" || m === "arrow") {
           const t = resolveTime(param);
           if (t == null || Number.isNaN(t)) {
             setStatusMsg("Could not read time — try on chart area");
@@ -3927,6 +4024,7 @@ export default function DashboardPage() {
             start_time: start.time,
             end_time: endT,
             end_price: fp,
+            note: m === "arrow" ? "__arrow__" : null,
           };
 
           // Alarm-diag: save into alarms table
@@ -4134,6 +4232,145 @@ export default function DashboardPage() {
             setMode("none");
             setStatusMsg("");
           });
+          return;
+        }
+
+
+        // Path: multi-point polyline (double-click finishes)
+        if (m === "path") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const pts = pathPointsRef.current;
+          // Double-click detection via detail or second quick click near last
+          const isDbl = (param as any)?._dbl || false;
+          pts.push({ time: t, price: fp });
+          pathPointsRef.current = pts;
+          try {
+            if (!previewDiagSeriesRef.current) {
+              previewDiagSeriesRef.current = chart.addLineSeries({
+                color: drawColorRef.current,
+                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                lineStyle: LineStyle.Solid,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                autoscaleInfoProvider: () => null as any,
+              });
+            }
+            // Sort by time for LWC
+            const sorted = [...pts].sort((a, b) => a.time - b.time);
+            if (sorted.length >= 2) {
+              previewDiagSeriesRef.current.setData(
+                sorted.map((p) => ({ time: p.time as any, value: p.price }))
+              );
+            }
+          } catch {}
+          if (pts.length >= 2 && isDbl) {
+            // finish — save as diagonal-like multi via note
+            clickLockRef.current = true;
+            setSaving(true);
+            const first = pts[0];
+            const last = pts[pts.length - 1];
+            const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+            const base: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: first.price,
+              color: drawColorRef.current,
+              width: drawWidthRef.current,
+              dash: drawDashRef.current,
+              start_time: first.time,
+              end_time: last.time,
+              end_price: last.price,
+              note,
+            };
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fallback = {
+                symbol: base.symbol,
+                price: base.price,
+                color: base.color,
+                start_time: base.start_time,
+                note,
+              };
+              (fallback as any).user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fallback]).select().single());
+            }
+            if (!error && data) {
+              const saved = { ...(data as ChartLine), ...base, id: (data as any).id };
+              pushUndo();
+              setLines((prev) => [saved, ...prev]);
+              setStatusMsg("Path saved");
+            } else setStatusMsg("Path save failed");
+            pathPointsRef.current = [];
+            clearPreview();
+            setMode("none");
+            modeRef.current = "none";
+            setSaving(false);
+            setTimeout(() => { clickLockRef.current = false; }, 300);
+          } else {
+            setStatusMsg(`Path: ${pts.length} point(s) — double-click to finish`);
+          }
+          return;
+        }
+
+        // Curve: 3 points → quadratic-ish polyline
+        if (m === "curve") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const pts = pathPointsRef.current;
+          pts.push({ time: t, price: fp });
+          pathPointsRef.current = pts;
+          if (pts.length < 3) {
+            setStatusMsg(`Curve: point ${pts.length}/3`);
+            return;
+          }
+          // Build dense curve points (quadratic Bezier in time-price space)
+          const [p0, p1, p2] = pts;
+          const curvePts: { time: number; price: number }[] = [];
+          for (let i = 0; i <= 24; i++) {
+            const u = i / 24;
+            const mt = (1 - u) * (1 - u) * p0.time + 2 * (1 - u) * u * p1.time + u * u * p2.time;
+            const mp = (1 - u) * (1 - u) * p0.price + 2 * (1 - u) * u * p1.price + u * u * p2.price;
+            curvePts.push({ time: Math.round(mt), price: mp });
+          }
+          // ensure increasing times
+          for (let i = 1; i < curvePts.length; i++) {
+            if (curvePts[i].time <= curvePts[i - 1].time) curvePts[i].time = curvePts[i - 1].time + 1;
+          }
+          clickLockRef.current = true;
+          setSaving(true);
+          const note = `__curve:` + curvePts.map((p) => `${p.time},${p.price}`).join("|");
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: p0.price,
+            color: drawColorRef.current,
+            width: drawWidthRef.current,
+            dash: drawDashRef.current,
+            start_time: curvePts[0].time,
+            end_time: curvePts[curvePts.length - 1].time,
+            end_price: curvePts[curvePts.length - 1].price,
+            note,
+          };
+          (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+          let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+          if (error) {
+            const fallback = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+            (fallback as any).user_id = base.user_id;
+            ({ data, error } = await supabase.from("chart_lines").insert([fallback]).select().single());
+          }
+          if (!error && data) {
+            const saved = { ...(data as ChartLine), ...base, id: (data as any).id };
+            pushUndo();
+            setLines((prev) => [saved, ...prev]);
+            setStatusMsg("Curve saved");
+          } else setStatusMsg("Curve save failed");
+          pathPointsRef.current = [];
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
 
@@ -5972,6 +6209,143 @@ export default function DashboardPage() {
               </svg>
             </button>
 
+            {/* Separator — advanced drawing tools */}
+            <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
+
+            {/* Arrow */}
+            <button
+              type="button"
+              title="Arrow"
+              onClick={() => {
+                clearPreview();
+                setMode(mode === "arrow" ? "none" : "arrow");
+                setDiagStart(null);
+                setMovingId(null);
+                if (mode !== "arrow") setStatusMsg("Arrow: first point, then tip");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "arrow"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="5" y1="19" x2="19" y2="5" />
+                <polyline points="9,5 19,5 19,15" />
+              </svg>
+            </button>
+
+            {/* Path */}
+            <button
+              type="button"
+              title="Path"
+              onClick={async () => {
+                if (mode === "path" && pathPointsRef.current.length >= 2) {
+                  // Finish current path
+                  const pts = pathPointsRef.current;
+                  const first = pts[0];
+                  const last = pts[pts.length - 1];
+                  const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+                  const base: any = {
+                    symbol: symbol.toUpperCase(),
+                    price: first.price,
+                    color: drawColor,
+                    width: drawWidth,
+                    dash: drawDash,
+                    start_time: first.time,
+                    end_time: last.time,
+                    end_price: last.price,
+                    note,
+                  };
+                  try {
+                    (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                    let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+                    if (error) {
+                      const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                      (fb as any).user_id = base.user_id;
+                      ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                    }
+                    if (!error && data) {
+                      pushUndo();
+                      setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+                      setStatusMsg("Path saved");
+                    }
+                  } catch {}
+                  pathPointsRef.current = [];
+                  clearPreview();
+                  setMode("none");
+                  return;
+                }
+                clearPreview();
+                setMode(mode === "path" ? "none" : "path");
+                setDiagStart(null);
+                setMovingId(null);
+                pathPointsRef.current = [];
+                if (mode !== "path") setStatusMsg("Path: click points, click Path again to finish");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "path"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="4,18 8,10 13,14 20,6" />
+                <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+              </svg>
+            </button>
+
+            {/* Brush */}
+            <button
+              type="button"
+              title="Brush"
+              onClick={() => {
+                clearPreview();
+                setMode(mode === "brush" ? "none" : "brush");
+                setDiagStart(null);
+                setMovingId(null);
+                if (mode !== "brush") setStatusMsg("Brush: drag on chart");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "brush"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 20l4-1 9-9a2.5 2.5 0 10-3.5-3.5L4.5 15.5 4 20z" />
+                <path d="M13.5 6.5l3.5 3.5" />
+              </svg>
+            </button>
+
+            {/* Curve */}
+            <button
+              type="button"
+              title="Curve"
+              onClick={() => {
+                clearPreview();
+                setMode(mode === "curve" ? "none" : "curve");
+                setDiagStart(null);
+                setMovingId(null);
+                pathPointsRef.current = [];
+                if (mode !== "curve") setStatusMsg("Curve: 3 points (start, control, end)");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "curve"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 18C8 18 10 6 14 6s4 12 8 12" />
+              </svg>
+            </button>
+
             {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
             <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
             <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
@@ -6310,6 +6684,10 @@ export default function DashboardPage() {
           {(mode === "draw" ||
             mode === "ray" ||
             mode === "diag" ||
+            mode === "arrow" ||
+            mode === "path" ||
+            mode === "brush" ||
+            mode === "curve" ||
             mode === "alarm" ||
             mode === "alarm-ray" ||
             mode === "alarm-diag" ||
