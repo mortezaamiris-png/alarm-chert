@@ -543,7 +543,7 @@ function toLineStyle(dash?: string | null) {
   return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
 }
 
-/** Dense points along a diagonal so LWC never shows visual gaps on higher TFs */
+/** Points along a diagonal — keep endpoints exact; fill only when span is long */
 function denseDiagPoints(
   t0: number,
   t1: number,
@@ -552,23 +552,43 @@ function denseDiagPoints(
   barSec: number
 ): { time: any; value: number }[] {
   const bs = Math.max(1, barSec || 60);
-  if (t1 <= t0) {
+  let aT = Number(t0);
+  let bT = Number(t1);
+  let aV = Number(v0);
+  let bV = Number(v1);
+  if (bT < aT) {
+    const tmpT = aT; aT = bT; bT = tmpT;
+    const tmpV = aV; aV = bV; bV = tmpV;
+  }
+  if (bT <= aT) {
     return [
-      { time: t0 as any, value: v0 },
-      { time: (t0 + bs) as any, value: v1 },
+      { time: aT as any, value: aV },
+      { time: (aT + Math.max(1, Math.floor(bs / 4))) as any, value: bV },
     ];
   }
-  const steps = Math.max(2, Math.min(80, Math.ceil((t1 - t0) / bs) + 1));
+  // Always include exact endpoints; add mid points only for long segments
+  const spanBars = (bT - aT) / bs;
+  const steps = spanBars <= 2 ? 1 : Math.max(2, Math.min(48, Math.ceil(spanBars)));
   const pts: { time: any; value: number }[] = [];
   for (let i = 0; i <= steps; i++) {
-    const tt = t0 + ((t1 - t0) * i) / steps;
-    const vv = v0 + ((v1 - v0) * i) / steps;
-    pts.push({ time: Math.round(tt) as any, value: vv });
+    const r = i / steps;
+    const tt = Math.round(aT + (bT - aT) * r);
+    const vv = aV + (bV - aV) * r;
+    if (pts.length && Number(pts[pts.length - 1].time) >= tt) {
+      pts.push({ time: (Number(pts[pts.length - 1].time) + 1) as any, value: vv });
+    } else {
+      pts.push({ time: tt as any, value: vv });
+    }
   }
-  // Ensure strictly increasing times (LWC requirement)
-  for (let i = 1; i < pts.length; i++) {
-    if (Number(pts[i].time) <= Number(pts[i - 1].time)) {
-      pts[i].time = (Number(pts[i - 1].time) + 1) as any;
+  // Force exact end values on last point
+  if (pts.length) {
+    pts[0] = { time: aT as any, value: aV };
+    const lastT = Math.max(bT, Number(pts[pts.length - 1].time));
+    pts[pts.length - 1] = { time: lastT as any, value: bV };
+    for (let i = 1; i < pts.length; i++) {
+      if (Number(pts[i].time) <= Number(pts[i - 1].time)) {
+        pts[i].time = (Number(pts[i - 1].time) + 1) as any;
+      }
     }
   }
   return pts;
@@ -806,6 +826,7 @@ export default function DashboardPage() {
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
   const movingRayRef = useRef(false);
+  const movingVLineRef = useRef(false);
   const lastPriceLineRef = useRef<IPriceLine | null>(null);
   const alarmLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const chartLinesRef = useRef<Map<string, any>>(new Map());
@@ -3636,13 +3657,66 @@ export default function DashboardPage() {
             return;
           }
 
-          // ── Horizontal single-click move ──
+          // ── Horizontal / vertical / ray single-click move ──
           clickLockRef.current = true;
           try {
             if (typ === "line") {
-              // Ray: also move origin (start_time) so user can place it further left/right
-              const isRay = movingRayRef.current;
+              const isV = movingVLineRef.current;
+              const isRay = movingRayRef.current && !isV;
               const tMove = resolveTime(param);
+              if (isV) {
+                // Vertical line: move only in time; keep both ends on same timestamp
+                if (tMove == null || Number.isNaN(tMove)) {
+                  setStatusMsg("Could not read time");
+                } else {
+                  const bars = candlesRef.current;
+                  let lo = Infinity, hi = -Infinity;
+                  try {
+                    const pr = series.priceScale().getVisibleRange?.();
+                    if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
+                      lo = Number(pr.from);
+                      hi = Number(pr.to);
+                    }
+                  } catch {}
+                  if (!(hi > lo)) {
+                    for (const c of bars) {
+                      if (c.low < lo) lo = c.low;
+                      if (c.high > hi) hi = c.high;
+                    }
+                  }
+                  if (!(hi > lo)) {
+                    lo = fp * 0.98;
+                    hi = fp * 1.02;
+                  }
+                  const pad = (hi - lo) * 0.08;
+                  const patch: any = {
+                    start_time: tMove,
+                    end_time: tMove,
+                    price: lo - pad,
+                    end_price: hi + pad,
+                    note: "__vline__",
+                  };
+                  try {
+                    await supabase.from("chart_lines").update(patch).eq("id", id);
+                  } catch {}
+                  setLines((prev) =>
+                    prev.map((l) =>
+                      l.id === id
+                        ? {
+                            ...l,
+                            start_time: tMove,
+                            end_time: tMove,
+                            price: lo - pad,
+                            end_price: hi + pad,
+                            note: "__vline__",
+                          }
+                        : l
+                    )
+                  );
+                  setStatusMsg("Vertical line moved");
+                }
+              } else {
+              // Ray: also move origin (start_time) so user can place it further left/right
               const patch: any = { price: fp };
               if (isRay && tMove != null && !Number.isNaN(tMove)) {
                 patch.start_time = tMove;
@@ -3667,6 +3741,7 @@ export default function DashboardPage() {
                 )
               );
               setStatusMsg(isRay ? "Ray moved" : "Line moved");
+              }
             } else if (typ === "alarm") {
               const isRayAl = movingRayRef.current;
               const tMove = resolveTime(param);
@@ -3690,6 +3765,7 @@ export default function DashboardPage() {
               setStatusMsg(isRayAl ? "Ray alarm moved" : "Alarm moved");
             }
             movingRayRef.current = false;
+            movingVLineRef.current = false;
           } catch {
             setStatusMsg("Move failed");
           }
@@ -6996,7 +7072,7 @@ export default function DashboardPage() {
                           } catch {}
                         }}
                         onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                        className={`mb-1.5 mt-0.5 px-1 py-1 rounded-md group/sec cursor-default select-none border ${isDrag ? "opacity-70 border-orange-500/50 bg-orange-500/5" : "border-transparent hover:border-gray-700/80 hover:bg-gray-800/40"}`}
+                        className={`mb-1.5 mt-0.5 px-1 py-1 rounded-md group/sec cursor-default select-none border ${isDrag ? "opacity-40 border-orange-500/50 bg-orange-500/5 pointer-events-none" : "border-transparent hover:border-gray-700/80 hover:bg-gray-800/40"}`}
                       >
                         <div className="flex items-center gap-1 mb-0.5">
                           {secRenameId === row.id ? (
@@ -7236,7 +7312,7 @@ export default function DashboardPage() {
                       onClick={() => { if (!draggingSym) goToSymbol(sym); }}
                       className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none cursor-default ${
                         isDrag
-                          ? "opacity-45"
+                          ? "opacity-40 pointer-events-none"
                           : symbolUpper === sym
                             ? "bg-orange-500/15 ring-1 ring-orange-500/40"
                             : "hover:bg-gray-800/80"
@@ -7742,11 +7818,19 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
-                        // Ray = has start_time but is not a full diagonal segment
+                        const isV =
+                          l.note === "__vline__" ||
+                          (l.start_time != null &&
+                            l.end_time != null &&
+                            Number(l.start_time) === Number(l.end_time) &&
+                            l.end_price != null);
+                        movingVLineRef.current = !!isV;
+                        // Ray = has start_time but is not diagonal and not vertical
                         movingRayRef.current =
-                          l.start_time != null && !isDiagonalLine(l);
+                          !isV && l.start_time != null && !isDiagonalLine(l);
                         if (isDiagonalLine(l)) {
                           movingRayRef.current = false;
+                          movingVLineRef.current = false;
                           moveDiagRef.current = {
                             id: l.id,
                             phase: "pick",
