@@ -1025,6 +1025,7 @@ export default function DashboardPage() {
   useEffect(() => { hideIndicatorsRef.current = hideIndicators; }, [hideIndicators]);
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
+  const [drawToolsOpen, setDrawToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
   const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
