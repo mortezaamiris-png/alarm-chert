@@ -1090,6 +1090,53 @@ export default function DashboardPage() {
   const diagStartRef = useRef(diagStart);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
+  // Vertical tool: emphasize vertical crosshair, hide horizontal guide
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      if (mode === "vline") {
+        chart.applyOptions({
+          crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: {
+              visible: true,
+              labelVisible: true,
+              width: 1,
+              style: LineStyle.Dashed,
+              color: "rgba(249, 115, 22, 0.85)",
+            },
+            horzLine: {
+              visible: false,
+              labelVisible: false,
+            },
+          },
+        } as any);
+      } else if (mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray") {
+        chart.applyOptions({
+          crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: { visible: false, labelVisible: false },
+            horzLine: {
+              visible: true,
+              labelVisible: true,
+              width: 1,
+              style: LineStyle.Dashed,
+              color: "rgba(249, 115, 22, 0.85)",
+            },
+          },
+        } as any);
+      } else {
+        chart.applyOptions({
+          crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: { visible: true, labelVisible: true, color: "rgba(156,163,175,0.6)" },
+            horzLine: { visible: true, labelVisible: true, color: "rgba(156,163,175,0.6)" },
+          },
+        } as any);
+      }
+    } catch {}
+  }, [mode]);
   useEffect(() => { conditionRef.current = condition; }, [condition]);
   useEffect(() => { movingIdRef.current = movingId; }, [movingId]);
   useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
@@ -1600,14 +1647,23 @@ export default function DashboardPage() {
           // skip drawing lines when eye-hide is on
         } else if (isVLine) {
           // Vertical line at start_time spanning price low→high
+          // LWC needs strictly increasing times; use many steps so it reads as a vertical bar
           const t = Number(l.start_time);
           const barSec = intervalToSeconds(String(intervalRef.current));
           const v0 = Number(l.price);
           const v1 = Number(l.end_price);
-          const t2 = t + Math.max(1, Math.floor(barSec / 120));
+          const dt = Math.max(1, Math.floor(barSec / 200));
+          const steps = 24;
+          const pts: { time: any; value: number }[] = [];
+          for (let i = 0; i <= steps; i++) {
+            pts.push({
+              time: (t + i * dt) as any,
+              value: v0 + ((v1 - v0) * i) / steps,
+            });
+          }
           const ls: any = chart.addLineSeries({
             color,
-            lineWidth: width,
+            lineWidth: Math.max(2, width) as 1 | 2 | 3 | 4,
             lineStyle: style,
             priceLineVisible: false,
             lastValueVisible: false,
@@ -1615,10 +1671,7 @@ export default function DashboardPage() {
             title: title || "",
             autoscaleInfoProvider: () => null as any,
           });
-          ls.setData([
-            { time: t as any, value: v0 },
-            { time: t2 as any, value: v1 },
-          ]);
+          ls.setData(pts);
           chartLinesRef.current.set(l.id, ls);
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
@@ -3320,10 +3373,21 @@ export default function DashboardPage() {
           if (!(modeRef.current === "move" && md0 && md0.phase === "pick")) return;
         }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
-        const price = series.coordinateToPrice(param.point.y);
-        if (price == null || Number.isNaN(price)) return;
-        const fp = formatPrice(price);
         const m = modeRef.current;
+        // Vertical line only needs time (x) — do not require a valid price
+        let price: number | null = series.coordinateToPrice(param.point.y);
+        if ((price == null || Number.isNaN(price)) && m !== "vline") return;
+        if (price == null || Number.isNaN(price)) {
+          // fallback for vline: mid of last candle range
+          const bars0 = candlesRef.current;
+          if (bars0.length) {
+            const last = bars0[bars0.length - 1];
+            price = (Number(last.high) + Number(last.low)) / 2;
+          } else {
+            price = 0;
+          }
+        }
+        const fp = formatPrice(price);
 
         if (m === "move" && movingIdRef.current) {
           const id = movingIdRef.current;
@@ -3595,15 +3659,25 @@ export default function DashboardPage() {
           }
           const bars = candlesRef.current;
           let lo = Infinity, hi = -Infinity;
-          for (const c of bars) {
-            if (c.low < lo) lo = c.low;
-            if (c.high > hi) hi = c.high;
+          // Prefer visible price range so the vertical line spans the whole chart pane
+          try {
+            const pr = series.priceScale().getVisibleRange?.();
+            if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
+              lo = Number(pr.from);
+              hi = Number(pr.to);
+            }
+          } catch {}
+          if (!(hi > lo)) {
+            for (const c of bars) {
+              if (c.low < lo) lo = c.low;
+              if (c.high > hi) hi = c.high;
+            }
           }
           if (!(hi > lo)) {
             lo = fp * 0.98;
             hi = fp * 1.02;
           }
-          const pad = (hi - lo) * 0.05;
+          const pad = (hi - lo) * 0.08;
           const color = drawColorRef.current || DEFAULT_LINE_COLOR;
           const width = drawWidthRef.current || 2;
           const dash = drawDashRef.current || "solid";
@@ -5556,7 +5630,7 @@ export default function DashboardPage() {
       <div className="flex gap-2">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
-          <div className="flex flex-col gap-1 shrink-0">
+          <div className="flex flex-col gap-1 shrink-0 self-stretch" style={{ minHeight: 640 }}>
             {/* Hide tools — same idea as « Hide on coin list */}
             <button
               type="button"
@@ -5763,6 +5837,10 @@ export default function DashboardPage() {
                 <line x1="9" y1="21" x2="15" y2="21" />
               </svg>
             </button>
+
+            {/* Spacer — push measure / hide / trash to bottom of tools */}
+            <div className="flex-1 min-h-3" />
+            <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
 
             {/* Measure — classic ruler icon */}
             <button
@@ -5977,7 +6055,20 @@ export default function DashboardPage() {
           <div
             ref={chartContainerRef}
             className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
-            style={{ height: 640, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
+            style={{
+              height: 640,
+              touchAction: "none",
+              WebkitUserSelect: "none",
+              userSelect: "none",
+              cursor:
+                mode === "vline"
+                  ? "col-resize"
+                  : mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray"
+                    ? "row-resize"
+                    : mode === "diag" || mode === "alarm-diag" || mode === "measure"
+                      ? "crosshair"
+                      : "default",
+            }}
           />
           {statusMsg === "Loading..." && (
             <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
