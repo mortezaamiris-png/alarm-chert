@@ -1701,13 +1701,20 @@ export default function DashboardPage() {
             ? String(l.note)
             : "";
         const title = isMoving ? "MOVING" : noteClean;
+        const isArrowMark =
+          typeof l.note === "string" &&
+          (l.note === "__arrow_up__" ||
+            l.note === "__arrow_down__" ||
+            l.note === "__arrow_marker__" ||
+            l.note.startsWith("__arrow"));
         const isVLine =
-          l.note === "__vline__" ||
-          (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
-          (l.start_time != null &&
-            l.end_time != null &&
-            Number(l.start_time) === Number(l.end_time) &&
-            l.end_price != null);
+          !isArrowMark &&
+          (l.note === "__vline__" ||
+            (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
+            (l.start_time != null &&
+              l.end_time != null &&
+              Number(l.start_time) === Number(l.end_time) &&
+              l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
         } else if (isVLine) {
@@ -3752,24 +3759,27 @@ export default function DashboardPage() {
             }
           };
           for (const l of list) {
-            const isV =
-              l.note === "__vline__" ||
-              (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
-              (l.start_time != null &&
-                l.end_time != null &&
-                Number(l.start_time) === Number(l.end_time) &&
-                l.end_price != null);
-            const isDiag = isDiagonalLine(l);
-            const isRay =
-              !isV &&
-              !isDiag &&
-              l.start_time != null &&
-              (l.end_time == null || l.end_price == null);
             const isArrow =
               typeof l.note === "string" &&
               (l.note === "__arrow_up__" ||
                 l.note === "__arrow_down__" ||
-                l.note === "__arrow_marker__");
+                l.note === "__arrow_marker__" ||
+                l.note.startsWith("__arrow"));
+            const isV =
+              !isArrow &&
+              (l.note === "__vline__" ||
+                (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
+                (l.start_time != null &&
+                  l.end_time != null &&
+                  Number(l.start_time) === Number(l.end_time) &&
+                  l.end_price != null));
+            const isDiag = isDiagonalLine(l);
+            const isRay =
+              !isV &&
+              !isDiag &&
+              !isArrow &&
+              l.start_time != null &&
+              (l.end_time == null || l.end_price == null);
             try {
               if (isV && l.start_time != null) {
                 const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
@@ -3810,34 +3820,132 @@ export default function DashboardPage() {
               }
             } catch {}
           }
-          const best = hitBox.current;
+          // Also hit-test alarm lines (horizontal / ray / diagonal)
+          const alarmList = (alarmsRef.current || []).filter(
+            (a) =>
+              String(a.symbol || "").toUpperCase() === symU &&
+              a.is_active !== false &&
+              !a.triggered
+          );
+          type AlarmHit = {
+            id: string;
+            kind: "alarm";
+            score: number;
+            isV: boolean;
+            isRay: boolean;
+            isDiag: boolean;
+          };
+          const alarmBox: { current: AlarmHit | null } = { current: null };
+          const considerAlarm = (
+            id: string,
+            score: number,
+            isV: boolean,
+            isRay: boolean,
+            isDiag: boolean
+          ) => {
+            if (score > HIT) return;
+            if (!alarmBox.current || score < alarmBox.current.score) {
+              alarmBox.current = { id, kind: "alarm", score, isV, isRay, isDiag };
+            }
+          };
+          for (const a of alarmList) {
+            try {
+              if (isDiagonalLine(a)) {
+                const x0 = chart.timeScale().timeToCoordinate(Number(a.start_time) as any);
+                const x1 = chart.timeScale().timeToCoordinate(Number(a.end_time) as any);
+                const y0 = series.priceToCoordinate(Number(a.price));
+                const y1 = series.priceToCoordinate(Number(a.end_price));
+                if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                  const dx = x1 - x0, dy = y1 - y0;
+                  const len2 = dx * dx + dy * dy || 1;
+                  let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+                  t = Math.max(0, Math.min(1, t));
+                  const cx = x0 + t * dx, cy = y0 + t * dy;
+                  considerAlarm(a.id, Math.hypot(px - cx, py - cy), false, false, true);
+                }
+              } else if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
+                // ray alarm
+                const x0 = chart.timeScale().timeToCoordinate(Number(a.start_time) as any);
+                const y = series.priceToCoordinate(Number(a.price));
+                if (y != null) {
+                  const dy = Math.abs(py - y);
+                  if (x0 == null || Number.isNaN(x0) || px >= x0 - 8) {
+                    considerAlarm(a.id, dy, false, true, false);
+                  }
+                }
+              } else {
+                // horizontal alarm
+                const y = series.priceToCoordinate(Number(a.price));
+                if (y != null) considerAlarm(a.id, Math.abs(py - y), false, false, false);
+              }
+            } catch {}
+          }
+
+          const bestLine = hitBox.current;
+          const bestAlarm = alarmBox.current;
+          let best:
+            | { id: string; kind: "line" | "alarm"; score: number; isV: boolean; isRay: boolean; isDiag: boolean }
+            | null = null;
+          if (bestLine && bestAlarm) {
+            best = bestLine.score <= bestAlarm.score
+              ? { ...bestLine, kind: "line" }
+              : { ...bestAlarm, kind: "alarm" };
+          } else if (bestLine) {
+            best = { ...bestLine, kind: "line" };
+          } else if (bestAlarm) {
+            best = { ...bestAlarm, kind: "alarm" };
+          }
+
           if (best) {
             setMode("move");
             setMovingId(best.id);
-            setMovingType("line");
+            setMovingType(best.kind);
             movingVLineRef.current = best.isV;
             movingRayRef.current = best.isRay;
-            const l = list.find((x) => x.id === best.id);
-            if (l && best.isDiag) {
-              moveDiagRef.current = {
-                id: l.id,
-                phase: "pick",
-                pointA: { time: Number(l.start_time), price: Number(l.price) },
-                pointB: { time: Number(l.end_time), price: Number(l.end_price) },
-                color: l.color || DEFAULT_LINE_COLOR,
-                width: l.width || 2,
-                dash: (l.dash || l.style || "solid") as string,
-              };
-              setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
-            } else if (best.isV) {
-              moveDiagRef.current = null;
-              setStatusMsg("Click chart to move vertical line");
-            } else if (best.isRay) {
-              moveDiagRef.current = null;
-              setStatusMsg("Click chart to move ray");
+            if (best.kind === "line") {
+              const l = list.find((x) => x.id === best!.id);
+              if (l && best.isDiag) {
+                moveDiagRef.current = {
+                  id: l.id,
+                  phase: "pick",
+                  pointA: { time: Number(l.start_time), price: Number(l.price) },
+                  pointB: { time: Number(l.end_time), price: Number(l.end_price) },
+                  color: l.color || DEFAULT_LINE_COLOR,
+                  width: l.width || 2,
+                  dash: (l.dash || l.style || "solid") as string,
+                };
+                setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
+              } else if (best.isV) {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move vertical line");
+              } else if (best.isRay) {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move ray");
+              } else {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move line");
+              }
             } else {
-              moveDiagRef.current = null;
-              setStatusMsg("Click chart to move line");
+              // alarm
+              const a = alarmList.find((x) => x.id === best!.id);
+              if (a && best.isDiag) {
+                moveDiagRef.current = {
+                  id: a.id,
+                  phase: "pick",
+                  pointA: { time: Number(a.start_time), price: Number(a.price) },
+                  pointB: { time: Number(a.end_time), price: Number(a.end_price) },
+                  color: a.color || DEFAULT_ALARM_COLOR,
+                  width: a.width || 2,
+                  dash: (a.dash || "solid") as string,
+                };
+                setStatusMsg("Tap a circle to move alarm — empty chart or ✓ Done");
+              } else if (best.isRay) {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move alarm ray");
+              } else {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move alarm");
+              }
             }
             return;
           }
