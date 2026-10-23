@@ -928,11 +928,22 @@ export default function DashboardPage() {
     loadLS("chart_type", "candles")
   );
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
-  /** Multi-pane layout: 1 | 2h | 2v | 4 */
-  const [chartLayout, setChartLayout] = useState<"1" | "2h" | "2v" | "4">(() =>
+  /** Multi-pane layout like TradingView */
+  const [chartLayout, setChartLayout] = useState<"1" | "2h" | "2v" | "3" | "4">(() =>
     loadLS("chart_layout", "1")
   );
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
+  /** Symbols for extra panes (pane 0 = main `symbol`) */
+  const [paneSymbols, setPaneSymbols] = useState<string[]>(() => {
+    const saved = loadLS<string[]>("pane_symbols", ["ETHUSDT", "SOLUSDT", "BNBUSDT"]);
+    return Array.isArray(saved) && saved.length >= 3 ? saved : ["ETHUSDT", "SOLUSDT", "BNBUSDT"];
+  });
+  const pane2Ref = useRef<HTMLDivElement>(null);
+  const pane3Ref = useRef<HTMLDivElement>(null);
+  const pane4Ref = useRef<HTMLDivElement>(null);
+  const secondaryChartsRef = useRef<
+    Map<number, { chart: IChartApi; series: any; symbol: string }>
+  >(new Map());
   /** Undo / Redo stacks (lines + active alarms snapshots) */
   const undoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
   const redoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
@@ -1291,6 +1302,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("show_side_wl", showSideWl); }, [showSideWl]);
   useEffect(() => { saveLS("chart_type", chartType); }, [chartType]);
   useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
+  useEffect(() => { saveLS("pane_symbols", paneSymbols); }, [paneSymbols]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
   // Keyboard Undo / Redo
@@ -5240,6 +5252,180 @@ export default function DashboardPage() {
     }
   }, [destroyChart, rebuildIndicators, renderAllLinesAndAlarms, clearPreview, applyLastPriceLabel]);
 
+  // ── Secondary multi-pane charts (view-only + symbol switch) ──
+  useEffect(() => {
+    const need =
+      chartLayout === "2h" || chartLayout === "2v"
+        ? 1
+        : chartLayout === "3"
+        ? 2
+        : chartLayout === "4"
+        ? 3
+        : 0;
+
+    const parseRows = (rows: any[]) => {
+      const out: { time: number; open: number; high: number; low: number; close: number }[] = [];
+      for (const r of rows) {
+        let t = Number(r.time ?? r[0] ?? r.openTime ?? r.open_time);
+        if (t > 1e12) t = Math.floor(t / 1000);
+        if (!(t > 0)) continue;
+        const o = Number(r.open ?? r[1]);
+        const h = Number(r.high ?? r[2]);
+        const l = Number(r.low ?? r[3]);
+        const c = Number(r.close ?? r[4]);
+        if ([o, h, l, c].some((x) => Number.isNaN(x))) continue;
+        out.push({ time: t, open: o, high: h, low: l, close: c });
+      }
+      out.sort((a, b) => a.time - b.time);
+      // dedupe
+      const dedup: typeof out = [];
+      for (const c of out) {
+        if (dedup.length && dedup[dedup.length - 1].time === c.time) dedup[dedup.length - 1] = c;
+        else dedup.push(c);
+      }
+      return dedup;
+    };
+
+    const mountPane = async (idx: number, el: HTMLDivElement | null, sym: string) => {
+      if (!el || need <= idx) {
+        const prev = secondaryChartsRef.current.get(idx);
+        if (prev) {
+          try { prev.chart.remove(); } catch {}
+          secondaryChartsRef.current.delete(idx);
+        }
+        return;
+      }
+      const cleanSym = chartSymbol(sym) || sym;
+      let entry = secondaryChartsRef.current.get(idx);
+      if (!entry || entry.symbol !== cleanSym) {
+        if (entry) {
+          try { entry.chart.remove(); } catch {}
+          secondaryChartsRef.current.delete(idx);
+        }
+        // wait for layout size
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        if (el.clientWidth < 40 || el.clientHeight < 40) {
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        try {
+          const chart = createChart(el, {
+            width: el.clientWidth,
+            height: el.clientHeight,
+            layout: {
+              background: { color: "#000000" } as any,
+              textColor: "#9ca3af",
+              fontSize: 10,
+            },
+            grid: {
+              vertLines: { color: "rgba(42,46,57,0.5)" },
+              horzLines: { color: "rgba(42,46,57,0.5)" },
+            },
+            rightPriceScale: { borderVisible: false },
+            timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+            crosshair: { mode: CrosshairMode.Normal },
+          });
+          const series = chart.addCandlestickSeries({
+            upColor: "#22c55e",
+            downColor: "#ef4444",
+            borderUpColor: "#22c55e",
+            borderDownColor: "#ef4444",
+            wickUpColor: "#22c55e",
+            wickDownColor: "#ef4444",
+          });
+          entry = { chart, series, symbol: cleanSym };
+          secondaryChartsRef.current.set(idx, entry);
+        } catch {
+          return;
+        }
+      }
+      try {
+        const iv = String(intervalRef.current || "15");
+        const res = await fetch(
+          `/api/kline?symbol=${encodeURIComponent(cleanSym)}&interval=${encodeURIComponent(iv)}&limit=300`,
+          { cache: "no-store" }
+        );
+        const raw = await res.json();
+        const rows = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || [];
+        const candles = parseRows(rows);
+        if (candles.length && entry) {
+          entry.series.setData(candles as any);
+          try {
+            entry.chart.timeScale().fitContent();
+          } catch {}
+        }
+      } catch {}
+    };
+
+    const el2 = pane2Ref.current;
+    const el3 = pane3Ref.current;
+    const el4 = pane4Ref.current;
+    void mountPane(0, el2, paneSymbols[0] || "ETHUSDT");
+    void mountPane(1, el3, paneSymbols[1] || "SOLUSDT");
+    void mountPane(2, el4, paneSymbols[2] || "BNBUSDT");
+
+    const onResize = () => {
+      secondaryChartsRef.current.forEach((entry, idx) => {
+        const el = idx === 0 ? pane2Ref.current : idx === 1 ? pane3Ref.current : pane4Ref.current;
+        if (!el) return;
+        try {
+          entry.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+        } catch {}
+      });
+      if (chartRef.current && chartContainerRef.current) {
+        try {
+          chartRef.current.applyOptions({
+            width: chartContainerRef.current.clientWidth,
+            height: chartContainerRef.current.clientHeight,
+          });
+        } catch {}
+      }
+    };
+    window.addEventListener("resize", onResize);
+    const t = window.setTimeout(onResize, 100);
+
+    // light poll for secondary panes
+    const poll = window.setInterval(() => {
+      if (need < 1) return;
+      secondaryChartsRef.current.forEach((entry, idx) => {
+        const sym = paneSymbols[idx];
+        if (!sym) return;
+        const cleanSym = chartSymbol(sym) || sym;
+        const iv = String(intervalRef.current || "15");
+        fetch(
+          `/api/kline?symbol=${encodeURIComponent(cleanSym)}&interval=${encodeURIComponent(iv)}&limit=3`,
+          { cache: "no-store" }
+        )
+          .then((r) => r.json())
+          .then((raw) => {
+            const rows = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || [];
+            const candles = parseRows(rows);
+            if (!candles.length) return;
+            const last = candles[candles.length - 1];
+            try {
+              entry.series.update(last as any);
+            } catch {
+              try {
+                entry.series.setData(candles as any);
+              } catch {}
+            }
+          })
+          .catch(() => {});
+      });
+    }, 8000);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.clearTimeout(t);
+      window.clearInterval(poll);
+      if (need === 0) {
+        secondaryChartsRef.current.forEach((entry) => {
+          try { entry.chart.remove(); } catch {}
+        });
+        secondaryChartsRef.current.clear();
+      }
+    };
+  }, [chartLayout, paneSymbols, interval]);
+
   // همیشه آخرین loadCandles را در ref نگه دار تا useEffect با عوض شدن identity دوباره لود نکند
   loadCandlesRef.current = loadCandles;
 
@@ -6715,27 +6901,92 @@ export default function DashboardPage() {
               </button>
               {showLayoutMenu && (
                 <div
-                  className="absolute z-50 top-full right-0 mt-1.5 border border-white/20 rounded-xl p-2 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[140px]"
+                  className="absolute z-50 top-full right-0 mt-1.5 border border-white/20 rounded-xl p-3 shadow-[0_8px_40px_rgba(0,0,0,0.5)] isolate min-w-[200px]"
                   style={{ background: "rgba(20,20,22,0.92)", backdropFilter: "blur(24px)" }}
                 >
-                  <div className="text-[10px] text-gray-500 px-1 mb-1">Layout</div>
-                  {([
-                    ["1", "1 chart"],
-                    ["2h", "2 horizontal"],
-                    ["2v", "2 vertical"],
-                    ["4", "4 charts"],
-                  ] as const).map(([k, label]) => (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => { setChartLayout(k); setShowLayoutMenu(false); setStatusMsg(`Layout: ${label}`); }}
-                      className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-white/10 ${
-                        chartLayout === k ? "text-orange-300" : "text-gray-200"
-                      }`}
-                    >
-                      {chartLayout === k ? "✓ " : ""}{label}
-                    </button>
-                  ))}
+                  <div className="text-[10px] text-gray-500 px-1 mb-2 font-medium tracking-wide">LAYOUT</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      ["1", "1", "col"],
+                      ["2h", "2", "row"],
+                      ["2v", "2", "col"],
+                      ["3", "3", "3"],
+                      ["4", "4", "grid"],
+                    ] as const).map(([k, n, kind]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        title={
+                          k === "1" ? "1 chart" :
+                          k === "2h" ? "2 side by side" :
+                          k === "2v" ? "2 stacked" :
+                          k === "3" ? "3 charts" : "4 charts"
+                        }
+                        onClick={() => {
+                          setChartLayout(k);
+                          setShowLayoutMenu(false);
+                          setStatusMsg(
+                            k === "1" ? "Layout: 1 chart" :
+                            k === "2h" ? "Layout: 2 horizontal" :
+                            k === "2v" ? "Layout: 2 vertical" :
+                            k === "3" ? "Layout: 3 charts" : "Layout: 4 charts"
+                          );
+                          // Resize main chart after layout change
+                          setTimeout(() => {
+                            try {
+                              if (chartRef.current && chartContainerRef.current) {
+                                chartRef.current.applyOptions({
+                                  width: chartContainerRef.current.clientWidth,
+                                  height: chartContainerRef.current.clientHeight,
+                                });
+                              }
+                            } catch {}
+                          }, 80);
+                        }}
+                        className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-colors ${
+                          chartLayout === k
+                            ? "border-orange-500 bg-orange-500/15 text-orange-300"
+                            : "border-white/10 text-gray-300 hover:bg-white/10"
+                        }`}
+                      >
+                        <span className="w-10 h-8 flex items-center justify-center">
+                          {k === "1" && (
+                            <span className="w-8 h-6 border border-current rounded-sm" />
+                          )}
+                          {k === "2h" && (
+                            <span className="flex gap-0.5 w-8 h-6">
+                              <span className="flex-1 border border-current rounded-sm" />
+                              <span className="flex-1 border border-current rounded-sm" />
+                            </span>
+                          )}
+                          {k === "2v" && (
+                            <span className="flex flex-col gap-0.5 w-8 h-6">
+                              <span className="flex-1 border border-current rounded-sm" />
+                              <span className="flex-1 border border-current rounded-sm" />
+                            </span>
+                          )}
+                          {k === "3" && (
+                            <span className="flex flex-col gap-0.5 w-8 h-6">
+                              <span className="flex-1 border border-current rounded-sm" />
+                              <span className="flex flex-1 gap-0.5">
+                                <span className="flex-1 border border-current rounded-sm" />
+                                <span className="flex-1 border border-current rounded-sm" />
+                              </span>
+                            </span>
+                          )}
+                          {k === "4" && (
+                            <span className="grid grid-cols-2 gap-0.5 w-8 h-6">
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px]">{n}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -7285,39 +7536,189 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Chart */}
-        <div className="flex-1 min-w-0 relative">
+        {/* Chart — multi-pane layout */}
+        <div className="flex-1 min-w-0 relative" style={{ height: 640 }}>
           <div
-            ref={chartContainerRef}
-            className="w-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
-            style={{
-              height: 640,
-              touchAction: "none",
-              WebkitUserSelect: "none",
-              userSelect: "none",
-              cursor:
-                mode === "vline"
-                  ? "col-resize"
-                  : mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray"
-                    ? "row-resize"
-                    : mode === "diag" || mode === "alarm-diag" || mode === "measure"
-                      ? "crosshair"
-                      : "default",
-            }}
-          />
-          {/* True vertical lines overlay (DOM) */}
-          <div
-            ref={vlineOverlayRef}
-            className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-            style={{ zIndex: 4 }}
-          />
-          {statusMsg === "Loading..." && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
-              <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
-                Loading…
+            className={
+              chartLayout === "1"
+                ? "h-full w-full"
+                : chartLayout === "2h"
+                ? "h-full w-full grid grid-cols-2 gap-1"
+                : chartLayout === "2v"
+                ? "h-full w-full grid grid-rows-2 gap-1"
+                : chartLayout === "3"
+                ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
+                : "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
+            }
+          >
+            {/* Main chart (always pane 0) */}
+            <div
+              className={`relative min-h-0 min-w-0 ${
+                chartLayout === "3" ? "col-span-2" : ""
+              }`}
+            >
+              <div
+                ref={chartContainerRef}
+                className="w-full h-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+                style={{
+                  touchAction: "none",
+                  WebkitUserSelect: "none",
+                  userSelect: "none",
+                  cursor:
+                    mode === "vline"
+                      ? "col-resize"
+                      : mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray"
+                        ? "row-resize"
+                        : mode === "diag" || mode === "alarm-diag" || mode === "measure"
+                          ? "crosshair"
+                          : "default",
+                }}
+              />
+              {/* True vertical lines overlay (DOM) — main pane only */}
+              <div
+                ref={vlineOverlayRef}
+                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
+                style={{ zIndex: 4 }}
+              />
+              {statusMsg === "Loading..." && (
+                <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
+                  <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
+                    Loading…
+                  </div>
+                </div>
+              )}
+              <div className="absolute top-1.5 left-2 z-10 text-[10px] font-semibold text-orange-300/90 pointer-events-none">
+                {symbolUpper}
               </div>
             </div>
-          )}
+
+            {/* Extra panes */}
+            {(chartLayout === "2h" || chartLayout === "2v" || chartLayout === "3" || chartLayout === "4") && (
+              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
+                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
+                  <select
+                    value={paneSymbols[0] || "ETHUSDT"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPaneSymbols((prev) => {
+                        const n = [...prev];
+                        n[0] = v;
+                        return n;
+                      });
+                    }}
+                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
+                  >
+                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
+                      .filter(Boolean)
+                      .filter((s, i, a) => a.indexOf(s) === i)
+                      .slice(0, 40)
+                      .map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    title="Open in main"
+                    onClick={() => {
+                      const s = paneSymbols[0];
+                      if (s) {
+                        setSymbol(s);
+                        setStatusMsg(`Main: ${s}`);
+                      }
+                    }}
+                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                  >
+                    Main
+                  </button>
+                </div>
+                <div ref={pane2Ref} className="w-full h-full" />
+              </div>
+            )}
+
+            {(chartLayout === "3" || chartLayout === "4") && (
+              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
+                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
+                  <select
+                    value={paneSymbols[1] || "SOLUSDT"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPaneSymbols((prev) => {
+                        const n = [...prev];
+                        n[1] = v;
+                        return n;
+                      });
+                    }}
+                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
+                  >
+                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
+                      .filter(Boolean)
+                      .filter((s, i, a) => a.indexOf(s) === i)
+                      .slice(0, 40)
+                      .map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    title="Open in main"
+                    onClick={() => {
+                      const s = paneSymbols[1];
+                      if (s) {
+                        setSymbol(s);
+                        setStatusMsg(`Main: ${s}`);
+                      }
+                    }}
+                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                  >
+                    Main
+                  </button>
+                </div>
+                <div ref={pane3Ref} className="w-full h-full" />
+              </div>
+            )}
+
+            {chartLayout === "4" && (
+              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
+                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
+                  <select
+                    value={paneSymbols[2] || "BNBUSDT"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPaneSymbols((prev) => {
+                        const n = [...prev];
+                        n[2] = v;
+                        return n;
+                      });
+                    }}
+                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
+                  >
+                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
+                      .filter(Boolean)
+                      .filter((s, i, a) => a.indexOf(s) === i)
+                      .slice(0, 40)
+                      .map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    title="Open in main"
+                    onClick={() => {
+                      const s = paneSymbols[2];
+                      if (s) {
+                        setSymbol(s);
+                        setStatusMsg(`Main: ${s}`);
+                      }
+                    }}
+                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
+                  >
+                    Main
+                  </button>
+                </div>
+                <div ref={pane4Ref} className="w-full h-full" />
+              </div>
+            )}
+          </div>
           {/* Hollow circle handles for diagonal Move — overlay on chart */}
           <div
             ref={handleAElRef}
