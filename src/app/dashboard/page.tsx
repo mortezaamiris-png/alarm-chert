@@ -1554,6 +1554,9 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-vline-guide]").forEach((el) => el.remove());
+    } catch {}
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1787,15 +1790,34 @@ export default function DashboardPage() {
         } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
           const t = Number(l.start_time || 0);
           if (t > 0) {
+            const mkColor =
+              l.note === "__arrow_up__"
+                ? (color && color !== DEFAULT_LINE_COLOR ? color : "#22c55e")
+                : l.note === "__arrow_down__"
+                ? (color && color !== DEFAULT_LINE_COLOR ? color : "#ef4444")
+                : color || "#f97316";
+            const mkSize = Math.max(1, Math.min(3, Number(l.width) || width || 2)) as 1 | 2 | 3;
             const ls: any = chart.addLineSeries({
-              color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-              crosshairMarkerVisible: false, autoscaleInfoProvider: () => null as any,
+              color: "rgba(0,0,0,0)",
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              autoscaleInfoProvider: () => null as any,
             });
             ls.setData([{ time: t as any, value: l.price }]);
             try {
               const shape =
                 l.note === "__arrow_up__" ? "arrowUp" : l.note === "__arrow_down__" ? "arrowDown" : "circle";
-              ls.setMarkers([{ time: t as any, position: "inBar", color, shape, size: 2 }]);
+              ls.setMarkers([
+                {
+                  time: t as any,
+                  position: "inBar",
+                  color: mkColor,
+                  shape,
+                  size: mkSize,
+                },
+              ]);
             } catch {}
             chartLinesRef.current.set(l.id, ls);
           }
@@ -3711,6 +3733,112 @@ export default function DashboardPage() {
         }
         const fp = formatPrice(price);
 
+        // ── Click on existing drawing to move it (TradingView-like) ──
+        if (m === "none" && param.point) {
+          const px = param.point.x;
+          const py = param.point.y;
+          const HIT = 28;
+          const symU = symbolRef.current.toUpperCase();
+          const list = (linesRef.current || []).filter(
+            (l) => String(l.symbol || "").toUpperCase() === symU
+          );
+          type Hit = { id: string; kind: "line"; score: number; isV: boolean; isRay: boolean; isDiag: boolean };
+          let best: Hit | null = null;
+          const consider = (id: string, score: number, isV: boolean, isRay: boolean, isDiag: boolean) => {
+            if (score > HIT) return;
+            if (!best || score < best.score) best = { id, kind: "line", score, isV, isRay, isDiag };
+          };
+          for (const l of list) {
+            const isV =
+              l.note === "__vline__" ||
+              (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
+              (l.start_time != null &&
+                l.end_time != null &&
+                Number(l.start_time) === Number(l.end_time) &&
+                l.end_price != null);
+            const isDiag = isDiagonalLine(l);
+            const isRay =
+              !isV &&
+              !isDiag &&
+              l.start_time != null &&
+              (l.end_time == null || l.end_price == null);
+            const isArrow =
+              typeof l.note === "string" &&
+              (l.note === "__arrow_up__" ||
+                l.note === "__arrow_down__" ||
+                l.note === "__arrow_marker__");
+            try {
+              if (isV && l.start_time != null) {
+                const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                if (x != null) consider(l.id, Math.abs(px - x), true, false, false);
+              } else if (isDiag) {
+                const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
+                const y0 = series.priceToCoordinate(Number(l.price));
+                const y1 = series.priceToCoordinate(Number(l.end_price));
+                if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                  // distance to segment
+                  const dx = x1 - x0, dy = y1 - y0;
+                  const len2 = dx * dx + dy * dy || 1;
+                  let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+                  t = Math.max(0, Math.min(1, t));
+                  const cx = x0 + t * dx, cy = y0 + t * dy;
+                  consider(l.id, Math.hypot(px - cx, py - cy), false, false, true);
+                }
+              } else if (isArrow && l.start_time != null) {
+                const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                const y = series.priceToCoordinate(Number(l.price));
+                if (x != null && y != null) consider(l.id, Math.hypot(px - x, py - y), false, false, false);
+              } else if (isRay && l.start_time != null) {
+                const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                const y = series.priceToCoordinate(Number(l.price));
+                if (y != null) {
+                  const dy = Math.abs(py - y);
+                  if (x0 == null || Number.isNaN(x0)) {
+                    consider(l.id, dy, false, true, false);
+                  } else if (px >= x0 - 8) {
+                    consider(l.id, dy, false, true, false);
+                  }
+                }
+              } else {
+                // horizontal
+                const y = series.priceToCoordinate(Number(l.price));
+                if (y != null) consider(l.id, Math.abs(py - y), false, false, false);
+              }
+            } catch {}
+          }
+          if (best) {
+            setMode("move");
+            setMovingId(best.id);
+            setMovingType("line");
+            movingVLineRef.current = best.isV;
+            movingRayRef.current = best.isRay;
+            const l = list.find((x) => x.id === best!.id);
+            if (l && best.isDiag) {
+              moveDiagRef.current = {
+                id: l.id,
+                phase: "pick",
+                pointA: { time: Number(l.start_time), price: Number(l.price) },
+                pointB: { time: Number(l.end_time), price: Number(l.end_price) },
+                color: l.color || DEFAULT_LINE_COLOR,
+                width: l.width || 2,
+                dash: (l.dash || l.style || "solid") as string,
+              };
+              setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
+            } else if (best.isV) {
+              moveDiagRef.current = null;
+              setStatusMsg("Click chart to move vertical line");
+            } else if (best.isRay) {
+              moveDiagRef.current = null;
+              setStatusMsg("Click chart to move ray");
+            } else {
+              moveDiagRef.current = null;
+              setStatusMsg("Click chart to move line");
+            }
+            return;
+          }
+        }
+
         if (m === "move" && movingIdRef.current) {
           const id = movingIdRef.current;
           const typ = movingTypeRef.current;
@@ -4416,18 +4544,26 @@ export default function DashboardPage() {
 
 
 
-        // Arrow mark up / down / marker — single click
+        // Arrow mark up / down / marker — single click (TradingView-style, stay in tool)
         if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
           clickLockRef.current = true;
           setSaving(true);
           const t = resolveTime(param);
           const note =
             m === "arrow-up" ? "__arrow_up__" : m === "arrow-down" ? "__arrow_down__" : "__arrow_marker__";
+          // Default TV colors if user still on generic orange
+          let col = drawColorRef.current || DEFAULT_LINE_COLOR;
+          if (m === "arrow-up" && (col === DEFAULT_LINE_COLOR || col === DEFAULT_ALARM_COLOR)) {
+            col = "#22c55e";
+          }
+          if (m === "arrow-down" && (col === DEFAULT_LINE_COLOR || col === DEFAULT_ALARM_COLOR)) {
+            col = "#ef4444";
+          }
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: fp,
-            color: drawColorRef.current,
-            width: drawWidthRef.current,
+            color: col,
+            width: drawWidthRef.current || 2,
             start_time: t,
             end_time: t,
             end_price: fp,
@@ -4436,19 +4572,18 @@ export default function DashboardPage() {
           (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
           if (error) {
-            const fb = { symbol: base.symbol, price: base.price, color: base.color, note };
+            const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: t, note };
             (fb as any).user_id = base.user_id;
             ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
           }
           if (!error && data) {
             pushUndo();
             setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-            setStatusMsg("Mark placed");
+            setStatusMsg("Mark placed — tap again or change tool");
           } else setStatusMsg("Save failed");
-          setMode("none");
-          modeRef.current = "none";
+          // Stay in arrow mode so user can place multiple (like TradingView)
           setSaving(false);
-          setTimeout(() => { clickLockRef.current = false; }, 300);
+          setTimeout(() => { clickLockRef.current = false; }, 200);
           return;
         }
 
@@ -6540,11 +6675,13 @@ export default function DashboardPage() {
                         setMovingId(null);
                         pathPointsRef.current = [];
                         setMode(t.id as any);
+                        if (t.id === "arrow-up") setDrawColor("#22c55e");
+                        if (t.id === "arrow-down") setDrawColor("#ef4444");
                         setStatusMsg(
                           t.id === "arrow"
                             ? "Arrow: first point, then tip"
                             : t.id === "arrow-up" || t.id === "arrow-down"
-                            ? "Tap chart to place mark"
+                            ? "Tap chart to place mark — color/size from style panel"
                             : "Arrow marker: tap on chart"
                         );
                       }}
