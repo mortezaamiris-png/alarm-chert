@@ -929,11 +929,22 @@ export default function DashboardPage() {
   );
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   /** Multi-pane layout like TradingView */
-  type ChartLayoutId = "1" | "2h" | "2v" | "3" | "4" | "5" | "6";
-  const [chartLayout, setChartLayout] = useState<ChartLayoutId>(() =>
-    loadLS("chart_layout", "1")
-  );
+  type ChartLayoutId =
+    | "1"
+    | "2h" | "2v"
+    | "3a" | "3b" | "3c"
+    | "4a" | "4b" | "4c"
+    | "5a" | "5b"
+    | "6a" | "6b";
+  const [chartLayout, setChartLayout] = useState<ChartLayoutId>(() => {
+    const saved = loadLS<string>("chart_layout", "1");
+    // migrate old ids
+    const map: Record<string, string> = { "3": "3a", "4": "4a", "5": "5a", "6": "6a" };
+    return (map[saved] || saved || "1") as ChartLayoutId;
+  });
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
+  /** Full symbol universe for pane search (from /api/symbols) */
+  const [allSymbols, setAllSymbols] = useState<string[]>([]);
   /** Symbols for extra panes (index 0..4) — main chart uses `symbol` */
   const [paneSymbols, setPaneSymbols] = useState<string[]>(() => {
     const def = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"];
@@ -1309,6 +1320,27 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("chart_type", chartType); }, [chartType]);
   useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
   useEffect(() => { saveLS("pane_symbols", paneSymbols); }, [paneSymbols]);
+
+  // Load full coin list once (same source as watchlist search)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/symbols", { cache: "force-cache" });
+        const data = await res.json();
+        const list: string[] = [];
+        const rows = Array.isArray(data) ? data : data?.symbols || data?.data || [];
+        for (const r of rows) {
+          const s = typeof r === "string" ? r : r?.symbol;
+          if (s && typeof s === "string") list.push(String(s).toUpperCase());
+        }
+        if (!cancelled && list.length) {
+          setAllSymbols(Array.from(new Set(list)).sort());
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   /** Force main chart to fill container after layout change (esp. back to 1) */
   useEffect(() => {
@@ -5298,13 +5330,13 @@ export default function DashboardPage() {
     const need =
       chartLayout === "2h" || chartLayout === "2v"
         ? 1
-        : chartLayout === "3"
+        : chartLayout === "3a" || chartLayout === "3b" || chartLayout === "3c"
         ? 2
-        : chartLayout === "4"
+        : chartLayout === "4a" || chartLayout === "4b" || chartLayout === "4c"
         ? 3
-        : chartLayout === "5"
+        : chartLayout === "5a" || chartLayout === "5b"
         ? 4
-        : chartLayout === "6"
+        : chartLayout === "6a" || chartLayout === "6b"
         ? 5
         : 0;
 
@@ -5370,12 +5402,12 @@ export default function DashboardPage() {
             crosshair: { mode: CrosshairMode.Normal },
           });
           const series = chart.addCandlestickSeries({
-            upColor: "#22c55e",
-            downColor: "#ef4444",
-            borderUpColor: "#22c55e",
-            borderDownColor: "#ef4444",
-            wickUpColor: "#22c55e",
-            wickDownColor: "#ef4444",
+            upColor: "#089981",
+            downColor: "#f23645",
+            borderUpColor: "#089981",
+            borderDownColor: "#f23645",
+            wickUpColor: "#089981",
+            wickDownColor: "#f23645",
           });
           entry = { chart, series, symbol: cleanSym };
           secondaryChartsRef.current.set(idx, entry);
@@ -6948,102 +6980,199 @@ export default function DashboardPage() {
                   style={{ background: "rgba(20,20,22,0.92)", backdropFilter: "blur(24px)" }}
                 >
                   <div className="text-[10px] text-gray-500 px-1 mb-2 font-medium tracking-wide">LAYOUT</div>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {([
-                      { id: "1", n: "1", title: "1 chart", icon: "1" },
-                      { id: "2h", n: "2", title: "2 side by side", icon: "2h" },
-                      { id: "2v", n: "2", title: "2 stacked", icon: "2v" },
-                      { id: "3", n: "3", title: "3 charts", icon: "3" },
-                      { id: "4", n: "4", title: "4 charts", icon: "4" },
-                      { id: "5", n: "5", title: "5 charts", icon: "5" },
-                      { id: "6", n: "6", title: "6 charts", icon: "6" },
-                    ] as const).map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        title={opt.title}
-                        onClick={() => {
-                          setChartLayout(opt.id as any);
-                          setShowLayoutMenu(false);
-                          setStatusMsg(`Layout: ${opt.title}`);
-                          const force = () => {
-                            try {
-                              if (chartRef.current && chartContainerRef.current) {
-                                chartRef.current.applyOptions({
-                                  width: chartContainerRef.current.clientWidth,
-                                  height: chartContainerRef.current.clientHeight,
-                                });
-                              }
-                            } catch {}
-                          };
-                          requestAnimationFrame(force);
-                          setTimeout(force, 80);
-                          setTimeout(force, 200);
-                          setTimeout(force, 400);
-                        }}
-                        className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border transition-colors ${
-                          chartLayout === opt.id
-                            ? "border-orange-500 bg-orange-500/15 text-orange-300"
-                            : "border-white/10 text-gray-300 hover:bg-white/10"
-                        }`}
-                      >
-                        <span className="w-9 h-7 flex items-center justify-center">
-                          {opt.icon === "1" && <span className="w-7 h-5 border border-current rounded-sm" />}
-                          {opt.icon === "2h" && (
-                            <span className="flex gap-0.5 w-7 h-5">
-                              <span className="flex-1 border border-current rounded-sm" />
-                              <span className="flex-1 border border-current rounded-sm" />
-                            </span>
-                          )}
-                          {opt.icon === "2v" && (
-                            <span className="flex flex-col gap-0.5 w-7 h-5">
-                              <span className="flex-1 border border-current rounded-sm" />
-                              <span className="flex-1 border border-current rounded-sm" />
-                            </span>
-                          )}
-                          {opt.icon === "3" && (
-                            <span className="flex flex-col gap-0.5 w-7 h-5">
-                              <span className="flex-1 border border-current rounded-sm" />
-                              <span className="flex flex-1 gap-0.5">
-                                <span className="flex-1 border border-current rounded-sm" />
-                                <span className="flex-1 border border-current rounded-sm" />
+                  <div className="flex flex-col gap-2 max-h-[70vh] overflow-y-auto pr-0.5">
+                    {(
+                      [
+                        {
+                          row: "1",
+                          items: [{ id: "1", title: "1 chart", icon: "1" }],
+                        },
+                        {
+                          row: "2",
+                          items: [
+                            { id: "2h", title: "2 side by side", icon: "2h" },
+                            { id: "2v", title: "2 stacked", icon: "2v" },
+                          ],
+                        },
+                        {
+                          row: "3",
+                          items: [
+                            { id: "3a", title: "1 top + 2 bottom", icon: "3a" },
+                            { id: "3b", title: "3 columns", icon: "3b" },
+                            { id: "3c", title: "Big left + 2 right", icon: "3c" },
+                          ],
+                        },
+                        {
+                          row: "4",
+                          items: [
+                            { id: "4a", title: "2×2 grid", icon: "4a" },
+                            { id: "4b", title: "1 top + 3 bottom", icon: "4b" },
+                            { id: "4c", title: "4 columns", icon: "4c" },
+                          ],
+                        },
+                        {
+                          row: "5",
+                          items: [
+                            { id: "5a", title: "2 top + 3 bottom", icon: "5a" },
+                            { id: "5b", title: "1 left + 4 right", icon: "5b" },
+                          ],
+                        },
+                        {
+                          row: "6",
+                          items: [
+                            { id: "6a", title: "2×3 grid", icon: "6a" },
+                            { id: "6b", title: "3×2 grid", icon: "6b" },
+                          ],
+                        },
+                      ] as const
+                    ).map((group) => (
+                      <div key={group.row} className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-gray-500 w-3 shrink-0">{group.row}</span>
+                        <div className="flex flex-wrap gap-1">
+                          {group.items.map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              title={opt.title}
+                              onClick={() => {
+                                setChartLayout(opt.id as any);
+                                setShowLayoutMenu(false);
+                                setStatusMsg(`Layout: ${opt.title}`);
+                                const force = () => {
+                                  try {
+                                    if (chartRef.current && chartContainerRef.current) {
+                                      chartRef.current.applyOptions({
+                                        width: chartContainerRef.current.clientWidth,
+                                        height: chartContainerRef.current.clientHeight,
+                                      });
+                                    }
+                                  } catch {}
+                                };
+                                requestAnimationFrame(force);
+                                setTimeout(force, 80);
+                                setTimeout(force, 200);
+                                setTimeout(force, 400);
+                              }}
+                              className={`w-9 h-8 flex items-center justify-center rounded-md border transition-colors ${
+                                chartLayout === opt.id
+                                  ? "border-orange-500 bg-orange-500/15 text-orange-300"
+                                  : "border-white/10 text-gray-300 hover:bg-white/10"
+                              }`}
+                            >
+                              <span className="w-6 h-5 flex items-center justify-center">
+                                {opt.icon === "1" && <span className="w-5 h-4 border border-current rounded-[2px]" />}
+                                {opt.icon === "2h" && (
+                                  <span className="flex gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "2v" && (
+                                  <span className="flex flex-col gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "3a" && (
+                                  <span className="flex flex-col gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex flex-1 gap-px">
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                    </span>
+                                  </span>
+                                )}
+                                {opt.icon === "3b" && (
+                                  <span className="flex gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "3c" && (
+                                  <span className="flex gap-px w-5 h-4">
+                                    <span className="w-[55%] border border-current rounded-[1px]" />
+                                    <span className="flex-1 flex flex-col gap-px">
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                    </span>
+                                  </span>
+                                )}
+                                {opt.icon === "4a" && (
+                                  <span className="grid grid-cols-2 gap-px w-5 h-4">
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "4b" && (
+                                  <span className="flex flex-col gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex flex-1 gap-px">
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                    </span>
+                                  </span>
+                                )}
+                                {opt.icon === "4c" && (
+                                  <span className="flex gap-px w-5 h-4">
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                    <span className="flex-1 border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "5a" && (
+                                  <span className="flex flex-col gap-px w-5 h-4">
+                                    <span className="flex flex-1 gap-px">
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                    </span>
+                                    <span className="flex flex-1 gap-px">
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                      <span className="flex-1 border border-current rounded-[1px]" />
+                                    </span>
+                                  </span>
+                                )}
+                                {opt.icon === "5b" && (
+                                  <span className="flex gap-px w-5 h-4">
+                                    <span className="w-[40%] border border-current rounded-[1px]" />
+                                    <span className="flex-1 grid grid-cols-2 gap-px">
+                                      <span className="border border-current rounded-[1px]" />
+                                      <span className="border border-current rounded-[1px]" />
+                                      <span className="border border-current rounded-[1px]" />
+                                      <span className="border border-current rounded-[1px]" />
+                                    </span>
+                                  </span>
+                                )}
+                                {opt.icon === "6a" && (
+                                  <span className="grid grid-cols-3 gap-px w-5 h-4">
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                  </span>
+                                )}
+                                {opt.icon === "6b" && (
+                                  <span className="grid grid-cols-2 gap-px w-5 h-4" style={{ gridTemplateRows: "1fr 1fr 1fr" }}>
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                    <span className="border border-current rounded-[1px]" />
+                                  </span>
+                                )}
                               </span>
-                            </span>
-                          )}
-                          {opt.icon === "4" && (
-                            <span className="grid grid-cols-2 gap-0.5 w-7 h-5">
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                            </span>
-                          )}
-                          {opt.icon === "5" && (
-                            <span className="flex flex-col gap-0.5 w-7 h-5">
-                              <span className="flex flex-1 gap-0.5">
-                                <span className="flex-1 border border-current rounded-sm" />
-                                <span className="flex-1 border border-current rounded-sm" />
-                              </span>
-                              <span className="flex flex-1 gap-0.5">
-                                <span className="flex-1 border border-current rounded-sm" />
-                                <span className="flex-1 border border-current rounded-sm" />
-                                <span className="flex-1 border border-current rounded-sm" />
-                              </span>
-                            </span>
-                          )}
-                          {opt.icon === "6" && (
-                            <span className="grid grid-cols-3 gap-0.5 w-7 h-5">
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                              <span className="border border-current rounded-sm" />
-                            </span>
-                          )}
-                        </span>
-                        <span className="text-[10px]">{opt.n}</span>
-                      </button>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -7605,14 +7734,26 @@ export default function DashboardPage() {
                 ? "h-full w-full grid grid-cols-2 gap-1"
                 : chartLayout === "2v"
                 ? "h-full w-full grid grid-rows-2 gap-1"
-                : chartLayout === "3"
+                : chartLayout === "3a"
                 ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
-                : chartLayout === "4"
+                : chartLayout === "3b"
+                ? "h-full w-full grid grid-cols-3 gap-1"
+                : chartLayout === "3c"
                 ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
-                : chartLayout === "5"
-                ? "h-full w-full grid grid-cols-6 grid-rows-2 gap-1"
-                : chartLayout === "6"
+                : chartLayout === "4a"
+                ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
+                : chartLayout === "4b"
                 ? "h-full w-full grid grid-cols-3 grid-rows-2 gap-1"
+                : chartLayout === "4c"
+                ? "h-full w-full grid grid-cols-4 gap-1"
+                : chartLayout === "5a"
+                ? "h-full w-full grid grid-cols-6 grid-rows-2 gap-1"
+                : chartLayout === "5b"
+                ? "h-full w-full grid grid-cols-3 grid-rows-2 gap-1"
+                : chartLayout === "6a"
+                ? "h-full w-full grid grid-cols-3 grid-rows-2 gap-1"
+                : chartLayout === "6b"
+                ? "h-full w-full grid grid-cols-2 grid-rows-3 gap-1"
                 : "h-full w-full"
             }
           >
@@ -7621,10 +7762,16 @@ export default function DashboardPage() {
               className={
                 chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
-                  : chartLayout === "3"
+                  : chartLayout === "3a"
                   ? "relative min-h-0 min-w-0 col-span-2"
-                  : chartLayout === "5"
+                  : chartLayout === "3c"
+                  ? "relative min-h-0 min-w-0 row-span-2"
+                  : chartLayout === "4b"
                   ? "relative min-h-0 min-w-0 col-span-3"
+                  : chartLayout === "5a"
+                  ? "relative min-h-0 min-w-0 col-span-3"
+                  : chartLayout === "5b"
+                  ? "relative min-h-0 min-w-0 row-span-2"
                   : "relative min-h-0 min-w-0"
               }
             >
@@ -7664,17 +7811,24 @@ export default function DashboardPage() {
 
             {/* Extra panes 0..4 */}
             {([0, 1, 2, 3, 4] as const).map((i) => {
-              const visible =
-                (i === 0 && chartLayout !== "1") ||
-                (i === 1 && (chartLayout === "3" || chartLayout === "4" || chartLayout === "5" || chartLayout === "6")) ||
-                (i === 2 && (chartLayout === "4" || chartLayout === "5" || chartLayout === "6")) ||
-                (i === 3 && (chartLayout === "5" || chartLayout === "6")) ||
-                (i === 4 && chartLayout === "6");
+              const needExtra =
+                chartLayout === "2h" || chartLayout === "2v"
+                  ? 1
+                  : chartLayout === "3a" || chartLayout === "3b" || chartLayout === "3c"
+                  ? 2
+                  : chartLayout === "4a" || chartLayout === "4b" || chartLayout === "4c"
+                  ? 3
+                  : chartLayout === "5a" || chartLayout === "5b"
+                  ? 4
+                  : chartLayout === "6a" || chartLayout === "6b"
+                  ? 5
+                  : 0;
+              const visible = i < needExtra;
               if (!visible) return null;
               const spanClass =
-                chartLayout === "5" && i === 0
+                chartLayout === "5a" && i === 0
                   ? "col-span-3"
-                  : chartLayout === "5" && i >= 1
+                  : chartLayout === "5a" && i >= 1
                   ? "col-span-2"
                   : "";
               const sym = paneSymbols[i] || "ETHUSDT";
@@ -7684,13 +7838,15 @@ export default function DashboardPage() {
                     symbolUpper,
                     ...paneSymbols,
                     ...(watchItems || []).map((w) => chartSymbol(w.symbol)),
+                    ...allSymbols,
                   ].filter(Boolean)
                 )
               );
               const q = paneSearchOpen === i ? paneSearchQ.trim().toUpperCase() : "";
-              const filtered = q
-                ? pool.filter((s) => s.includes(q)).slice(0, 20)
-                : pool.slice(0, 20);
+              const filtered = (q
+                ? pool.filter((s) => s.includes(q))
+                : pool
+              ).slice(0, 40);
               return (
                 <div
                   key={`pane-${i}`}
