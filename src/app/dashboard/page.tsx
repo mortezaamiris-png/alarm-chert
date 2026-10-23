@@ -956,11 +956,38 @@ export default function DashboardPage() {
   });
   const [paneSearchOpen, setPaneSearchOpen] = useState<number | null>(null);
   const [paneSearchQ, setPaneSearchQ] = useState("");
+  /** 0 = main chart, 1..5 = secondary panes (index+1 in UI = paneSymbols index) */
+  const [activePane, setActivePane] = useState(0);
+  /** Independent TF for each secondary pane (same values as main interval) */
+  const [paneIntervals, setPaneIntervals] = useState<string[]>(() => {
+    const def = ["15", "15", "15", "15", "15"];
+    const saved = loadLS<string[]>("pane_intervals", def);
+    if (!Array.isArray(saved)) return def;
+    const out = [...saved];
+    while (out.length < 5) out.push("15");
+    return out;
+  });
+  const paneIntervalsRef = useRef(paneIntervals);
+  useEffect(() => { paneIntervalsRef.current = paneIntervals; }, [paneIntervals]);
+  useEffect(() => { saveLS("pane_intervals", paneIntervals); }, [paneIntervals]);
   const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
-    Map<number, { chart: IChartApi; series: any; symbol: string }>
+    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string }>
   >(new Map());
   const layoutWrapRef = useRef<HTMLDivElement>(null);
+
+  const applyTfToActivePane = useCallback((tf: string) => {
+    if (activePane === 0) {
+      setIntervalTf(tf);
+      return;
+    }
+    const idx = activePane - 1;
+    setPaneIntervals((prev) => {
+      const n = [...prev];
+      n[idx] = tf;
+      return n;
+    });
+  }, [activePane]);
   /** Undo / Redo stacks (lines + active alarms snapshots) */
   const undoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
   const redoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
@@ -5363,7 +5390,7 @@ export default function DashboardPage() {
       return dedup;
     };
 
-    const mountPane = async (idx: number, el: HTMLDivElement | null, sym: string) => {
+    const mountPane = async (idx: number, el: HTMLDivElement | null, sym: string, paneIv: string) => {
       if (!el || need <= idx) {
         const prev = secondaryChartsRef.current.get(idx);
         if (prev) {
@@ -5373,6 +5400,7 @@ export default function DashboardPage() {
         return;
       }
       const cleanSym = chartSymbol(sym) || sym;
+      const iv = String(paneIv || "15");
       let entry = secondaryChartsRef.current.get(idx);
       if (!entry || entry.symbol !== cleanSym) {
         if (entry) {
@@ -5409,14 +5437,17 @@ export default function DashboardPage() {
             wickUpColor: "#089981",
             wickDownColor: "#f23645",
           });
-          entry = { chart, series, symbol: cleanSym };
+          entry = { chart, series, symbol: cleanSym, interval: iv };
           secondaryChartsRef.current.set(idx, entry);
         } catch {
           return;
         }
       }
+      // Reload data if symbol or interval changed
+      if (entry && entry.interval !== iv) {
+        entry.interval = iv;
+      }
       try {
-        const iv = String(intervalRef.current || "15");
         const res = await fetch(
           `/api/kline?symbol=${encodeURIComponent(cleanSym)}&interval=${encodeURIComponent(iv)}&limit=300`,
           { cache: "no-store" }
@@ -5435,7 +5466,12 @@ export default function DashboardPage() {
 
     const defaults = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"];
     for (let i = 0; i < 5; i++) {
-      void mountPane(i, paneRefs.current[i], paneSymbols[i] || defaults[i]);
+      void mountPane(
+        i,
+        paneRefs.current[i],
+        paneSymbols[i] || defaults[i],
+        paneIntervals[i] || paneIntervalsRef.current[i] || "15"
+      );
     }
 
     const onResize = () => {
@@ -5465,7 +5501,7 @@ export default function DashboardPage() {
         const sym = paneSymbols[idx];
         if (!sym) return;
         const cleanSym = chartSymbol(sym) || sym;
-        const iv = String(intervalRef.current || "15");
+        const iv = String(entry.interval || paneIntervalsRef.current[idx] || "15");
         fetch(
           `/api/kline?symbol=${encodeURIComponent(cleanSym)}&interval=${encodeURIComponent(iv)}&limit=3`,
           { cache: "no-store" }
@@ -5499,7 +5535,7 @@ export default function DashboardPage() {
         secondaryChartsRef.current.clear();
       }
     };
-  }, [chartLayout, paneSymbols, interval]);
+  }, [chartLayout, paneSymbols, paneIntervals]);
 
   // همیشه آخرین loadCandles را در ref نگه دار تا useEffect با عوض شدن identity دوباره لود نکند
   loadCandlesRef.current = loadCandles;
@@ -6732,13 +6768,20 @@ export default function DashboardPage() {
           title="Symbol"
         />
         <div className="flex items-center gap-1">
+          {chartLayout !== "1" && (
+            <span className="text-[10px] text-orange-300/90 px-1.5 py-0.5 rounded border border-orange-500/30 bg-orange-500/10 mr-0.5">
+              {activePane === 0 ? "Main" : `P${activePane}`}
+            </span>
+          )}
           {favTfButtons.map((t) => (
             <button
               key={t.value}
               type="button"
-              onClick={() => setIntervalTf(t.value)}
+              onClick={() => applyTfToActivePane(t.value)}
               className={`px-2 py-1 text-xs rounded ${
-                interval === t.value ? "bg-orange-500 text-black" : "bg-gray-800 hover:bg-gray-700"
+                (activePane === 0 ? interval : (paneIntervals[activePane - 1] || interval)) === t.value
+                  ? "bg-orange-500 text-black"
+                  : "bg-gray-800 hover:bg-gray-700"
               }`}
             >
               {t.label}
@@ -6778,12 +6821,12 @@ export default function DashboardPage() {
                   <div key={t.value} className="flex items-center">
                     <button
                       type="button"
-                      onClick={() => { setIntervalTf(t.value); setTfMenuOpen(false); }}
+                      onClick={() => { applyTfToActivePane(t.value); setTfMenuOpen(false); }}
                       className={`flex-1 text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
-                        interval === t.value ? "text-orange-300" : "text-gray-200"
+                        (activePane === 0 ? interval : (paneIntervals[activePane - 1] || interval)) === t.value ? "text-orange-300" : "text-gray-200"
                       }`}
                     >
-                      <span className="w-3 text-orange-400">{interval === t.value ? "✓" : ""}</span>
+                      <span className="w-3 text-orange-400">{(activePane === 0 ? interval : (paneIntervals[activePane - 1] || interval)) === t.value ? "✓" : ""}</span>
                       <span>{t.label}</span>
                     </button>
                     <button
@@ -7759,8 +7802,9 @@ export default function DashboardPage() {
           >
             {/* Main chart */}
             <div
+              onMouseDown={() => setActivePane(0)}
               className={
-                chartLayout === "1"
+                (chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
                   : chartLayout === "3a"
                   ? "relative min-h-0 min-w-0 col-span-2"
@@ -7772,7 +7816,10 @@ export default function DashboardPage() {
                   ? "relative min-h-0 min-w-0 col-span-3"
                   : chartLayout === "5b"
                   ? "relative min-h-0 min-w-0 row-span-2"
-                  : "relative min-h-0 min-w-0"
+                  : "relative min-h-0 min-w-0") +
+                (activePane === 0 && chartLayout !== "1"
+                  ? " ring-1 ring-dashed ring-orange-400/80 rounded-xl"
+                  : "")
               }
             >
               <div
@@ -7850,7 +7897,12 @@ export default function DashboardPage() {
               return (
                 <div
                   key={`pane-${i}`}
-                  className={`relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden ${spanClass}`}
+                  onMouseDown={() => setActivePane(i + 1)}
+                  className={`relative min-h-0 min-w-0 rounded-xl border bg-black overflow-hidden ${spanClass} ${
+                    activePane === i + 1
+                      ? "border-orange-400 ring-1 ring-dashed ring-orange-400/90"
+                      : "border-gray-800"
+                  }`}
                 >
                   <div className="absolute top-1 left-1 z-10" data-menu>
                     <input
