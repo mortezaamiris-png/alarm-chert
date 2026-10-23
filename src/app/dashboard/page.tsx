@@ -5420,6 +5420,7 @@ export default function DashboardPage() {
               background: { color: "#000000" } as any,
               textColor: "#9ca3af",
               fontSize: 10,
+              attributionLogo: false as any,
             },
             grid: {
               vertLines: { color: "rgba(42,46,57,0.5)" },
@@ -5428,7 +5429,7 @@ export default function DashboardPage() {
             rightPriceScale: { borderVisible: false },
             timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
             crosshair: { mode: CrosshairMode.Normal },
-          });
+          } as any);
           const series = chart.addCandlestickSeries({
             upColor: "#089981",
             downColor: "#f23645",
@@ -5437,6 +5438,9 @@ export default function DashboardPage() {
             wickUpColor: "#089981",
             wickDownColor: "#f23645",
           });
+          try {
+            chart.applyOptions({ layout: { attributionLogo: false } as any });
+          } catch {}
           entry = { chart, series, symbol: cleanSym, interval: iv };
           secondaryChartsRef.current.set(idx, entry);
         } catch {
@@ -6752,6 +6756,18 @@ export default function DashboardPage() {
         input[type="color"]::-webkit-color-swatch-wrapper{padding:0;border-radius:9999px}
         input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
         input[type="color"]::-moz-color-swatch{border:none;border-radius:9999px}
+        /* Hide Lightweight Charts / TradingView attribution logo on all panes */
+        #tv-attr-logo,
+        a#tv-attr-logo,
+        a[href*="tradingview.com"][title*="Charting"],
+        a[href*="tradingview.com"][aria-label*="TradingView"] {
+          display: none !important;
+          visibility: hidden !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
       `}</style>
       {/* Header — symbol search + timeframes + indicators on the left */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
