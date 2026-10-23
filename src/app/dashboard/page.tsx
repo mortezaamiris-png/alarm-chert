@@ -929,21 +929,27 @@ export default function DashboardPage() {
   );
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   /** Multi-pane layout like TradingView */
-  const [chartLayout, setChartLayout] = useState<"1" | "2h" | "2v" | "3" | "4">(() =>
+  type ChartLayoutId = "1" | "2h" | "2v" | "3" | "4" | "5" | "6";
+  const [chartLayout, setChartLayout] = useState<ChartLayoutId>(() =>
     loadLS("chart_layout", "1")
   );
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
-  /** Symbols for extra panes (pane 0 = main `symbol`) */
+  /** Symbols for extra panes (index 0..4) — main chart uses `symbol` */
   const [paneSymbols, setPaneSymbols] = useState<string[]>(() => {
-    const saved = loadLS<string[]>("pane_symbols", ["ETHUSDT", "SOLUSDT", "BNBUSDT"]);
-    return Array.isArray(saved) && saved.length >= 3 ? saved : ["ETHUSDT", "SOLUSDT", "BNBUSDT"];
+    const def = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"];
+    const saved = loadLS<string[]>("pane_symbols", def);
+    if (!Array.isArray(saved)) return def;
+    const out = [...saved];
+    while (out.length < 5) out.push(def[out.length] || "ETHUSDT");
+    return out;
   });
-  const pane2Ref = useRef<HTMLDivElement>(null);
-  const pane3Ref = useRef<HTMLDivElement>(null);
-  const pane4Ref = useRef<HTMLDivElement>(null);
+  const [paneSearchOpen, setPaneSearchOpen] = useState<number | null>(null);
+  const [paneSearchQ, setPaneSearchQ] = useState("");
+  const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
     Map<number, { chart: IChartApi; series: any; symbol: string }>
   >(new Map());
+  const layoutWrapRef = useRef<HTMLDivElement>(null);
   /** Undo / Redo stacks (lines + active alarms snapshots) */
   const undoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
   const redoStackRef = useRef<{ lines: ChartLine[]; alarms: Alarm[] }[]>([]);
@@ -1303,6 +1309,41 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("chart_type", chartType); }, [chartType]);
   useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
   useEffect(() => { saveLS("pane_symbols", paneSymbols); }, [paneSymbols]);
+
+  /** Force main chart to fill container after layout change (esp. back to 1) */
+  useEffect(() => {
+    const forceResize = () => {
+      try {
+        const el = chartContainerRef.current;
+        const chart = chartRef.current;
+        if (!el || !chart) return;
+        const w = el.clientWidth;
+        const h = el.clientHeight;
+        if (w > 20 && h > 20) {
+          chart.applyOptions({ width: w, height: h });
+          try { chart.timeScale().applyOptions({}); } catch {}
+        }
+      } catch {}
+    };
+    forceResize();
+    const t1 = window.setTimeout(forceResize, 50);
+    const t2 = window.setTimeout(forceResize, 150);
+    const t3 = window.setTimeout(forceResize, 350);
+    let ro: ResizeObserver | null = null;
+    try {
+      const el = chartContainerRef.current;
+      if (el && typeof ResizeObserver !== "undefined") {
+        ro = new ResizeObserver(() => forceResize());
+        ro.observe(el);
+      }
+    } catch {}
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+      try { ro?.disconnect(); } catch {}
+    };
+  }, [chartLayout]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
   // Keyboard Undo / Redo
@@ -5261,6 +5302,10 @@ export default function DashboardPage() {
         ? 2
         : chartLayout === "4"
         ? 3
+        : chartLayout === "5"
+        ? 4
+        : chartLayout === "6"
+        ? 5
         : 0;
 
     const parseRows = (rows: any[]) => {
@@ -5356,16 +5401,14 @@ export default function DashboardPage() {
       } catch {}
     };
 
-    const el2 = pane2Ref.current;
-    const el3 = pane3Ref.current;
-    const el4 = pane4Ref.current;
-    void mountPane(0, el2, paneSymbols[0] || "ETHUSDT");
-    void mountPane(1, el3, paneSymbols[1] || "SOLUSDT");
-    void mountPane(2, el4, paneSymbols[2] || "BNBUSDT");
+    const defaults = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"];
+    for (let i = 0; i < 5; i++) {
+      void mountPane(i, paneRefs.current[i], paneSymbols[i] || defaults[i]);
+    }
 
     const onResize = () => {
       secondaryChartsRef.current.forEach((entry, idx) => {
-        const el = idx === 0 ? pane2Ref.current : idx === 1 ? pane3Ref.current : pane4Ref.current;
+        const el = paneRefs.current[idx];
         if (!el) return;
         try {
           entry.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
@@ -6905,34 +6948,25 @@ export default function DashboardPage() {
                   style={{ background: "rgba(20,20,22,0.92)", backdropFilter: "blur(24px)" }}
                 >
                   <div className="text-[10px] text-gray-500 px-1 mb-2 font-medium tracking-wide">LAYOUT</div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-4 gap-1.5">
                     {([
-                      ["1", "1", "col"],
-                      ["2h", "2", "row"],
-                      ["2v", "2", "col"],
-                      ["3", "3", "3"],
-                      ["4", "4", "grid"],
-                    ] as const).map(([k, n, kind]) => (
+                      { id: "1", n: "1", title: "1 chart", icon: "1" },
+                      { id: "2h", n: "2", title: "2 side by side", icon: "2h" },
+                      { id: "2v", n: "2", title: "2 stacked", icon: "2v" },
+                      { id: "3", n: "3", title: "3 charts", icon: "3" },
+                      { id: "4", n: "4", title: "4 charts", icon: "4" },
+                      { id: "5", n: "5", title: "5 charts", icon: "5" },
+                      { id: "6", n: "6", title: "6 charts", icon: "6" },
+                    ] as const).map((opt) => (
                       <button
-                        key={k}
+                        key={opt.id}
                         type="button"
-                        title={
-                          k === "1" ? "1 chart" :
-                          k === "2h" ? "2 side by side" :
-                          k === "2v" ? "2 stacked" :
-                          k === "3" ? "3 charts" : "4 charts"
-                        }
+                        title={opt.title}
                         onClick={() => {
-                          setChartLayout(k);
+                          setChartLayout(opt.id as any);
                           setShowLayoutMenu(false);
-                          setStatusMsg(
-                            k === "1" ? "Layout: 1 chart" :
-                            k === "2h" ? "Layout: 2 horizontal" :
-                            k === "2v" ? "Layout: 2 vertical" :
-                            k === "3" ? "Layout: 3 charts" : "Layout: 4 charts"
-                          );
-                          // Resize main chart after layout change
-                          setTimeout(() => {
+                          setStatusMsg(`Layout: ${opt.title}`);
+                          const force = () => {
                             try {
                               if (chartRef.current && chartContainerRef.current) {
                                 chartRef.current.applyOptions({
@@ -6941,32 +6975,34 @@ export default function DashboardPage() {
                                 });
                               }
                             } catch {}
-                          }, 80);
+                          };
+                          requestAnimationFrame(force);
+                          setTimeout(force, 80);
+                          setTimeout(force, 200);
+                          setTimeout(force, 400);
                         }}
-                        className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-colors ${
-                          chartLayout === k
+                        className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border transition-colors ${
+                          chartLayout === opt.id
                             ? "border-orange-500 bg-orange-500/15 text-orange-300"
                             : "border-white/10 text-gray-300 hover:bg-white/10"
                         }`}
                       >
-                        <span className="w-10 h-8 flex items-center justify-center">
-                          {k === "1" && (
-                            <span className="w-8 h-6 border border-current rounded-sm" />
-                          )}
-                          {k === "2h" && (
-                            <span className="flex gap-0.5 w-8 h-6">
+                        <span className="w-9 h-7 flex items-center justify-center">
+                          {opt.icon === "1" && <span className="w-7 h-5 border border-current rounded-sm" />}
+                          {opt.icon === "2h" && (
+                            <span className="flex gap-0.5 w-7 h-5">
                               <span className="flex-1 border border-current rounded-sm" />
                               <span className="flex-1 border border-current rounded-sm" />
                             </span>
                           )}
-                          {k === "2v" && (
-                            <span className="flex flex-col gap-0.5 w-8 h-6">
+                          {opt.icon === "2v" && (
+                            <span className="flex flex-col gap-0.5 w-7 h-5">
                               <span className="flex-1 border border-current rounded-sm" />
                               <span className="flex-1 border border-current rounded-sm" />
                             </span>
                           )}
-                          {k === "3" && (
-                            <span className="flex flex-col gap-0.5 w-8 h-6">
+                          {opt.icon === "3" && (
+                            <span className="flex flex-col gap-0.5 w-7 h-5">
                               <span className="flex-1 border border-current rounded-sm" />
                               <span className="flex flex-1 gap-0.5">
                                 <span className="flex-1 border border-current rounded-sm" />
@@ -6974,8 +7010,31 @@ export default function DashboardPage() {
                               </span>
                             </span>
                           )}
-                          {k === "4" && (
-                            <span className="grid grid-cols-2 gap-0.5 w-8 h-6">
+                          {opt.icon === "4" && (
+                            <span className="grid grid-cols-2 gap-0.5 w-7 h-5">
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
+                            </span>
+                          )}
+                          {opt.icon === "5" && (
+                            <span className="flex flex-col gap-0.5 w-7 h-5">
+                              <span className="flex flex-1 gap-0.5">
+                                <span className="flex-1 border border-current rounded-sm" />
+                                <span className="flex-1 border border-current rounded-sm" />
+                              </span>
+                              <span className="flex flex-1 gap-0.5">
+                                <span className="flex-1 border border-current rounded-sm" />
+                                <span className="flex-1 border border-current rounded-sm" />
+                                <span className="flex-1 border border-current rounded-sm" />
+                              </span>
+                            </span>
+                          )}
+                          {opt.icon === "6" && (
+                            <span className="grid grid-cols-3 gap-0.5 w-7 h-5">
+                              <span className="border border-current rounded-sm" />
+                              <span className="border border-current rounded-sm" />
                               <span className="border border-current rounded-sm" />
                               <span className="border border-current rounded-sm" />
                               <span className="border border-current rounded-sm" />
@@ -6983,7 +7042,7 @@ export default function DashboardPage() {
                             </span>
                           )}
                         </span>
-                        <span className="text-[10px]">{n}</span>
+                        <span className="text-[10px]">{opt.n}</span>
                       </button>
                     ))}
                   </div>
@@ -7537,7 +7596,7 @@ export default function DashboardPage() {
         )}
 
         {/* Chart — multi-pane layout */}
-        <div className="flex-1 min-w-0 relative" style={{ height: 640 }}>
+        <div ref={layoutWrapRef} className="flex-1 min-w-0 relative" style={{ height: 640 }}>
           <div
             className={
               chartLayout === "1"
@@ -7548,14 +7607,26 @@ export default function DashboardPage() {
                 ? "h-full w-full grid grid-rows-2 gap-1"
                 : chartLayout === "3"
                 ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
-                : "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
+                : chartLayout === "4"
+                ? "h-full w-full grid grid-cols-2 grid-rows-2 gap-1"
+                : chartLayout === "5"
+                ? "h-full w-full grid grid-cols-6 grid-rows-2 gap-1"
+                : chartLayout === "6"
+                ? "h-full w-full grid grid-cols-3 grid-rows-2 gap-1"
+                : "h-full w-full"
             }
           >
-            {/* Main chart (always pane 0) */}
+            {/* Main chart */}
             <div
-              className={`relative min-h-0 min-w-0 ${
-                chartLayout === "3" ? "col-span-2" : ""
-              }`}
+              className={
+                chartLayout === "1"
+                  ? "relative min-h-0 min-w-0 h-full w-full"
+                  : chartLayout === "3"
+                  ? "relative min-h-0 min-w-0 col-span-2"
+                  : chartLayout === "5"
+                  ? "relative min-h-0 min-w-0 col-span-3"
+                  : "relative min-h-0 min-w-0"
+              }
             >
               <div
                 ref={chartContainerRef}
@@ -7574,7 +7645,6 @@ export default function DashboardPage() {
                           : "default",
                 }}
               />
-              {/* True vertical lines overlay (DOM) — main pane only */}
               <div
                 ref={vlineOverlayRef}
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
@@ -7592,133 +7662,127 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Extra panes */}
-            {(chartLayout === "2h" || chartLayout === "2v" || chartLayout === "3" || chartLayout === "4") && (
-              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
-                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
-                  <select
-                    value={paneSymbols[0] || "ETHUSDT"}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setPaneSymbols((prev) => {
-                        const n = [...prev];
-                        n[0] = v;
-                        return n;
-                      });
+            {/* Extra panes 0..4 */}
+            {([0, 1, 2, 3, 4] as const).map((i) => {
+              const visible =
+                (i === 0 && chartLayout !== "1") ||
+                (i === 1 && (chartLayout === "3" || chartLayout === "4" || chartLayout === "5" || chartLayout === "6")) ||
+                (i === 2 && (chartLayout === "4" || chartLayout === "5" || chartLayout === "6")) ||
+                (i === 3 && (chartLayout === "5" || chartLayout === "6")) ||
+                (i === 4 && chartLayout === "6");
+              if (!visible) return null;
+              const spanClass =
+                chartLayout === "5" && i === 0
+                  ? "col-span-3"
+                  : chartLayout === "5" && i >= 1
+                  ? "col-span-2"
+                  : "";
+              const sym = paneSymbols[i] || "ETHUSDT";
+              const pool = Array.from(
+                new Set(
+                  [
+                    symbolUpper,
+                    ...paneSymbols,
+                    ...(watchItems || []).map((w) => chartSymbol(w.symbol)),
+                  ].filter(Boolean)
+                )
+              );
+              const q = paneSearchOpen === i ? paneSearchQ.trim().toUpperCase() : "";
+              const filtered = q
+                ? pool.filter((s) => s.includes(q)).slice(0, 20)
+                : pool.slice(0, 20);
+              return (
+                <div
+                  key={`pane-${i}`}
+                  className={`relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden ${spanClass}`}
+                >
+                  <div className="absolute top-1 left-1 z-10" data-menu>
+                    <input
+                      value={paneSearchOpen === i ? paneSearchQ : sym}
+                      onFocus={() => {
+                        setPaneSearchOpen(i);
+                        setPaneSearchQ(sym);
+                      }}
+                      onChange={(e) => {
+                        setPaneSearchOpen(i);
+                        setPaneSearchQ(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const v = (paneSearchQ || sym).toUpperCase().replace(/[^A-Z0-9]/g, "");
+                          if (!v) return;
+                          setPaneSymbols((prev) => {
+                            const n = [...prev];
+                            n[i] = v;
+                            return n;
+                          });
+                          setPaneSearchOpen(null);
+                          setPaneSearchQ("");
+                        } else if (e.key === "Escape") {
+                          setPaneSearchOpen(null);
+                          setPaneSearchQ("");
+                        }
+                      }}
+                      onBlur={() => {
+                        // delay so option click can fire
+                        setTimeout(() => {
+                          if (paneSearchOpen === i) {
+                            const v = (paneSearchQ || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+                            if (v && v !== sym) {
+                              setPaneSymbols((prev) => {
+                                const n = [...prev];
+                                n[i] = v;
+                                return n;
+                              });
+                            }
+                            setPaneSearchOpen(null);
+                            setPaneSearchQ("");
+                          }
+                        }, 150);
+                      }}
+                      placeholder="Search…"
+                      className="bg-gray-900/95 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-gray-200 w-[100px]"
+                    />
+                    {paneSearchOpen === i && filtered.length > 0 && (
+                      <div
+                        className="absolute top-full left-0 mt-0.5 z-40 max-h-36 overflow-y-auto rounded-lg border border-white/15 shadow-xl min-w-[120px]"
+                        style={{ background: "rgba(20,20,22,0.95)", backdropFilter: "blur(16px)" }}
+                      >
+                        {filtered.map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setPaneSymbols((prev) => {
+                                const n = [...prev];
+                                n[i] = s;
+                                return n;
+                              });
+                              setPaneSearchOpen(null);
+                              setPaneSearchQ("");
+                            }}
+                            className={`w-full text-left px-2 py-1 text-[10px] hover:bg-white/10 ${
+                              s === sym ? "text-orange-300" : "text-gray-200"
+                            }`}
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    ref={(el) => {
+                      paneRefs.current[i] = el;
                     }}
-                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
-                  >
-                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
-                      .filter(Boolean)
-                      .filter((s, i, a) => a.indexOf(s) === i)
-                      .slice(0, 40)
-                      .map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                  </select>
-                  <button
-                    type="button"
-                    title="Open in main"
-                    onClick={() => {
-                      const s = paneSymbols[0];
-                      if (s) {
-                        setSymbol(s);
-                        setStatusMsg(`Main: ${s}`);
-                      }
-                    }}
-                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
-                  >
-                    Main
-                  </button>
+                    className="w-full h-full"
+                  />
                 </div>
-                <div ref={pane2Ref} className="w-full h-full" />
-              </div>
-            )}
-
-            {(chartLayout === "3" || chartLayout === "4") && (
-              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
-                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
-                  <select
-                    value={paneSymbols[1] || "SOLUSDT"}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setPaneSymbols((prev) => {
-                        const n = [...prev];
-                        n[1] = v;
-                        return n;
-                      });
-                    }}
-                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
-                  >
-                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
-                      .filter(Boolean)
-                      .filter((s, i, a) => a.indexOf(s) === i)
-                      .slice(0, 40)
-                      .map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                  </select>
-                  <button
-                    type="button"
-                    title="Open in main"
-                    onClick={() => {
-                      const s = paneSymbols[1];
-                      if (s) {
-                        setSymbol(s);
-                        setStatusMsg(`Main: ${s}`);
-                      }
-                    }}
-                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
-                  >
-                    Main
-                  </button>
-                </div>
-                <div ref={pane3Ref} className="w-full h-full" />
-              </div>
-            )}
-
-            {chartLayout === "4" && (
-              <div className="relative min-h-0 min-w-0 rounded-xl border border-gray-800 bg-black overflow-hidden">
-                <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
-                  <select
-                    value={paneSymbols[2] || "BNBUSDT"}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setPaneSymbols((prev) => {
-                        const n = [...prev];
-                        n[2] = v;
-                        return n;
-                      });
-                    }}
-                    className="bg-gray-900/90 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-200 max-w-[110px]"
-                  >
-                    {[symbolUpper, ...paneSymbols, ...Array.from(new Set((watchItems || []).map((w) => chartSymbol(w.symbol))))]
-                      .filter(Boolean)
-                      .filter((s, i, a) => a.indexOf(s) === i)
-                      .slice(0, 40)
-                      .map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                  </select>
-                  <button
-                    type="button"
-                    title="Open in main"
-                    onClick={() => {
-                      const s = paneSymbols[2];
-                      if (s) {
-                        setSymbol(s);
-                        setStatusMsg(`Main: ${s}`);
-                      }
-                    }}
-                    className="text-[9px] px-1 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40"
-                  >
-                    Main
-                  </button>
-                </div>
-                <div ref={pane4Ref} className="w-full h-full" />
-              </div>
-            )}
+              );
+            })}
           </div>
+
           {/* Hollow circle handles for diagonal Move — overlay on chart */}
           <div
             ref={handleAElRef}
