@@ -1933,7 +1933,8 @@ export default function DashboardPage() {
       const host = vlineOverlayRef.current;
       const chart2 = chartRef.current;
       if (!host || !chart2) return;
-      host.innerHTML = "";
+      // Only remove vertical line nodes — keep rays intact
+      host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
       if (hideLines) return;
       for (const v of vlineItemsRef.current) {
         let x: number | null = null;
@@ -1967,10 +1968,9 @@ export default function DashboardPage() {
       const chart2 = chartRef.current;
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
-      // remove previous ray divs only
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       if (hideLines) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const r of rayItemsRef.current) {
         let x: number | null = null;
         let y: number | null = null;
@@ -1980,20 +1980,23 @@ export default function DashboardPage() {
         try {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
-        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
-        if (x > hostW) continue;
+        if (y == null || Number.isNaN(y)) continue;
+        // If origin is left of viewport, start at 0 so ray still spans to the right edge
+        const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
+        if (x0 > hostW) continue;
         const el = document.createElement("div");
         el.dataset.rayId = r.id;
         el.style.position = "absolute";
-        el.style.left = `${Math.max(0, x)}px`;
+        el.style.left = `${x0}px`;
         el.style.top = `${y}px`;
-        el.style.width = `${Math.max(0, hostW - Math.max(0, x))}px`;
+        el.style.width = `${Math.max(4, hostW - x0)}px`;
         el.style.height = `${Math.max(1, r.width)}px`;
         el.style.transform = "translateY(-50%)";
         el.style.background = r.color;
         el.style.opacity = "0.95";
         el.style.pointerEvents = "none";
         el.style.zIndex = "5";
+        el.style.willChange = "left, top, width";
         if (r.dash === "dashed") {
           el.style.background = "transparent";
           el.style.borderTop = `${Math.max(1, r.width)}px dashed ${r.color}`;
@@ -2003,11 +2006,59 @@ export default function DashboardPage() {
       }
     };
 
+    /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
+    const syncOverlayPositions = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      for (const child of Array.from(host.children) as HTMLElement[]) {
+        if (child.dataset.vlineId) {
+          const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
+          if (!item) continue;
+          let x: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          if (x == null || Number.isNaN(x)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+          }
+        } else if (child.dataset.rayId && ser) {
+          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
+          if (x0 > hostW) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          child.style.visibility = "visible";
+          child.style.left = `${x0}px`;
+          child.style.top = `${y}px`;
+          child.style.width = `${Math.max(4, hostW - x0)}px`;
+        }
+      }
+    };
+
     paintVLines();
     paintRays();
     try {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-        requestAnimationFrame(paintVLines);
+        // Only reposition existing DOM nodes — do NOT rebuild (avoids ray flicker)
+        requestAnimationFrame(() => {
+          try { syncOverlayPositions(); } catch {
+            try { paintVLines(); paintRays(); } catch {}
+          }
+        });
       });
     } catch {}
 
@@ -3145,25 +3196,22 @@ export default function DashboardPage() {
       // User-driven range changes only (ignore our own programmatic sets)
       try {
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-          if (!range || programmaticRangeRef.current) return;
-          userInteractingRef.current = true;
-          // Reposition DOM vertical lines while scrolling/zooming
+          // Reposition overlays always (including programmatic) — no flicker
           try {
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
+            const ser = seriesRef.current;
             if (host && chart2) {
-              const ser = seriesRef.current;
-              const hostW = host.clientWidth || host.getBoundingClientRect().width;
+              const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
               for (const child of Array.from(host.children) as HTMLElement[]) {
                 if (child.dataset.vlineId) {
                   const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
                   if (!item) continue;
                   let x: number | null = null;
                   try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-                  if (x == null || Number.isNaN(x)) {
-                    child.style.display = "none";
-                  } else {
-                    child.style.display = "block";
+                  if (x == null || Number.isNaN(x)) child.style.visibility = "hidden";
+                  else {
+                    child.style.visibility = "visible";
                     child.style.left = `${x}px`;
                   }
                 } else if (child.dataset.rayId && ser) {
@@ -3173,30 +3221,35 @@ export default function DashboardPage() {
                   let y: number | null = null;
                   try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
                   try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-                  if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y) || x > hostW) {
-                    child.style.display = "none";
-                  } else {
-                    child.style.display = "block";
-                    child.style.left = `${Math.max(0, x)}px`;
-                    child.style.top = `${y}px`;
-                    child.style.width = `${Math.max(0, hostW - Math.max(0, x))}px`;
+                  if (y == null || Number.isNaN(y)) {
+                    child.style.visibility = "hidden";
+                    continue;
                   }
+                  const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
+                  if (x0 > hostW) {
+                    child.style.visibility = "hidden";
+                    continue;
+                  }
+                  child.style.visibility = "visible";
+                  child.style.left = `${x0}px`;
+                  child.style.top = `${y}px`;
+                  child.style.width = `${Math.max(4, hostW - x0)}px`;
                 }
               }
             }
           } catch {}
+          // user-interaction bookkeeping only for real user pans
+          if (!range || programmaticRangeRef.current) return;
+          userInteractingRef.current = true;
           const bars = candlesRef.current.length;
           let pinned = false;
           if (bars >= 2) {
-            // لبه زنده = آخرین کندل واقعی + چند بار آیندهٔ کوتاه
-            // اگر کاربر به گذشته رفته (range.to خیلی قبل از آخر)، فلش Go Live نشان بده
             const liveEdge = bars - 1 + FUTURE_VISIBLE;
             pinned = range.to >= liveEdge - 5;
           }
           pinnedToRightRef.current = pinned;
           setShowGoLive(!pinned);
           if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
-          // تا وقتی دست کاربر روی چارت است auto-scroll نکن
           interactTimerRef.current = window.setTimeout(() => {
             userInteractingRef.current = false;
             interactTimerRef.current = null;
