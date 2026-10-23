@@ -3743,10 +3743,13 @@ export default function DashboardPage() {
             (l) => String(l.symbol || "").toUpperCase() === symU
           );
           type Hit = { id: string; kind: "line"; score: number; isV: boolean; isRay: boolean; isDiag: boolean };
-          let best: Hit | null = null;
+          // Holder object so TS tracks mutation inside nested function (avoids type 'never')
+          const hitBox: { current: Hit | null } = { current: null };
           const consider = (id: string, score: number, isV: boolean, isRay: boolean, isDiag: boolean) => {
             if (score > HIT) return;
-            if (!best || score < best.score) best = { id, kind: "line", score, isV, isRay, isDiag };
+            if (!hitBox.current || score < hitBox.current.score) {
+              hitBox.current = { id, kind: "line", score, isV, isRay, isDiag };
+            }
           };
           for (const l of list) {
             const isV =
@@ -3807,13 +3810,14 @@ export default function DashboardPage() {
               }
             } catch {}
           }
+          const best = hitBox.current;
           if (best) {
             setMode("move");
             setMovingId(best.id);
             setMovingType("line");
             movingVLineRef.current = best.isV;
             movingRayRef.current = best.isRay;
-            const l = list.find((x) => x.id === best!.id);
+            const l = list.find((x) => x.id === best.id);
             if (l && best.isDiag) {
               moveDiagRef.current = {
                 id: l.id,
