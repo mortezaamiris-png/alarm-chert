@@ -1146,6 +1146,7 @@ export default function DashboardPage() {
     if (!chart) return;
     try {
       if (mode === "vline") {
+        // Only vertical guide — never horizontal
         chart.applyOptions({
           crosshair: {
             mode: CrosshairMode.Normal,
@@ -1159,7 +1160,21 @@ export default function DashboardPage() {
             horzLine: {
               visible: false,
               labelVisible: false,
+              color: "transparent",
             },
+          },
+        } as any);
+      } else if (
+        mode === "arrow-up" ||
+        mode === "arrow-down" ||
+        mode === "arrow-marker"
+      ) {
+        // No crosshair lines while placing arrow marks
+        chart.applyOptions({
+          crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: { visible: false, labelVisible: false, color: "transparent" },
+            horzLine: { visible: false, labelVisible: false, color: "transparent" },
           },
         } as any);
       } else if (mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray") {
@@ -3675,17 +3690,55 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Heavy previews (diag / ray / move) handled by throttled pointermove — skip here
+        const mm = modeRef.current;
+        // No horizontal price-line preview for these tools
         if (
-          modeRef.current === "none" ||
-          modeRef.current === "move" ||
-          modeRef.current === "diag" ||
-          modeRef.current === "alarm-diag" ||
-          modeRef.current === "ray" ||
-          modeRef.current === "alarm-ray" ||
-          modeRef.current === "measure"
-        )
+          mm === "none" ||
+          mm === "move" ||
+          mm === "diag" ||
+          mm === "alarm-diag" ||
+          mm === "ray" ||
+          mm === "alarm-ray" ||
+          mm === "measure" ||
+          mm === "vline" ||
+          mm === "arrow-up" ||
+          mm === "arrow-down" ||
+          mm === "arrow-marker"
+        ) {
+          // Clear any leftover horizontal ghost
+          if (
+            mm === "vline" ||
+            mm === "arrow-up" ||
+            mm === "arrow-down" ||
+            mm === "arrow-marker"
+          ) {
+            try {
+              if (previewLineRef.current) {
+                series.removePriceLine(previewLineRef.current);
+                previewLineRef.current = null;
+              }
+            } catch {}
+          }
+          // Vertical tool: DOM vertical guide only (no horizontal)
+          if (mm === "vline" && param.point && param.point.x >= 0) {
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                let guide = host.querySelector("[data-vline-guide]") as HTMLDivElement | null;
+                if (!guide) {
+                  guide = document.createElement("div");
+                  guide.dataset.vlineGuide = "1";
+                  guide.style.cssText =
+                    "position:absolute;top:0;bottom:0;width:0;border-left:2px dashed rgba(249,115,22,0.9);pointer-events:none;z-index:25;";
+                  host.appendChild(guide);
+                }
+                guide.style.left = `${param.point.x}px`;
+                guide.style.display = "block";
+              }
+            } catch {}
+          }
           return;
+        }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
@@ -4691,9 +4744,12 @@ export default function DashboardPage() {
           if (!error && data) {
             pushUndo();
             setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-            setStatusMsg("Mark placed — tap again or change tool");
+            setStatusMsg("Mark placed");
           } else setStatusMsg("Save failed");
-          // Stay in arrow mode so user can place multiple (like TradingView)
+          // One placement only — must re-select tool for another mark
+          setMode("none");
+          modeRef.current = "none";
+          clearPreview();
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 200);
           return;
