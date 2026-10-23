@@ -1700,6 +1700,7 @@ export default function DashboardPage() {
         const title = isMoving ? "MOVING" : noteClean;
         const isVLine =
           l.note === "__vline__" ||
+          (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
           (l.start_time != null &&
             l.end_time != null &&
             Number(l.start_time) === Number(l.end_time) &&
@@ -2051,15 +2052,30 @@ export default function DashboardPage() {
 
     paintVLines();
     paintRays();
-    try {
-      chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-        // Only reposition existing DOM nodes — do NOT rebuild (avoids ray flicker)
-        requestAnimationFrame(() => {
-          try { syncOverlayPositions(); } catch {
-            try { paintVLines(); paintRays(); } catch {}
-          }
-        });
+    // Sync overlay on horizontal scroll AND vertical price pan
+    const scheduleOverlaySync = () => {
+      requestAnimationFrame(() => {
+        try {
+          syncOverlayPositions();
+        } catch {
+          try {
+            paintVLines();
+            paintRays();
+          } catch {}
+        }
       });
+    };
+    try {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleOverlaySync);
+    } catch {}
+    // Vertical pan/zoom does not fire timeScale events — listen on container
+    try {
+      const hostEl = chartContainerRef.current;
+      if (hostEl) {
+        hostEl.addEventListener("wheel", scheduleOverlaySync, { passive: true });
+        hostEl.addEventListener("pointermove", scheduleOverlaySync, { passive: true });
+        hostEl.addEventListener("touchmove", scheduleOverlaySync, { passive: true });
+      }
     } catch {}
 
         if (highlightPrice != null && !hlDrawnOnActive && !highlightDiag && !highlightRay) {
@@ -4043,7 +4059,9 @@ export default function DashboardPage() {
           const width = drawWidthRef.current || 2;
           const dash = drawDashRef.current || "solid";
           try {
-            const { data, error } = await supabase.from("chart_lines").insert([{
+            const uid =
+              (await supabase.auth.getSession()).data.session?.user?.id || null;
+            let payload: any = {
               symbol: symbolUpper,
               price: lo - pad,
               end_price: hi + pad,
@@ -4054,13 +4072,42 @@ export default function DashboardPage() {
               style: dash,
               dash,
               note: "__vline__",
-            }]).select().single();
+            };
+            if (uid) payload.user_id = uid;
+            let { data, error } = await supabase
+              .from("chart_lines")
+              .insert([payload])
+              .select()
+              .single();
+            if (error) {
+              payload = {
+                symbol: symbolUpper,
+                price: Number(fp) || lo,
+                start_time: t,
+                color,
+                width,
+                dash,
+                note: `__vline__:${t}`,
+              };
+              if (uid) payload.user_id = uid;
+              ({ data, error } = await supabase
+                .from("chart_lines")
+                .insert([payload])
+                .select()
+                .single());
+            }
             if (!error && data) {
               pushUndo();
-              setLines((prev) => [data as ChartLine, ...prev]);
+              const saved: ChartLine = {
+                ...(data as ChartLine),
+                start_time: (data as any).start_time ?? t,
+                end_time: (data as any).end_time ?? t,
+                end_price: (data as any).end_price ?? hi + pad,
+                note: "__vline__",
+              };
+              setLines((prev) => [saved, ...prev]);
               setStatusMsg("Vertical line added");
             } else {
-              // local fallback id
               const local: ChartLine = {
                 id: `local-vl-${Date.now()}`,
                 symbol: symbolUpper,
@@ -4075,7 +4122,7 @@ export default function DashboardPage() {
                 note: "__vline__",
               };
               setLines((prev) => [local, ...prev]);
-              setStatusMsg("Vertical line added (local)");
+              setStatusMsg("Vertical line local only — check login / DB");
             }
           } catch {
             const local: ChartLine = {
@@ -4092,7 +4139,7 @@ export default function DashboardPage() {
               note: "__vline__",
             };
             setLines((prev) => [local, ...prev]);
-            setStatusMsg("Vertical line added (local)");
+            setStatusMsg("Vertical line local only — check login / DB");
           }
           setMode("none");
           return;
@@ -4989,11 +5036,20 @@ export default function DashboardPage() {
         setWatchItems([]);
         return;
       }
-      const { data: a } = await supabase
-        .from("alarms")
-        .select("*")
-        .eq("user_id", uidA)
-        .order("created_at", { ascending: false });
+      // Parallel fetch: alarms + lines together (faster when returning to chart)
+      const [alarmsRes, linesRes] = await Promise.all([
+        supabase
+          .from("alarms")
+          .select("*")
+          .eq("user_id", uidA)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("chart_lines")
+          .select("*")
+          .eq("user_id", uidA)
+          .order("created_at", { ascending: false }),
+      ]);
+      const a = alarmsRes.data;
       if (a) {
         setAlarms(
           (a as Alarm[]).map((row) => {
@@ -5020,27 +5076,32 @@ export default function DashboardPage() {
       } else {
         setAlarms([]);
       }
-      const { data: l } = await supabase
-        .from("chart_lines")
-        .select("*")
-        .eq("user_id", uidA)
-        .order("created_at", { ascending: false });
+      const l = linesRes.data;
       if (l) {
         setLines(
           (l as ChartLine[]).map((row) => {
             if (isDiagonalLine(row)) return row;
+            if (row.note === "__vline__" || (typeof row.note === "string" && row.note.startsWith("__vline__:"))) {
+              let st = row.start_time != null ? Number(row.start_time) : null;
+              if ((st == null || Number.isNaN(st)) && typeof row.note === "string" && row.note.startsWith("__vline__:")) {
+                const n = Number(row.note.replace("__vline__:", ""));
+                if (!Number.isNaN(n) && n > 0) st = n;
+              }
+              return { ...row, start_time: st, end_time: st, note: "__vline__" };
+            }
             if (row.note?.startsWith("__diag:")) {
-              const parts = row.note.split(":");
+              const parts = row.note.replace(/^__diag:/, "").split("|")[0].split(":");
               if (parts.length >= 3) {
                 return {
                   ...row,
+                  start_time: row.start_time ?? Number(parts[0]),
                   end_time: Number(parts[1]),
                   end_price: Number(parts[2]),
                 };
               }
             }
             if (row.note?.startsWith("__ray:") && row.start_time == null) {
-              const n = Number(row.note.replace("__ray:", ""));
+              const n = Number(String(row.note).replace("__ray:", "").split("|")[0]);
               if (!Number.isNaN(n)) return { ...row, start_time: n };
             }
             return row;
@@ -5049,6 +5110,12 @@ export default function DashboardPage() {
       } else {
         setLines([]);
       }
+      // خطوط را بلافاصله روی چارت بکش (بدون منتظر ماندن واچ‌لیست)
+      try {
+        requestAnimationFrame(() => {
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        });
+      } catch {}
       const { data: wl } = await supabase
         .from("watchlist_lists")
         .select("*")
