@@ -857,6 +857,7 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
+  const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
@@ -1704,6 +1705,7 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
+    arrowMoveItemsRef.current = [];
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
@@ -1881,6 +1883,7 @@ export default function DashboardPage() {
                     ? `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`
                     : `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="9" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`;
                   el.innerHTML = svg;
+                  arrowMoveItemsRef.current.push({ id: String(l.id), time: t, price: Number(l.price) });
                   const x = chart.timeScale().timeToCoordinate(t as any);
                   const y = ser.priceToCoordinate(Number(l.price));
                   if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
