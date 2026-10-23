@@ -1829,7 +1829,7 @@ export default function DashboardPage() {
             // Size: width 1/2/3 → visibly different marker sizes
             const w = Math.max(1, Math.min(3, Number(l.width) || width || 2));
             const mkSize = (w === 1 ? 1 : w === 2 ? 2 : 3) as 1 | 2 | 3;
-            const mkColor = isMoving ? "#f59e0b" : baseCol;
+            const mkColor = baseCol;
             const ls: any = chart.addLineSeries({
               color: "rgba(0,0,0,0)",
               lineWidth: 1,
@@ -1859,29 +1859,30 @@ export default function DashboardPage() {
             } catch {}
             chartLinesRef.current.set(l.id, ls);
 
-            // Moving: dashed hollow arrow (outline only) at the point
+            // Moving: gray dashed hollow arrow (outline only), size follows width 1/2/3
             if (isMoving) {
               try {
                 const host = vlineOverlayRef.current;
                 const ser = seriesRef.current;
                 if (host && ser) {
+                  const px = w === 1 ? 24 : w === 2 ? 32 : 42;
                   let el = host.querySelector(`[data-arrow-ring="${l.id}"]`) as HTMLDivElement | null;
                   if (!el) {
                     el = document.createElement("div");
                     el.dataset.arrowRing = String(l.id);
-                    el.style.cssText =
-                      "position:absolute;width:32px;height:32px;margin-left:-16px;margin-top:-16px;pointer-events:none;z-index:30;";
                     host.appendChild(el);
                   }
+                  el.style.cssText =
+                    `position:absolute;width:${px}px;height:${px}px;margin-left:-${px / 2}px;margin-top:-${px / 2}px;pointer-events:none;z-index:30;`;
                   const up = l.note === "__arrow_up__";
                   const down = l.note === "__arrow_down__";
-                  const stroke = mkColor || "#f59e0b";
-                  // Hollow dashed arrow path (outline only)
+                  const stroke = "#9ca3af"; // gray dashed outline
+                  const sw = w === 1 ? 1.5 : w === 2 ? 2 : 2.5;
                   const svg = up
-                    ? `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`
+                    ? `<svg width="${px}" height="${px}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="${sw}" stroke-dasharray="3 2" fill="none"/></svg>`
                     : down
-                    ? `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`
-                    : `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="9" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`;
+                    ? `<svg width="${px}" height="${px}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="${sw}" stroke-dasharray="3 2" fill="none"/></svg>`
+                    : `<svg width="${px}" height="${px}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="9" stroke="${stroke}" stroke-width="${sw}" stroke-dasharray="3 2" fill="none"/></svg>`;
                   el.innerHTML = svg;
                   arrowMoveItemsRef.current.push({ id: String(l.id), time: t, price: Number(l.price) });
                   const x = chart.timeScale().timeToCoordinate(t as any);
@@ -3244,16 +3245,21 @@ export default function DashboardPage() {
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
         const onCtxChart = (e: MouseEvent) => {
-          if (modeRef.current === "move" && movingIdRef.current) {
+          const m = modeRef.current;
+          if (m && m !== "none") {
             e.preventDefault();
             e.stopPropagation();
             try {
               moveDiagRef.current = null;
               movingVLineRef.current = false;
               movingRayRef.current = false;
+              diagStartRef.current = null;
+              pathPointsRef.current = [];
               setMovingId(null);
               setMovingType(null);
+              setDiagStart(null);
               setMode("none");
+              modeRef.current = "none";
               clearPreview();
               setStatusMsg("");
             } catch {}
@@ -5392,25 +5398,51 @@ export default function DashboardPage() {
     drawToolsOpen,
   ]);
 
-  // Cancel move/selection: click outside chart OR right-click anywhere
+  // Cancel tool / move: outside click (move only) OR right-click (any tool)
   useEffect(() => {
-    if (mode !== "move" || !movingId) return;
-    const cancelMove = () => {
+    const isTool =
+      mode !== "none" &&
+      (mode === "move" ||
+        mode === "draw" ||
+        mode === "ray" ||
+        mode === "diag" ||
+        mode === "vline" ||
+        mode === "arrow" ||
+        mode === "arrow-up" ||
+        mode === "arrow-down" ||
+        mode === "arrow-marker" ||
+        mode === "path" ||
+        mode === "brush" ||
+        mode === "curve" ||
+        mode === "rect" ||
+        mode === "alarm" ||
+        mode === "alarm-ray" ||
+        mode === "alarm-diag" ||
+        mode === "measure");
+    if (!isTool) return;
+
+    const cancelAll = () => {
       try {
         moveDiagRef.current = null;
         movingVLineRef.current = false;
         movingRayRef.current = false;
+        diagStartRef.current = null;
+        pathPointsRef.current = [];
         setMovingId(null);
         setMovingType(null);
+        setDiagStart(null);
         setMode("none");
+        modeRef.current = "none";
         clearPreview();
         setStatusMsg("");
       } catch {}
     };
+
     const onDown = (e: MouseEvent | TouchEvent | PointerEvent) => {
+      // Outside-click only cancels move selection
+      if (mode !== "move" || !movingId) return;
       const el = e.target as HTMLElement | null;
       if (!el) return;
-      // Keep selection when interacting with style panel / list Move controls / Done
       if (
         el.closest?.("[data-menu]") ||
         el.closest?.("[data-note-edit]") ||
@@ -5419,18 +5451,20 @@ export default function DashboardPage() {
       ) {
         return;
       }
-      // Inside chart container → leave to chart click handler (place / pick)
       if (chartContainerRef.current && chartContainerRef.current.contains(el)) {
         return;
       }
-      // Outside chart → deselect
-      cancelMove();
+      cancelAll();
     };
+
     const onContext = (e: MouseEvent) => {
-      // Right-click always cancels current selection/move
+      // Right-click cancels any active tool or move selection
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.("[data-menu]") || el?.closest?.("[data-move-bar]")) return;
       e.preventDefault();
-      cancelMove();
+      cancelAll();
     };
+
     document.addEventListener("mousedown", onDown, true);
     document.addEventListener("touchstart", onDown, true);
     document.addEventListener("contextmenu", onContext, true);
@@ -7389,32 +7423,80 @@ export default function DashboardPage() {
             mode === "alarm-diag" ||
             mode === "move") && (
             <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
-              <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
-                <input
-                  type="color"
-                  value={drawColor}
-                  onChange={(e) => {
-                    const c = e.target.value;
-                    setDrawColor(c);
-                    // Live-apply style while editing a diagonal
-                    const md = moveDiagRef.current;
-                    if (mode === "move" && md) {
-                      md.color = c;
-                      try {
-                        previewDiagSeriesRef.current?.applyOptions({ color: c });
-                      } catch {}
-                    }
-                    // Also apply to selected line/alarm (arrows, horizontals, etc.)
-                    if (mode === "move" && movingId) {
-                      if (movingType === "line") {
-                        void updateLineColor(movingId, c);
-                      } else if (movingType === "alarm") {
-                        void updateAlarmColor(movingId, c);
-                      }
-                    }
-                  }}
-                  className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+              <div className="relative" data-menu>
+                <button
+                  type="button"
+                  title="Color"
+                  onClick={() => setOpenMenu((m) => (m === "__style_color__" ? null : "__style_color__"))}
+                  className="w-8 h-8 rounded-full border-2 border-gray-500 shadow shrink-0"
+                  style={{ background: drawColor }}
                 />
+                {openMenu === "__style_color__" && (
+                  <div
+                    className="absolute bottom-full left-0 mb-2 z-50 p-3 rounded-2xl border border-white/10 shadow-2xl min-w-[180px]"
+                    style={{
+                      background: "rgba(22,22,26,0.92)",
+                      backdropFilter: "blur(28px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(28px) saturate(180%)",
+                    }}
+                  >
+                    <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
+                    <div className="grid grid-cols-5 gap-1.5 mb-3">
+                      {PRESET_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => {
+                            setDrawColor(c);
+                            const md = moveDiagRef.current;
+                            if (mode === "move" && md) {
+                              md.color = c;
+                              try {
+                                previewDiagSeriesRef.current?.applyOptions({ color: c });
+                              } catch {}
+                            }
+                            if (mode === "move" && movingId) {
+                              if (movingType === "line") void updateLineColor(movingId, c);
+                              else if (movingType === "alarm") void updateAlarmColor(movingId, c);
+                            }
+                            setOpenMenu(null);
+                          }}
+                          className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                            drawColor.toLowerCase() === c.toLowerCase()
+                              ? "border-orange-400 ring-2 ring-orange-400/40"
+                              : "border-white/10"
+                          }`}
+                          style={{ background: c }}
+                        />
+                      ))}
+                    </div>
+                    <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
+                      <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                        <input
+                          type="color"
+                          value={drawColor}
+                          onChange={(e) => {
+                            const c = e.target.value;
+                            setDrawColor(c);
+                            const md = moveDiagRef.current;
+                            if (mode === "move" && md) {
+                              md.color = c;
+                              try {
+                                previewDiagSeriesRef.current?.applyOptions({ color: c });
+                              } catch {}
+                            }
+                            if (mode === "move" && movingId) {
+                              if (movingType === "line") void updateLineColor(movingId, c);
+                              else if (movingType === "alarm") void updateAlarmColor(movingId, c);
+                            }
+                          }}
+                          className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                        />
+                      </span>
+                      Custom color
+                    </label>
+                  </div>
+                )}
               </div>
               <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
@@ -7430,11 +7512,17 @@ export default function DashboardPage() {
                           previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 });
                         } catch {}
                       }
-                      // Live size for selected arrow / line / alarm
+                      // Live size for selected arrow / line / alarm (immediate UI)
                       if (mode === "move" && movingId) {
                         if (movingType === "line") {
+                          setLines((prev) =>
+                            prev.map((l) => (l.id === movingId ? { ...l, width: w } : l))
+                          );
                           void updateLineWidth(movingId, w);
                         } else if (movingType === "alarm") {
+                          setAlarms((prev) =>
+                            prev.map((a) => (a.id === movingId ? { ...a, width: w } : a))
+                          );
                           void updateAlarmWidth(movingId, w);
                         }
                       }
