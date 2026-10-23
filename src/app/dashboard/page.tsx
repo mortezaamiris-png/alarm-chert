@@ -1572,6 +1572,9 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-vline-guide]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
+    } catch {}
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1701,6 +1704,9 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
+    } catch {}
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -1812,13 +1818,16 @@ export default function DashboardPage() {
         } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
           const t = Number(l.start_time || 0);
           if (t > 0) {
-            const mkColor =
+            const baseCol =
               l.note === "__arrow_up__"
                 ? (color && color !== DEFAULT_LINE_COLOR ? color : "#22c55e")
                 : l.note === "__arrow_down__"
                 ? (color && color !== DEFAULT_LINE_COLOR ? color : "#ef4444")
                 : color || "#f97316";
-            const mkSize = Math.max(1, Math.min(3, Number(l.width) || width || 2)) as 1 | 2 | 3;
+            // Size: width 1/2/3 → visibly different marker sizes
+            const w = Math.max(1, Math.min(3, Number(l.width) || width || 2));
+            const mkSize = (w === 1 ? 1 : w === 2 ? 2 : 3) as 1 | 2 | 3;
+            const mkColor = isMoving ? "#f59e0b" : baseCol;
             const ls: any = chart.addLineSeries({
               color: "rgba(0,0,0,0)",
               lineWidth: 1,
@@ -1831,17 +1840,64 @@ export default function DashboardPage() {
             try {
               const shape =
                 l.note === "__arrow_up__" ? "arrowUp" : l.note === "__arrow_down__" ? "arrowDown" : "circle";
-              ls.setMarkers([
-                {
-                  time: t as any,
-                  position: "inBar",
-                  color: mkColor,
-                  shape,
-                  size: mkSize,
-                },
-              ]);
+              // When moving: hollow circle ring (selection) + arrow on top
+              if (isMoving) {
+                ls.setMarkers([
+                  {
+                    time: t as any,
+                    position: "inBar",
+                    color: "rgba(245,158,11,0.35)",
+                    shape: "circle",
+                    size: 4 as any,
+                  },
+                  {
+                    time: t as any,
+                    position: "inBar",
+                    color: mkColor,
+                    shape,
+                    size: mkSize,
+                  },
+                ]);
+              } else {
+                ls.setMarkers([
+                  {
+                    time: t as any,
+                    position: "inBar",
+                    color: mkColor,
+                    shape,
+                    size: mkSize,
+                  },
+                ]);
+              }
             } catch {}
             chartLinesRef.current.set(l.id, ls);
+
+            // Dashed ring overlay around marker while moving (pixel-perfect hollow feel)
+            if (isMoving) {
+              try {
+                const host = vlineOverlayRef.current;
+                const ser = seriesRef.current;
+                if (host && ser) {
+                  let ring = host.querySelector(`[data-arrow-ring="${l.id}"]`) as HTMLDivElement | null;
+                  if (!ring) {
+                    ring = document.createElement("div");
+                    ring.dataset.arrowRing = String(l.id);
+                    ring.style.cssText =
+                      "position:absolute;width:28px;height:28px;margin-left:-14px;margin-top:-14px;border:2px dashed rgba(156,163,175,0.95);border-radius:9999px;pointer-events:none;z-index:30;box-sizing:border-box;";
+                    host.appendChild(ring);
+                  }
+                  const x = chart.timeScale().timeToCoordinate(t as any);
+                  const y = ser.priceToCoordinate(Number(l.price));
+                  if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+                    ring.style.left = `${x}px`;
+                    ring.style.top = `${y}px`;
+                    ring.style.display = "block";
+                  } else {
+                    ring.style.display = "none";
+                  }
+                }
+              } catch {}
+            }
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
           const raw = l.note.replace(/^__(?:path|curve):/, "");
@@ -3705,12 +3761,13 @@ export default function DashboardPage() {
           mm === "arrow-down" ||
           mm === "arrow-marker"
         ) {
-          // Clear any leftover horizontal ghost
+          // Clear any leftover horizontal ghost / stuck DOM guide
           if (
             mm === "vline" ||
             mm === "arrow-up" ||
             mm === "arrow-down" ||
-            mm === "arrow-marker"
+            mm === "arrow-marker" ||
+            mm === "none"
           ) {
             try {
               if (previewLineRef.current) {
@@ -3718,25 +3775,13 @@ export default function DashboardPage() {
                 previewLineRef.current = null;
               }
             } catch {}
-          }
-          // Vertical tool: DOM vertical guide only (no horizontal)
-          if (mm === "vline" && param.point && param.point.x >= 0) {
             try {
-              const host = vlineOverlayRef.current;
-              if (host) {
-                let guide = host.querySelector("[data-vline-guide]") as HTMLDivElement | null;
-                if (!guide) {
-                  guide = document.createElement("div");
-                  guide.dataset.vlineGuide = "1";
-                  guide.style.cssText =
-                    "position:absolute;top:0;bottom:0;width:0;border-left:2px dashed rgba(249,115,22,0.9);pointer-events:none;z-index:25;";
-                  host.appendChild(guide);
-                }
-                guide.style.left = `${param.point.x}px`;
-                guide.style.display = "block";
-              }
+              vlineOverlayRef.current
+                ?.querySelectorAll("[data-vline-guide]")
+                .forEach((el) => el.remove());
             } catch {}
           }
+          // Vertical tool: rely on LWC crosshair vertLine only (follows pan/zoom, never sticks)
           return;
         }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
@@ -3957,6 +4002,18 @@ export default function DashboardPage() {
             movingRayRef.current = best.isRay;
             if (best.kind === "line") {
               const l = list.find((x) => x.id === best!.id);
+              const isArrowSel =
+                l &&
+                typeof l.note === "string" &&
+                (l.note === "__arrow_up__" ||
+                  l.note === "__arrow_down__" ||
+                  l.note === "__arrow_marker__" ||
+                  l.note.startsWith("__arrow"));
+              // Arrows move freely in X+Y (treat like ray origin)
+              if (isArrowSel) {
+                movingRayRef.current = true;
+                movingVLineRef.current = false;
+              }
               if (l && best.isDiag) {
                 moveDiagRef.current = {
                   id: l.id,
@@ -3971,6 +4028,9 @@ export default function DashboardPage() {
               } else if (best.isV) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move vertical line");
+              } else if (isArrowSel) {
+                moveDiagRef.current = null;
+                setStatusMsg("Click chart to move arrow (any direction)");
               } else if (best.isRay) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move ray");
@@ -4258,10 +4318,12 @@ export default function DashboardPage() {
                   setStatusMsg("Vertical line moved");
                 }
               } else {
-              // Ray: also move origin (start_time) so user can place it further left/right
+              // Ray / arrow: move price + origin time (left-right and up-down)
               const patch: any = { price: fp };
               if (isRay && tMove != null && !Number.isNaN(tMove)) {
                 patch.start_time = tMove;
+                patch.end_time = tMove; // keep arrow point consistent
+                patch.end_price = fp;
               }
               const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
               if (error && patch.start_time != null) {
@@ -4278,11 +4340,14 @@ export default function DashboardPage() {
                         price: fp,
                         start_time:
                           isRay && tMove != null ? tMove : l.start_time,
+                        end_time:
+                          isRay && tMove != null ? tMove : l.end_time,
+                        end_price: isRay ? fp : l.end_price,
                       }
                     : l
                 )
               );
-              setStatusMsg(isRay ? "Ray moved" : "Line moved");
+              setStatusMsg(isRay ? "Moved" : "Line moved");
               }
             } else if (typ === "alarm") {
               const isRayAl = movingRayRef.current;
@@ -7235,6 +7300,9 @@ export default function DashboardPage() {
             mode === "ray" ||
             mode === "diag" ||
             mode === "arrow" ||
+            mode === "arrow-up" ||
+            mode === "arrow-down" ||
+            mode === "arrow-marker" ||
             mode === "path" ||
             mode === "brush" ||
             mode === "curve" ||
@@ -7258,6 +7326,14 @@ export default function DashboardPage() {
                         previewDiagSeriesRef.current?.applyOptions({ color: c });
                       } catch {}
                     }
+                    // Also apply to selected line/alarm (arrows, horizontals, etc.)
+                    if (mode === "move" && movingId) {
+                      if (movingType === "line") {
+                        void updateLineColor(movingId, c);
+                      } else if (movingType === "alarm") {
+                        void updateAlarmColor(movingId, c);
+                      }
+                    }
                   }}
                   className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
                 />
@@ -7275,6 +7351,14 @@ export default function DashboardPage() {
                         try {
                           previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 });
                         } catch {}
+                      }
+                      // Live size for selected arrow / line / alarm
+                      if (mode === "move" && movingId) {
+                        if (movingType === "line") {
+                          void updateLineWidth(movingId, w);
+                        } else if (movingType === "alarm") {
+                          void updateAlarmWidth(movingId, w);
+                        }
                       }
                     }}
                     className={`w-7 h-7 rounded text-xs ${
@@ -8355,7 +8439,14 @@ export default function DashboardPage() {
           </h3>
           <div className="space-y-1.5">
             {currentAlarms.map((a) => (
-              <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+              <div
+                key={a.id}
+                className={`bg-gray-900 border rounded-lg px-3 py-2 ${
+                  movingId === a.id && movingType === "alarm"
+                    ? "border-dashed border-gray-400 ring-1 ring-gray-500/40"
+                    : "border-gray-800"
+                }`}
+              >
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
                     {isDiagonalLine(a)
@@ -8606,7 +8697,14 @@ export default function DashboardPage() {
           </h3>
           <div className="space-y-1.5">
             {currentLines.map((l) => (
-              <div key={l.id} className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
+              <div
+                key={l.id}
+                className={`bg-gray-900 border rounded-lg px-3 py-2 ${
+                  movingId === l.id && movingType === "line"
+                    ? "border-dashed border-gray-400 ring-1 ring-gray-500/40"
+                    : "border-gray-800"
+                }`}
+              >
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
                     {l.note === "__vline__"
@@ -8752,16 +8850,25 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        const isArrowL =
+                          typeof l.note === "string" &&
+                          (l.note === "__arrow_up__" ||
+                            l.note === "__arrow_down__" ||
+                            l.note === "__arrow_marker__" ||
+                            l.note.startsWith("__arrow"));
                         const isV =
-                          l.note === "__vline__" ||
-                          (l.start_time != null &&
-                            l.end_time != null &&
-                            Number(l.start_time) === Number(l.end_time) &&
-                            l.end_price != null);
+                          !isArrowL &&
+                          (l.note === "__vline__" ||
+                            (l.start_time != null &&
+                              l.end_time != null &&
+                              Number(l.start_time) === Number(l.end_time) &&
+                              l.end_price != null));
                         movingVLineRef.current = !!isV;
-                        // Ray = has start_time but is not diagonal and not vertical
+                        // Ray / arrow: can move in time + price (left-right and up-down)
                         movingRayRef.current =
-                          !isV && l.start_time != null && !isDiagonalLine(l);
+                          !isV &&
+                          (isArrowL ||
+                            (l.start_time != null && !isDiagonalLine(l)));
                         if (isDiagonalLine(l)) {
                           movingRayRef.current = false;
                           movingVLineRef.current = false;
