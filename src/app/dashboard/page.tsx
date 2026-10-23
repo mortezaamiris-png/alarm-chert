@@ -1840,24 +1840,9 @@ export default function DashboardPage() {
             try {
               const shape =
                 l.note === "__arrow_up__" ? "arrowUp" : l.note === "__arrow_down__" ? "arrowDown" : "circle";
-              // When moving: hollow circle ring (selection) + arrow on top
               if (isMoving) {
-                ls.setMarkers([
-                  {
-                    time: t as any,
-                    position: "inBar",
-                    color: "rgba(245,158,11,0.35)",
-                    shape: "circle",
-                    size: 4 as any,
-                  },
-                  {
-                    time: t as any,
-                    position: "inBar",
-                    color: mkColor,
-                    shape,
-                    size: mkSize,
-                  },
-                ]);
+                // Hide solid marker — dashed hollow arrow drawn as SVG overlay
+                ls.setMarkers([]);
               } else {
                 ls.setMarkers([
                   {
@@ -1872,28 +1857,38 @@ export default function DashboardPage() {
             } catch {}
             chartLinesRef.current.set(l.id, ls);
 
-            // Dashed ring overlay around marker while moving (pixel-perfect hollow feel)
+            // Moving: dashed hollow arrow (outline only) at the point
             if (isMoving) {
               try {
                 const host = vlineOverlayRef.current;
                 const ser = seriesRef.current;
                 if (host && ser) {
-                  let ring = host.querySelector(`[data-arrow-ring="${l.id}"]`) as HTMLDivElement | null;
-                  if (!ring) {
-                    ring = document.createElement("div");
-                    ring.dataset.arrowRing = String(l.id);
-                    ring.style.cssText =
-                      "position:absolute;width:28px;height:28px;margin-left:-14px;margin-top:-14px;border:2px dashed rgba(156,163,175,0.95);border-radius:9999px;pointer-events:none;z-index:30;box-sizing:border-box;";
-                    host.appendChild(ring);
+                  let el = host.querySelector(`[data-arrow-ring="${l.id}"]`) as HTMLDivElement | null;
+                  if (!el) {
+                    el = document.createElement("div");
+                    el.dataset.arrowRing = String(l.id);
+                    el.style.cssText =
+                      "position:absolute;width:32px;height:32px;margin-left:-16px;margin-top:-16px;pointer-events:none;z-index:30;";
+                    host.appendChild(el);
                   }
+                  const up = l.note === "__arrow_up__";
+                  const down = l.note === "__arrow_down__";
+                  const stroke = mkColor || "#f59e0b";
+                  // Hollow dashed arrow path (outline only)
+                  const svg = up
+                    ? `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`
+                    : down
+                    ? `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`
+                    : `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="9" stroke="${stroke}" stroke-width="2" stroke-dasharray="3 2" fill="none"/></svg>`;
+                  el.innerHTML = svg;
                   const x = chart.timeScale().timeToCoordinate(t as any);
                   const y = ser.priceToCoordinate(Number(l.price));
                   if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
-                    ring.style.left = `${x}px`;
-                    ring.style.top = `${y}px`;
-                    ring.style.display = "block";
+                    el.style.left = `${x}px`;
+                    el.style.top = `${y}px`;
+                    el.style.display = "block";
                   } else {
-                    ring.style.display = "none";
+                    el.style.display = "none";
                   }
                 }
               } catch {}
@@ -2146,6 +2141,20 @@ export default function DashboardPage() {
           child.style.left = `${x0}px`;
           child.style.top = `${y}px`;
           child.style.width = `${Math.max(4, hostW - x0)}px`;
+        } else if (child.dataset.arrowRing && ser) {
+          const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
         }
       }
     };
@@ -3231,6 +3240,23 @@ export default function DashboardPage() {
         // capture:true تا قبل از handler خود LWC اجرا شود
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
+        const onCtxChart = (e: MouseEvent) => {
+          if (modeRef.current === "move" && movingIdRef.current) {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+              moveDiagRef.current = null;
+              movingVLineRef.current = false;
+              movingRayRef.current = false;
+              setMovingId(null);
+              setMovingType(null);
+              setMode("none");
+              clearPreview();
+              setStatusMsg("");
+            } catch {}
+          }
+        };
+        container.addEventListener("contextmenu", onCtxChart);
 
         // iPad / touch: درگ عمودی روی محور قیمت = زوم عمودی
         let priceTouchY0 = 0;
@@ -5363,6 +5389,55 @@ export default function DashboardPage() {
     drawToolsOpen,
   ]);
 
+  // Cancel move/selection: click outside chart OR right-click anywhere
+  useEffect(() => {
+    if (mode !== "move" || !movingId) return;
+    const cancelMove = () => {
+      try {
+        moveDiagRef.current = null;
+        movingVLineRef.current = false;
+        movingRayRef.current = false;
+        setMovingId(null);
+        setMovingType(null);
+        setMode("none");
+        clearPreview();
+        setStatusMsg("");
+      } catch {}
+    };
+    const onDown = (e: MouseEvent | TouchEvent | PointerEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (!el) return;
+      // Keep selection when interacting with style panel / list Move controls / Done
+      if (
+        el.closest?.("[data-menu]") ||
+        el.closest?.("[data-note-edit]") ||
+        el.closest?.("[data-ind-panel]") ||
+        el.closest?.("[data-move-bar]")
+      ) {
+        return;
+      }
+      // Inside chart container → leave to chart click handler (place / pick)
+      if (chartContainerRef.current && chartContainerRef.current.contains(el)) {
+        return;
+      }
+      // Outside chart → deselect
+      cancelMove();
+    };
+    const onContext = (e: MouseEvent) => {
+      // Right-click always cancels current selection/move
+      e.preventDefault();
+      cancelMove();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("touchstart", onDown, true);
+    document.addEventListener("contextmenu", onContext, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("touchstart", onDown, true);
+      document.removeEventListener("contextmenu", onContext, true);
+    };
+  }, [mode, movingId, clearPreview]);
+
   // Refresh last-price axis label when timezone / TF changes
   useEffect(() => {
     applyLastPriceLabel();
@@ -7310,7 +7385,7 @@ export default function DashboardPage() {
             mode === "alarm-ray" ||
             mode === "alarm-diag" ||
             mode === "move") && (
-            <div className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+            <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
               <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-500 shadow shrink-0" title="Color">
                 <input
                   type="color"
