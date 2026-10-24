@@ -1688,6 +1688,9 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
+    } catch {}
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1820,6 +1823,9 @@ export default function DashboardPage() {
     arrowMoveItemsRef.current = [];
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
     } catch {}
     currentLines.forEach((l) => {
       try {
@@ -3908,7 +3914,7 @@ export default function DashboardPage() {
           mm === "arrow-down" ||
           mm === "arrow-marker"
         ) {
-          // Clear any leftover horizontal ghost / stuck DOM guide
+          // Clear horizontal ghost
           if (
             mm === "vline" ||
             mm === "arrow-up" ||
@@ -3928,7 +3934,51 @@ export default function DashboardPage() {
                 .forEach((el) => el.remove());
             } catch {}
           }
-          // Vertical tool: rely on LWC crosshair vertLine only (follows pan/zoom, never sticks)
+          // Arrow tools: show floating dashed arrow under cursor before place
+          if (
+            (mm === "arrow-up" || mm === "arrow-down" || mm === "arrow-marker") &&
+            param.point &&
+            param.point.x >= 0 &&
+            param.point.y >= 0
+          ) {
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                let el = host.querySelector("[data-arrow-preview]") as HTMLDivElement | null;
+                if (!el) {
+                  el = document.createElement("div");
+                  el.dataset.arrowPreview = "1";
+                  el.style.cssText =
+                    "position:absolute;width:28px;height:28px;margin-left:-14px;margin-top:-14px;pointer-events:none;z-index:35;";
+                  host.appendChild(el);
+                }
+                const stroke =
+                  mm === "arrow-up"
+                    ? "#22c55e"
+                    : mm === "arrow-down"
+                    ? "#ef4444"
+                    : (drawColorRef.current || "#f97316");
+                const svg =
+                  mm === "arrow-up"
+                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
+                    : mm === "arrow-down"
+                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
+                    : `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="8" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`;
+                el.innerHTML = svg;
+                el.style.left = `${param.point.x}px`;
+                el.style.top = `${param.point.y}px`;
+                el.style.display = "block";
+              }
+            } catch {}
+            return;
+          }
+          // Leaving arrow mode → remove preview
+          try {
+            vlineOverlayRef.current
+              ?.querySelectorAll("[data-arrow-preview]")
+              .forEach((el) => el.remove());
+          } catch {}
+          // Vertical tool: rely on LWC crosshair vertLine only
           return;
         }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
@@ -4010,21 +4060,25 @@ export default function DashboardPage() {
                 l.note === "__arrow_down__" ||
                 l.note === "__arrow_marker__" ||
                 l.note.startsWith("__arrow"));
+            const isRayNote =
+              typeof l.note === "string" && l.note.startsWith("__ray:");
             const isV =
               !isArrow &&
+              !isRayNote &&
               (l.note === "__vline__" ||
                 (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                 (l.start_time != null &&
                   l.end_time != null &&
                   Number(l.start_time) === Number(l.end_time) &&
-                  l.end_price != null));
+                  l.end_price != null &&
+                  !isDiagonalLine(l)));
             const isDiag = isDiagonalLine(l);
             const isRay =
               !isV &&
               !isDiag &&
               !isArrow &&
               l.start_time != null &&
-              (l.end_time == null || l.end_price == null);
+              (isRayNote || l.end_time == null || l.end_price == null);
             try {
               if (isV && l.start_time != null) {
                 const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
@@ -4465,15 +4519,34 @@ export default function DashboardPage() {
                   setStatusMsg("Vertical line moved");
                 }
               } else {
-              // Ray / arrow: move price + origin time (left-right and up-down)
+              // Ray vs arrow: different geometry
+              const cur = (linesRef.current || []).find((x) => x.id === id);
+              const isArrowMove =
+                !!cur &&
+                typeof cur.note === "string" &&
+                (cur.note === "__arrow_up__" ||
+                  cur.note === "__arrow_down__" ||
+                  cur.note === "__arrow_marker__" ||
+                  cur.note.startsWith("__arrow"));
               const patch: any = { price: fp };
               if (isRay && tMove != null && !Number.isNaN(tMove)) {
                 patch.start_time = tMove;
-                patch.end_time = tMove; // keep arrow point consistent
-                patch.end_price = fp;
+                if (isArrowMove) {
+                  // Arrow is a point — keep both times equal
+                  patch.end_time = tMove;
+                  patch.end_price = fp;
+                } else {
+                  // Half-line (ray): origin + price only — never set end_time=start_time
+                  // (that would turn it into a vertical line)
+                  patch.end_time = null;
+                  patch.end_price = null;
+                  if (cur?.note?.startsWith("__ray:")) {
+                    patch.note = `__ray:${tMove}`;
+                  }
+                }
               }
               const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
-              if (error && patch.start_time != null) {
+              if (error && patch.start_time != null && !isArrowMove) {
                 await supabase
                   .from("chart_lines")
                   .update({ price: fp, note: `__ray:${patch.start_time}` })
@@ -4487,14 +4560,27 @@ export default function DashboardPage() {
                         price: fp,
                         start_time:
                           isRay && tMove != null ? tMove : l.start_time,
-                        end_time:
-                          isRay && tMove != null ? tMove : l.end_time,
-                        end_price: isRay ? fp : l.end_price,
+                        end_time: isArrowMove
+                          ? tMove != null
+                            ? tMove
+                            : l.end_time
+                          : isRay
+                          ? null
+                          : l.end_time,
+                        end_price: isArrowMove
+                          ? fp
+                          : isRay
+                          ? null
+                          : l.end_price,
+                        note:
+                          isRay && !isArrowMove && tMove != null && l.note?.startsWith("__ray:")
+                            ? `__ray:${tMove}`
+                            : l.note,
                       }
                     : l
                 )
               );
-              setStatusMsg(isRay ? "Moved" : "Line moved");
+              setStatusMsg(isArrowMove ? "Arrow moved" : isRay ? "Ray moved" : "Line moved");
               }
             } else if (typ === "alarm") {
               const isRayAl = movingRayRef.current;
@@ -6676,7 +6762,22 @@ export default function DashboardPage() {
     setEditingNoteType(null);
   };
 
-  const goToSymbol = (sym: string) => setSymbol(chartSymbol(sym));
+  const goToSymbol = (sym: string) => {
+    const s = chartSymbol(sym);
+    if (!s) return;
+    // Immediate ref so loadCandles sees new symbol even before React re-render
+    symbolRef.current = s;
+    setSymbol(s);
+    // iPad: force a fresh load (otherwise chart can stick on previous coin)
+    try {
+      loadGenRef.current += 1;
+    } catch {}
+    requestAnimationFrame(() => {
+      try {
+        loadCandlesRef.current?.();
+      } catch {}
+    });
+  };
 
   // Auto-register push if permission already granted (e.g. returning user on iPad PWA)
   useEffect(() => {
@@ -9182,8 +9283,18 @@ export default function DashboardPage() {
                         } catch {}
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                      onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none cursor-default ${
+                      onPointerUp={(e) => {
+                        if (draggingSym) return;
+                        // Ignore if this was a drag (moved more than a few px)
+                        e.stopPropagation();
+                        goToSymbol(sym);
+                      }}
+                      onClick={(e) => {
+                        // Fallback for mouse; prevent double-fire after pointerup
+                        if (draggingSym) return;
+                        e.preventDefault();
+                      }}
+                      className={`group flex items-center gap-1.5 px-1.5 py-1.5 mb-0.5 rounded-lg text-[11px] select-none cursor-pointer touch-manipulation ${
                         isDrag
                           ? "opacity-40 pointer-events-none"
                           : symbolUpper === sym
@@ -9711,18 +9822,24 @@ export default function DashboardPage() {
                             l.note === "__arrow_down__" ||
                             l.note === "__arrow_marker__" ||
                             l.note.startsWith("__arrow"));
+                        const isRayNote =
+                          typeof l.note === "string" && l.note.startsWith("__ray:");
                         const isV =
                           !isArrowL &&
+                          !isRayNote &&
                           (l.note === "__vline__" ||
+                            (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                             (l.start_time != null &&
                               l.end_time != null &&
                               Number(l.start_time) === Number(l.end_time) &&
-                              l.end_price != null));
+                              l.end_price != null &&
+                              !isDiagonalLine(l)));
                         movingVLineRef.current = !!isV;
                         // Ray / arrow: can move in time + price (left-right and up-down)
                         movingRayRef.current =
                           !isV &&
                           (isArrowL ||
+                            isRayNote ||
                             (l.start_time != null && !isDiagonalLine(l)));
                         if (isDiagonalLine(l)) {
                           movingRayRef.current = false;
@@ -9795,35 +9912,31 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="relative flex items-center mb-2 min-h-[28px]">
+          <div className="flex flex-wrap items-center gap-1.5 mb-2 min-h-[32px]">
             <button
               type="button"
               onClick={() => setHistoryMode("coin")}
-              className={`relative z-10 text-sm font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 ${
+              className={`text-sm font-medium px-2.5 py-1 rounded-full border transition-colors shrink-0 touch-manipulation ${
                 historyMode === "coin"
-                  ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
                   : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
               }`}
             >
               History — {symbolUpper}
             </button>
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="pointer-events-auto flex items-center gap-1.5">
-                <button
-                  type="button"
-                  title="All history"
-                  onClick={() => setHistoryMode("all")}
-                  className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
-                    historyMode === "all"
-                      ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
-                      : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
-                  }`}
-                >
-                  All History
-                </button>
-                <span className="text-xs text-gray-600">({historyAlarms.length})</span>
-              </div>
-            </div>
+            <button
+              type="button"
+              title="All history"
+              onClick={() => setHistoryMode("all")}
+              className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors touch-manipulation ${
+                historyMode === "all"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
+                  : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
+              }`}
+            >
+              All History
+            </button>
+            <span className="text-xs text-gray-600">({historyAlarms.length})</span>
             {historyAlarms.length > 0 && (
               <button
                 type="button"
@@ -9834,7 +9947,7 @@ export default function DashboardPage() {
                     await supabase.from("alarms").delete().in("id", ids);
                   } catch {}
                 }}
-                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50"
+                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2.5 py-1 rounded border border-red-900/50 touch-manipulation"
               >
                 Delete all
               </button>
@@ -9846,7 +9959,7 @@ export default function DashboardPage() {
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-1.5 text-xs cursor-pointer hover:border-amber-600/50"
+                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-2 text-xs cursor-pointer hover:border-amber-600/50 touch-manipulation active:bg-gray-900"
                   onClick={() => {
                     // Resolve diagonal geometry (columns or note fallback)
                     let st = a.start_time ?? null;
