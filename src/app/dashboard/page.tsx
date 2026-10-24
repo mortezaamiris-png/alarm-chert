@@ -9181,10 +9181,13 @@ export default function DashboardPage() {
                         const target = rowEl?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                       }}
-                      onPointerUp={async () => {
+                      onPointerUp={async (e) => {
                         if (!draggingSym) {
                           setDraggingSym(null);
                           setDragOverSym(null);
+                          // Tap (not drag) → switch coin
+                          try { e?.stopPropagation?.(); } catch {}
+                          goToSymbol(sym);
                           return;
                         }
                         const fromSym = draggingSym;
@@ -9283,17 +9286,6 @@ export default function DashboardPage() {
                         } catch {}
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                      onPointerUp={(e) => {
-                        if (draggingSym) return;
-                        // Ignore if this was a drag (moved more than a few px)
-                        e.stopPropagation();
-                        goToSymbol(sym);
-                      }}
-                      onClick={(e) => {
-                        // Fallback for mouse; prevent double-fire after pointerup
-                        if (draggingSym) return;
-                        e.preventDefault();
-                      }}
                       className={`group flex items-center gap-1.5 px-1.5 py-1.5 mb-0.5 rounded-lg text-[11px] select-none cursor-pointer touch-manipulation ${
                         isDrag
                           ? "opacity-40 pointer-events-none"
