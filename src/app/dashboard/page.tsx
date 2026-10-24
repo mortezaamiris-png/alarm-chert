@@ -854,7 +854,8 @@ export default function DashboardPage() {
   const chartLinesRef = useRef<Map<string, any>>(new Map());
   /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
-  const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
+  const pathPointsRef = useRef<{ time: number; price: number }[]>([])
+  const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
@@ -1691,6 +1692,9 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
+    } catch {}
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1827,6 +1831,9 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
+    } catch {}
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -1898,15 +1905,44 @@ export default function DashboardPage() {
           );
           if (isArrow) {
             try {
+              // Tip is at (et, ep) in original coords — pick marker direction by price slope
+              const tipTime = Number(l.end_time);
+              const tipPrice = Number(l.end_price);
+              const basePrice = Number(l.price);
+              const shape = tipPrice >= basePrice ? "arrowUp" : "arrowDown";
               ls.setMarkers([
                 {
-                  time: et as any,
+                  time: tipTime as any,
                   position: "inBar",
                   color,
-                  shape: "arrowUp",
+                  shape: shape as any,
                   size: 2,
                 },
               ]);
+            } catch {}
+            // Also DOM arrow for true direction (rotated toward tip)
+            try {
+              const host = vlineOverlayRef.current;
+              if (host && chart) {
+                const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
+                const y0 = series.priceToCoordinate(Number(l.price));
+                const y1 = series.priceToCoordinate(Number(l.end_price));
+                if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                  const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
+                  let el = host.querySelector(`[data-arrow-dir="${l.id}"]`) as HTMLDivElement | null;
+                  if (!el) {
+                    el = document.createElement("div");
+                    el.dataset.arrowDir = String(l.id);
+                    el.style.cssText =
+                      "position:absolute;width:20px;height:20px;margin-left:-4px;margin-top:-10px;pointer-events:none;z-index:28;";
+                    host.appendChild(el);
+                  }
+                  el.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M4 12 H16 M16 12 L11 7 M16 12 L11 17" stroke="${color}" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                  el.style.left = `${x1}px`;
+                  el.style.top = `${y1}px`;
+                }
+              }
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
@@ -8213,6 +8249,57 @@ export default function DashboardPage() {
             mode === "alarm-diag" ||
             mode === "move") && (
             <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+              {mode === "path" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const pts = [...pathPointsRef.current];
+                    if (pts.length < 2) {
+                      setStatusMsg("Need at least 2 points");
+                      return;
+                    }
+                    clickLockRef.current = true;
+                    setSaving(true);
+                    const first = pts[0];
+                    const last = pts[pts.length - 1];
+                    const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+                    const base: any = {
+                      symbol: symbolRef.current.toUpperCase(),
+                      price: first.price,
+                      color: drawColorRef.current,
+                      width: drawWidthRef.current,
+                      dash: drawDashRef.current,
+                      start_time: first.time,
+                      end_time: last.time,
+                      end_price: last.price,
+                      note,
+                    };
+                    try {
+                      (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                      let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+                      if (error) {
+                        const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                        (fb as any).user_id = base.user_id;
+                        ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                      }
+                      if (!error && data) {
+                        pushUndo();
+                        setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+                        setStatusMsg("Path saved");
+                      } else setStatusMsg("Path save failed");
+                    } catch { setStatusMsg("Path save failed"); }
+                    pathPointsRef.current = [];
+                    clearPreview();
+                    setMode("none");
+                    setSaving(false);
+                    setTimeout(() => { clickLockRef.current = false; }, 200);
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+                >
+                  ✓ Finish path
+                </button>
+              )}
+
               <div className="relative" data-menu>
                 <button
                   type="button"
@@ -9169,12 +9256,17 @@ export default function DashboardPage() {
                       data-item-id={row.itemId || ""}
                       onPointerDown={(e) => {
                         if ((e.target as HTMLElement).closest("button")) return;
-                        e.preventDefault();
+                        coinPressRef.current = { sym, x: e.clientX, y: e.clientY, t: Date.now() };
                         try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
-                        setDraggingSym(sym);
                         setDragOverSym(null);
                       }}
                       onPointerMove={(e) => {
+                        const press = coinPressRef.current;
+                        if (press && !draggingSym) {
+                          if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) {
+                            setDraggingSym(press.sym);
+                          }
+                        }
                         if (!draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
@@ -9182,19 +9274,18 @@ export default function DashboardPage() {
                         if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                       }}
                       onPointerUp={async (e) => {
-                        if (!draggingSym) {
-                          setDraggingSym(null);
-                          setDragOverSym(null);
-                          // Tap (not drag) → switch coin
-                          try { e?.stopPropagation?.(); } catch {}
-                          goToSymbol(sym);
-                          return;
-                        }
+                        coinPressRef.current = null;
+                        const wasDrag = !!draggingSym;
                         const fromSym = draggingSym;
                         const toSym = dragOverSym;
                         setDraggingSym(null);
                         setDragOverSym(null);
-                        if (!toSym || fromSym === toSym) return;
+                        // Tap or no drop target → switch coin
+                        if (!wasDrag || !toSym || fromSym === toSym) {
+                          try { e?.stopPropagation?.(); } catch {}
+                          goToSymbol(sym);
+                          return;
+                        }
 
                         if (sideViewId === SIDE_VIEW_ALARMS) {
                           const keys: string[] = [];
