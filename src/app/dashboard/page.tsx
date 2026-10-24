@@ -9281,30 +9281,32 @@ export default function DashboardPage() {
                         setDraggingSym(null);
                         setDragOverSym(null);
                         // Tap or no drop target → switch coin
-                        if (!wasDrag || !toSym || fromSym === toSym) {
+                        if (!wasDrag || !fromSym || !toSym || fromSym === toSym) {
                           try { e?.stopPropagation?.(); } catch {}
                           goToSymbol(sym);
                           return;
                         }
+                        const dragFrom: string = fromSym;
+                        const dragTo: string = toSym;
 
                         if (sideViewId === SIDE_VIEW_ALARMS) {
                           const keys: string[] = [];
                           sidePanelRows.forEach((r) => {
                             if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
-                            else keys.push(r.symbol);
+                            else if (r.symbol) keys.push(r.symbol);
                           });
-                          if (!keys.includes(fromSym)) keys.push(fromSym);
-                          const fromIdx = keys.indexOf(fromSym);
-                          const toIdxOrig = toSym === "__END__" ? keys.length : keys.indexOf(toSym);
-                          const without = keys.filter((k) => k !== fromSym);
+                          if (!keys.includes(dragFrom)) keys.push(dragFrom);
+                          const fromIdx = keys.indexOf(dragFrom);
+                          const toIdxOrig = dragTo === "__END__" ? keys.length : keys.indexOf(dragTo);
+                          const without = keys.filter((k) => k !== dragFrom);
                           let insertAt = without.length;
-                          if (toSym && toSym !== "__END__") {
-                            const ti = without.indexOf(toSym);
+                          if (dragTo && dragTo !== "__END__") {
+                            const ti = without.indexOf(dragTo);
                             if (ti >= 0) {
                               insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
                             }
                           }
-                          without.splice(insertAt, 0, fromSym);
+                          without.splice(insertAt, 0, dragFrom);
                           const newSymOrder: string[] = [];
                           const newSecs: { id: string; name: string; sort_order: number }[] = [];
                           without.forEach((k, i) => {
@@ -9326,29 +9328,29 @@ export default function DashboardPage() {
                           .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
                         const fromItem = listRows.find(
                           (w) =>
-                            chartSymbol(w.symbol) === fromSym &&
+                            chartSymbol(w.symbol) === dragFrom &&
                             !String(w.symbol).startsWith("__SECTION__")
                         );
                         if (!fromItem) return;
                         const fromIdx = listRows.findIndex((w) => w.id === fromItem.id);
                         const without = listRows.filter((w) => w.id !== fromItem.id);
                         let insertAt = without.length;
-                        if (toSym && toSym !== "__END__") {
+                        if (dragTo && dragTo !== "__END__") {
                           let ti = -1;
                           let toIdxOrig = -1;
-                          if (toSym.startsWith("__SEC__:")) {
-                            const tid = toSym.slice("__SEC__:".length);
+                          if (dragTo.startsWith("__SEC__:")) {
+                            const tid = dragTo.slice("__SEC__:".length);
                             toIdxOrig = listRows.findIndex((w) => w.id === tid);
                             ti = without.findIndex((w) => w.id === tid);
                           } else {
                             toIdxOrig = listRows.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === toSym &&
+                                chartSymbol(w.symbol) === dragTo &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                             ti = without.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === toSym &&
+                                chartSymbol(w.symbol) === dragTo &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                           }
