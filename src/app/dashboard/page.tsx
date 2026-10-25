@@ -857,7 +857,7 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string; note?: string }[]>([]);
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
@@ -959,8 +959,6 @@ export default function DashboardPage() {
   const [paneSearchQ, setPaneSearchQ] = useState("");
   /** 0 = main chart, 1..5 = secondary panes (index+1 in UI = paneSymbols index) */
   const [activePane, setActivePane] = useState(0);
-  const activePaneRef = useRef(0);
-  useEffect(() => { activePaneRef.current = activePane; }, [activePane]);
   /** Independent TF for each secondary pane (same values as main interval) */
   const [paneIntervals, setPaneIntervals] = useState<string[]>(() => {
     const def = ["15", "15", "15", "15", "15"];
@@ -975,7 +973,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("pane_intervals", paneIntervals); }, [paneIntervals]);
   const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
-    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string; priceLines?: any[] }>
+    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string }>
   >(new Map());
   const layoutWrapRef = useRef<HTMLDivElement>(null);
 
@@ -1843,8 +1841,14 @@ export default function DashboardPage() {
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        // Title from user note (rays/diags: text after |)
-        const noteClean = userFacingNote(l.note);
+        // Title only when note exists (no "Line xxx" label)
+        const noteClean =
+          l.note &&
+          !String(l.note).startsWith("__diag:") &&
+          !String(l.note).startsWith("__ray:") &&
+          l.note !== "__vline__"
+            ? String(l.note)
+            : "";
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -2069,7 +2073,6 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
-              note: title || userFacingNote(l.note) || "",
             });
           }
         } else {
@@ -2099,7 +2102,13 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA = userFacingNote(a.note);
+        const noteCleanA =
+          a.note &&
+          !String(a.note).startsWith("__diag:") &&
+          !String(a.note).startsWith("__ray:") &&
+          a.note !== "Diag"
+            ? String(a.note)
+            : null;
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -2144,7 +2153,6 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
-              note: title || userFacingNote(a.note) || "",
             });
           }
         } else {
@@ -2200,18 +2208,6 @@ export default function DashboardPage() {
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
-      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
-      // Clip DOM overlay to main pane so rays never paint over RSI/DMI (no delete — just CSS clip)
-      const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
-      let oscFrac = 0.05;
-      try {
-        if (volumeSeriesRef.current) oscFrac += 0.12;
-        if (rsiSeriesRef.current) oscFrac += 0.14;
-        if (dmiSeriesRef.current) oscFrac += 0.13;
-        oscFrac += 0.02;
-      } catch {}
-      const mainH = Math.max(40, hostH * (1 - oscFrac));
-      host.style.clipPath = `inset(0 0 ${Math.max(0, hostH - mainH)}px 0)`;
       if (hideLines) return;
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const r of rayItemsRef.current) {
@@ -2224,6 +2220,7 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
+        // If origin is left of viewport, start at 0 so ray still spans to the right edge
         const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
         if (x0 > hostW) continue;
         const el = document.createElement("div");
@@ -2245,15 +2242,6 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
-        // Note chip at the right end of the half-line (not a second full line)
-        const labelText = (r.note || "").trim();
-        if (labelText) {
-          const lab = document.createElement("div");
-          lab.dataset.rayLabel = r.id;
-          lab.textContent = labelText;
-          lab.style.cssText = `position:absolute;left:${hostW - 4}px;top:${y}px;transform:translate(-100%,-50%);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
-          host.appendChild(lab);
-        }
       }
     };
 
@@ -2276,9 +2264,8 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
-        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
-          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
-          const item = rayItemsRef.current.find((v) => v.id === rid);
+        } else if (child.dataset.rayId && ser) {
+          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
           if (!item) continue;
           let x: number | null = null;
           let y: number | null = null;
@@ -2286,12 +2273,6 @@ export default function DashboardPage() {
           try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
           if (y == null || Number.isNaN(y)) {
             child.style.visibility = "hidden";
-            continue;
-          }
-          if (child.dataset.rayLabel) {
-            child.style.visibility = "visible";
-            child.style.left = `${hostW - 4}px`;
-            child.style.top = `${y}px`;
             continue;
           }
           const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
@@ -2483,66 +2464,14 @@ export default function DashboardPage() {
   }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
-    if (chartRef.current) {
-      try {
-        const bg = (rsiSeriesRef as any)._bg;
-        if (bg) chartRef.current.removeSeries(bg);
-        const bg2 = (rsiSeriesRef as any)._bg2;
-        if (bg2) chartRef.current.removeSeries(bg2);
-      } catch {}
-      (rsiSeriesRef as any)._bg = null;
-      (rsiSeriesRef as any)._bg2 = null;
-      if (rsiSeriesRef.current) {
-        try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
-      }
+    if (rsiSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
       rsiSeriesRef.current = null;
     }
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const candles = candlesRef.current;
-    // Opaque RSI pane fill (past + future) so main chart never shows through
-    try {
-      const barSec = intervalToSeconds(String(intervalRef.current));
-      const lastT = Number(candles[candles.length - 1]?.time) || 0;
-      const bgData: any[] = candles.map((c: any) => ({
-        time: c.time,
-        value: 100,
-        color: "#0b0e11",
-      }));
-      for (let i = 1; i <= FUTURE_BARS; i++) {
-        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
-      }
-      const bg: any = chartRef.current.addHistogramSeries({
-        priceScaleId: "rsi",
-        color: "#0b0e11",
-        base: 0,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: 0, maxValue: 100 },
-        }),
-      } as any);
-      bg.setData(bgData);
-      (rsiSeriesRef as any)._bg = bg;
-      // Extra area fill for denser coverage
-      const bg2: any = chartRef.current.addAreaSeries({
-        priceScaleId: "rsi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: 0, maxValue: 100 },
-        }),
-      } as any);
-      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
-      (rsiSeriesRef as any)._bg2 = bg2;
-    } catch {}
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -2554,7 +2483,7 @@ export default function DashboardPage() {
         priceRange: { minValue: 0, maxValue: 100 },
       }),
     });
-    s.setData(calcRSI(candles, rsiPeriod) as any);
+    s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
     // Overbought / mid / oversold dashed guides
     try {
       s.createPriceLine({
@@ -2587,22 +2516,12 @@ export default function DashboardPage() {
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
-    if (chartRef.current) {
+    if (dmiSeriesRef.current && chartRef.current) {
       try {
-        const bg = (dmiSeriesRef as any)._bg;
-        if (bg) chartRef.current.removeSeries(bg);
-        const bg2 = (dmiSeriesRef as any)._bg2;
-        if (bg2) chartRef.current.removeSeries(bg2);
+        chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+        chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+        chartRef.current.removeSeries(dmiSeriesRef.current.adx);
       } catch {}
-      (dmiSeriesRef as any)._bg = null;
-      (dmiSeriesRef as any)._bg2 = null;
-      if (dmiSeriesRef.current) {
-        try {
-          chartRef.current.removeSeries(dmiSeriesRef.current.plus);
-          chartRef.current.removeSeries(dmiSeriesRef.current.minus);
-          chartRef.current.removeSeries(dmiSeriesRef.current.adx);
-        } catch {}
-      }
       dmiSeriesRef.current = null;
     }
   }, []);
@@ -2610,47 +2529,6 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-    // Opaque DMI pane fill (past + future)
-    try {
-      const candles = candlesRef.current;
-      const barSec = intervalToSeconds(String(intervalRef.current));
-      const lastT = Number(candles[candles.length - 1]?.time) || 0;
-      const bgData: any[] = candles.map((c: any) => ({
-        time: c.time,
-        value: 100,
-        color: "#0b0e11",
-      }));
-      for (let i = 1; i <= FUTURE_BARS; i++) {
-        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
-      }
-      const bg: any = chartRef.current.addHistogramSeries({
-        priceScaleId: "dmi",
-        color: "#0b0e11",
-        base: 0,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: 0, maxValue: 100 },
-        }),
-      } as any);
-      bg.setData(bgData);
-      (dmiSeriesRef as any)._bg = bg;
-      const bg2: any = chartRef.current.addAreaSeries({
-        priceScaleId: "dmi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: 0, maxValue: 100 },
-        }),
-      } as any);
-      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
-      (dmiSeriesRef as any)._bg2 = bg2;
-    } catch {}
     const paneOpts = {
       priceScaleId: "dmi",
       priceLineVisible: false,
@@ -2990,10 +2868,12 @@ export default function DashboardPage() {
                     ? candlesRef.current.length
                     : candles.length);
                   if (n < 2) return;
-                  // Only time snap — do NOT touch scaleMargins (keeps RSI/DMI room + price scroll)
-                  priceRangeOverrideRef.current = null;
-                  series.priceScale().applyOptions({ autoScale: true });
+                  series.priceScale().applyOptions({
+                    autoScale: true,
+                    scaleMargins: { top: 0.08, bottom: 0.12 },
+                  });
                   chart.priceScale("right").applyOptions({ autoScale: true });
+                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
                   const past = Math.min(500, n);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
@@ -3016,8 +2896,10 @@ export default function DashboardPage() {
             }
           } else {
             try {
-              priceRangeOverrideRef.current = null;
-              series.priceScale().applyOptions({ autoScale: true });
+              series.priceScale().applyOptions({
+                autoScale: true,
+                scaleMargins: { top: 0.08, bottom: 0.12 },
+              });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
           }
@@ -3454,18 +3336,8 @@ export default function DashboardPage() {
             pTop = ov0.to;
           } else {
             try {
-              // Only sample inside the MAIN price pane (exclude RSI/DMI/Vol)
-              let used = 0.05;
-              try {
-                if (dmiSeriesRef.current) used += 0.13;
-                if (rsiSeriesRef.current) used += 0.14;
-                if (volumeSeriesRef.current) used += 0.12;
-              } catch {}
-              const h = Math.max(2, container.clientHeight);
-              const yTop = Math.max(1, h * 0.06);
-              const yBot = Math.max(yTop + 2, h * (1 - used - 0.02));
-              const t = s.coordinateToPrice?.(yTop);
-              const b = s.coordinateToPrice?.(yBot);
+              const t = s.coordinateToPrice?.(1);
+              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
@@ -3473,43 +3345,15 @@ export default function DashboardPage() {
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
-          // Guard against absurd ranges (e.g. sampling into oscillator zone)
-          if (pTop / Math.max(Math.abs(pBot), 1e-12) > 50 || pBot < 0 && pTop > 0) {
-            try {
-              const bars = candlesRef.current || [];
-              if (bars.length) {
-                let lo = Infinity, hi = -Infinity;
-                const n = bars.length;
-                const from = Math.max(0, n - 120);
-                for (let i = from; i < n; i++) {
-                  hi = Math.max(hi, Number(bars[i].high));
-                  lo = Math.min(lo, Number(bars[i].low));
-                }
-                if (hi > lo) {
-                  const pad = (hi - lo) * 0.1;
-                  pTop = hi + pad;
-                  pBot = lo - pad;
-                }
-              }
-            } catch {}
-          }
-          if (!(pTop > pBot)) return;
 
-          // Cursor Y relative to MAIN pane only
-          let used2 = 0.05;
-          try {
-            if (dmiSeriesRef.current) used2 += 0.13;
-            if (rsiSeriesRef.current) used2 += 0.14;
-            if (volumeSeriesRef.current) used2 += 0.12;
-          } catch {}
-          const mainH = Math.max(1, rect.height * (1 - used2 - 0.02));
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / mainH));
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
+          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
           let factor = 1;
           for (let i = 0; i < steps; i++) {
             factor *= zoomIn ? 0.94 : 1.06;
           }
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 1e-8);
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
@@ -3517,8 +3361,10 @@ export default function DashboardPage() {
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
+            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
+            // اگر API setVisibleRange داشت، مستقیم هم ست کن
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
@@ -3531,9 +3377,7 @@ export default function DashboardPage() {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
             ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true });
-            // restore oscillator margins — never hardcode 0.08/0.12
-            try { updateMargins(); } catch {}
+            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
@@ -4950,15 +4794,6 @@ export default function DashboardPage() {
           return;
         }
 
-        // When a secondary pane is active, horizontal draw/alarm go there — not main
-        if (
-          activePaneRef.current > 0 &&
-          (m === "draw" || m === "alarm" || m === "ray" || m === "alarm-ray")
-        ) {
-          setStatusMsg("Tap the selected (orange) chart to place");
-          return;
-        }
-
         // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
         if (m === "diag" || m === "alarm-diag" || m === "arrow") {
           const t = resolveTime(param);
@@ -5773,155 +5608,6 @@ export default function DashboardPage() {
           entry.series.setData(candles as any);
           try {
             entry.chart.timeScale().fitContent();
-          } catch {}
-          // Sync horizontal lines/alarms for this pane symbol
-          try {
-            if (entry.priceLines?.length) {
-              entry.priceLines.forEach((pl) => { try { entry!.series.removePriceLine(pl); } catch {} });
-            }
-            entry.priceLines = [];
-            const symU = cleanSym.toUpperCase();
-            const lines = (linesRef.current || []).filter(
-              (l) => chartSymbol(l.symbol) === symU && !isDiagonalLine(l) &&
-                !(l.note === "__vline__" || (typeof l.note === "string" && l.note.startsWith("__vline")))
-            );
-            const alms = (alarmsRef.current || []).filter(
-              (a) => a.is_active && !a.triggered && chartSymbol(a.symbol) === symU &&
-                a.end_price == null
-            );
-            for (const l of lines) {
-              try {
-                const pl = entry.series.createPriceLine({
-                  price: Number(l.price),
-                  color: l.color || DEFAULT_LINE_COLOR,
-                  lineWidth: Math.max(1, Number(l.width) || 2) as 1 | 2 | 3 | 4,
-                  lineStyle: toLineStyle(l.dash || l.style),
-                  axisLabelVisible: true,
-                  title: userFacingNote(l.note) || "",
-                });
-                entry.priceLines.push(pl);
-              } catch {}
-            }
-            for (const a of alms) {
-              try {
-                const pl = entry.series.createPriceLine({
-                  price: Number(a.price),
-                  color: a.color || DEFAULT_ALARM_COLOR,
-                  lineWidth: Math.max(1, Number(a.width) || 2) as 1 | 2 | 3 | 4,
-                  lineStyle: toLineStyle(a.dash),
-                  axisLabelVisible: true,
-                  title: userFacingNote(a.note) || "",
-                });
-                entry.priceLines.push(pl);
-              } catch {}
-            }
-          } catch {}
-          // Click on secondary pane → place draw/alarm when this pane is active (bind once)
-          try {
-            if ((entry as any)._clickBound) { /* skip */ } else {
-            (entry as any)._clickBound = true;
-            entry.chart.subscribeClick(async (param: any) => {
-              const paneId = idx + 1;
-              if (activePaneRef.current !== paneId) {
-                setActivePane(paneId);
-                return;
-              }
-              const m = modeRef.current;
-              if (m !== "draw" && m !== "alarm" && m !== "ray" && m !== "alarm-ray") return;
-              if (!param?.point || param.point.x < 0 || param.point.y < 0) return;
-              const ser = entry!.series;
-              const price = ser.coordinateToPrice(param.point.y);
-              if (price == null || Number.isNaN(Number(price))) return;
-              const fp = formatPrice(Number(price));
-              const symSave = cleanSym.toUpperCase();
-              clickLockRef.current = true;
-              setSaving(true);
-              try {
-                if (m === "alarm" || m === "alarm-ray") {
-                  const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
-                  const payload: any = {
-                    symbol: symSave,
-                    price: fp,
-                    condition: conditionRef.current,
-                    is_active: true,
-                    triggered: false,
-                    color: chosenColor,
-                    width: drawWidthRef.current,
-                    dash: drawDashRef.current,
-                  };
-                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-                  let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
-                  if (error) {
-                    const minimal: any = {
-                      symbol: payload.symbol, price: payload.price, condition: payload.condition,
-                      is_active: true, triggered: false,
-                    };
-                    (minimal as any).user_id = payload.user_id;
-                    ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
-                  }
-                  if (!error && data) {
-                    pushUndo();
-                    setAlarms((prev) => [{ ...(data as Alarm), color: chosenColor }, ...prev]);
-                    try {
-                      const pl = ser.createPriceLine({
-                        price: fp,
-                        color: chosenColor,
-                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                        lineStyle: toLineStyle(drawDashRef.current),
-                        axisLabelVisible: true,
-                        title: "",
-                      });
-                      entry!.priceLines = entry!.priceLines || [];
-                      entry!.priceLines.push(pl);
-                    } catch {}
-                    setStatusMsg(`Alarm on ${symSave} @ ${fp}`);
-                  }
-                  modeRef.current = "none";
-                  setMode("none");
-                  setAlarmMenuOpen(false);
-                } else {
-                  // draw / ray horizontal on secondary
-                  const payload: any = {
-                    symbol: symSave,
-                    price: fp,
-                    color: drawColorRef.current,
-                    width: drawWidthRef.current,
-                    dash: drawDashRef.current,
-                    note: m === "ray" ? "__ray:" : null,
-                  };
-                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-                  let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-                  if (error) {
-                    const fb: any = { symbol: payload.symbol, price: payload.price, color: payload.color };
-                    (fb as any).user_id = payload.user_id;
-                    ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-                  }
-                  if (!error && data) {
-                    pushUndo();
-                    setLines((prev) => [data as ChartLine, ...prev]);
-                    try {
-                      const pl = ser.createPriceLine({
-                        price: fp,
-                        color: drawColorRef.current,
-                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                        lineStyle: toLineStyle(drawDashRef.current),
-                        axisLabelVisible: true,
-                        title: "",
-                      });
-                      entry!.priceLines = entry!.priceLines || [];
-                      entry!.priceLines.push(pl);
-                    } catch {}
-                    setStatusMsg(`Line on ${symSave} @ ${fp}`);
-                  }
-                  modeRef.current = "none";
-                  setMode("none");
-                }
-              } finally {
-                setSaving(false);
-                setTimeout(() => { clickLockRef.current = false; }, 250);
-              }
-            });
-            } // end bind-once
           } catch {}
         }
       } catch {}
@@ -7124,38 +6810,12 @@ export default function DashboardPage() {
 
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
-    const draft = (noteDraft || "").trim();
     if (editingNoteType === "line") {
-      const cur = linesRef.current.find((l) => l.id === editingNoteId);
-      let noteVal = draft;
-      if (cur?.note?.startsWith("__ray:")) {
-        const head = String(cur.note).split("|")[0];
-        noteVal = draft ? `${head}|${draft}` : head;
-      } else if (
-        cur?.start_time != null &&
-        cur?.end_time == null &&
-        cur?.end_price == null &&
-        !cur?.note?.startsWith("__diag:")
-      ) {
-        noteVal = draft ? `__ray:${cur.start_time}|${draft}` : (cur.note || `__ray:${cur.start_time}`);
-      } else if (cur?.note?.startsWith("__diag:")) {
-        const head = String(cur.note).split("|")[0];
-        noteVal = draft ? `${head}|${draft}` : head;
-      }
-      await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
+      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
     } else {
-      const cur = alarmsRef.current.find((a) => a.id === editingNoteId);
-      let noteVal = draft;
-      if (cur?.note?.startsWith("__ray:")) {
-        const head = String(cur.note).split("|")[0];
-        noteVal = draft ? `${head}|${draft}` : head;
-      } else if (cur?.note?.startsWith("__diag:")) {
-        const head = String(cur.note).split("|")[0];
-        noteVal = draft ? `${head}|${draft}` : head;
-      }
-      await supabase.from("alarms").update({ note: noteVal }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteVal } : a)));
+      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
@@ -8318,10 +7978,7 @@ export default function DashboardPage() {
           >
             {/* Main chart */}
             <div
-              onMouseDown={() => {
-                setActivePane(0);
-                setStatusMsg("Active chart: Main");
-              }}
+              onMouseDown={() => setActivePane(0)}
               className={
                 (chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
@@ -8416,11 +8073,7 @@ export default function DashboardPage() {
               return (
                 <div
                   key={`pane-${i}`}
-                  onMouseDown={() => {
-                    setActivePane(i + 1);
-                    const s = (paneSymbols[i] || "ETHUSDT").toUpperCase();
-                    setStatusMsg(`Active chart: ${s} — tools apply here`);
-                  }}
+                  onMouseDown={() => setActivePane(i + 1)}
                   className={`relative min-h-0 min-w-0 rounded-xl border bg-black overflow-hidden ${spanClass} ${
                     activePane === i + 1
                       ? "border-orange-400 ring-1 ring-dashed ring-orange-400/90"
