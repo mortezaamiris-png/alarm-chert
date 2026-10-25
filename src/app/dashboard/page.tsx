@@ -85,6 +85,7 @@ type ToolMode =
   | "brush"
   | "curve"
   | "rect"
+  | "text"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -371,6 +372,7 @@ function userFacingNote(note?: string | null): string {
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__curve:")) return "Curve";
+  if (s.startsWith("__text:")) return s.slice(7).trim();
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
     if (idx >= 0) return s.slice(idx + 1).trim();
@@ -857,7 +859,7 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string; note?: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
@@ -1837,20 +1839,17 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-text-id]").forEach((el) => el.remove());
+    } catch {}
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        // Title only when note exists (no "Line xxx" label)
-        const noteClean =
-          l.note &&
-          !String(l.note).startsWith("__diag:") &&
-          !String(l.note).startsWith("__ray:") &&
-          l.note !== "__vline__"
-            ? String(l.note)
-            : "";
+        // Title from user-facing note (rays/diags keep text after |)
+        const noteClean = userFacingNote(l.note);
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -1868,6 +1867,27 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
+        } else if (typeof l.note === "string" && l.note.startsWith("__text:")) {
+          // Text annotation at (start_time, price)
+          try {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser2 = seriesRef.current;
+            if (host && chart2 && ser2 && l.start_time != null) {
+              const tx = chart2.timeScale().timeToCoordinate(Number(l.start_time) as any);
+              const ty = ser2.priceToCoordinate(Number(l.price));
+              if (tx != null && ty != null && !Number.isNaN(tx) && !Number.isNaN(ty)) {
+                let el = host.querySelector(`[data-text-id="${l.id}"]`) as HTMLDivElement | null;
+                if (!el) {
+                  el = document.createElement("div");
+                  el.dataset.textId = String(l.id);
+                  host.appendChild(el);
+                }
+                el.textContent = userFacingNote(l.note);
+                el.style.cssText = `position:absolute;left:${tx}px;top:${ty}px;transform:translate(-50%,-50%);max-width:180px;padding:4px 8px;border-radius:6px;border:1px solid ${color}99;background:rgba(11,14,17,0.9);color:${color};font-size:11px;font-weight:600;pointer-events:none;z-index:7;white-space:pre-wrap;`;
+              }
+            }
+          } catch {}
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
@@ -2075,6 +2095,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
+              note: title || userFacingNote(l.note) || "",
             });
           }
         } else {
@@ -2155,6 +2176,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
+              note: title || userFacingNote(a.note) || "",
             });
           }
         } else {
@@ -2210,8 +2232,19 @@ export default function DashboardPage() {
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
       if (hideLines) return;
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
+      // Clip rays to main price pane (keep them out of RSI/DMI/Vol zone)
+      let oscFrac = 0.05;
+      try {
+        if (volSeriesRef.current) oscFrac += 0.12;
+        if (rsiSeriesRef.current) oscFrac += 0.14;
+        if (dmiSeriesRef.current) oscFrac += 0.13;
+        oscFrac += 0.02;
+      } catch {}
+      const maxY = hostH * (1 - oscFrac) - 2;
       for (const r of rayItemsRef.current) {
         let x: number | null = null;
         let y: number | null = null;
@@ -2222,7 +2255,7 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // If origin is left of viewport, start at 0 so ray still spans to the right edge
+        if (y > maxY || y < 0) continue;
         const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
         if (x0 > hostW) continue;
         const el = document.createElement("div");
@@ -2230,7 +2263,7 @@ export default function DashboardPage() {
         el.style.position = "absolute";
         el.style.left = `${x0}px`;
         el.style.top = `${y}px`;
-        el.style.width = `${Math.max(4, hostW - x0)}px`;
+        el.style.width = `${Math.max(4, hostW - x0 - 56)}px`;
         el.style.height = `${Math.max(1, r.width)}px`;
         el.style.transform = "translateY(-50%)";
         el.style.background = r.color;
@@ -2244,6 +2277,15 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
+        // Note label next to price (right side) like other lines
+        const labelText = (r.note || "").trim();
+        if (labelText) {
+          const lab = document.createElement("div");
+          lab.dataset.rayLabel = r.id;
+          lab.textContent = labelText;
+          lab.style.cssText = `position:absolute;right:4px;top:${y}px;transform:translateY(-50%);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;color:${r.color};background:rgba(11,14,17,0.85);padding:1px 5px;border-radius:3px;pointer-events:none;z-index:6;`;
+          host.appendChild(lab);
+        }
       }
     };
 
@@ -2482,22 +2524,29 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const candles = candlesRef.current;
-    // Solid opaque pane background so main candles don't show through
+    // Solid opaque pane background (histogram fills entire RSI scale incl. future)
     try {
-      const bg: any = chartRef.current.addAreaSeries({
+      const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "rsi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
+        color: "#0b0e11",
+        base: 0,
         priceLineVisible: false,
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
         autoscaleInfoProvider: () => ({
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      bg.setData(candles.map((c: any) => ({ time: c.time, value: 100 })));
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: { time: any; value: number; color?: string }[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      bg.setData(bgData as any);
       (rsiSeriesRef as any)._bg = bg;
     } catch {}
     const s = chartRef.current.addLineSeries({
@@ -2564,22 +2613,30 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-    // Solid opaque pane background
+    // Solid opaque pane background (histogram fills entire DMI scale incl. future)
     try {
-      const bg: any = chartRef.current.addAreaSeries({
+      const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "dmi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
+        color: "#0b0e11",
+        base: 0,
         priceLineVisible: false,
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
         autoscaleInfoProvider: () => ({
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      bg.setData(candlesRef.current.map((c: any) => ({ time: c.time, value: 100 })));
+      const candles = candlesRef.current;
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: { time: any; value: number; color?: string }[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      bg.setData(bgData as any);
       (dmiSeriesRef as any)._bg = bg;
     } catch {}
     const paneOpts = {
@@ -5363,6 +5420,81 @@ export default function DashboardPage() {
           return;
         }
 
+        // Text annotation: place editable input on chart
+        if (m === "text") {
+          const t = resolveTime(param);
+          if (t == null || !param.point) return;
+          const host = vlineOverlayRef.current;
+          if (!host) return;
+          // Remove prior draft input
+          host.querySelectorAll("[data-text-draft]").forEach((el) => el.remove());
+          const inp = document.createElement("textarea");
+          inp.dataset.textDraft = "1";
+          inp.rows = 2;
+          inp.placeholder = "Type note…";
+          inp.style.cssText = `position:absolute;left:${param.point.x}px;top:${param.point.y}px;transform:translate(-50%,-50%);min-width:120px;max-width:220px;padding:6px 8px;border-radius:8px;border:1px solid #f97316;background:rgba(15,17,20,0.95);color:#e5e7eb;font-size:12px;z-index:50;outline:none;resize:both;`;
+          host.appendChild(inp);
+          const saveText = async () => {
+            const text = (inp.value || "").trim();
+            try { inp.remove(); } catch {}
+            if (!text) {
+              modeRef.current = "none";
+              setMode("none");
+              return;
+            }
+            clickLockRef.current = true;
+            setSaving(true);
+            const payload: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: fp,
+              color: drawColorRef.current || "#e5e7eb",
+              width: 1,
+              start_time: t,
+              note: `__text:${text}`,
+            };
+            (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            try {
+              let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+              if (error) {
+                const fb: any = { symbol: payload.symbol, price: payload.price, color: payload.color, note: payload.note };
+                (fb as any).user_id = payload.user_id;
+                ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+              }
+              if (!error && data) {
+                pushUndo();
+                setLines((prev) => [{ ...(data as ChartLine), start_time: t, note: `__text:${text}` }, ...prev]);
+                setStatusMsg("Text saved");
+              } else setStatusMsg("Text save failed");
+            } catch {
+              setStatusMsg("Text save failed");
+            }
+            modeRef.current = "none";
+            setMode("none");
+            setSaving(false);
+            setTimeout(() => { clickLockRef.current = false; }, 200);
+          };
+          inp.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" && !ev.shiftKey) {
+              ev.preventDefault();
+              void saveText();
+            }
+            if (ev.key === "Escape") {
+              try { inp.remove(); } catch {}
+              modeRef.current = "none";
+              setMode("none");
+            }
+          });
+          // Save when clicking outside
+          const onDoc = (ev: Event) => {
+            if (ev.target === inp) return;
+            document.removeEventListener("pointerdown", onDoc, true);
+            void saveText();
+          };
+          setTimeout(() => document.addEventListener("pointerdown", onDoc, true), 50);
+          requestAnimationFrame(() => { try { inp.focus(); } catch {} });
+          return;
+        }
+
         if (m === "draw" || m === "ray") {
           clickLockRef.current = true;
           setSaving(true);
@@ -7021,12 +7153,36 @@ export default function DashboardPage() {
 
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
+    const draft = (noteDraft || "").trim();
     if (editingNoteType === "line") {
-      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
+      const cur = linesRef.current.find((l) => l.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.start_time != null && cur?.end_time == null && cur?.end_price == null && !cur?.note?.startsWith("__text:")) {
+        // half-line without note prefix
+        noteVal = draft ? `__ray:${cur.start_time}|${draft}` : (cur.note || `__ray:${cur.start_time}`);
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.note?.startsWith("__text:")) {
+        noteVal = `__text:${draft}`;
+      }
+      await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
     } else {
-      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
+      const cur = alarmsRef.current.find((a) => a.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("alarms").update({ note: noteVal }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteVal } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
@@ -7847,6 +8003,27 @@ export default function DashboardPage() {
                 <line x1="9" y1="3" x2="15" y2="3" />
                 <line x1="9" y1="21" x2="15" y2="21" />
               </svg>
+            </button>
+
+            {/* Text annotation */}
+            <button
+              type="button"
+              title="Text"
+              onClick={() => {
+                setMode(mode === "text" ? "none" : "text");
+                setDiagStart(null);
+                setAlarmMenuOpen(false);
+                clearPreview();
+                if (mode !== "text") setStatusMsg("Text: tap chart, type, tap outside to save");
+                else setStatusMsg("");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "text"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <span className="text-sm font-bold leading-none">T</span>
             </button>
 
             {/* Separator + shapes menu (TradingView-style) */}
@@ -10033,7 +10210,7 @@ export default function DashboardPage() {
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {l.note && l.note !== "__vline__" && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:") && userFacingNote(l.note)
+                        {l.note && l.note !== "__vline__" && userFacingNote(l.note)
                           ? userFacingNote(l.note)
                           : "Note"}
                       </button>
