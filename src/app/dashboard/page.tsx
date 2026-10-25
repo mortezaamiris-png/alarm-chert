@@ -372,7 +372,9 @@ function userFacingNote(note?: string | null): string {
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__curve:")) return "Curve";
-  if (s.startsWith("__text:")) return s.slice(7).trim();
+  if (s.startsWith("__text:") || s.startsWith("__callout:")) {
+    return s.replace(/^__(?:text|callout):/, "").trim();
+  }
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
     if (idx >= 0) return s.slice(idx + 1).trim();
@@ -1867,8 +1869,11 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
-        } else if (typeof l.note === "string" && l.note.startsWith("__text:")) {
-          // Text annotation at (start_time, price)
+        } else if (
+          typeof l.note === "string" &&
+          (l.note.startsWith("__text:") || l.note.startsWith("__callout:"))
+        ) {
+          // Callout bubble at (start_time, price)
           try {
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
@@ -1883,8 +1888,9 @@ export default function DashboardPage() {
                   el.dataset.textId = String(l.id);
                   host.appendChild(el);
                 }
-                el.textContent = userFacingNote(l.note);
-                el.style.cssText = `position:absolute;left:${tx}px;top:${ty}px;transform:translate(-50%,-50%);max-width:180px;padding:4px 8px;border-radius:6px;border:1px solid ${color}99;background:rgba(11,14,17,0.9);color:${color};font-size:11px;font-weight:600;pointer-events:none;z-index:7;white-space:pre-wrap;`;
+                const txt = userFacingNote(l.note).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                el.innerHTML = `<div style="min-width:70px;max-width:200px;padding:6px 9px;border-radius:9px;border:1.5px solid ${color};background:rgba(11,14,17,0.94);color:${color};font-size:11px;font-weight:600;white-space:pre-wrap;line-height:1.3;box-shadow:0 2px 10px rgba(0,0,0,0.35);">${txt}</div><div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid ${color};margin:0 auto;"></div>`;
+                el.style.cssText = `position:absolute;left:${tx}px;top:${ty}px;transform:translate(-50%,-100%);pointer-events:none;z-index:7;display:flex;flex-direction:column;align-items:center;`;
               }
             }
           } catch {}
@@ -2239,7 +2245,7 @@ export default function DashboardPage() {
       // Clip rays to main price pane (keep them out of RSI/DMI/Vol zone)
       let oscFrac = 0.05;
       try {
-        if (volSeriesRef.current) oscFrac += 0.12;
+        if (volumeSeriesRef.current) oscFrac += 0.12;
         if (rsiSeriesRef.current) oscFrac += 0.14;
         if (dmiSeriesRef.current) oscFrac += 0.13;
         oscFrac += 0.02;
@@ -2823,6 +2829,8 @@ export default function DashboardPage() {
           lastValueVisible: false,
           crosshairMarkerVisible: false,
           visible: true,
+          // must not expand/shrink main price scale
+          autoscaleInfoProvider: () => null as any,
         } as any);
       }
       futureSeriesRef.current.setData(pts as any);
@@ -2936,6 +2944,23 @@ export default function DashboardPage() {
             }
           } catch {}
 
+          // On symbol change, drop old overlays first so autoscale never mixes BTC + alt prices
+          if (symbolChanged) {
+            try {
+              chartLinesRef.current.forEach((s) => {
+                try { chart.removeSeries(s); } catch {
+                  try { series.removePriceLine(s); } catch {}
+                }
+              });
+              chartLinesRef.current.clear();
+              alarmLinesRef.current.forEach((pl) => {
+                try { series.removePriceLine(pl); } catch {}
+              });
+              alarmLinesRef.current.clear();
+              priceRangeOverrideRef.current = null;
+            } catch {}
+          }
+
           series.setData(appendFutureWhitespace(candles, fetchIv) as any);
           try { syncFutureAxis(candles, fetchIv); } catch {}
 
@@ -2974,22 +2999,52 @@ export default function DashboardPage() {
 
               const snapToLastCandles = () => {
                 try {
-                  const n = (candlesRef.current && candlesRef.current.length
-                    ? candlesRef.current.length
-                    : candles.length);
+                  const bars = (candlesRef.current && candlesRef.current.length
+                    ? candlesRef.current
+                    : candles);
+                  const n = bars.length;
                   if (n < 2) return;
-                  series.priceScale().applyOptions({
-                    autoScale: true,
-                    scaleMargins: { top: 0.08, bottom: 0.12 },
-                  });
-                  chart.priceScale("right").applyOptions({ autoScale: true });
-                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
+                  // logical index: 0..n-1 = real candles; whitespace after
                   const past = Math.min(500, n);
+                  const fromIdx = Math.max(0, n - past);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
-                    from: Math.max(0, n - past),
+                    from: fromIdx,
                     to: n - 1 + FUTURE_VISIBLE,
                   });
+                  // Explicit vertical range from visible candles — avoids random shrink/jump
+                  let lo = Infinity, hi = -Infinity;
+                  for (let i = fromIdx; i < n; i++) {
+                    const c = bars[i];
+                    if (!c) continue;
+                    const h = Number(c.high), l = Number(c.low);
+                    if (!Number.isNaN(h)) hi = Math.max(hi, h);
+                    if (!Number.isNaN(l)) lo = Math.min(lo, l);
+                  }
+                  if (hi > lo && Number.isFinite(hi) && Number.isFinite(lo)) {
+                    const pad = (hi - lo) * 0.12 || hi * 0.02 || 1e-8;
+                    const from = lo - pad;
+                    const to = hi + pad;
+                    priceRangeOverrideRef.current = { from, to };
+                    try {
+                      series.priceScale().applyOptions({
+                        autoScale: false,
+                        scaleMargins: { top: 0.06, bottom: 0.1 },
+                      });
+                    } catch {}
+                    try {
+                      (series.priceScale() as any).setVisibleRange?.({ from, to });
+                    } catch {}
+                    try {
+                      chart.priceScale("right").applyOptions({ autoScale: false });
+                    } catch {}
+                  } else {
+                    series.priceScale().applyOptions({
+                      autoScale: true,
+                      scaleMargins: { top: 0.08, bottom: 0.12 },
+                    });
+                    chart.priceScale("right").applyOptions({ autoScale: true });
+                  }
                 } catch {}
               };
 
@@ -3152,11 +3207,30 @@ export default function DashboardPage() {
                     if (n >= 2) {
                       programmaticRangeRef.current = true;
                       const past = Math.min(500, n);
+                      const fromIdx = Math.max(0, n - past);
                       chartRef.current.timeScale().setVisibleLogicalRange({
-                        from: Math.max(0, n - past),
+                        from: fromIdx,
                         to: n - 1 + FUTURE_VISIBLE,
                       });
-                      seriesRef.current.priceScale().applyOptions({ autoScale: true });
+                      // Keep vertical range stable (don't autoScale to weird values)
+                      let lo = Infinity, hi = -Infinity;
+                      for (let i = fromIdx; i < n; i++) {
+                        const c = all[i];
+                        if (!c) continue;
+                        const h = Number(c.high), l = Number(c.low);
+                        if (!Number.isNaN(h)) hi = Math.max(hi, h);
+                        if (!Number.isNaN(l)) lo = Math.min(lo, l);
+                      }
+                      if (hi > lo && Number.isFinite(hi) && Number.isFinite(lo)) {
+                        const pad = (hi - lo) * 0.12 || hi * 0.02 || 1e-8;
+                        const from = lo - pad;
+                        const to = hi + pad;
+                        priceRangeOverrideRef.current = { from, to };
+                        try {
+                          seriesRef.current.priceScale().applyOptions({ autoScale: false });
+                          (seriesRef.current.priceScale() as any).setVisibleRange?.({ from, to });
+                        } catch {}
+                      }
                       requestAnimationFrame(() => {
                         programmaticRangeRef.current = false;
                       });
@@ -5420,23 +5494,34 @@ export default function DashboardPage() {
           return;
         }
 
-        // Text annotation: place editable input on chart
+        // Callout: speech-bubble text annotation (TradingView-style)
         if (m === "text") {
           const t = resolveTime(param);
           if (t == null || !param.point) return;
           const host = vlineOverlayRef.current;
           if (!host) return;
-          // Remove prior draft input
           host.querySelectorAll("[data-text-draft]").forEach((el) => el.remove());
+          const wrap = document.createElement("div");
+          wrap.dataset.textDraft = "1";
+          wrap.style.cssText = `position:absolute;left:${param.point.x}px;top:${param.point.y - 8}px;transform:translate(-50%,-100%);z-index:50;display:flex;flex-direction:column;align-items:center;pointer-events:auto;`;
+          const bubble = document.createElement("div");
+          bubble.style.cssText = `min-width:130px;max-width:240px;padding:8px 10px;border-radius:10px;border:1.5px solid #f97316;background:rgba(15,17,20,0.96);box-shadow:0 4px 16px rgba(0,0,0,0.45);`;
           const inp = document.createElement("textarea");
-          inp.dataset.textDraft = "1";
           inp.rows = 2;
-          inp.placeholder = "Type note…";
-          inp.style.cssText = `position:absolute;left:${param.point.x}px;top:${param.point.y}px;transform:translate(-50%,-50%);min-width:120px;max-width:220px;padding:6px 8px;border-radius:8px;border:1px solid #f97316;background:rgba(15,17,20,0.95);color:#e5e7eb;font-size:12px;z-index:50;outline:none;resize:both;`;
-          host.appendChild(inp);
+          inp.placeholder = "Callout…";
+          inp.style.cssText = `width:100%;min-width:120px;background:transparent;border:none;outline:none;resize:both;color:#e5e7eb;font-size:12px;font-weight:500;line-height:1.35;`;
+          bubble.appendChild(inp);
+          const tail = document.createElement("div");
+          tail.style.cssText = `width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:8px solid #f97316;margin-top:-1px;`;
+          const tailInner = document.createElement("div");
+          tailInner.style.cssText = `width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid rgba(15,17,20,0.96);margin-top:-9px;margin-left:1px;`;
+          wrap.appendChild(bubble);
+          wrap.appendChild(tail);
+          wrap.appendChild(tailInner);
+          host.appendChild(wrap);
           const saveText = async () => {
             const text = (inp.value || "").trim();
-            try { inp.remove(); } catch {}
+            try { wrap.remove(); } catch {}
             if (!text) {
               modeRef.current = "none";
               setMode("none");
@@ -5447,10 +5532,10 @@ export default function DashboardPage() {
             const payload: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: fp,
-              color: drawColorRef.current || "#e5e7eb",
+              color: drawColorRef.current || "#f97316",
               width: 1,
               start_time: t,
-              note: `__text:${text}`,
+              note: `__callout:${text}`,
             };
             (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
             try {
@@ -5462,11 +5547,11 @@ export default function DashboardPage() {
               }
               if (!error && data) {
                 pushUndo();
-                setLines((prev) => [{ ...(data as ChartLine), start_time: t, note: `__text:${text}` }, ...prev]);
-                setStatusMsg("Text saved");
-              } else setStatusMsg("Text save failed");
+                setLines((prev) => [{ ...(data as ChartLine), start_time: t, note: `__callout:${text}` }, ...prev]);
+                setStatusMsg("Callout saved");
+              } else setStatusMsg("Callout save failed");
             } catch {
-              setStatusMsg("Text save failed");
+              setStatusMsg("Callout save failed");
             }
             modeRef.current = "none";
             setMode("none");
@@ -5479,14 +5564,13 @@ export default function DashboardPage() {
               void saveText();
             }
             if (ev.key === "Escape") {
-              try { inp.remove(); } catch {}
+              try { wrap.remove(); } catch {}
               modeRef.current = "none";
               setMode("none");
             }
           });
-          // Save when clicking outside
           const onDoc = (ev: Event) => {
-            if (ev.target === inp) return;
+            if (wrap.contains(ev.target as Node)) return;
             document.removeEventListener("pointerdown", onDoc, true);
             void saveText();
           };
@@ -7166,8 +7250,8 @@ export default function DashboardPage() {
       } else if (cur?.note?.startsWith("__diag:")) {
         const head = String(cur.note).split("|")[0];
         noteVal = draft ? `${head}|${draft}` : head;
-      } else if (cur?.note?.startsWith("__text:")) {
-        noteVal = `__text:${draft}`;
+      } else if (cur?.note?.startsWith("__text:") || cur?.note?.startsWith("__callout:")) {
+        noteVal = `__callout:${draft}`;
       }
       await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
       setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
@@ -8005,16 +8089,16 @@ export default function DashboardPage() {
               </svg>
             </button>
 
-            {/* Text annotation */}
+            {/* Callout (speech bubble text) */}
             <button
               type="button"
-              title="Text"
+              title="Callout"
               onClick={() => {
                 setMode(mode === "text" ? "none" : "text");
                 setDiagStart(null);
                 setAlarmMenuOpen(false);
                 clearPreview();
-                if (mode !== "text") setStatusMsg("Text: tap chart, type, tap outside to save");
+                if (mode !== "text") setStatusMsg("Callout: tap chart, type, tap outside to save");
                 else setStatusMsg("");
               }}
               className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
@@ -8023,7 +8107,9 @@ export default function DashboardPage() {
                   : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
               }`}
             >
-              <span className="text-sm font-bold leading-none">T</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 5.5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v8c0 1.1-.9 2-2 2h-5.5L8 19.5V15.5H6c-1.1 0-2-.9-2-2v-8z" />
+              </svg>
             </button>
 
             {/* Separator + shapes menu (TradingView-style) */}
