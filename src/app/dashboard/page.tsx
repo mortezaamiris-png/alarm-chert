@@ -959,6 +959,8 @@ export default function DashboardPage() {
   const [paneSearchQ, setPaneSearchQ] = useState("");
   /** 0 = main chart, 1..5 = secondary panes (index+1 in UI = paneSymbols index) */
   const [activePane, setActivePane] = useState(0);
+  const activePaneRef = useRef(0);
+  useEffect(() => { activePaneRef.current = activePane; }, [activePane]);
   /** Independent TF for each secondary pane (same values as main interval) */
   const [paneIntervals, setPaneIntervals] = useState<string[]>(() => {
     const def = ["15", "15", "15", "15", "15"];
@@ -973,7 +975,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("pane_intervals", paneIntervals); }, [paneIntervals]);
   const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
-    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string }>
+    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string; priceLines?: any[] }>
   >(new Map());
   const layoutWrapRef = useRef<HTMLDivElement>(null);
 
@@ -2464,14 +2466,40 @@ export default function DashboardPage() {
   }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
-    if (rsiSeriesRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+    if (chartRef.current) {
+      try {
+        const bg = (rsiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
+      } catch {}
+      (rsiSeriesRef as any)._bg = null;
+      if (rsiSeriesRef.current) {
+        try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+      }
       rsiSeriesRef.current = null;
     }
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const candles = candlesRef.current;
+    // Solid opaque pane background so main candles don't show through
+    try {
+      const bg: any = chartRef.current.addAreaSeries({
+        priceScaleId: "rsi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(candles.map((c: any) => ({ time: c.time, value: 100 })));
+      (rsiSeriesRef as any)._bg = bg;
+    } catch {}
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -2483,7 +2511,7 @@ export default function DashboardPage() {
         priceRange: { minValue: 0, maxValue: 100 },
       }),
     });
-    s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
+    s.setData(calcRSI(candles, rsiPeriod) as any);
     // Overbought / mid / oversold dashed guides
     try {
       s.createPriceLine({
@@ -2516,12 +2544,19 @@ export default function DashboardPage() {
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
-    if (dmiSeriesRef.current && chartRef.current) {
+    if (chartRef.current) {
       try {
-        chartRef.current.removeSeries(dmiSeriesRef.current.plus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.minus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        const bg = (dmiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
       } catch {}
+      (dmiSeriesRef as any)._bg = null;
+      if (dmiSeriesRef.current) {
+        try {
+          chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        } catch {}
+      }
       dmiSeriesRef.current = null;
     }
   }, []);
@@ -2529,6 +2564,24 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
+    // Solid opaque pane background
+    try {
+      const bg: any = chartRef.current.addAreaSeries({
+        priceScaleId: "dmi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(candlesRef.current.map((c: any) => ({ time: c.time, value: 100 })));
+      (dmiSeriesRef as any)._bg = bg;
+    } catch {}
     const paneOpts = {
       priceScaleId: "dmi",
       priceLineVisible: false,
@@ -4794,6 +4847,15 @@ export default function DashboardPage() {
           return;
         }
 
+        // When a secondary pane is active, horizontal draw/alarm go there — not main
+        if (
+          activePaneRef.current > 0 &&
+          (m === "draw" || m === "alarm" || m === "ray" || m === "alarm-ray")
+        ) {
+          setStatusMsg("Tap the selected (orange) chart to place");
+          return;
+        }
+
         // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
         if (m === "diag" || m === "alarm-diag" || m === "arrow") {
           const t = resolveTime(param);
@@ -5608,6 +5670,155 @@ export default function DashboardPage() {
           entry.series.setData(candles as any);
           try {
             entry.chart.timeScale().fitContent();
+          } catch {}
+          // Sync horizontal lines/alarms for this pane symbol
+          try {
+            if (entry.priceLines?.length) {
+              entry.priceLines.forEach((pl) => { try { entry!.series.removePriceLine(pl); } catch {} });
+            }
+            entry.priceLines = [];
+            const symU = cleanSym.toUpperCase();
+            const lines = (linesRef.current || []).filter(
+              (l) => chartSymbol(l.symbol) === symU && !isDiagonalLine(l) &&
+                !(l.note === "__vline__" || (typeof l.note === "string" && l.note.startsWith("__vline")))
+            );
+            const alms = (alarmsRef.current || []).filter(
+              (a) => a.is_active && !a.triggered && chartSymbol(a.symbol) === symU &&
+                a.end_price == null
+            );
+            for (const l of lines) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(l.price),
+                  color: l.color || DEFAULT_LINE_COLOR,
+                  lineWidth: Math.max(1, Number(l.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(l.dash || l.style),
+                  axisLabelVisible: true,
+                  title: userFacingNote(l.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+            for (const a of alms) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(a.price),
+                  color: a.color || DEFAULT_ALARM_COLOR,
+                  lineWidth: Math.max(1, Number(a.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(a.dash),
+                  axisLabelVisible: true,
+                  title: userFacingNote(a.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+          } catch {}
+          // Click on secondary pane → place draw/alarm when this pane is active (bind once)
+          try {
+            if ((entry as any)._clickBound) { /* skip */ } else {
+            (entry as any)._clickBound = true;
+            entry.chart.subscribeClick(async (param: any) => {
+              const paneId = idx + 1;
+              if (activePaneRef.current !== paneId) {
+                setActivePane(paneId);
+                return;
+              }
+              const m = modeRef.current;
+              if (m !== "draw" && m !== "alarm" && m !== "ray" && m !== "alarm-ray") return;
+              if (!param?.point || param.point.x < 0 || param.point.y < 0) return;
+              const ser = entry!.series;
+              const price = ser.coordinateToPrice(param.point.y);
+              if (price == null || Number.isNaN(Number(price))) return;
+              const fp = formatPrice(Number(price));
+              const symSave = cleanSym.toUpperCase();
+              clickLockRef.current = true;
+              setSaving(true);
+              try {
+                if (m === "alarm" || m === "alarm-ray") {
+                  const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    condition: conditionRef.current,
+                    is_active: true,
+                    triggered: false,
+                    color: chosenColor,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+                  if (error) {
+                    const minimal: any = {
+                      symbol: payload.symbol, price: payload.price, condition: payload.condition,
+                      is_active: true, triggered: false,
+                    };
+                    (minimal as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setAlarms((prev) => [{ ...(data as Alarm), color: chosenColor }, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: chosenColor,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Alarm on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                  setAlarmMenuOpen(false);
+                } else {
+                  // draw / ray horizontal on secondary
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    color: drawColorRef.current,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                    note: m === "ray" ? "__ray:" : null,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+                  if (error) {
+                    const fb: any = { symbol: payload.symbol, price: payload.price, color: payload.color };
+                    (fb as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setLines((prev) => [data as ChartLine, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: drawColorRef.current,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Line on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                }
+              } finally {
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 250);
+              }
+            });
+            } // end bind-once
           } catch {}
         }
       } catch {}
@@ -7978,7 +8189,10 @@ export default function DashboardPage() {
           >
             {/* Main chart */}
             <div
-              onMouseDown={() => setActivePane(0)}
+              onMouseDown={() => {
+                setActivePane(0);
+                setStatusMsg("Active chart: Main");
+              }}
               className={
                 (chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
@@ -8073,7 +8287,11 @@ export default function DashboardPage() {
               return (
                 <div
                   key={`pane-${i}`}
-                  onMouseDown={() => setActivePane(i + 1)}
+                  onMouseDown={() => {
+                    setActivePane(i + 1);
+                    const s = (paneSymbols[i] || "ETHUSDT").toUpperCase();
+                    setStatusMsg(`Active chart: ${s} — tools apply here`);
+                  }}
                   className={`relative min-h-0 min-w-0 rounded-xl border bg-black overflow-hidden ${spanClass} ${
                     activePane === i + 1
                       ? "border-orange-400 ring-1 ring-dashed ring-orange-400/90"
