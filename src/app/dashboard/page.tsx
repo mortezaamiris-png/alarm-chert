@@ -857,7 +857,7 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string; note?: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
@@ -1843,14 +1843,8 @@ export default function DashboardPage() {
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        // Title only when note exists (no "Line xxx" label)
-        const noteClean =
-          l.note &&
-          !String(l.note).startsWith("__diag:") &&
-          !String(l.note).startsWith("__ray:") &&
-          l.note !== "__vline__"
-            ? String(l.note)
-            : "";
+        // Title from user note (rays/diags: text after |)
+        const noteClean = userFacingNote(l.note);
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -2075,6 +2069,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
+              note: title || userFacingNote(l.note) || "",
             });
           }
         } else {
@@ -2104,13 +2099,7 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA =
-          a.note &&
-          !String(a.note).startsWith("__diag:") &&
-          !String(a.note).startsWith("__ray:") &&
-          a.note !== "Diag"
-            ? String(a.note)
-            : null;
+        const noteCleanA = userFacingNote(a.note);
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -2155,6 +2144,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
+              note: title || userFacingNote(a.note) || "",
             });
           }
         } else {
@@ -2210,8 +2200,19 @@ export default function DashboardPage() {
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
       if (hideLines) return;
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
+      // Keep rays out of RSI / DMI / Volume zone
+      let oscFrac = 0.05;
+      try {
+        if (volumeSeriesRef.current) oscFrac += 0.12;
+        if (rsiSeriesRef.current) oscFrac += 0.14;
+        if (dmiSeriesRef.current) oscFrac += 0.13;
+        oscFrac += 0.02;
+      } catch {}
+      const maxY = hostH * (1 - oscFrac) - 2;
       for (const r of rayItemsRef.current) {
         let x: number | null = null;
         let y: number | null = null;
@@ -2222,7 +2223,8 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // If origin is left of viewport, start at 0 so ray still spans to the right edge
+        // Hide ray when price maps into oscillator panes
+        if (y > maxY || y < 0) continue;
         const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
         if (x0 > hostW) continue;
         const el = document.createElement("div");
@@ -2230,7 +2232,7 @@ export default function DashboardPage() {
         el.style.position = "absolute";
         el.style.left = `${x0}px`;
         el.style.top = `${y}px`;
-        el.style.width = `${Math.max(4, hostW - x0)}px`;
+        el.style.width = `${Math.max(4, hostW - x0 - 4)}px`;
         el.style.height = `${Math.max(1, r.width)}px`;
         el.style.transform = "translateY(-50%)";
         el.style.background = r.color;
@@ -2244,6 +2246,15 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
+        // Note next to price axis — same look as alarm / full-line titles
+        const labelText = (r.note || "").trim();
+        if (labelText) {
+          const lab = document.createElement("div");
+          lab.dataset.rayLabel = r.id;
+          lab.textContent = labelText;
+          lab.style.cssText = `position:absolute;right:2px;top:${y}px;transform:translateY(-50%);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;line-height:1.2;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
+          host.appendChild(lab);
+        }
       }
     };
 
@@ -2266,15 +2277,30 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
-        } else if (child.dataset.rayId && ser) {
-          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
+        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
+          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
+          const item = rayItemsRef.current.find((v) => v.id === rid);
           if (!item) continue;
           let x: number | null = null;
           let y: number | null = null;
           try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
           try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (y == null || Number.isNaN(y)) {
+          const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
+          let oscFrac = 0.05;
+          try {
+            if (volumeSeriesRef.current) oscFrac += 0.12;
+            if (rsiSeriesRef.current) oscFrac += 0.14;
+            if (dmiSeriesRef.current) oscFrac += 0.13;
+            oscFrac += 0.02;
+          } catch {}
+          const maxY = hostH * (1 - oscFrac) - 2;
+          if (y == null || Number.isNaN(y) || y > maxY || y < 0) {
             child.style.visibility = "hidden";
+            continue;
+          }
+          if (child.dataset.rayLabel) {
+            child.style.visibility = "visible";
+            child.style.top = `${y}px`;
             continue;
           }
           const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
@@ -2482,22 +2508,29 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const candles = candlesRef.current;
-    // Solid opaque pane background so main candles don't show through
+    // Solid opaque pane background (incl. future empty area)
     try {
-      const bg: any = chartRef.current.addAreaSeries({
+      const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "rsi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
+        color: "#0b0e11",
+        base: 0,
         priceLineVisible: false,
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
         autoscaleInfoProvider: () => ({
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      bg.setData(candles.map((c: any) => ({ time: c.time, value: 100 })));
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      bg.setData(bgData);
       (rsiSeriesRef as any)._bg = bg;
     } catch {}
     const s = chartRef.current.addLineSeries({
@@ -2564,22 +2597,30 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-    // Solid opaque pane background
+    // Solid opaque pane background (incl. future empty area)
     try {
-      const bg: any = chartRef.current.addAreaSeries({
+      const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "dmi",
-        topColor: "#0b0e11",
-        bottomColor: "#0b0e11",
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
+        color: "#0b0e11",
+        base: 0,
         priceLineVisible: false,
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
         autoscaleInfoProvider: () => ({
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      bg.setData(candlesRef.current.map((c: any) => ({ time: c.time, value: 100 })));
+      const candles = candlesRef.current;
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      bg.setData(bgData);
       (dmiSeriesRef as any)._bg = bg;
     } catch {}
     const paneOpts = {
@@ -7021,12 +7062,38 @@ export default function DashboardPage() {
 
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
+    const draft = (noteDraft || "").trim();
     if (editingNoteType === "line") {
-      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
+      const cur = linesRef.current.find((l) => l.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (
+        cur?.start_time != null &&
+        cur?.end_time == null &&
+        cur?.end_price == null &&
+        !cur?.note?.startsWith("__diag:")
+      ) {
+        noteVal = draft ? `__ray:${cur.start_time}|${draft}` : (cur.note || `__ray:${cur.start_time}`);
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
     } else {
-      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
+      const cur = alarmsRef.current.find((a) => a.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("alarms").update({ note: noteVal }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteVal } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
