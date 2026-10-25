@@ -2071,20 +2071,6 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
               note: title || userFacingNote(l.note) || "",
             });
-            // Note on price axis — identical to alarm / full-line labels
-            if (title) {
-              try {
-                const pl = series.createPriceLine({
-                  price: Number(l.price),
-                  color,
-                  lineWidth: width,
-                  lineStyle: style,
-                  axisLabelVisible: true,
-                  title,
-                });
-                alarmLinesRef.current.set(`ray-note-${l.id}`, pl);
-              } catch {}
-            }
           }
         } else {
           const pl = series.createPriceLine({
@@ -2160,19 +2146,6 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
               note: title || userFacingNote(a.note) || "",
             });
-            if (title) {
-              try {
-                const pl = series.createPriceLine({
-                  price: Number(a.price),
-                  color,
-                  lineWidth: width,
-                  lineStyle: style,
-                  axisLabelVisible: true,
-                  title,
-                });
-                alarmLinesRef.current.set(`ray-note-alarm-${a.id}`, pl);
-              } catch {}
-            }
           }
         } else {
           const pl = series.createPriceLine({
@@ -2272,6 +2245,15 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
+        // Note chip at the right end of the half-line (not a second full line)
+        const labelText = (r.note || "").trim();
+        if (labelText) {
+          const lab = document.createElement("div");
+          lab.dataset.rayLabel = r.id;
+          lab.textContent = labelText;
+          lab.style.cssText = `position:absolute;left:${hostW - 4}px;top:${y}px;transform:translate(-100%,-50%);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
+          host.appendChild(lab);
+        }
       }
     };
 
@@ -2294,8 +2276,9 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
-        } else if (child.dataset.rayId && ser) {
-          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
+        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
+          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
+          const item = rayItemsRef.current.find((v) => v.id === rid);
           if (!item) continue;
           let x: number | null = null;
           let y: number | null = null;
@@ -2303,6 +2286,12 @@ export default function DashboardPage() {
           try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
           if (y == null || Number.isNaN(y)) {
             child.style.visibility = "hidden";
+            continue;
+          }
+          if (child.dataset.rayLabel) {
+            child.style.visibility = "visible";
+            child.style.left = `${hostW - 4}px`;
+            child.style.top = `${y}px`;
             continue;
           }
           const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
@@ -3001,12 +2990,10 @@ export default function DashboardPage() {
                     ? candlesRef.current.length
                     : candles.length);
                   if (n < 2) return;
-                  series.priceScale().applyOptions({
-                    autoScale: true,
-                    scaleMargins: { top: 0.08, bottom: 0.12 },
-                  });
+                  // Only time snap — do NOT touch scaleMargins (keeps RSI/DMI room + price scroll)
+                  priceRangeOverrideRef.current = null;
+                  series.priceScale().applyOptions({ autoScale: true });
                   chart.priceScale("right").applyOptions({ autoScale: true });
-                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
                   const past = Math.min(500, n);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
@@ -3029,10 +3016,8 @@ export default function DashboardPage() {
             }
           } else {
             try {
-              series.priceScale().applyOptions({
-                autoScale: true,
-                scaleMargins: { top: 0.08, bottom: 0.12 },
-              });
+              priceRangeOverrideRef.current = null;
+              series.priceScale().applyOptions({ autoScale: true });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
           }
@@ -3469,8 +3454,18 @@ export default function DashboardPage() {
             pTop = ov0.to;
           } else {
             try {
-              const t = s.coordinateToPrice?.(1);
-              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+              // Only sample inside the MAIN price pane (exclude RSI/DMI/Vol)
+              let used = 0.05;
+              try {
+                if (dmiSeriesRef.current) used += 0.13;
+                if (rsiSeriesRef.current) used += 0.14;
+                if (volumeSeriesRef.current) used += 0.12;
+              } catch {}
+              const h = Math.max(2, container.clientHeight);
+              const yTop = Math.max(1, h * 0.06);
+              const yBot = Math.max(yTop + 2, h * (1 - used - 0.02));
+              const t = s.coordinateToPrice?.(yTop);
+              const b = s.coordinateToPrice?.(yBot);
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
@@ -3478,15 +3473,43 @@ export default function DashboardPage() {
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
+          // Guard against absurd ranges (e.g. sampling into oscillator zone)
+          if (pTop / Math.max(Math.abs(pBot), 1e-12) > 50 || pBot < 0 && pTop > 0) {
+            try {
+              const bars = candlesRef.current || [];
+              if (bars.length) {
+                let lo = Infinity, hi = -Infinity;
+                const n = bars.length;
+                const from = Math.max(0, n - 120);
+                for (let i = from; i < n; i++) {
+                  hi = Math.max(hi, Number(bars[i].high));
+                  lo = Math.min(lo, Number(bars[i].low));
+                }
+                if (hi > lo) {
+                  const pad = (hi - lo) * 0.1;
+                  pTop = hi + pad;
+                  pBot = lo - pad;
+                }
+              }
+            } catch {}
+          }
+          if (!(pTop > pBot)) return;
 
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+          // Cursor Y relative to MAIN pane only
+          let used2 = 0.05;
+          try {
+            if (dmiSeriesRef.current) used2 += 0.13;
+            if (rsiSeriesRef.current) used2 += 0.14;
+            if (volumeSeriesRef.current) used2 += 0.12;
+          } catch {}
+          const mainH = Math.max(1, rect.height * (1 - used2 - 0.02));
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
           let factor = 1;
           for (let i = 0; i < steps; i++) {
             factor *= zoomIn ? 0.94 : 1.06;
           }
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 1e-8);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
@@ -3494,10 +3517,8 @@ export default function DashboardPage() {
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
-            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
-            // اگر API setVisibleRange داشت، مستقیم هم ست کن
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
@@ -3510,7 +3531,9 @@ export default function DashboardPage() {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
             ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            ps?.applyOptions?.({ autoScale: true });
+            // restore oscillator margins — never hardcode 0.08/0.12
+            try { updateMargins(); } catch {}
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
