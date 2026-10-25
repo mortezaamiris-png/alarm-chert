@@ -1693,9 +1693,8 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
     } catch {}
     try {
-      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview-tip]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
-    // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1905,7 +1904,23 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           if (isArrow) {
-            // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
+            try {
+              // Tip is at (et, ep) in original coords — pick marker direction by price slope
+              const tipTime = Number(l.end_time);
+              const tipPrice = Number(l.end_price);
+              const basePrice = Number(l.price);
+              const shape = tipPrice >= basePrice ? "arrowUp" : "arrowDown";
+              ls.setMarkers([
+                {
+                  time: tipTime as any,
+                  position: "inBar",
+                  color,
+                  shape: shape as any,
+                  size: 2,
+                },
+              ]);
+            } catch {}
+            // Also DOM arrow for true direction (rotated toward tip)
             try {
               const host = vlineOverlayRef.current;
               if (host && chart) {
@@ -1920,10 +1935,10 @@ export default function DashboardPage() {
                     el = document.createElement("div");
                     el.dataset.arrowDir = String(l.id);
                     el.style.cssText =
-                      "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:28;";
+                      "position:absolute;width:20px;height:20px;margin-left:-4px;margin-top:-10px;pointer-events:none;z-index:28;";
                     host.appendChild(el);
                   }
-                  el.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${color}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                  el.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M4 12 H16 M16 12 L11 7 M16 12 L11 17" stroke="${color}" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
                   el.style.left = `${x1}px`;
                   el.style.top = `${y1}px`;
                 }
@@ -3616,58 +3631,21 @@ export default function DashboardPage() {
         if (t1 === t0) return;
         const v0 = start.time <= tCursor ? start.price : price;
         const v1 = start.time <= tCursor ? price : start.price;
-        const isArrowMode = modeRef.current === "arrow";
         try {
           if (!previewDiagSeriesRef.current) {
             previewDiagSeriesRef.current = chart.addLineSeries({
               color: drawColorRef.current,
               lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-              lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
+              lineStyle: LineStyle.Dashed,
               priceLineVisible: false,
               lastValueVisible: false,
-              crosshairMarkerVisible: false,
+              crosshairMarkerVisible: true,
             });
-          } else {
-            try {
-              previewDiagSeriesRef.current.applyOptions({
-                color: drawColorRef.current,
-                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
-              });
-            } catch {}
           }
           previewDiagSeriesRef.current.setData([
             { time: t0 as any, value: v0 },
             { time: t1 as any, value: v1 },
           ]);
-        } catch {}
-        // Live arrow head at tip while drawing (TradingView-style)
-        try {
-          const host = vlineOverlayRef.current;
-          if (!host) return;
-          let tipEl = host.querySelector("[data-arrow-preview-tip]") as HTMLDivElement | null;
-          if (!isArrowMode) {
-            if (tipEl) tipEl.remove();
-            return;
-          }
-          if (!tipEl) {
-            tipEl = document.createElement("div");
-            tipEl.dataset.arrowPreviewTip = "1";
-            tipEl.style.cssText =
-              "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:40;";
-            host.appendChild(tipEl);
-          }
-          const x0 = chart.timeScale().timeToCoordinate(start.time as any);
-          const y0 = series.priceToCoordinate(start.price);
-          const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
-          const y1 = series.priceToCoordinate(price);
-          if (x0 == null || y0 == null || x1 == null || y1 == null) return;
-          const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
-          const col = drawColorRef.current || "#f97316";
-          tipEl.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${col}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-          tipEl.style.left = `${x1}px`;
-          tipEl.style.top = `${y1}px`;
-          tipEl.style.display = "block";
         } catch {}
       };
 
@@ -4820,10 +4798,10 @@ export default function DashboardPage() {
                 previewDiagSeriesRef.current = chart.addLineSeries({
                   color: drawColorRef.current,
                   lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                  lineStyle: m === "arrow" ? LineStyle.Solid : LineStyle.Dashed,
+                  lineStyle: LineStyle.Dashed,
                   priceLineVisible: false,
                   lastValueVisible: false,
-                  crosshairMarkerVisible: false,
+                  crosshairMarkerVisible: true,
                 });
               }
               const barSec = intervalToSeconds(String(intervalRef.current));
@@ -4832,7 +4810,6 @@ export default function DashboardPage() {
                 { time: (t + barSec) as any, value: fp },
               ]);
             } catch {}
-            setStatusMsg(m === "arrow" ? "① start set — move then tap tip" : "① set — drag to ② then tap");
             return;
           }
           // Need two distinct times (at least 1 bar apart)
@@ -10020,31 +9997,31 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="flex flex-nowrap items-center gap-1 mb-2 min-h-[28px] overflow-hidden">
+          <div className="flex flex-wrap items-center gap-1.5 mb-2 min-h-[32px]">
             <button
               type="button"
               onClick={() => setHistoryMode("coin")}
-              title={`History — ${symbolUpper}`}
-              className={`text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation max-w-[9.5rem] truncate ${
+              className={`text-sm font-medium px-2.5 py-1 rounded-full border transition-colors shrink-0 touch-manipulation ${
                 historyMode === "coin"
                   ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
                   : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
               }`}
             >
-              Hist · {symbolUpper.replace(/USDT$/i, "")}
+              History — {symbolUpper}
             </button>
             <button
               type="button"
               title="All history"
               onClick={() => setHistoryMode("all")}
-              className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation ${
+              className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors touch-manipulation ${
                 historyMode === "all"
                   ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
                   : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
               }`}
             >
-              All ({historyAlarms.length})
+              All History
             </button>
+            <span className="text-xs text-gray-600">({historyAlarms.length})</span>
             {historyAlarms.length > 0 && (
               <button
                 type="button"
@@ -10055,7 +10032,7 @@ export default function DashboardPage() {
                     await supabase.from("alarms").delete().in("id", ids);
                   } catch {}
                 }}
-                className="ml-auto shrink-0 text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50 touch-manipulation"
+                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2.5 py-1 rounded border border-red-900/50 touch-manipulation"
               >
                 Delete all
               </button>
