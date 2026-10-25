@@ -2071,6 +2071,20 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
               note: title || userFacingNote(l.note) || "",
             });
+            // Note on price axis — identical to alarm / full-line labels
+            if (title) {
+              try {
+                const pl = series.createPriceLine({
+                  price: Number(l.price),
+                  color,
+                  lineWidth: width,
+                  lineStyle: style,
+                  axisLabelVisible: true,
+                  title,
+                });
+                alarmLinesRef.current.set(`ray-note-${l.id}`, pl);
+              } catch {}
+            }
           }
         } else {
           const pl = series.createPriceLine({
@@ -2146,6 +2160,19 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
               note: title || userFacingNote(a.note) || "",
             });
+            if (title) {
+              try {
+                const pl = series.createPriceLine({
+                  price: Number(a.price),
+                  color,
+                  lineWidth: width,
+                  lineStyle: style,
+                  axisLabelVisible: true,
+                  title,
+                });
+                alarmLinesRef.current.set(`ray-note-alarm-${a.id}`, pl);
+              } catch {}
+            }
           }
         } else {
           const pl = series.createPriceLine({
@@ -2201,10 +2228,8 @@ export default function DashboardPage() {
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
-      if (hideLines) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      // Clip DOM overlay to main pane so rays never paint over RSI/DMI (no delete — just CSS clip)
       const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
-      // Keep rays out of RSI / DMI / Volume zone
       let oscFrac = 0.05;
       try {
         if (volumeSeriesRef.current) oscFrac += 0.12;
@@ -2212,7 +2237,10 @@ export default function DashboardPage() {
         if (dmiSeriesRef.current) oscFrac += 0.13;
         oscFrac += 0.02;
       } catch {}
-      const maxY = hostH * (1 - oscFrac) - 2;
+      const mainH = Math.max(40, hostH * (1 - oscFrac));
+      host.style.clipPath = `inset(0 0 ${Math.max(0, hostH - mainH)}px 0)`;
+      if (hideLines) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const r of rayItemsRef.current) {
         let x: number | null = null;
         let y: number | null = null;
@@ -2223,8 +2251,6 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // Hide ray when price maps into oscillator panes
-        if (y > maxY || y < 0) continue;
         const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
         if (x0 > hostW) continue;
         const el = document.createElement("div");
@@ -2232,7 +2258,7 @@ export default function DashboardPage() {
         el.style.position = "absolute";
         el.style.left = `${x0}px`;
         el.style.top = `${y}px`;
-        el.style.width = `${Math.max(4, hostW - x0 - 4)}px`;
+        el.style.width = `${Math.max(4, hostW - x0)}px`;
         el.style.height = `${Math.max(1, r.width)}px`;
         el.style.transform = "translateY(-50%)";
         el.style.background = r.color;
@@ -2246,15 +2272,6 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
-        // Note next to price axis — same look as alarm / full-line titles
-        const labelText = (r.note || "").trim();
-        if (labelText) {
-          const lab = document.createElement("div");
-          lab.dataset.rayLabel = r.id;
-          lab.textContent = labelText;
-          lab.style.cssText = `position:absolute;right:2px;top:${y}px;transform:translateY(-50%);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;line-height:1.2;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
-          host.appendChild(lab);
-        }
       }
     };
 
@@ -2277,30 +2294,15 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
-        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
-          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
-          const item = rayItemsRef.current.find((v) => v.id === rid);
+        } else if (child.dataset.rayId && ser) {
+          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
           if (!item) continue;
           let x: number | null = null;
           let y: number | null = null;
           try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
           try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
-          let oscFrac = 0.05;
-          try {
-            if (volumeSeriesRef.current) oscFrac += 0.12;
-            if (rsiSeriesRef.current) oscFrac += 0.14;
-            if (dmiSeriesRef.current) oscFrac += 0.13;
-            oscFrac += 0.02;
-          } catch {}
-          const maxY = hostH * (1 - oscFrac) - 2;
-          if (y == null || Number.isNaN(y) || y > maxY || y < 0) {
+          if (y == null || Number.isNaN(y)) {
             child.style.visibility = "hidden";
-            continue;
-          }
-          if (child.dataset.rayLabel) {
-            child.style.visibility = "visible";
-            child.style.top = `${y}px`;
             continue;
           }
           const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
@@ -2496,8 +2498,11 @@ export default function DashboardPage() {
       try {
         const bg = (rsiSeriesRef as any)._bg;
         if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (rsiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
       } catch {}
       (rsiSeriesRef as any)._bg = null;
+      (rsiSeriesRef as any)._bg2 = null;
       if (rsiSeriesRef.current) {
         try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
       }
@@ -2508,8 +2513,18 @@ export default function DashboardPage() {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const candles = candlesRef.current;
-    // Solid opaque pane background (incl. future empty area)
+    // Opaque RSI pane fill (past + future) so main chart never shows through
     try {
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
       const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "rsi",
         color: "#0b0e11",
@@ -2520,18 +2535,24 @@ export default function DashboardPage() {
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      const barSec = intervalToSeconds(String(intervalRef.current));
-      const lastT = Number(candles[candles.length - 1]?.time) || 0;
-      const bgData: any[] = candles.map((c: any) => ({
-        time: c.time,
-        value: 100,
-        color: "#0b0e11",
-      }));
-      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
-        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
-      }
       bg.setData(bgData);
       (rsiSeriesRef as any)._bg = bg;
+      // Extra area fill for denser coverage
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "rsi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (rsiSeriesRef as any)._bg2 = bg2;
     } catch {}
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
@@ -2581,8 +2602,11 @@ export default function DashboardPage() {
       try {
         const bg = (dmiSeriesRef as any)._bg;
         if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (dmiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
       } catch {}
       (dmiSeriesRef as any)._bg = null;
+      (dmiSeriesRef as any)._bg2 = null;
       if (dmiSeriesRef.current) {
         try {
           chartRef.current.removeSeries(dmiSeriesRef.current.plus);
@@ -2597,8 +2621,19 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
-    // Solid opaque pane background (incl. future empty area)
+    // Opaque DMI pane fill (past + future)
     try {
+      const candles = candlesRef.current;
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
       const bg: any = chartRef.current.addHistogramSeries({
         priceScaleId: "dmi",
         color: "#0b0e11",
@@ -2609,19 +2644,23 @@ export default function DashboardPage() {
           priceRange: { minValue: 0, maxValue: 100 },
         }),
       } as any);
-      const candles = candlesRef.current;
-      const barSec = intervalToSeconds(String(intervalRef.current));
-      const lastT = Number(candles[candles.length - 1]?.time) || 0;
-      const bgData: any[] = candles.map((c: any) => ({
-        time: c.time,
-        value: 100,
-        color: "#0b0e11",
-      }));
-      for (let i = 1; i <= Math.min(FUTURE_BARS, 200); i++) {
-        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
-      }
       bg.setData(bgData);
       (dmiSeriesRef as any)._bg = bg;
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "dmi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (dmiSeriesRef as any)._bg2 = bg2;
     } catch {}
     const paneOpts = {
       priceScaleId: "dmi",
