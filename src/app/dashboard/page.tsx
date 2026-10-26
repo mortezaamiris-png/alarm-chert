@@ -1903,7 +1903,7 @@ export default function DashboardPage() {
         if (y == null || Number.isNaN(y)) continue;
         const tag = document.createElement("div");
         tag.dataset.axisTag = t.id;
-        const priceTxt = formatPrice(t.price);
+        const priceTxt = String(formatPrice(t.price));
         const noteTxt = (t.note || "").trim();
         tag.textContent = noteTxt ? `${noteTxt}  ${priceTxt}` : priceTxt;
         tag.style.cssText = [
