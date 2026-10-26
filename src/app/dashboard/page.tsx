@@ -854,9 +854,10 @@ export default function DashboardPage() {
   const chartLinesRef = useRef<Map<string, any>>(new Map());
   /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
-  const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
+  const pathPointsRef = useRef<{ time: number; price: number }[]>([])
+  const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string; note?: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
@@ -958,6 +959,8 @@ export default function DashboardPage() {
   const [paneSearchQ, setPaneSearchQ] = useState("");
   /** 0 = main chart, 1..5 = secondary panes (index+1 in UI = paneSymbols index) */
   const [activePane, setActivePane] = useState(0);
+  const activePaneRef = useRef(0);
+  useEffect(() => { activePaneRef.current = activePane; }, [activePane]);
   /** Independent TF for each secondary pane (same values as main interval) */
   const [paneIntervals, setPaneIntervals] = useState<string[]>(() => {
     const def = ["15", "15", "15", "15", "15"];
@@ -972,7 +975,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("pane_intervals", paneIntervals); }, [paneIntervals]);
   const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
-    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string }>
+    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string; priceLines?: any[] }>
   >(new Map());
   const layoutWrapRef = useRef<HTMLDivElement>(null);
 
@@ -1688,6 +1691,13 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview-tip]").forEach((el) => el.remove());
+    } catch {}
+    // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1821,20 +1831,20 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
+    } catch {}
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        // Title only when note exists (no "Line xxx" label)
-        const noteClean =
-          l.note &&
-          !String(l.note).startsWith("__diag:") &&
-          !String(l.note).startsWith("__ray:") &&
-          l.note !== "__vline__"
-            ? String(l.note)
-            : "";
+        // Title from user note (rays/diags: text after |)
+        const noteClean = userFacingNote(l.note);
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -1891,16 +1901,29 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           if (isArrow) {
+            // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
             try {
-              ls.setMarkers([
-                {
-                  time: et as any,
-                  position: "inBar",
-                  color,
-                  shape: "arrowUp",
-                  size: 2,
-                },
-              ]);
+              const host = vlineOverlayRef.current;
+              if (host && chart) {
+                const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
+                const y0 = series.priceToCoordinate(Number(l.price));
+                const y1 = series.priceToCoordinate(Number(l.end_price));
+                if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                  const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
+                  let el = host.querySelector(`[data-arrow-dir="${l.id}"]`) as HTMLDivElement | null;
+                  if (!el) {
+                    el = document.createElement("div");
+                    el.dataset.arrowDir = String(l.id);
+                    el.style.cssText =
+                      "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:28;";
+                    host.appendChild(el);
+                  }
+                  el.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${color}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                  el.style.left = `${x1}px`;
+                  el.style.top = `${y1}px`;
+                }
+              }
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
@@ -2046,6 +2069,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
+              note: title || userFacingNote(l.note) || "",
             });
           }
         } else {
@@ -2075,13 +2099,7 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA =
-          a.note &&
-          !String(a.note).startsWith("__diag:") &&
-          !String(a.note).startsWith("__ray:") &&
-          a.note !== "Diag"
-            ? String(a.note)
-            : null;
+        const noteCleanA = userFacingNote(a.note);
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -2126,6 +2144,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
+              note: title || userFacingNote(a.note) || "",
             });
           }
         } else {
@@ -2181,6 +2200,18 @@ export default function DashboardPage() {
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+      // Clip DOM overlay to main pane so rays never paint over RSI/DMI (no delete — just CSS clip)
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
+      let oscFrac = 0.05;
+      try {
+        if (volumeSeriesRef.current) oscFrac += 0.12;
+        if (rsiSeriesRef.current) oscFrac += 0.14;
+        if (dmiSeriesRef.current) oscFrac += 0.13;
+        oscFrac += 0.02;
+      } catch {}
+      const mainH = Math.max(40, hostH * (1 - oscFrac));
+      host.style.clipPath = `inset(0 0 ${Math.max(0, hostH - mainH)}px 0)`;
       if (hideLines) return;
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const r of rayItemsRef.current) {
@@ -2193,7 +2224,6 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // If origin is left of viewport, start at 0 so ray still spans to the right edge
         const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
         if (x0 > hostW) continue;
         const el = document.createElement("div");
@@ -2215,6 +2245,15 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
+        // Note chip at the right end of the half-line (not a second full line)
+        const labelText = (r.note || "").trim();
+        if (labelText) {
+          const lab = document.createElement("div");
+          lab.dataset.rayLabel = r.id;
+          lab.textContent = labelText;
+          lab.style.cssText = `position:absolute;left:${hostW - 4}px;top:${y}px;transform:translate(-100%,-50%);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
+          host.appendChild(lab);
+        }
       }
     };
 
@@ -2237,8 +2276,9 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
-        } else if (child.dataset.rayId && ser) {
-          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
+        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
+          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
+          const item = rayItemsRef.current.find((v) => v.id === rid);
           if (!item) continue;
           let x: number | null = null;
           let y: number | null = null;
@@ -2246,6 +2286,12 @@ export default function DashboardPage() {
           try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
           if (y == null || Number.isNaN(y)) {
             child.style.visibility = "hidden";
+            continue;
+          }
+          if (child.dataset.rayLabel) {
+            child.style.visibility = "visible";
+            child.style.left = `${hostW - 4}px`;
+            child.style.top = `${y}px`;
             continue;
           }
           const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
@@ -2437,14 +2483,66 @@ export default function DashboardPage() {
   }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
-    if (rsiSeriesRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+    if (chartRef.current) {
+      try {
+        const bg = (rsiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (rsiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
+      } catch {}
+      (rsiSeriesRef as any)._bg = null;
+      (rsiSeriesRef as any)._bg2 = null;
+      if (rsiSeriesRef.current) {
+        try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+      }
       rsiSeriesRef.current = null;
     }
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const candles = candlesRef.current;
+    // Opaque RSI pane fill (past + future) so main chart never shows through
+    try {
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      const bg: any = chartRef.current.addHistogramSeries({
+        priceScaleId: "rsi",
+        color: "#0b0e11",
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(bgData);
+      (rsiSeriesRef as any)._bg = bg;
+      // Extra area fill for denser coverage
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "rsi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (rsiSeriesRef as any)._bg2 = bg2;
+    } catch {}
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -2456,7 +2554,7 @@ export default function DashboardPage() {
         priceRange: { minValue: 0, maxValue: 100 },
       }),
     });
-    s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
+    s.setData(calcRSI(candles, rsiPeriod) as any);
     // Overbought / mid / oversold dashed guides
     try {
       s.createPriceLine({
@@ -2489,12 +2587,22 @@ export default function DashboardPage() {
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
-    if (dmiSeriesRef.current && chartRef.current) {
+    if (chartRef.current) {
       try {
-        chartRef.current.removeSeries(dmiSeriesRef.current.plus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.minus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        const bg = (dmiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (dmiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
       } catch {}
+      (dmiSeriesRef as any)._bg = null;
+      (dmiSeriesRef as any)._bg2 = null;
+      if (dmiSeriesRef.current) {
+        try {
+          chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        } catch {}
+      }
       dmiSeriesRef.current = null;
     }
   }, []);
@@ -2502,6 +2610,47 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
+    // Opaque DMI pane fill (past + future)
+    try {
+      const candles = candlesRef.current;
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      const bg: any = chartRef.current.addHistogramSeries({
+        priceScaleId: "dmi",
+        color: "#0b0e11",
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(bgData);
+      (dmiSeriesRef as any)._bg = bg;
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "dmi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (dmiSeriesRef as any)._bg2 = bg2;
+    } catch {}
     const paneOpts = {
       priceScaleId: "dmi",
       priceLineVisible: false,
@@ -2841,12 +2990,10 @@ export default function DashboardPage() {
                     ? candlesRef.current.length
                     : candles.length);
                   if (n < 2) return;
-                  series.priceScale().applyOptions({
-                    autoScale: true,
-                    scaleMargins: { top: 0.08, bottom: 0.12 },
-                  });
+                  // Only time snap — do NOT touch scaleMargins (keeps RSI/DMI room + price scroll)
+                  priceRangeOverrideRef.current = null;
+                  series.priceScale().applyOptions({ autoScale: true });
                   chart.priceScale("right").applyOptions({ autoScale: true });
-                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
                   const past = Math.min(500, n);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
@@ -2869,10 +3016,8 @@ export default function DashboardPage() {
             }
           } else {
             try {
-              series.priceScale().applyOptions({
-                autoScale: true,
-                scaleMargins: { top: 0.08, bottom: 0.12 },
-              });
+              priceRangeOverrideRef.current = null;
+              series.priceScale().applyOptions({ autoScale: true });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
           }
@@ -3309,8 +3454,18 @@ export default function DashboardPage() {
             pTop = ov0.to;
           } else {
             try {
-              const t = s.coordinateToPrice?.(1);
-              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+              // Only sample inside the MAIN price pane (exclude RSI/DMI/Vol)
+              let used = 0.05;
+              try {
+                if (dmiSeriesRef.current) used += 0.13;
+                if (rsiSeriesRef.current) used += 0.14;
+                if (volumeSeriesRef.current) used += 0.12;
+              } catch {}
+              const h = Math.max(2, container.clientHeight);
+              const yTop = Math.max(1, h * 0.06);
+              const yBot = Math.max(yTop + 2, h * (1 - used - 0.02));
+              const t = s.coordinateToPrice?.(yTop);
+              const b = s.coordinateToPrice?.(yBot);
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
@@ -3318,15 +3473,43 @@ export default function DashboardPage() {
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
+          // Guard against absurd ranges (e.g. sampling into oscillator zone)
+          if (pTop / Math.max(Math.abs(pBot), 1e-12) > 50 || pBot < 0 && pTop > 0) {
+            try {
+              const bars = candlesRef.current || [];
+              if (bars.length) {
+                let lo = Infinity, hi = -Infinity;
+                const n = bars.length;
+                const from = Math.max(0, n - 120);
+                for (let i = from; i < n; i++) {
+                  hi = Math.max(hi, Number(bars[i].high));
+                  lo = Math.min(lo, Number(bars[i].low));
+                }
+                if (hi > lo) {
+                  const pad = (hi - lo) * 0.1;
+                  pTop = hi + pad;
+                  pBot = lo - pad;
+                }
+              }
+            } catch {}
+          }
+          if (!(pTop > pBot)) return;
 
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+          // Cursor Y relative to MAIN pane only
+          let used2 = 0.05;
+          try {
+            if (dmiSeriesRef.current) used2 += 0.13;
+            if (rsiSeriesRef.current) used2 += 0.14;
+            if (volumeSeriesRef.current) used2 += 0.12;
+          } catch {}
+          const mainH = Math.max(1, rect.height * (1 - used2 - 0.02));
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
           let factor = 1;
           for (let i = 0; i < steps; i++) {
             factor *= zoomIn ? 0.94 : 1.06;
           }
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 1e-8);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
@@ -3334,10 +3517,8 @@ export default function DashboardPage() {
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
-            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
-            // اگر API setVisibleRange داشت، مستقیم هم ست کن
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
@@ -3350,7 +3531,9 @@ export default function DashboardPage() {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
             ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            ps?.applyOptions?.({ autoScale: true });
+            // restore oscillator margins — never hardcode 0.08/0.12
+            try { updateMargins(); } catch {}
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
@@ -3589,21 +3772,58 @@ export default function DashboardPage() {
         if (t1 === t0) return;
         const v0 = start.time <= tCursor ? start.price : price;
         const v1 = start.time <= tCursor ? price : start.price;
+        const isArrowMode = modeRef.current === "arrow";
         try {
           if (!previewDiagSeriesRef.current) {
             previewDiagSeriesRef.current = chart.addLineSeries({
               color: drawColorRef.current,
               lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-              lineStyle: LineStyle.Dashed,
+              lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
               priceLineVisible: false,
               lastValueVisible: false,
-              crosshairMarkerVisible: true,
+              crosshairMarkerVisible: false,
             });
+          } else {
+            try {
+              previewDiagSeriesRef.current.applyOptions({
+                color: drawColorRef.current,
+                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
+              });
+            } catch {}
           }
           previewDiagSeriesRef.current.setData([
             { time: t0 as any, value: v0 },
             { time: t1 as any, value: v1 },
           ]);
+        } catch {}
+        // Live arrow head at tip while drawing (TradingView-style)
+        try {
+          const host = vlineOverlayRef.current;
+          if (!host) return;
+          let tipEl = host.querySelector("[data-arrow-preview-tip]") as HTMLDivElement | null;
+          if (!isArrowMode) {
+            if (tipEl) tipEl.remove();
+            return;
+          }
+          if (!tipEl) {
+            tipEl = document.createElement("div");
+            tipEl.dataset.arrowPreviewTip = "1";
+            tipEl.style.cssText =
+              "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:40;";
+            host.appendChild(tipEl);
+          }
+          const x0 = chart.timeScale().timeToCoordinate(start.time as any);
+          const y0 = series.priceToCoordinate(start.price);
+          const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
+          const y1 = series.priceToCoordinate(price);
+          if (x0 == null || y0 == null || x1 == null || y1 == null) return;
+          const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
+          const col = drawColorRef.current || "#f97316";
+          tipEl.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${col}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+          tipEl.style.left = `${x1}px`;
+          tipEl.style.top = `${y1}px`;
+          tipEl.style.display = "block";
         } catch {}
       };
 
@@ -3908,7 +4128,7 @@ export default function DashboardPage() {
           mm === "arrow-down" ||
           mm === "arrow-marker"
         ) {
-          // Clear any leftover horizontal ghost / stuck DOM guide
+          // Clear horizontal ghost
           if (
             mm === "vline" ||
             mm === "arrow-up" ||
@@ -3928,7 +4148,51 @@ export default function DashboardPage() {
                 .forEach((el) => el.remove());
             } catch {}
           }
-          // Vertical tool: rely on LWC crosshair vertLine only (follows pan/zoom, never sticks)
+          // Arrow tools: show floating dashed arrow under cursor before place
+          if (
+            (mm === "arrow-up" || mm === "arrow-down" || mm === "arrow-marker") &&
+            param.point &&
+            param.point.x >= 0 &&
+            param.point.y >= 0
+          ) {
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                let el = host.querySelector("[data-arrow-preview]") as HTMLDivElement | null;
+                if (!el) {
+                  el = document.createElement("div");
+                  el.dataset.arrowPreview = "1";
+                  el.style.cssText =
+                    "position:absolute;width:28px;height:28px;margin-left:-14px;margin-top:-14px;pointer-events:none;z-index:35;";
+                  host.appendChild(el);
+                }
+                const stroke =
+                  mm === "arrow-up"
+                    ? "#22c55e"
+                    : mm === "arrow-down"
+                    ? "#ef4444"
+                    : (drawColorRef.current || "#f97316");
+                const svg =
+                  mm === "arrow-up"
+                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
+                    : mm === "arrow-down"
+                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
+                    : `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="8" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`;
+                el.innerHTML = svg;
+                el.style.left = `${param.point.x}px`;
+                el.style.top = `${param.point.y}px`;
+                el.style.display = "block";
+              }
+            } catch {}
+            return;
+          }
+          // Leaving arrow mode → remove preview
+          try {
+            vlineOverlayRef.current
+              ?.querySelectorAll("[data-arrow-preview]")
+              .forEach((el) => el.remove());
+          } catch {}
+          // Vertical tool: rely on LWC crosshair vertLine only
           return;
         }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
@@ -4010,21 +4274,25 @@ export default function DashboardPage() {
                 l.note === "__arrow_down__" ||
                 l.note === "__arrow_marker__" ||
                 l.note.startsWith("__arrow"));
+            const isRayNote =
+              typeof l.note === "string" && l.note.startsWith("__ray:");
             const isV =
               !isArrow &&
+              !isRayNote &&
               (l.note === "__vline__" ||
                 (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                 (l.start_time != null &&
                   l.end_time != null &&
                   Number(l.start_time) === Number(l.end_time) &&
-                  l.end_price != null));
+                  l.end_price != null &&
+                  !isDiagonalLine(l)));
             const isDiag = isDiagonalLine(l);
             const isRay =
               !isV &&
               !isDiag &&
               !isArrow &&
               l.start_time != null &&
-              (l.end_time == null || l.end_price == null);
+              (isRayNote || l.end_time == null || l.end_price == null);
             try {
               if (isV && l.start_time != null) {
                 const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
@@ -4465,15 +4733,34 @@ export default function DashboardPage() {
                   setStatusMsg("Vertical line moved");
                 }
               } else {
-              // Ray / arrow: move price + origin time (left-right and up-down)
+              // Ray vs arrow: different geometry
+              const cur = (linesRef.current || []).find((x) => x.id === id);
+              const isArrowMove =
+                !!cur &&
+                typeof cur.note === "string" &&
+                (cur.note === "__arrow_up__" ||
+                  cur.note === "__arrow_down__" ||
+                  cur.note === "__arrow_marker__" ||
+                  cur.note.startsWith("__arrow"));
               const patch: any = { price: fp };
               if (isRay && tMove != null && !Number.isNaN(tMove)) {
                 patch.start_time = tMove;
-                patch.end_time = tMove; // keep arrow point consistent
-                patch.end_price = fp;
+                if (isArrowMove) {
+                  // Arrow is a point — keep both times equal
+                  patch.end_time = tMove;
+                  patch.end_price = fp;
+                } else {
+                  // Half-line (ray): origin + price only — never set end_time=start_time
+                  // (that would turn it into a vertical line)
+                  patch.end_time = null;
+                  patch.end_price = null;
+                  if (cur?.note?.startsWith("__ray:")) {
+                    patch.note = `__ray:${tMove}`;
+                  }
+                }
               }
               const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
-              if (error && patch.start_time != null) {
+              if (error && patch.start_time != null && !isArrowMove) {
                 await supabase
                   .from("chart_lines")
                   .update({ price: fp, note: `__ray:${patch.start_time}` })
@@ -4487,14 +4774,27 @@ export default function DashboardPage() {
                         price: fp,
                         start_time:
                           isRay && tMove != null ? tMove : l.start_time,
-                        end_time:
-                          isRay && tMove != null ? tMove : l.end_time,
-                        end_price: isRay ? fp : l.end_price,
+                        end_time: isArrowMove
+                          ? tMove != null
+                            ? tMove
+                            : l.end_time
+                          : isRay
+                          ? null
+                          : l.end_time,
+                        end_price: isArrowMove
+                          ? fp
+                          : isRay
+                          ? null
+                          : l.end_price,
+                        note:
+                          isRay && !isArrowMove && tMove != null && l.note?.startsWith("__ray:")
+                            ? `__ray:${tMove}`
+                            : l.note,
                       }
                     : l
                 )
               );
-              setStatusMsg(isRay ? "Moved" : "Line moved");
+              setStatusMsg(isArrowMove ? "Arrow moved" : isRay ? "Ray moved" : "Line moved");
               }
             } else if (typ === "alarm") {
               const isRayAl = movingRayRef.current;
@@ -4650,6 +4950,15 @@ export default function DashboardPage() {
           return;
         }
 
+        // When a secondary pane is active, horizontal draw/alarm go there — not main
+        if (
+          activePaneRef.current > 0 &&
+          (m === "draw" || m === "alarm" || m === "ray" || m === "alarm-ray")
+        ) {
+          setStatusMsg("Tap the selected (orange) chart to place");
+          return;
+        }
+
         // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
         if (m === "diag" || m === "alarm-diag" || m === "arrow") {
           const t = resolveTime(param);
@@ -4676,10 +4985,10 @@ export default function DashboardPage() {
                 previewDiagSeriesRef.current = chart.addLineSeries({
                   color: drawColorRef.current,
                   lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                  lineStyle: LineStyle.Dashed,
+                  lineStyle: m === "arrow" ? LineStyle.Solid : LineStyle.Dashed,
                   priceLineVisible: false,
                   lastValueVisible: false,
-                  crosshairMarkerVisible: true,
+                  crosshairMarkerVisible: false,
                 });
               }
               const barSec = intervalToSeconds(String(intervalRef.current));
@@ -4688,6 +4997,7 @@ export default function DashboardPage() {
                 { time: (t + barSec) as any, value: fp },
               ]);
             } catch {}
+            setStatusMsg(m === "arrow" ? "① start set — move then tap tip" : "① set — drag to ② then tap");
             return;
           }
           // Need two distinct times (at least 1 bar apart)
@@ -5463,6 +5773,155 @@ export default function DashboardPage() {
           entry.series.setData(candles as any);
           try {
             entry.chart.timeScale().fitContent();
+          } catch {}
+          // Sync horizontal lines/alarms for this pane symbol
+          try {
+            if (entry.priceLines?.length) {
+              entry.priceLines.forEach((pl) => { try { entry!.series.removePriceLine(pl); } catch {} });
+            }
+            entry.priceLines = [];
+            const symU = cleanSym.toUpperCase();
+            const lines = (linesRef.current || []).filter(
+              (l) => chartSymbol(l.symbol) === symU && !isDiagonalLine(l) &&
+                !(l.note === "__vline__" || (typeof l.note === "string" && l.note.startsWith("__vline")))
+            );
+            const alms = (alarmsRef.current || []).filter(
+              (a) => a.is_active && !a.triggered && chartSymbol(a.symbol) === symU &&
+                a.end_price == null
+            );
+            for (const l of lines) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(l.price),
+                  color: l.color || DEFAULT_LINE_COLOR,
+                  lineWidth: Math.max(1, Number(l.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(l.dash || l.style),
+                  axisLabelVisible: true,
+                  title: userFacingNote(l.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+            for (const a of alms) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(a.price),
+                  color: a.color || DEFAULT_ALARM_COLOR,
+                  lineWidth: Math.max(1, Number(a.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(a.dash),
+                  axisLabelVisible: true,
+                  title: userFacingNote(a.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+          } catch {}
+          // Click on secondary pane → place draw/alarm when this pane is active (bind once)
+          try {
+            if ((entry as any)._clickBound) { /* skip */ } else {
+            (entry as any)._clickBound = true;
+            entry.chart.subscribeClick(async (param: any) => {
+              const paneId = idx + 1;
+              if (activePaneRef.current !== paneId) {
+                setActivePane(paneId);
+                return;
+              }
+              const m = modeRef.current;
+              if (m !== "draw" && m !== "alarm" && m !== "ray" && m !== "alarm-ray") return;
+              if (!param?.point || param.point.x < 0 || param.point.y < 0) return;
+              const ser = entry!.series;
+              const price = ser.coordinateToPrice(param.point.y);
+              if (price == null || Number.isNaN(Number(price))) return;
+              const fp = formatPrice(Number(price));
+              const symSave = cleanSym.toUpperCase();
+              clickLockRef.current = true;
+              setSaving(true);
+              try {
+                if (m === "alarm" || m === "alarm-ray") {
+                  const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    condition: conditionRef.current,
+                    is_active: true,
+                    triggered: false,
+                    color: chosenColor,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+                  if (error) {
+                    const minimal: any = {
+                      symbol: payload.symbol, price: payload.price, condition: payload.condition,
+                      is_active: true, triggered: false,
+                    };
+                    (minimal as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setAlarms((prev) => [{ ...(data as Alarm), color: chosenColor }, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: chosenColor,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Alarm on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                  setAlarmMenuOpen(false);
+                } else {
+                  // draw / ray horizontal on secondary
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    color: drawColorRef.current,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                    note: m === "ray" ? "__ray:" : null,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+                  if (error) {
+                    const fb: any = { symbol: payload.symbol, price: payload.price, color: payload.color };
+                    (fb as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setLines((prev) => [data as ChartLine, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: drawColorRef.current,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Line on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                }
+              } finally {
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 250);
+              }
+            });
+            } // end bind-once
           } catch {}
         }
       } catch {}
@@ -6665,18 +7124,59 @@ export default function DashboardPage() {
 
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
+    const draft = (noteDraft || "").trim();
     if (editingNoteType === "line") {
-      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
+      const cur = linesRef.current.find((l) => l.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (
+        cur?.start_time != null &&
+        cur?.end_time == null &&
+        cur?.end_price == null &&
+        !cur?.note?.startsWith("__diag:")
+      ) {
+        noteVal = draft ? `__ray:${cur.start_time}|${draft}` : (cur.note || `__ray:${cur.start_time}`);
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
     } else {
-      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
+      const cur = alarmsRef.current.find((a) => a.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("alarms").update({ note: noteVal }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteVal } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
   };
 
-  const goToSymbol = (sym: string) => setSymbol(chartSymbol(sym));
+  const goToSymbol = (sym: string) => {
+    const s = chartSymbol(sym);
+    if (!s) return;
+    // Immediate ref so loadCandles sees new symbol even before React re-render
+    symbolRef.current = s;
+    setSymbol(s);
+    // iPad: force a fresh load (otherwise chart can stick on previous coin)
+    try {
+      loadGenRef.current += 1;
+    } catch {}
+    requestAnimationFrame(() => {
+      try {
+        loadCandlesRef.current?.();
+      } catch {}
+    });
+  };
 
   // Auto-register push if permission already granted (e.g. returning user on iPad PWA)
   useEffect(() => {
@@ -7818,7 +8318,10 @@ export default function DashboardPage() {
           >
             {/* Main chart */}
             <div
-              onMouseDown={() => setActivePane(0)}
+              onMouseDown={() => {
+                setActivePane(0);
+                setStatusMsg("Active chart: Main");
+              }}
               className={
                 (chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
@@ -7913,7 +8416,11 @@ export default function DashboardPage() {
               return (
                 <div
                   key={`pane-${i}`}
-                  onMouseDown={() => setActivePane(i + 1)}
+                  onMouseDown={() => {
+                    setActivePane(i + 1);
+                    const s = (paneSymbols[i] || "ETHUSDT").toUpperCase();
+                    setStatusMsg(`Active chart: ${s} — tools apply here`);
+                  }}
                   className={`relative min-h-0 min-w-0 rounded-xl border bg-black overflow-hidden ${spanClass} ${
                     activePane === i + 1
                       ? "border-orange-400 ring-1 ring-dashed ring-orange-400/90"
@@ -8112,6 +8619,57 @@ export default function DashboardPage() {
             mode === "alarm-diag" ||
             mode === "move") && (
             <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+              {mode === "path" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const pts = [...pathPointsRef.current];
+                    if (pts.length < 2) {
+                      setStatusMsg("Need at least 2 points");
+                      return;
+                    }
+                    clickLockRef.current = true;
+                    setSaving(true);
+                    const first = pts[0];
+                    const last = pts[pts.length - 1];
+                    const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+                    const base: any = {
+                      symbol: symbolRef.current.toUpperCase(),
+                      price: first.price,
+                      color: drawColorRef.current,
+                      width: drawWidthRef.current,
+                      dash: drawDashRef.current,
+                      start_time: first.time,
+                      end_time: last.time,
+                      end_price: last.price,
+                      note,
+                    };
+                    try {
+                      (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                      let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+                      if (error) {
+                        const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                        (fb as any).user_id = base.user_id;
+                        ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                      }
+                      if (!error && data) {
+                        pushUndo();
+                        setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+                        setStatusMsg("Path saved");
+                      } else setStatusMsg("Path save failed");
+                    } catch { setStatusMsg("Path save failed"); }
+                    pathPointsRef.current = [];
+                    clearPreview();
+                    setMode("none");
+                    setSaving(false);
+                    setTimeout(() => { clickLockRef.current = false; }, 200);
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+                >
+                  ✓ Finish path
+                </button>
+              )}
+
               <div className="relative" data-menu>
                 <button
                   type="button"
@@ -9068,48 +9626,57 @@ export default function DashboardPage() {
                       data-item-id={row.itemId || ""}
                       onPointerDown={(e) => {
                         if ((e.target as HTMLElement).closest("button")) return;
-                        e.preventDefault();
+                        coinPressRef.current = { sym, x: e.clientX, y: e.clientY, t: Date.now() };
                         try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
-                        setDraggingSym(sym);
                         setDragOverSym(null);
                       }}
                       onPointerMove={(e) => {
+                        const press = coinPressRef.current;
+                        if (press && !draggingSym) {
+                          if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) {
+                            setDraggingSym(press.sym);
+                          }
+                        }
                         if (!draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
                         const target = rowEl?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                       }}
-                      onPointerUp={async () => {
-                        if (!draggingSym) {
-                          setDraggingSym(null);
-                          setDragOverSym(null);
-                          return;
-                        }
+                      onPointerUp={async (e) => {
+                        coinPressRef.current = null;
+                        const wasDrag = !!draggingSym;
                         const fromSym = draggingSym;
                         const toSym = dragOverSym;
                         setDraggingSym(null);
                         setDragOverSym(null);
-                        if (!toSym || fromSym === toSym) return;
+                        // Tap or no drop target → switch coin
+                        if (!wasDrag || !fromSym || !toSym || fromSym === toSym) {
+                          try { e?.stopPropagation?.(); } catch {}
+                          goToSymbol(sym);
+                          return;
+                        }
+                        const dragFrom: string = fromSym;
+                        const dragTo: string = toSym;
 
                         if (sideViewId === SIDE_VIEW_ALARMS) {
                           const keys: string[] = [];
                           sidePanelRows.forEach((r) => {
                             if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
-                            else keys.push(r.symbol);
+                            else if (r.symbol) keys.push(r.symbol);
                           });
-                          if (!keys.includes(fromSym)) keys.push(fromSym);
-                          const fromIdx = keys.indexOf(fromSym);
-                          const toIdxOrig = toSym === "__END__" ? keys.length : keys.indexOf(toSym);
-                          const without = keys.filter((k) => k !== fromSym);
+                          if (!keys.includes(dragFrom)) keys.push(dragFrom);
+                          const fromIdx = keys.indexOf(dragFrom);
+                          const toIdxOrig = dragTo === "__END__" ? keys.length : keys.indexOf(dragTo);
+                          const without = keys.filter((k) => k !== dragFrom);
                           let insertAt = without.length;
-                          if (toSym && toSym !== "__END__") {
-                            const ti = without.indexOf(toSym);
+                          if (dragTo && dragTo !== "__END__") {
+                            const ti = without.indexOf(dragTo);
                             if (ti >= 0) {
                               insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
                             }
                           }
-                          without.splice(insertAt, 0, fromSym);
+                          without.splice(insertAt, 0, dragFrom);
                           const newSymOrder: string[] = [];
                           const newSecs: { id: string; name: string; sort_order: number }[] = [];
                           without.forEach((k, i) => {
@@ -9131,29 +9698,29 @@ export default function DashboardPage() {
                           .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
                         const fromItem = listRows.find(
                           (w) =>
-                            chartSymbol(w.symbol) === fromSym &&
+                            chartSymbol(w.symbol) === dragFrom &&
                             !String(w.symbol).startsWith("__SECTION__")
                         );
                         if (!fromItem) return;
                         const fromIdx = listRows.findIndex((w) => w.id === fromItem.id);
                         const without = listRows.filter((w) => w.id !== fromItem.id);
                         let insertAt = without.length;
-                        if (toSym && toSym !== "__END__") {
+                        if (dragTo && dragTo !== "__END__") {
                           let ti = -1;
                           let toIdxOrig = -1;
-                          if (toSym.startsWith("__SEC__:")) {
-                            const tid = toSym.slice("__SEC__:".length);
+                          if (dragTo.startsWith("__SEC__:")) {
+                            const tid = dragTo.slice("__SEC__:".length);
                             toIdxOrig = listRows.findIndex((w) => w.id === tid);
                             ti = without.findIndex((w) => w.id === tid);
                           } else {
                             toIdxOrig = listRows.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === toSym &&
+                                chartSymbol(w.symbol) === dragTo &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                             ti = without.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === toSym &&
+                                chartSymbol(w.symbol) === dragTo &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                           }
@@ -9182,8 +9749,7 @@ export default function DashboardPage() {
                         } catch {}
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                      onClick={() => { if (!draggingSym) goToSymbol(sym); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none cursor-default ${
+                      className={`group flex items-center gap-1.5 px-1.5 py-1.5 mb-0.5 rounded-lg text-[11px] select-none cursor-pointer touch-manipulation ${
                         isDrag
                           ? "opacity-40 pointer-events-none"
                           : symbolUpper === sym
@@ -9711,18 +10277,24 @@ export default function DashboardPage() {
                             l.note === "__arrow_down__" ||
                             l.note === "__arrow_marker__" ||
                             l.note.startsWith("__arrow"));
+                        const isRayNote =
+                          typeof l.note === "string" && l.note.startsWith("__ray:");
                         const isV =
                           !isArrowL &&
+                          !isRayNote &&
                           (l.note === "__vline__" ||
+                            (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                             (l.start_time != null &&
                               l.end_time != null &&
                               Number(l.start_time) === Number(l.end_time) &&
-                              l.end_price != null));
+                              l.end_price != null &&
+                              !isDiagonalLine(l)));
                         movingVLineRef.current = !!isV;
                         // Ray / arrow: can move in time + price (left-right and up-down)
                         movingRayRef.current =
                           !isV &&
                           (isArrowL ||
+                            isRayNote ||
                             (l.start_time != null && !isDiagonalLine(l)));
                         if (isDiagonalLine(l)) {
                           movingRayRef.current = false;
@@ -9795,35 +10367,31 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="relative flex items-center mb-2 min-h-[28px]">
+          <div className="flex flex-nowrap items-center gap-1 mb-2 min-h-[28px] overflow-hidden">
             <button
               type="button"
               onClick={() => setHistoryMode("coin")}
-              className={`relative z-10 text-sm font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 ${
+              title={`History — ${symbolUpper}`}
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation max-w-[9.5rem] truncate ${
                 historyMode === "coin"
-                  ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
                   : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
               }`}
             >
-              History — {symbolUpper}
+              Hist · {symbolUpper.replace(/USDT$/i, "")}
             </button>
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="pointer-events-auto flex items-center gap-1.5">
-                <button
-                  type="button"
-                  title="All history"
-                  onClick={() => setHistoryMode("all")}
-                  className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
-                    historyMode === "all"
-                      ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
-                      : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
-                  }`}
-                >
-                  All History
-                </button>
-                <span className="text-xs text-gray-600">({historyAlarms.length})</span>
-              </div>
-            </div>
+            <button
+              type="button"
+              title="All history"
+              onClick={() => setHistoryMode("all")}
+              className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation ${
+                historyMode === "all"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
+                  : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
+              }`}
+            >
+              All ({historyAlarms.length})
+            </button>
             {historyAlarms.length > 0 && (
               <button
                 type="button"
@@ -9834,7 +10402,7 @@ export default function DashboardPage() {
                     await supabase.from("alarms").delete().in("id", ids);
                   } catch {}
                 }}
-                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50"
+                className="ml-auto shrink-0 text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50 touch-manipulation"
               >
                 Delete all
               </button>
@@ -9846,7 +10414,7 @@ export default function DashboardPage() {
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-1.5 text-xs cursor-pointer hover:border-amber-600/50"
+                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-2 text-xs cursor-pointer hover:border-amber-600/50 touch-manipulation active:bg-gray-900"
                   onClick={() => {
                     // Resolve diagonal geometry (columns or note fallback)
                     let st = a.start_time ?? null;
