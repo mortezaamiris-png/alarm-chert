@@ -6239,6 +6239,7 @@ export default function DashboardPage() {
       trendSettings ||
       rsiSettings ||
       dmiSettings ||
+      tcpSettings ||
       hideMenuOpen ||
       trashMenuOpen;
     if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !alarmMenuOpen) return;
@@ -6292,6 +6293,7 @@ export default function DashboardPage() {
     trendSettings,
     rsiSettings,
     dmiSettings,
+    tcpSettings,
     hideMenuOpen,
     trashMenuOpen,
     editingNoteId,
