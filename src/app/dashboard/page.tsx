@@ -2096,7 +2096,6 @@ export default function DashboardPage() {
             } as any);
           }
         } else {
-} else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
             axisLabelVisible: true, title: title || "",
@@ -2176,7 +2175,6 @@ export default function DashboardPage() {
             } as any);
           }
         } else {
-} else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
             lineStyle: style,
