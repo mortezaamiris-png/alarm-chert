@@ -85,6 +85,7 @@ type ToolMode =
   | "brush"
   | "curve"
   | "rect"
+  | "callout"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -7646,7 +7647,7 @@ export default function DashboardPage() {
                 title="Shapes & tools"
                 onClick={() => setDrawToolsOpen((v) => !v)}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow" || mode === "path" || mode === "brush" || mode === "curve" || mode === "rect"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -7662,10 +7663,8 @@ export default function DashboardPage() {
                 <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Arrows</div>
                   {[
-                    { id: "arrow", label: "Arrow", icon: "↗" },
                     { id: "arrow-up", label: "Arrow mark up", icon: "↑" },
                     { id: "arrow-down", label: "Arrow mark down", icon: "↓" },
-                    { id: "arrow-marker", label: "Arrow marker", icon: "➤" },
                   ].map((t) => (
                     <button
                       key={t.id}
@@ -7680,13 +7679,7 @@ export default function DashboardPage() {
                         setMode(t.id as any);
                         if (t.id === "arrow-up") setDrawColor("#22c55e");
                         if (t.id === "arrow-down") setDrawColor("#ef4444");
-                        setStatusMsg(
-                          t.id === "arrow"
-                            ? "Arrow: first point, then tip"
-                            : t.id === "arrow-up" || t.id === "arrow-down"
-                            ? "Tap chart to place mark — color/size from style panel"
-                            : "Arrow marker: tap on chart"
-                        );
+                        setStatusMsg(t.id === "arrow-up" ? "Arrow up: tap on chart" : "Arrow down: tap on chart");
                       }}
                     >
                       <span className="w-4 text-center">{t.icon}</span>
@@ -7694,39 +7687,22 @@ export default function DashboardPage() {
                     </button>
                   ))}
                   <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
-                  {[
-                    { id: "rect", label: "Rectangle", icon: "▭" },
-                    { id: "path", label: "Path", icon: "∿" },
-                    { id: "curve", label: "Curve", icon: "◠" },
-                    { id: "brush", label: "Brush", icon: "✎" },
-                  ].map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
-                      onClick={() => {
-                        clearPreview();
-                        setDrawToolsOpen(false);
-                        setDiagStart(null);
-                        setMovingId(null);
-                        pathPointsRef.current = [];
-                        setMode(t.id as any);
-                        setStatusMsg(
-                          t.id === "rect"
-                            ? "Rectangle: corner 1, then corner 2"
-                            : t.id === "path"
-                            ? "Path: click points, click menu again to finish"
-                            : t.id === "curve"
-                            ? "Curve: 3 points"
-                            : "Brush: drag on chart"
-                        );
-                      }}
-                    >
-                      <span className="w-4 text-center">{t.icon}</span>
-                      {t.label}
-                    </button>
-                  ))}
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Text</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "callout" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode("callout" as any);
+                      setStatusMsg("Callout: tap on chart, then type");
+                    }}
+                  >
+                    <span className="w-4 text-center">💬</span>
+                    Callout
+                  </button>
                 </div>
               )}
             </div>
