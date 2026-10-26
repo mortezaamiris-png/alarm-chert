@@ -85,7 +85,6 @@ type ToolMode =
   | "brush"
   | "curve"
   | "rect"
-  | "callout"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -858,7 +857,6 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
@@ -1827,7 +1825,6 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
-    calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
@@ -1845,23 +1842,13 @@ export default function DashboardPage() {
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
         // Title only when note exists (no "Line xxx" label)
-        const noteClean = (() => {
-          if (!l.note) return "";
-          const s = String(l.note);
-          if (s === "__vline__" || s.startsWith("__vline__:")) return "";
-          if (s.startsWith("__diag:")) {
-            const idx = s.indexOf("|");
-            return idx >= 0 ? s.slice(idx + 1).trim() : "";
-          }
-          if (s.startsWith("__ray:")) {
-            const idx = s.indexOf("|");
-            return idx >= 0 ? s.slice(idx + 1).trim() : "";
-          }
-          if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:")) return "";
-          if (s.startsWith("__")) return "";
-          return s;
-        })();
+        const noteClean =
+          l.note &&
+          !String(l.note).startsWith("__diag:") &&
+          !String(l.note).startsWith("__ray:") &&
+          l.note !== "__vline__"
+            ? String(l.note)
+            : "";
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -1879,17 +1866,6 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
-        } else if (typeof l.note === "string" && l.note.startsWith("__callout:")) {
-          const t = Number(l.start_time);
-          if (!Number.isNaN(t) && t > 0) {
-            calloutItemsRef.current.push({
-              id: String(l.id),
-              time: t,
-              price: Number(l.price),
-              text: String(l.note).replace(/^__callout:/, ""),
-              color: color,
-            });
-          }
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
@@ -2086,12 +2062,9 @@ export default function DashboardPage() {
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (l.start_time != null) {
-          // Half-line: DOM overlay (no TF gap) + price-scale label like full line
+          // Horizontal half-line via DOM overlay (no LWC gap on any TF)
           const bars = candlesRef.current || [];
-          const barSec = intervalToSeconds(String(intervalRef.current));
           const t0 = snapTimeToBars(Number(l.start_time), bars);
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2101,26 +2074,6 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
             });
-            // Price label on right scale (same style as full line last-value / axis tag)
-            try {
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              // Short segment at far right — label only; DOM draws the real half-line
-              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
-              ls.setData([
-                { time: tLabel as any, value: Number(l.price) },
-                { time: rayEnd as any, value: Number(l.price) },
-              ]);
-              chartLinesRef.current.set(l.id, ls);
-            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2189,12 +2142,9 @@ export default function DashboardPage() {
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Half-line alarm: DOM + price label on scale
+          // Horizontal half-line alarm via DOM overlay
           const bars = candlesRef.current || [];
-          const barSec = intervalToSeconds(String(intervalRef.current));
           const t0 = snapTimeToBars(Number(a.start_time), bars);
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
@@ -2204,24 +2154,6 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
             });
-            try {
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
-              ls.setData([
-                { time: tLabel as any, value: Number(a.price) },
-                { time: rayEnd as any, value: Number(a.price) },
-              ]);
-              chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
-            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2370,86 +2302,8 @@ export default function DashboardPage() {
       }
     };
 
-
-    const paintCallouts = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2 || !ser) return;
-      host.querySelectorAll("[data-callout-id]").forEach((el) => el.remove());
-      if (hideLines) return;
-      for (const c of calloutItemsRef.current) {
-        let x: number | null = null;
-        let y: number | null = null;
-        try { x = chart2.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
-        try { y = ser.priceToCoordinate(c.price); } catch { y = null; }
-        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
-        const wrap = document.createElement("div");
-        wrap.dataset.calloutId = c.id;
-        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:20;pointer-events:auto;`;
-        const stem = document.createElement("div");
-        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
-        const bubble = document.createElement("div");
-        bubble.contentEditable = "true";
-        bubble.spellcheck = false;
-        bubble.textContent = c.text || "";
-        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:48px;max-width:160px;padding:4px 8px;border-radius:8px;background:#0d9488;color:#fff;font-size:11px;line-height:1.3;border:1px solid rgba(255,255,255,0.25);outline:none;cursor:move;white-space:pre-wrap;word-break:break-word;text-align:center;`;
-        const dot = document.createElement("div");
-        dot.style.cssText = `position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;border:2px solid ${c.color};background:transparent;transform:translate(-50%,-50%);cursor:grab;`;
-        bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
-        bubble.addEventListener("blur", async () => {
-          const val = (bubble.textContent || "").trim();
-          const note = `__callout:${val}`;
-          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
-          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
-        });
-        let dragging = false;
-        let lastX = 0, lastY = 0;
-        const startDrag = (e: PointerEvent) => {
-          e.preventDefault(); e.stopPropagation();
-          dragging = true; lastX = e.clientX; lastY = e.clientY;
-          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-        };
-        const onMove = (e: PointerEvent) => {
-          if (!dragging) return;
-          const dx = e.clientX - lastX, dy = e.clientY - lastY;
-          lastX = e.clientX; lastY = e.clientY;
-          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
-          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
-        };
-        const onUp = async () => {
-          if (!dragging) return;
-          dragging = false;
-          try {
-            const left = parseFloat(wrap.style.left) || 0;
-            const top = parseFloat(wrap.style.top) || 0;
-            const t = chart2.timeScale().coordinateToTime(left);
-            const p = ser.coordinateToPrice(top);
-            if (t != null && p != null) {
-              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
-              setLines((prev) => prev.map((l) => l.id === c.id ? { ...l, start_time: tu, end_time: tu, price: Number(p) } : l));
-              try {
-                await supabase.from("chart_lines").update({ start_time: tu, end_time: tu, price: Number(p) }).eq("id", c.id);
-              } catch {}
-            }
-          } catch {}
-        };
-        bubble.addEventListener("pointerdown", (e) => startDrag(e as PointerEvent));
-        dot.addEventListener("pointerdown", (e) => startDrag(e as PointerEvent));
-        wrap.addEventListener("pointermove", onMove as any);
-        wrap.addEventListener("pointerup", onUp as any);
-        wrap.addEventListener("pointercancel", onUp as any);
-        wrap.appendChild(stem);
-        wrap.appendChild(bubble);
-        wrap.appendChild(dot);
-        host.appendChild(wrap);
-        if (!c.text) { try { bubble.focus(); } catch {} }
-      }
-    };
-
     paintVLines();
     paintRays();
-    paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
     const scheduleOverlaySync = () => {
       requestAnimationFrame(() => {
@@ -5213,53 +5067,7 @@ export default function DashboardPage() {
 
 
         // Arrow mark up / down / marker — single click (TradingView-style, stay in tool)
-        
-        if (m === "callout") {
-          const t = resolveTime(param);
-          if (t == null) return;
-          clickLockRef.current = true;
-          setSaving(true);
-          try {
-            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
-            let payload: any = {
-              symbol: symbolRef.current.toUpperCase(),
-              price: fp,
-              start_time: t,
-              end_time: t,
-              color: drawColorRef.current || "#0d9488",
-              width: 2,
-              note: "__callout:",
-            };
-            if (uid) payload.user_id = uid;
-            let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-            if (error) {
-              payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:" };
-              if (uid) payload.user_id = uid;
-              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
-            }
-            if (!error && data) {
-              pushUndo();
-              setLines((prev) => [{
-                ...(data as ChartLine),
-                start_time: (data as any).start_time ?? t,
-                end_time: (data as any).end_time ?? t,
-                note: "__callout:",
-                price: fp,
-              }, ...prev]);
-              setStatusMsg("Callout placed — type text");
-            } else {
-              setStatusMsg("Callout save failed");
-            }
-          } finally {
-            setMode("none");
-            modeRef.current = "none";
-            setSaving(false);
-            setTimeout(() => { clickLockRef.current = false; }, 300);
-          }
-          return;
-        }
-
-if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
+        if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
           clickLockRef.current = true;
           setSaving(true);
           const t = resolveTime(param);
@@ -7838,7 +7646,7 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
                 title="Shapes & tools"
                 onClick={() => setDrawToolsOpen((v) => !v)}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
+                  drawToolsOpen || mode === "arrow" || mode === "path" || mode === "brush" || mode === "curve" || mode === "rect"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -7854,8 +7662,10 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
                 <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Arrows</div>
                   {[
+                    { id: "arrow", label: "Arrow", icon: "↗" },
                     { id: "arrow-up", label: "Arrow mark up", icon: "↑" },
                     { id: "arrow-down", label: "Arrow mark down", icon: "↓" },
+                    { id: "arrow-marker", label: "Arrow marker", icon: "➤" },
                   ].map((t) => (
                     <button
                       key={t.id}
@@ -7870,7 +7680,13 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
                         setMode(t.id as any);
                         if (t.id === "arrow-up") setDrawColor("#22c55e");
                         if (t.id === "arrow-down") setDrawColor("#ef4444");
-                        setStatusMsg(t.id === "arrow-up" ? "Arrow up: tap on chart" : "Arrow down: tap on chart");
+                        setStatusMsg(
+                          t.id === "arrow"
+                            ? "Arrow: first point, then tip"
+                            : t.id === "arrow-up" || t.id === "arrow-down"
+                            ? "Tap chart to place mark — color/size from style panel"
+                            : "Arrow marker: tap on chart"
+                        );
                       }}
                     >
                       <span className="w-4 text-center">{t.icon}</span>
@@ -7878,22 +7694,39 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
                     </button>
                   ))}
                   <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Text</div>
-                  <button
-                    type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "callout" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setDrawToolsOpen(false);
-                      setDiagStart(null);
-                      setMovingId(null);
-                      setMode("callout" as any);
-                      setStatusMsg("Callout: tap on chart, then type");
-                    }}
-                  >
-                    <span className="w-4 text-center">💬</span>
-                    Callout
-                  </button>
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
+                  {[
+                    { id: "rect", label: "Rectangle", icon: "▭" },
+                    { id: "path", label: "Path", icon: "∿" },
+                    { id: "curve", label: "Curve", icon: "◠" },
+                    { id: "brush", label: "Brush", icon: "✎" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
+                      onClick={() => {
+                        clearPreview();
+                        setDrawToolsOpen(false);
+                        setDiagStart(null);
+                        setMovingId(null);
+                        pathPointsRef.current = [];
+                        setMode(t.id as any);
+                        setStatusMsg(
+                          t.id === "rect"
+                            ? "Rectangle: corner 1, then corner 2"
+                            : t.id === "path"
+                            ? "Path: click points, click menu again to finish"
+                            : t.id === "curve"
+                            ? "Curve: 3 points"
+                            : "Brush: drag on chart"
+                        );
+                      }}
+                    >
+                      <span className="w-4 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
