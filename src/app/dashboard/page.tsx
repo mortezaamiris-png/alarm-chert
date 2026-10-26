@@ -9430,20 +9430,18 @@ export default function DashboardPage() {
             {!hideIndicators && showTrend && (
               <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
                 onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
-              {!hideIndicators && showBB && (
-                <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
-                  onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
-              )}
-
+            )}
+            {!hideIndicators && showBB && (
+              <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
+                onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
             )}
             {!hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
-              {!hideIndicators && showHARSI && (
-                <IndChip label="HARSI" visible={harsiVisible} onToggleVisible={() => setHarsiVisible((v) => !v)}
-                  onSettings={() => setHarsiSettings((v) => !v)} onRemove={() => { setShowHARSI(false); removeHARSI(); }} />
-              )}
-
+            )}
+            {!hideIndicators && showHARSI && (
+              <IndChip label="HARSI" visible={harsiVisible} onToggleVisible={() => setHarsiVisible((v) => !v)}
+                onSettings={() => setHarsiSettings((v) => !v)} onRemove={() => { setShowHARSI(false); removeHARSI(); }} />
             )}
             {!hideIndicators && showDMI && (
               <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
