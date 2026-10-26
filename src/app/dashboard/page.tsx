@@ -2059,18 +2059,26 @@ export default function DashboardPage() {
           u += h;
         }
         const sepSet = new Set<number>();
+        const bgParts: string[] = [];
+        const hostH = host.clientHeight || 1;
+        // Solid background under each oscillator pane so main chart never shows through
+        // (past / present / future candles stay hidden behind oscillators)
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
           sepSet.add(bottoms[i]); // line under pane
           sepSet.add(tops[i]);    // line above pane
+          const topPx = hostH * (1 - tops[i]);
+          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
+          bgParts.push(
+            `<div style="position:absolute;left:0;right:0;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;z-index:0;"></div>`
+          );
         }
-        const hostH = host.clientHeight || 1;
-        host.innerHTML = Array.from(sepSet)
+        const lineParts = Array.from(sepSet)
           .map((fracFromBottom) => {
             const y = hostH * (1 - fracFromBottom);
-            return `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.22);pointer-events:none;"></div>`;
-          })
-          .join("");
+            return `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.22);pointer-events:none;z-index:1;"></div>`;
+          });
+        host.innerHTML = bgParts.concat(lineParts).join("");
       }
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
@@ -4104,7 +4112,7 @@ export default function DashboardPage() {
 
       const chart = createChart(container, {
         layout: {
-          background: { color: "#0b0e11" },
+          background: { color: "transparent" },
           textColor: "#d1d5db",
           fontSize: 11,
           // Hide default TradingView watermark (library is Apache-2.0)
@@ -8259,19 +8267,19 @@ export default function DashboardPage() {
                 }}
               >
                 {[
+                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
                   { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
                   { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
                   { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
                   { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
-                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
                   { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
                   { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
-                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
                   { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
                   { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
                   { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
                   { key: "macd", label: "MACD", on: showMACD, set: setShowMACD, group: "osc" },
                   { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch, group: "osc" },
+                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
                 ].map((it, idx, arr) => {
                   const prev = idx > 0 ? arr[idx - 1] : null;
                   const showSep = prev && prev.group === "main" && it.group === "osc";
@@ -9205,10 +9213,11 @@ export default function DashboardPage() {
                   ? " ring-1 ring-dashed ring-orange-400/80 rounded-xl"
                   : "")
               }
+              style={{ background: "#0b0e11" }}
             >
               <div
                 ref={chartContainerRef}
-                className="w-full h-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
+                className="w-full h-full rounded-xl border border-gray-800 bg-transparent overflow-hidden touch-none relative z-[10]"
                 style={{
                   touchAction: "none",
                   WebkitUserSelect: "none",
@@ -9236,7 +9245,7 @@ export default function DashboardPage() {
               <div
                 ref={paneSepRef}
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 18 }}
+                style={{ zIndex: 5 }}
               />
 
 
