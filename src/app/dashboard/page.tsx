@@ -1838,6 +1838,350 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
+    const paintVLines = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      if (!host || !chart2) return;
+      // Only remove vertical line nodes — keep rays intact
+      host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
+      if (hideLines) return;
+      for (const v of vlineItemsRef.current) {
+        let x: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(v.time as any);
+        } catch { x = null; }
+        if (x == null || Number.isNaN(x)) continue;
+        const el = document.createElement("div");
+        el.dataset.vlineId = v.id;
+        el.style.position = "absolute";
+        el.style.top = "0";
+        el.style.bottom = "0";
+        el.style.left = `${x}px`;
+        el.style.width = `${Math.max(1, v.width)}px`;
+        el.style.transform = "translateX(-50%)";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        if (v.dash === "dashed" || v.dash === "dotted") {
+          el.style.background = "transparent";
+          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
+          el.style.width = "0";
+        } else {
+          el.style.background = v.color;
+        }
+        host.appendChild(el);
+      }
+    };
+
+    const paintRays = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+      if (hideLines) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      // Plot width only (exclude right price scale) so line never runs under labels
+      let plotW = hostW;
+      try {
+        const tw = (chart2.timeScale() as any).width?.();
+        if (typeof tw === "number" && tw > 40) plotW = tw;
+        else plotW = Math.max(80, hostW - 64);
+      } catch {
+        plotW = Math.max(80, hostW - 64);
+      }
+      for (const r of rayItemsRef.current) {
+        let x: number | null = null;
+        let y: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(r.time as any);
+        } catch { x = null; }
+        try {
+          y = ser.priceToCoordinate(r.price);
+        } catch { y = null; }
+        if (y == null || Number.isNaN(y)) continue;
+        const startVisible = x != null && !Number.isNaN(x);
+        if (startVisible && (x as number) > plotW) continue;
+        const x0 = startVisible ? Math.max(0, x as number) : 0;
+        const w = Math.max(2, plotW - x0);
+        const lh = Math.max(1, Math.min(3, Number(r.width) || 2));
+
+        const el = document.createElement("div");
+        el.dataset.rayId = r.id;
+        el.dataset.rayRole = "line";
+        el.style.position = "absolute";
+        el.style.left = `${x0}px`;
+        el.style.top = `${y}px`;
+        el.style.width = `${w}px`;
+        el.style.height = `${lh}px`;
+        el.style.transform = "translateY(-50%)";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        el.style.boxSizing = "border-box";
+        if (r.dash === "dashed") {
+          el.style.background = "transparent";
+          el.style.borderTop = `${lh}px dashed ${r.color}`;
+          el.style.height = "0px";
+        } else if (r.dash === "dotted") {
+          el.style.background = "transparent";
+          el.style.borderTop = `${lh}px dotted ${r.color}`;
+          el.style.height = "0px";
+        } else {
+          el.style.background = r.color;
+        }
+        host.appendChild(el);
+
+        if (startVisible && (x as number) >= 0 && (x as number) <= plotW) {
+          const cap = document.createElement("div");
+          cap.dataset.rayId = r.id;
+          cap.dataset.rayRole = "cap";
+          cap.style.position = "absolute";
+          cap.style.left = `${x}px`;
+          cap.style.top = `${y}px`;
+          cap.style.width = "6px";
+          cap.style.height = "6px";
+          cap.style.borderRadius = "50%";
+          cap.style.background = r.color;
+          cap.style.transform = "translate(-50%,-50%)";
+          cap.style.pointerEvents = "none";
+          cap.style.zIndex = "6";
+          host.appendChild(cap);
+        }
+
+        // Price + note tag at plot edge (same place as full-line axis labels) — not over price scale
+        const tag = document.createElement("div");
+        tag.dataset.rayLabel = r.id;
+        const priceTxt = formatPrice(r.price);
+        const noteTxt = (r as any).note ? String((r as any).note).trim() : "";
+        // Note first (left), then price — matches full line look
+        tag.innerHTML = noteTxt
+          ? `<span style="opacity:.95">${noteTxt}</span> <span style="font-weight:700">${priceTxt}</span>`
+          : `<span style="font-weight:700">${priceTxt}</span>`;
+        tag.style.position = "absolute";
+        tag.style.left = `${plotW}px`;
+        tag.style.top = `${y}px`;
+        tag.style.transform = "translate(-100%, -50%)";
+        tag.style.background = r.color;
+        tag.style.color = "#0b1220";
+        tag.style.fontSize = "10px";
+        tag.style.lineHeight = "1.2";
+        tag.style.padding = "2px 6px";
+        tag.style.borderRadius = "3px 0 0 3px";
+        tag.style.pointerEvents = "none";
+        tag.style.zIndex = "7";
+        tag.style.whiteSpace = "nowrap";
+        tag.style.maxWidth = "150px";
+        tag.style.overflow = "hidden";
+        tag.style.textOverflow = "ellipsis";
+        host.appendChild(tag);
+      }
+    };
+
+    /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
+    const syncOverlayPositions = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      for (const child of Array.from(host.children) as HTMLElement[]) {
+        if (child.dataset.vlineId) {
+          const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
+          if (!item) continue;
+          let x: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          if (x == null || Number.isNaN(x)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+          }
+        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
+          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
+          const item = rayItemsRef.current.find((v) => v.id === rid);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          let plotW = hostW;
+          try {
+            const tw = (chart2.timeScale() as any).width?.();
+            if (typeof tw === "number" && tw > 40) plotW = tw;
+            else plotW = Math.max(80, hostW - 64);
+          } catch {
+            plotW = Math.max(80, hostW - 64);
+          }
+          const startVisible = x != null && !Number.isNaN(x);
+          if (startVisible && (x as number) > plotW) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          if (child.dataset.rayLabel) {
+            child.style.visibility = "visible";
+            child.style.left = `${plotW}px`;
+            child.style.top = `${y}px`;
+            continue;
+          }
+          const role = child.dataset.rayRole || "line";
+          const lh = Math.max(1, Math.min(3, Number(item.width) || 2));
+          if (role === "cap") {
+            if (startVisible && (x as number) >= 0) {
+              child.style.visibility = "visible";
+              child.style.left = `${x}px`;
+              child.style.top = `${y}px`;
+              child.style.width = "6px";
+              child.style.height = "6px";
+            } else {
+              child.style.visibility = "hidden";
+            }
+          } else {
+            const x0 = startVisible ? Math.max(0, x as number) : 0;
+            child.style.visibility = "visible";
+            child.style.left = `${x0}px`;
+            child.style.top = `${y}px`;
+            child.style.width = `${Math.max(2, plotW - x0)}px`;
+            if (item.dash === "dashed" || item.dash === "dotted") {
+              child.style.height = "0px";
+              child.style.borderTopWidth = `${lh}px`;
+            } else {
+              child.style.height = `${lh}px`;
+            }
+          }
+        } else if (child.dataset.arrowRing && ser) {
+          const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        } else if (child.dataset.calloutId && ser) {
+          const item = calloutItemsRef.current.find((v) => v.id === child.dataset.calloutId);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        }
+      }
+    };
+
+
+    const paintCallouts = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-callout-id]").forEach((el) => el.remove());
+      if (hideLines) return;
+      for (const c of calloutItemsRef.current) {
+        let x: number | null = null;
+        let y: number | null = null;
+        try { x = chart2.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
+        try { y = ser.priceToCoordinate(c.price); } catch { y = null; }
+        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
+        const wrap = document.createElement("div");
+        wrap.dataset.calloutId = c.id;
+        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:25;pointer-events:auto;`;
+        const stem = document.createElement("div");
+        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
+        const bubble = document.createElement("div");
+        bubble.contentEditable = "true";
+        bubble.spellcheck = false;
+        bubble.textContent = c.text || "";
+        bubble.setAttribute("data-placeholder", "Add text");
+        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:52px;max-width:180px;padding:5px 9px;border-radius:8px;background:#0d9488;color:#fff;font-size:12px;line-height:1.3;border:1px solid rgba(255,255,255,0.3);outline:none;cursor:text;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`;
+        const dot = document.createElement("div");
+        dot.title = "Drag to move";
+        dot.style.cssText = `position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;border:2px solid ${c.color};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;`;
+        // stop chart from eating clicks while typing
+        bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
+        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
+        bubble.addEventListener("click", (e) => e.stopPropagation());
+        bubble.addEventListener("blur", async () => {
+          const val = (bubble.textContent || "").trim();
+          const note = `__callout:${val}`;
+          c.text = val;
+          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
+          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
+        });
+        // Drag ONLY via anchor dot — chart pan does not move callout except via coordinate sync
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const onDown = (e: PointerEvent) => {
+          e.preventDefault(); e.stopPropagation();
+          dragging = true; lastX = e.clientX; lastY = e.clientY;
+          try { dot.setPointerCapture(e.pointerId); } catch {}
+          dot.style.cursor = "grabbing";
+        };
+        const onMove = (e: PointerEvent) => {
+          if (!dragging) return;
+          e.preventDefault(); e.stopPropagation();
+          const dx = e.clientX - lastX, dy = e.clientY - lastY;
+          lastX = e.clientX; lastY = e.clientY;
+          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
+          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
+        };
+        const onUp = async (e: PointerEvent) => {
+          if (!dragging) return;
+          dragging = false;
+          dot.style.cursor = "grab";
+          try {
+            const left = parseFloat(wrap.style.left) || 0;
+            const top = parseFloat(wrap.style.top) || 0;
+            const t = chart2.timeScale().coordinateToTime(left);
+            const p = ser.coordinateToPrice(top);
+            if (t != null && p != null) {
+              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
+              c.time = Number(tu);
+              c.price = Number(p);
+              setLines((prev) =>
+                prev.map((l) =>
+                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
+                )
+              );
+              try {
+                await supabase
+                  .from("chart_lines")
+                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
+                  .eq("id", c.id);
+              } catch {}
+            }
+          } catch {}
+        };
+        dot.addEventListener("pointerdown", onDown as any);
+        wrap.addEventListener("pointermove", onMove as any);
+        wrap.addEventListener("pointerup", onUp as any);
+        wrap.addEventListener("pointercancel", onUp as any);
+        wrap.appendChild(stem);
+        wrap.appendChild(bubble);
+        wrap.appendChild(dot);
+        host.appendChild(wrap);
+        if (!c.text) {
+          try { bubble.focus(); } catch {}
+        }
+      }
+    };
+
+
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -2081,9 +2425,22 @@ export default function DashboardPage() {
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
-        } else if (l.start_time != null && !isDiagonalLine(l) && l.note !== "__vline__" && !String(l.note || "").startsWith("__vline__:")) {
-          // Half-line: DOM body (never full) + tiny future series only for axis price/note label
-          const t0 = Number(l.start_time);
+        } else if (
+          (typeof l.note === "string" && l.note.startsWith("__ray:")) ||
+          (l.start_time != null &&
+            l.end_time == null &&
+            l.end_price == null &&
+            !isDiagonalLine(l) &&
+            l.note !== "__vline__" &&
+            !String(l.note || "").startsWith("__vline:") &&
+            !String(l.note || "").startsWith("__arrow") &&
+            !String(l.note || "").startsWith("__callout:"))
+        ) {
+          // Half-line: DOM only (stays half on every TF). Resolve time from start_time or __ray:
+          let t0 = Number(l.start_time);
+          if ((!t0 || Number.isNaN(t0)) && typeof l.note === "string" && l.note.startsWith("__ray:")) {
+            t0 = Number(String(l.note).replace(/^__ray:/, "").split("|")[0]);
+          }
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2094,29 +2451,6 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
               note: title || "",
             } as any);
-            try {
-              const bars = candlesRef.current || [];
-              const barSec = intervalToSeconds(String(intervalRef.current));
-              const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-              // Points only in the future empty area — not drawn over candles
-              const tA = lastT + barSec * 2;
-              const tB = lastT + barSec * 4;
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              ls.setData([
-                { time: tA as any, value: Number(l.price) },
-                { time: tB as any, value: Number(l.price) },
-              ]);
-              chartLinesRef.current.set(l.id, ls);
-            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2127,6 +2461,8 @@ export default function DashboardPage() {
         }
       } catch {}
     });
+    // Rays/vlines appear immediately with candles (before slower alarm series work)
+    try { paintVLines(); paintRays(); } catch {}
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
@@ -2184,8 +2520,14 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-        } else if (a.start_time != null && !isDiagonalLine(a)) {
-          const t0 = Number(a.start_time);
+        } else if (
+          (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
+          (a.start_time != null && a.end_time == null && a.end_price == null && !isDiagonalLine(a))
+        ) {
+          let t0 = Number(a.start_time);
+          if ((!t0 || Number.isNaN(t0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
+            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0]);
+          }
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
@@ -2196,28 +2538,6 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
               note: title || "",
             } as any);
-            try {
-              const bars = candlesRef.current || [];
-              const barSec = intervalToSeconds(String(intervalRef.current));
-              const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-              const tA = lastT + barSec * 2;
-              const tB = lastT + barSec * 4;
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              ls.setData([
-                { time: tA as any, value: Number(a.price) },
-                { time: tB as any, value: Number(a.price) },
-              ]);
-              chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
-            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2232,302 +2552,6 @@ export default function DashboardPage() {
 
     // History / temp highlight: yellow dashed HORIZONTAL line (full)
     // Paint true-vertical DOM lines
-    const paintVLines = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      if (!host || !chart2) return;
-      // Only remove vertical line nodes — keep rays intact
-      host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
-      if (hideLines) return;
-      for (const v of vlineItemsRef.current) {
-        let x: number | null = null;
-        try {
-          x = chart2.timeScale().timeToCoordinate(v.time as any);
-        } catch { x = null; }
-        if (x == null || Number.isNaN(x)) continue;
-        const el = document.createElement("div");
-        el.dataset.vlineId = v.id;
-        el.style.position = "absolute";
-        el.style.top = "0";
-        el.style.bottom = "0";
-        el.style.left = `${x}px`;
-        el.style.width = `${Math.max(1, v.width)}px`;
-        el.style.transform = "translateX(-50%)";
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "5";
-        if (v.dash === "dashed" || v.dash === "dotted") {
-          el.style.background = "transparent";
-          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
-          el.style.width = "0";
-        } else {
-          el.style.background = v.color;
-        }
-        host.appendChild(el);
-      }
-    };
-
-    const paintRays = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2 || !ser) return;
-      host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
-      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
-      if (hideLines) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
-      for (const r of rayItemsRef.current) {
-        let x: number | null = null;
-        let y: number | null = null;
-        try {
-          x = chart2.timeScale().timeToCoordinate(r.time as any);
-        } catch { x = null; }
-        try {
-          y = ser.priceToCoordinate(r.price);
-        } catch { y = null; }
-        if (y == null || Number.isNaN(y)) continue;
-        const startVisible = x != null && !Number.isNaN(x);
-        // If start is to the right of view → not visible
-        if (startVisible && (x as number) > hostW) continue;
-        // Ray starts at max(start, 0) so it never draws left of origin
-        const x0 = startVisible ? Math.max(0, x as number) : 0;
-        const w = Math.max(2, hostW - x0);
-        const lh = Math.max(1, Math.min(4, Number(r.width) || 2));
-
-        const el = document.createElement("div");
-        el.dataset.rayId = r.id;
-        el.dataset.rayRole = "line";
-        el.style.position = "absolute";
-        el.style.left = `${x0}px`;
-        el.style.top = `${y}px`;
-        el.style.width = `${w}px`;
-        el.style.height = `${lh}px`;
-        el.style.transform = "translateY(-50%)";
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "5";
-        el.style.boxSizing = "border-box";
-        if (r.dash === "dashed") {
-          el.style.background = "transparent";
-          el.style.borderTop = `${lh}px dashed ${r.color}`;
-          el.style.height = "0px";
-        } else if (r.dash === "dotted") {
-          el.style.background = "transparent";
-          el.style.borderTop = `${lh}px dotted ${r.color}`;
-          el.style.height = "0px";
-        } else {
-          el.style.background = r.color;
-        }
-        host.appendChild(el);
-
-        // Start cap — only when start is on screen
-        if (startVisible && (x as number) >= 0 && (x as number) <= hostW) {
-          const cap = document.createElement("div");
-          cap.dataset.rayId = r.id;
-          cap.dataset.rayRole = "cap";
-          cap.style.position = "absolute";
-          cap.style.left = `${x}px`;
-          cap.style.top = `${y}px`;
-          cap.style.width = "6px";
-          cap.style.height = "6px";
-          cap.style.borderRadius = "50%";
-          cap.style.background = r.color;
-          cap.style.transform = "translate(-50%,-50%)";
-          cap.style.pointerEvents = "none";
-          cap.style.zIndex = "6";
-          host.appendChild(cap);
-        }
-      }
-    };
-
-    /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
-    const syncOverlayPositions = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
-      for (const child of Array.from(host.children) as HTMLElement[]) {
-        if (child.dataset.vlineId) {
-          const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
-          if (!item) continue;
-          let x: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          if (x == null || Number.isNaN(x)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-          }
-        } else if (child.dataset.rayId && ser) {
-          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayId);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (y == null || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-            continue;
-          }
-          const startVisible = x != null && !Number.isNaN(x);
-          if (startVisible && (x as number) > hostW) {
-            child.style.visibility = "hidden";
-            continue;
-          }
-          const role = child.dataset.rayRole || "line";
-          const lh = Math.max(1, Math.min(4, Number(item.width) || 2));
-          if (role === "cap") {
-            if (startVisible && (x as number) >= 0) {
-              child.style.visibility = "visible";
-              child.style.left = `${x}px`;
-              child.style.top = `${y}px`;
-              child.style.width = "6px";
-              child.style.height = "6px";
-            } else {
-              child.style.visibility = "hidden";
-            }
-          } else {
-            const x0 = startVisible ? Math.max(0, x as number) : 0;
-            child.style.visibility = "visible";
-            child.style.left = `${x0}px`;
-            child.style.top = `${y}px`;
-            child.style.width = `${Math.max(2, hostW - x0)}px`;
-            // keep thin — never let height grow during pan/zoom
-            if (item.dash === "dashed" || item.dash === "dotted") {
-              child.style.height = "0px";
-              child.style.borderTopWidth = `${lh}px`;
-            } else {
-              child.style.height = `${lh}px`;
-            }
-          }
-        } else if (child.dataset.arrowRing && ser) {
-          const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-            child.style.top = `${y}px`;
-          }
-        } else if (child.dataset.calloutId && ser) {
-          const item = calloutItemsRef.current.find((v) => v.id === child.dataset.calloutId);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-            child.style.top = `${y}px`;
-          }
-        }
-      }
-    };
-
-
-    const paintCallouts = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2 || !ser) return;
-      host.querySelectorAll("[data-callout-id]").forEach((el) => el.remove());
-      if (hideLines) return;
-      for (const c of calloutItemsRef.current) {
-        let x: number | null = null;
-        let y: number | null = null;
-        try { x = chart2.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
-        try { y = ser.priceToCoordinate(c.price); } catch { y = null; }
-        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
-        const wrap = document.createElement("div");
-        wrap.dataset.calloutId = c.id;
-        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:25;pointer-events:auto;`;
-        const stem = document.createElement("div");
-        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
-        const bubble = document.createElement("div");
-        bubble.contentEditable = "true";
-        bubble.spellcheck = false;
-        bubble.textContent = c.text || "";
-        bubble.setAttribute("data-placeholder", "Add text");
-        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:52px;max-width:180px;padding:5px 9px;border-radius:8px;background:#0d9488;color:#fff;font-size:12px;line-height:1.3;border:1px solid rgba(255,255,255,0.3);outline:none;cursor:text;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`;
-        const dot = document.createElement("div");
-        dot.title = "Drag to move";
-        dot.style.cssText = `position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;border:2px solid ${c.color};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;`;
-        // stop chart from eating clicks while typing
-        bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
-        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
-        bubble.addEventListener("click", (e) => e.stopPropagation());
-        bubble.addEventListener("blur", async () => {
-          const val = (bubble.textContent || "").trim();
-          const note = `__callout:${val}`;
-          c.text = val;
-          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
-          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
-        });
-        // Drag ONLY via anchor dot — chart pan does not move callout except via coordinate sync
-        let dragging = false;
-        let lastX = 0, lastY = 0;
-        const onDown = (e: PointerEvent) => {
-          e.preventDefault(); e.stopPropagation();
-          dragging = true; lastX = e.clientX; lastY = e.clientY;
-          try { dot.setPointerCapture(e.pointerId); } catch {}
-          dot.style.cursor = "grabbing";
-        };
-        const onMove = (e: PointerEvent) => {
-          if (!dragging) return;
-          e.preventDefault(); e.stopPropagation();
-          const dx = e.clientX - lastX, dy = e.clientY - lastY;
-          lastX = e.clientX; lastY = e.clientY;
-          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
-          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
-        };
-        const onUp = async (e: PointerEvent) => {
-          if (!dragging) return;
-          dragging = false;
-          dot.style.cursor = "grab";
-          try {
-            const left = parseFloat(wrap.style.left) || 0;
-            const top = parseFloat(wrap.style.top) || 0;
-            const t = chart2.timeScale().coordinateToTime(left);
-            const p = ser.coordinateToPrice(top);
-            if (t != null && p != null) {
-              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
-              c.time = Number(tu);
-              c.price = Number(p);
-              setLines((prev) =>
-                prev.map((l) =>
-                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
-                )
-              );
-              try {
-                await supabase
-                  .from("chart_lines")
-                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
-                  .eq("id", c.id);
-              } catch {}
-            }
-          } catch {}
-        };
-        dot.addEventListener("pointerdown", onDown as any);
-        wrap.addEventListener("pointermove", onMove as any);
-        wrap.addEventListener("pointerup", onUp as any);
-        wrap.addEventListener("pointercancel", onUp as any);
-        wrap.appendChild(stem);
-        wrap.appendChild(bubble);
-        wrap.appendChild(dot);
-        host.appendChild(wrap);
-        if (!c.text) {
-          try { bubble.focus(); } catch {}
-        }
-      }
-    };
-
     paintVLines();
     paintRays();
     paintCallouts();
