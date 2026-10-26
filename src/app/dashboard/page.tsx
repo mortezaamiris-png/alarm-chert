@@ -1889,6 +1889,8 @@ export default function DashboardPage() {
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-axis-tag]").forEach((el) => el.remove());
       if (hideLines && hideAlarms) return;
+      // Allow tags to sit on the right price scale (like native LWC labels)
+      try { host.style.overflow = "visible"; } catch {}
       let plotW = host.clientWidth || 800;
       try {
         const tw = (chart2.timeScale() as any).width?.();
@@ -1905,26 +1907,39 @@ export default function DashboardPage() {
         tag.dataset.axisTag = t.id;
         const priceTxt = String(formatPrice(t.price));
         const noteTxt = (t.note || "").trim();
-        tag.textContent = noteTxt ? `${noteTxt}  ${priceTxt}` : priceTxt;
+        // Sit ON the price scale (right of plot), same place as native labels
         tag.style.cssText = [
           "position:absolute",
           `left:${plotW}px`,
           `top:${y}px`,
-          "transform:translate(-100%,-50%)",
+          "transform:translateY(-50%)",
           `background:${t.color}`,
-          "color:#000000",
           "font-size:10px",
           "font-weight:600",
           "line-height:1.25",
           "padding:2px 6px",
-          "border-radius:3px 0 0 3px",
+          "border-radius:2px",
           "pointer-events:none",
-          "z-index:8",
+          "z-index:30",
           "white-space:nowrap",
-          "max-width:160px",
+          "max-width:180px",
           "overflow:hidden",
           "text-overflow:ellipsis",
+          "box-sizing:border-box",
         ].join(";");
+        if (noteTxt) {
+          const noteSpan = document.createElement("span");
+          noteSpan.textContent = noteTxt + "\u00a0";
+          noteSpan.style.color = "#000000"; // note only → black
+          const priceSpan = document.createElement("span");
+          priceSpan.textContent = priceTxt;
+          priceSpan.style.color = "#ffffff"; // price stays white
+          tag.appendChild(noteSpan);
+          tag.appendChild(priceSpan);
+        } else {
+          tag.textContent = priceTxt;
+          tag.style.color = "#ffffff";
+        }
         host.appendChild(tag);
       }
     };
@@ -8364,8 +8379,8 @@ export default function DashboardPage() {
               />
               <div
                 ref={vlineOverlayRef}
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 4 }}
+                className="absolute inset-0 pointer-events-none overflow-visible rounded-xl"
+                style={{ zIndex: 30 }}
               />
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
