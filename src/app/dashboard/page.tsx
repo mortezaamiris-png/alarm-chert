@@ -445,6 +445,90 @@ function calcDMI(
   return { plusDI, minusDI, adx };
 }
 
+
+function calcBollinger(
+  candles: { time: number; close: number }[],
+  length = 20,
+  mult = 2
+) {
+  const basis: { time: number; value: number }[] = [];
+  const upper: { time: number; value: number }[] = [];
+  const lower: { time: number; value: number }[] = [];
+  const p = Math.max(1, length);
+  for (let i = p - 1; i < candles.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < p; j++) sum += candles[i - j].close;
+    const mean = sum / p;
+    let varSum = 0;
+    for (let j = 0; j < p; j++) {
+      const d = candles[i - j].close - mean;
+      varSum += d * d;
+    }
+    const std = Math.sqrt(varSum / p);
+    basis.push({ time: candles[i].time, value: mean });
+    upper.push({ time: candles[i].time, value: mean + mult * std });
+    lower.push({ time: candles[i].time, value: mean - mult * std });
+  }
+  return { basis, upper, lower };
+}
+
+/** Zero-median RSI series for a value stream */
+function calcZRsiFromValues(values: number[], length: number): (number | null)[] {
+  const p = Math.max(2, length);
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  if (values.length < p + 1) return out;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= p; i++) {
+    const d = values[i] - values[i - 1];
+    if (d >= 0) gains += d; else losses -= d;
+  }
+  let avgGain = gains / p, avgLoss = losses / p;
+  out[p] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) - 50;
+  for (let i = p + 1; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    avgGain = (avgGain * (p - 1) + (d > 0 ? d : 0)) / p;
+    avgLoss = (avgLoss * (p - 1) + (d < 0 ? -d : 0)) / p;
+    out[i] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) - 50;
+  }
+  return out;
+}
+
+function calcHARSI(
+  candles: { time: number; open: number; high: number; low: number; close: number }[],
+  length = 14,
+  openSmooth = 1
+) {
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+  const zClose = calcZRsiFromValues(closes, length);
+  const zHigh = calcZRsiFromValues(highs, length);
+  const zLow = calcZRsiFromValues(lows, length);
+  const out: { time: number; open: number; high: number; low: number; close: number }[] = [];
+  let prevOpen: number | null = null;
+  let prevClose: number | null = null;
+  for (let i = 0; i < candles.length; i++) {
+    if (zClose[i] == null || zHigh[i] == null || zLow[i] == null) continue;
+    const closeRSI = zClose[i] as number;
+    const openRSI = i > 0 && zClose[i - 1] != null ? (zClose[i - 1] as number) : closeRSI;
+    const highRSI = Math.max(zHigh[i] as number, zLow[i] as number);
+    const lowRSI = Math.min(zHigh[i] as number, zLow[i] as number);
+    const haClose = (openRSI + highRSI + lowRSI + closeRSI) / 4;
+    let haOpen: number;
+    if (prevOpen == null || prevClose == null) {
+      haOpen = (openRSI + closeRSI) / 2;
+    } else {
+      haOpen = (prevOpen * openSmooth + prevClose) / (openSmooth + 1);
+    }
+    const haHigh = Math.max(highRSI, Math.max(haOpen, haClose));
+    const haLow = Math.min(lowRSI, Math.min(haOpen, haClose));
+    out.push({ time: candles[i].time, open: haOpen, high: haHigh, low: haLow, close: haClose });
+    prevOpen = haOpen;
+    prevClose = haClose;
+  }
+  return out;
+}
+
 function findPivots(candles: any[], leftRight: number) {
   const highs: { index: number; time: number; price: number }[] = [];
   const lows: { index: number; time: number; price: number }[] = [];
@@ -1093,6 +1177,8 @@ export default function DashboardPage() {
   const stochSeriesRef = useRef<{ k: any; d: any } | null>(null);
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
+  const bbSeriesRef = useRef<{ basis: any; upper: any; lower: any } | null>(null);
+  const harsiSeriesRef = useRef<any>(null);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
   const paneSepRef = useRef<HTMLDivElement | null>(null);
@@ -1445,7 +1531,26 @@ export default function DashboardPage() {
   const [trendPeriodStr, setTrendPeriodStr] = useState(() => String(loadLS("trend_p", 12)));
   const [trendUpColor, setTrendUpColor] = useState(() => loadLS("trend_up", "#84cc16"));
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
-  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
+  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 6));
+
+  // Bollinger Bands
+  const [showBB, setShowBB] = useState(() => loadLS("ind_bb", false));
+  const [bbVisible, setBbVisible] = useState(() => loadLS("vis_bb", true));
+  const [bbSettings, setBbSettings] = useState(false);
+  const [bbLength, setBbLength] = useState(() => loadLS("bb_len", 20));
+  const [bbMult, setBbMult] = useState(() => loadLS("bb_mult", 2));
+  const [bbBasisColor, setBbBasisColor] = useState(() => loadLS("bb_bc", "#2962FF"));
+  const [bbUpperColor, setBbUpperColor] = useState(() => loadLS("bb_uc", "#F23645"));
+  const [bbLowerColor, setBbLowerColor] = useState(() => loadLS("bb_lc", "#089981"));
+
+  // HARSI oscillator
+  const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
+  const [harsiVisible, setHarsiVisible] = useState(() => loadLS("vis_harsi", true));
+  const [harsiSettings, setHarsiSettings] = useState(false);
+  const [harsiLen, setHarsiLen] = useState(() => loadLS("harsi_len", 14));
+  const [harsiSmooth, setHarsiSmooth] = useState(() => loadLS("harsi_sm", 1));
+  const [harsiUpColor, setHarsiUpColor] = useState(() => loadLS("harsi_up", "#14b8a6"));
+  const [harsiDnColor, setHarsiDnColor] = useState(() => loadLS("harsi_dn", "#ef4444"));
 
   // TCP — Money Management
   const [showTCP, setShowTCP] = useState(() => loadLS("ind_tcp", false));
@@ -1774,6 +1879,12 @@ export default function DashboardPage() {
   useEffect(() => {
     saveLS("ind_trend", showTrend); saveLS("vis_trend", trendVisible);
     saveLS("trend_p", trendPeriod); saveLS("trend_up", trendUpColor);
+    saveLS("ind_bb", showBB); saveLS("vis_bb", bbVisible);
+    saveLS("bb_len", bbLength); saveLS("bb_mult", bbMult);
+    saveLS("bb_bc", bbBasisColor); saveLS("bb_uc", bbUpperColor); saveLS("bb_lc", bbLowerColor);
+    saveLS("ind_harsi", showHARSI); saveLS("vis_harsi", harsiVisible);
+    saveLS("harsi_len", harsiLen); saveLS("harsi_sm", harsiSmooth);
+    saveLS("harsi_up", harsiUpColor); saveLS("harsi_dn", harsiDnColor);
     saveLS("trend_dn", trendDownColor); saveLS("trend_max", trendMax);
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
   useEffect(() => {
@@ -1905,6 +2016,7 @@ export default function DashboardPage() {
       { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators), h: 0.12 },
       { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators), h: 0.12 },
       { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators), h: 0.13 },
+      { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators), h: 0.14 },
       { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators), h: 0.12 },
       { id: "roc", on: !!(showROC && rocVisible && !hideIndicators), h: 0.11 },
       { id: "atr", on: !!(showATR && atrVisible && !hideIndicators), h: 0.11 },
@@ -1936,7 +2048,7 @@ export default function DashboardPage() {
     try {
       const host = paneSepRef.current;
       if (host) {
-        const oscIds = new Set(["dmi", "stoch", "macd", "rsi", "roc", "atr"]);
+        const oscIds = new Set(["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr"]);
         let u = 0;
         const bottoms: number[] = []; // fraction from bottom — bottom edge of pane
         const tops: number[] = [];    // fraction from bottom — top edge of pane
@@ -1962,7 +2074,8 @@ export default function DashboardPage() {
       }
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
-    showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible, hideIndicators]);
+    showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
+    showHARSI, harsiVisible, hideIndicators]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -3218,58 +3331,188 @@ export default function DashboardPage() {
     trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     trendSeriesRef.current = [];
   }, []);
+  /** Trend Line Adam — pivot-based unbroken support/resistance rays */
   const applyTrend = useCallback(() => {
     removeTrend();
     if (!showTrend || !trendVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
     const candles = candlesRef.current;
-    const period = Math.max(4, trendPeriod);
-    const maxLines = Math.max(1, Math.min(5, trendMax));
+    const period = Math.max(10, Math.min(50, trendPeriod));
+    const pivotN = Math.max(2, Math.min(6, Number(trendMax) || 6));
+    const maxLines = 3;
     const { highs, lows } = findPivots(candles, period);
-    const recentLows = lows.slice(-6);
-    const recentHighs = highs.slice(-6);
-    let upCount = 0;
-    for (let i = 0; i < recentLows.length - 1 && upCount < maxLines; i++) {
-      const a = recentLows[i], b = recentLows[i + 1];
-      if (b.price <= a.price) continue;
-      const slope = (b.price - a.price) / (b.index - a.index);
-      let valid = true;
-      for (let x = a.index + 1; x < candles.length; x++) {
-        if (candles[x].low < (a.price + slope * (x - a.index)) * 0.998) { valid = false; break; }
+    // newest-first like Pine array.unshift
+    const bottomVals = lows.slice(-pivotN).reverse();
+    const topVals = highs.slice(-pivotN).reverse();
+
+    let countLow = 0;
+    for (let pivot1 = 0; pivot1 < bottomVals.length - 1 && countLow < maxLines; pivot1++) {
+      let drawn = false;
+      for (let pivot2 = bottomVals.length - 1; pivot2 > pivot1; pivot2--) {
+        const value1 = bottomVals[pivot1].price; // newer
+        const value2 = bottomVals[pivot2].price; // older
+        const position1 = bottomVals[pivot1].index;
+        const position2 = bottomVals[pivot2].index;
+        if (!(value1 > value2) || position1 === position2) continue;
+        const different = (value1 - value2) / (position1 - position2);
+        let highLine = value2 + different;
+        let lowLocation = candles.length - 1;
+        let valid = true;
+        const startX = position2 + 1 - period;
+        for (let x = Math.max(0, startX); x < candles.length; x++) {
+          if (candles[x].close < highLine) { valid = false; break; }
+          lowLocation = x;
+          highLine += different;
+        }
+        if (!valid) continue;
+        const upVal1 = highLine - different;
+        const upVal2 = value2;
+        const up1 = lowLocation;
+        const up2 = position2;
+        try {
+          const ls = chart.addLineSeries({
+            color: trendUpColor,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          const t0 = candles[Math.max(0, up2 - period)]?.time ?? candles[up2].time;
+          ls.setData([
+            { time: t0 as any, value: upVal2 },
+            { time: candles[up1].time as any, value: upVal1 },
+          ]);
+          trendSeriesRef.current.push(ls);
+          countLow++;
+          drawn = true;
+        } catch {}
+        if (drawn) break;
       }
-      if (!valid) continue;
-      const endIdx = candles.length - 1;
-      try {
-        const ls = chartRef.current!.addLineSeries({ color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-        ls.setData([
-          { time: a.time as any, value: a.price },
-          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
-        ]);
-        trendSeriesRef.current.push(ls);
-        upCount++;
-      } catch {}
     }
-    let dnCount = 0;
-    for (let i = 0; i < recentHighs.length - 1 && dnCount < maxLines; i++) {
-      const a = recentHighs[i], b = recentHighs[i + 1];
-      if (b.price >= a.price) continue;
-      const slope = (b.price - a.price) / (b.index - a.index);
-      let valid = true;
-      for (let x = a.index + 1; x < candles.length; x++) {
-        if (candles[x].high > (a.price + slope * (x - a.index)) * 1.002) { valid = false; break; }
+
+    let countHigh = 0;
+    for (let pivot1 = 0; pivot1 < topVals.length - 1 && countHigh < maxLines; pivot1++) {
+      let drawn = false;
+      for (let pivot2 = topVals.length - 1; pivot2 > pivot1; pivot2--) {
+        const value1 = topVals[pivot1].price;
+        const value2 = topVals[pivot2].price;
+        const position1 = topVals[pivot1].index;
+        const position2 = topVals[pivot2].index;
+        if (!(value1 < value2) || position1 === position2) continue;
+        const different = (value2 - value1) / (position1 - position2);
+        let highLine = value2 - different;
+        let lowLocation = candles.length - 1;
+        let valid = true;
+        const startX = position2 + 1 - period;
+        for (let x = Math.max(0, startX); x < candles.length; x++) {
+          if (candles[x].close > highLine) { valid = false; break; }
+          lowLocation = x;
+          highLine -= different;
+        }
+        if (!valid) continue;
+        const dVal1 = highLine + different;
+        const dVal2 = value2;
+        const dPos1 = lowLocation;
+        const dPos2 = position2;
+        try {
+          const ls = chart.addLineSeries({
+            color: trendDownColor,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          const t0 = candles[Math.max(0, dPos2 - period)]?.time ?? candles[dPos2].time;
+          ls.setData([
+            { time: t0 as any, value: dVal2 },
+            { time: candles[dPos1].time as any, value: dVal1 },
+          ]);
+          trendSeriesRef.current.push(ls);
+          countHigh++;
+          drawn = true;
+        } catch {}
+        if (drawn) break;
       }
-      if (!valid) continue;
-      const endIdx = candles.length - 1;
-      try {
-        const ls = chartRef.current!.addLineSeries({ color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-        ls.setData([
-          { time: a.time as any, value: a.price },
-          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
-        ]);
-        trendSeriesRef.current.push(ls);
-        dnCount++;
-      } catch {}
     }
   }, [showTrend, trendVisible, hideIndicators, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
+
+
+  const removeBB = useCallback(() => {
+    const s = bbSeriesRef.current;
+    if (!s) return;
+    try { chartRef.current?.removeSeries(s.basis); } catch {}
+    try { chartRef.current?.removeSeries(s.upper); } catch {}
+    try { chartRef.current?.removeSeries(s.lower); } catch {}
+    bbSeriesRef.current = null;
+  }, []);
+  const applyBB = useCallback(() => {
+    removeBB();
+    if (!showBB || !bbVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
+    const data = calcBollinger(candlesRef.current, bbLength, bbMult);
+    try {
+      const basis = chart.addLineSeries({
+        color: bbBasisColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, title: "BB Basis",
+      });
+      const upper = chart.addLineSeries({
+        color: bbUpperColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, title: "BB Upper",
+      });
+      const lower = chart.addLineSeries({
+        color: bbLowerColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, title: "BB Lower",
+      });
+      basis.setData(data.basis.map((d) => ({ time: d.time as any, value: d.value })));
+      upper.setData(data.upper.map((d) => ({ time: d.time as any, value: d.value })));
+      lower.setData(data.lower.map((d) => ({ time: d.time as any, value: d.value })));
+      bbSeriesRef.current = { basis, upper, lower };
+    } catch {}
+  }, [showBB, bbVisible, hideIndicators, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor, removeBB]);
+
+  const removeHARSI = useCallback(() => {
+    if (harsiSeriesRef.current) {
+      try { chartRef.current?.removeSeries(harsiSeriesRef.current); } catch {}
+      harsiSeriesRef.current = null;
+    }
+  }, []);
+  const applyHARSI = useCallback(() => {
+    removeHARSI();
+    if (!showHARSI || !harsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
+    const candles = candlesRef.current as any[];
+    const ha = calcHARSI(candles, harsiLen, Math.max(1, harsiSmooth));
+    try {
+      const cs = chart.addCandlestickSeries({
+        priceScaleId: "harsi",
+        upColor: harsiUpColor,
+        downColor: harsiDnColor,
+        borderUpColor: harsiUpColor,
+        borderDownColor: harsiDnColor,
+        wickUpColor: "#9ca3af",
+        wickDownColor: "#9ca3af",
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      cs.setData(ha.map((c) => ({
+        time: c.time as any,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      })));
+      // zero / OB-OS guides via price lines on this scale
+      try {
+        cs.createPriceLine({ price: 0, color: "rgba(251,146,60,0.7)", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "" });
+        cs.createPriceLine({ price: 20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+        cs.createPriceLine({ price: -20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+        cs.createPriceLine({ price: 30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+        cs.createPriceLine({ price: -30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+      } catch {}
+      harsiSeriesRef.current = cs;
+    } catch {}
+    updateMargins();
+  }, [showHARSI, harsiVisible, hideIndicators, harsiLen, harsiSmooth, harsiUpColor, harsiDnColor, removeHARSI, updateMargins]);
 
   const applyVolume = useCallback(() => {
     if (volumeSeriesRef.current && chartRef.current) {
@@ -3453,10 +3696,14 @@ export default function DashboardPage() {
     updateMargins();
   }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
 
+  
+  useEffect(() => { applyBB(); }, [applyBB]);
+  useEffect(() => { applyHARSI(); }, [applyHARSI]);
+
   const rebuildIndicators = useCallback(() => {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
-    applyROC(); applyATR(); applyMACD(); applyStoch();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch]);
+    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI]);
 
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
@@ -6670,7 +6917,7 @@ export default function DashboardPage() {
       showIndicatorMenu ||
       smaSettings ||
       pivotSettings ||
-      trendSettings ||
+      trendSettings || bbSettings || harsiSettings ||
       rsiSettings ||
       dmiSettings ||
       tcpSettings ||
@@ -6733,6 +6980,8 @@ export default function DashboardPage() {
     smaSettings,
     pivotSettings,
     trendSettings,
+    bbSettings,
+    harsiSettings,
     rsiSettings,
     dmiSettings,
     tcpSettings,
@@ -7533,6 +7782,8 @@ export default function DashboardPage() {
     setShowATR(false);
     setShowMACD(false);
     setShowStoch(false);
+    setShowBB(false);
+    setShowHARSI(false);
   };
   const clearMeasure = () => {
     measureStartRef.current = null;
@@ -7988,9 +8239,11 @@ export default function DashboardPage() {
                   { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
                   { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
                   { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
+                  { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
                   { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
                   { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
                   { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
+                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
                   { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
                   { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
                   { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
@@ -9177,10 +9430,20 @@ export default function DashboardPage() {
             {!hideIndicators && showTrend && (
               <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
                 onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
+              {!hideIndicators && showBB && (
+                <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
+                  onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
+              )}
+
             )}
             {!hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
+              {!hideIndicators && showHARSI && (
+                <IndChip label="HARSI" visible={harsiVisible} onToggleVisible={() => setHarsiVisible((v) => !v)}
+                  onSettings={() => setHarsiSettings((v) => !v)} onRemove={() => { setShowHARSI(false); removeHARSI(); }} />
+              )}
+
             )}
             {!hideIndicators && showDMI && (
               <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
@@ -9629,13 +9892,13 @@ export default function DashboardPage() {
           )}
           {trendSettings && showTrend && (
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
-              <p className="font-medium mb-2">Trend Settings</p>
+              <p className="font-medium mb-2">Trend Line</p>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-14">Period</span>
                 <input value={trendPeriodStr} onChange={(e) => setTrendPeriodStr(e.target.value)}
                   onBlur={() => {
                     const n = parseInt(trendPeriodStr, 10);
-                    if (!Number.isNaN(n) && n >= 4) setTrendPeriod(n);
+                    if (!Number.isNaN(n) && n >= 10 && n <= 50) setTrendPeriod(n);
                     else setTrendPeriodStr(String(trendPeriod));
                   }}
                   className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
@@ -9791,7 +10054,60 @@ export default function DashboardPage() {
               <button type="button" onClick={() => setStochSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
             </div>
           )}
-          {rsiSettings && showRSI && (
+          
+          {bbSettings && showBB && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+              <p className="font-medium mb-2">Bollinger Bands</p>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-xs w-14">Length</span>
+                <input type="number" min={1} value={bbLength} onChange={(e) => setBbLength(Math.max(1, parseInt(e.target.value, 10) || 20))}
+                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-xs w-14">StdDev</span>
+                <input type="number" min={0.1} step={0.1} value={bbMult} onChange={(e) => setBbMult(Math.max(0.1, parseFloat(e.target.value) || 2))}
+                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Basis</span>
+                <input type="color" value={bbBasisColor} onChange={(e) => setBbBasisColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Upper</span>
+                <input type="color" value={bbUpperColor} onChange={(e) => setBbUpperColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Lower</span>
+                <input type="color" value={bbLowerColor} onChange={(e) => setBbLowerColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
+              </div>
+              <button type="button" onClick={() => setBbSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
+            </div>
+          )}
+          {harsiSettings && showHARSI && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+              <p className="font-medium mb-2">HARSI</p>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-xs w-16">Length</span>
+                <input type="number" min={1} value={harsiLen} onChange={(e) => setHarsiLen(Math.max(1, parseInt(e.target.value, 10) || 14))}
+                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-xs w-16">Open Sm.</span>
+                <input type="number" min={1} max={100} value={harsiSmooth} onChange={(e) => setHarsiSmooth(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-16">Up</span>
+                <input type="color" value={harsiUpColor} onChange={(e) => setHarsiUpColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-16">Down</span>
+                <input type="color" value={harsiDnColor} onChange={(e) => setHarsiDnColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
+              </div>
+              <button type="button" onClick={() => setHarsiSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
+            </div>
+          )}
+{rsiSettings && showRSI && (
 
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
               <p className="font-medium mb-2">RSI</p>
