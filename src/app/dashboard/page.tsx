@@ -859,6 +859,7 @@ export default function DashboardPage() {
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
   const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
+  const axisTagItemsRef = useRef<{ id: string; price: number; color: string; note: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
@@ -866,6 +867,8 @@ export default function DashboardPage() {
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
+  const tcpLinesRef = useRef<IPriceLine[]>([])
+  const tcpSeriesRef = useRef<any>(null);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   /** in-flight triggers — prevents concurrent double-fire */
@@ -1181,6 +1184,30 @@ export default function DashboardPage() {
   const [trendUpColor, setTrendUpColor] = useState(() => loadLS("trend_up", "#84cc16"));
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
   const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
+  // TCP — money management (entry / SL / targets)
+  const [showTCP, setShowTCP] = useState(() => loadLS("ind_tcp", false));
+  const [tcpVisible, setTcpVisible] = useState(() => loadLS("vis_tcp", true));
+  const [tcpSettings, setTcpSettings] = useState(false);
+  const [tcpCapital, setTcpCapital] = useState(() => loadLS("tcp_capital", 1000));
+  const [tcpRiskPct, setTcpRiskPct] = useState(() => loadLS("tcp_risk", 1));
+  const [tcpLeverage, setTcpLeverage] = useState(() => loadLS("tcp_lev", 1));
+  const [tcpEntry, setTcpEntry] = useState(() => loadLS("tcp_entry", 0));
+  const [tcpSL, setTcpSL] = useState(() => loadLS("tcp_sl", 0));
+  const [tcpT1on, setTcpT1on] = useState(() => loadLS("tcp_t1on", true));
+  const [tcpT1, setTcpT1] = useState(() => loadLS("tcp_t1", 0));
+  const [tcpT1rr, setTcpT1rr] = useState(() => loadLS("tcp_t1rr", 2));
+  const [tcpT2on, setTcpT2on] = useState(() => loadLS("tcp_t2on", true));
+  const [tcpT2, setTcpT2] = useState(() => loadLS("tcp_t2", 0));
+  const [tcpT2rr, setTcpT2rr] = useState(() => loadLS("tcp_t2rr", 3));
+  const [tcpT3on, setTcpT3on] = useState(() => loadLS("tcp_t3on", true));
+  const [tcpT3, setTcpT3] = useState(() => loadLS("tcp_t3", 0));
+  const [tcpT3rr, setTcpT3rr] = useState(() => loadLS("tcp_t3rr", 4));
+  const [tcpT4on, setTcpT4on] = useState(() => loadLS("tcp_t4on", false));
+  const [tcpT4, setTcpT4] = useState(() => loadLS("tcp_t4", 0));
+  const [tcpT4rr, setTcpT4rr] = useState(() => loadLS("tcp_t4rr", 5));
+  const [tcpT5on, setTcpT5on] = useState(() => loadLS("tcp_t5on", false));
+  const [tcpT5, setTcpT5] = useState(() => loadLS("tcp_t5", 0));
+  const [tcpT5rr, setTcpT5rr] = useState(() => loadLS("tcp_t5rr", 6));
 
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
@@ -1464,6 +1491,18 @@ export default function DashboardPage() {
     saveLS("trend_p", trendPeriod); saveLS("trend_up", trendUpColor);
     saveLS("trend_dn", trendDownColor); saveLS("trend_max", trendMax);
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
+  useEffect(() => {
+    saveLS("ind_tcp", showTCP); saveLS("vis_tcp", tcpVisible);
+    saveLS("tcp_capital", tcpCapital); saveLS("tcp_risk", tcpRiskPct); saveLS("tcp_lev", tcpLeverage);
+    saveLS("tcp_entry", tcpEntry); saveLS("tcp_sl", tcpSL);
+    saveLS("tcp_t1on", tcpT1on); saveLS("tcp_t1", tcpT1); saveLS("tcp_t1rr", tcpT1rr);
+    saveLS("tcp_t2on", tcpT2on); saveLS("tcp_t2", tcpT2); saveLS("tcp_t2rr", tcpT2rr);
+    saveLS("tcp_t3on", tcpT3on); saveLS("tcp_t3", tcpT3); saveLS("tcp_t3rr", tcpT3rr);
+    saveLS("tcp_t4on", tcpT4on); saveLS("tcp_t4", tcpT4); saveLS("tcp_t4rr", tcpT4rr);
+    saveLS("tcp_t5on", tcpT5on); saveLS("tcp_t5", tcpT5); saveLS("tcp_t5rr", tcpT5rr);
+  }, [showTCP, tcpVisible, tcpCapital, tcpRiskPct, tcpLeverage, tcpEntry, tcpSL,
+    tcpT1on, tcpT1, tcpT1rr, tcpT2on, tcpT2, tcpT2rr, tcpT3on, tcpT3, tcpT3rr,
+    tcpT4on, tcpT4, tcpT4rr, tcpT5on, tcpT5, tcpT5rr]);
 
   const favTfButtons = useMemo(
     () => ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value)),
@@ -1738,6 +1777,7 @@ export default function DashboardPage() {
     pivotSeriesRef.current = [];
     trendSeriesRef.current = [];
     volumeSeriesRef.current = null;
+    tcpLinesRef.current = [];
     previewDiagSeriesRef.current = null;
     seriesRef.current = null;
     futureSeriesRef.current = null;
@@ -1827,6 +1867,7 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
+    axisTagItemsRef.current = [];
     calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
     try {
@@ -1873,12 +1914,73 @@ export default function DashboardPage() {
     };
 
     const paintRays = () => {
-      // Rays are drawn by LWC line series (native price-axis tags, no start circle).
-      // Clear any leftover DOM from older versions.
       const host = vlineOverlayRef.current;
       if (!host) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+    };
+
+    /** Price/note tags on the right — black text on colored bar (all line types) */
+    const paintPriceTags = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-axis-tag]").forEach((el) => el.remove());
+      if (hideLines && hideAlarms) return;
+      // Allow tags to sit on the right price scale (like native LWC labels)
+      try { host.style.overflow = "visible"; } catch {}
+      let plotW = host.clientWidth || 800;
+      try {
+        const tw = (chart2.timeScale() as any).width?.();
+        if (typeof tw === "number" && tw > 40) plotW = tw;
+        else plotW = Math.max(80, plotW - 64);
+      } catch {
+        plotW = Math.max(80, plotW - 64);
+      }
+      for (const t of axisTagItemsRef.current) {
+        let y: number | null = null;
+        try { y = ser.priceToCoordinate(t.price); } catch { y = null; }
+        if (y == null || Number.isNaN(y)) continue;
+        const tag = document.createElement("div");
+        tag.dataset.axisTag = t.id;
+        const priceTxt = String(formatPrice(t.price));
+        const noteTxt = (t.note || "").trim();
+        // Sit ON the price scale (right of plot), same place as native labels
+        tag.style.cssText = [
+          "position:absolute",
+          `left:${plotW}px`,
+          `top:${y}px`,
+          "transform:translateY(-50%)",
+          `background:${t.color}`,
+          "font-size:10px",
+          "font-weight:600",
+          "line-height:1.25",
+          "padding:2px 6px",
+          "border-radius:2px",
+          "pointer-events:none",
+          "z-index:30",
+          "white-space:nowrap",
+          "max-width:180px",
+          "overflow:hidden",
+          "text-overflow:ellipsis",
+          "box-sizing:border-box",
+        ].join(";");
+        if (noteTxt) {
+          const noteSpan = document.createElement("span");
+          noteSpan.textContent = noteTxt + "\u00a0";
+          noteSpan.style.color = "#000000"; // note only → black
+          const priceSpan = document.createElement("span");
+          priceSpan.textContent = priceTxt;
+          priceSpan.style.color = "#ffffff"; // price stays white
+          tag.appendChild(noteSpan);
+          tag.appendChild(priceSpan);
+        } else {
+          tag.textContent = priceTxt;
+          tag.style.color = "#ffffff";
+        }
+        host.appendChild(tag);
+      }
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -1968,6 +2070,26 @@ export default function DashboardPage() {
           } else {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        } else if (child.dataset.axisTag && ser) {
+          const item = axisTagItemsRef.current.find((v) => v.id === child.dataset.axisTag);
+          if (!item) continue;
+          let y: number | null = null;
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          let plotW = hostW;
+          try {
+            const tw = (chart2.timeScale() as any).width?.();
+            if (typeof tw === "number" && tw > 40) plotW = tw;
+            else plotW = Math.max(80, hostW - 64);
+          } catch {
+            plotW = Math.max(80, hostW - 64);
+          }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${plotW}px`;
             child.style.top = `${y}px`;
           }
         } else if (child.dataset.calloutId && ser) {
@@ -2165,7 +2287,7 @@ export default function DashboardPage() {
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
-            title: title || "",
+            title: "",
             // prevent diagonal from pulling price scale / stretching candles
             autoscaleInfoProvider: () => null as any,
           });
@@ -2199,6 +2321,12 @@ export default function DashboardPage() {
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
+          axisTagItemsRef.current.push({
+            id: `diag-${l.id}`,
+            price: Number(l.price),
+            color: color,
+            note: title || "",
+          });
         } else if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
           const raw = l.note.replace(/^__rect:/, "");
           const parts = raw.split("|");
@@ -2357,9 +2485,9 @@ export default function DashboardPage() {
               lineWidth: width,
               lineStyle: style,
               priceLineVisible: false,
-              lastValueVisible: true,
+              lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: title || "",
+              title: "",
               autoscaleInfoProvider: () => null as any,
             });
             // Only points at/after origin — LWC will not draw left of t0
@@ -2368,6 +2496,12 @@ export default function DashboardPage() {
               { time: rayEnd as any, value: Number(l.price) },
             ]);
             chartLinesRef.current.set(l.id, ls);
+            axisTagItemsRef.current.push({
+              id: `ray-${l.id}`,
+              price: Number(l.price),
+              color: color,
+              note: title || "",
+            });
             // Keep rayItems for hit-testing / move, but paintRays draws nothing visible (no cap)
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2382,14 +2516,20 @@ export default function DashboardPage() {
         } else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
-            axisLabelVisible: true, title: title || "",
+            axisLabelVisible: false, title: "",
           });
           alarmLinesRef.current.set(`line-${l.id}`, pl);
+          axisTagItemsRef.current.push({
+            id: `line-${l.id}`,
+            price: Number(l.price),
+            color: color,
+            note: title || "",
+          });
         }
       } catch {}
     });
     // Rays/vlines appear immediately with candles (before slower alarm series work)
-    try { paintVLines(); paintRays(); } catch {}
+    try { paintVLines(); paintRays(); paintPriceTags(); } catch {}
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
@@ -2447,6 +2587,12 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
+          axisTagItemsRef.current.push({
+            id: `alarm-diag-${a.id}`,
+            price: Number(a.price),
+            color: color,
+            note: title || "",
+          });
         } else if (
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
           (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
@@ -2465,9 +2611,9 @@ export default function DashboardPage() {
               lineWidth: width,
               lineStyle: style,
               priceLineVisible: false,
-              lastValueVisible: true,
+              lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: title || "",
+              title: "",
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData([
@@ -2475,6 +2621,12 @@ export default function DashboardPage() {
               { time: rayEnd as any, value: Number(a.price) },
             ]);
             chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
+            axisTagItemsRef.current.push({
+              id: `alarm-ray-${a.id}`,
+              price: Number(a.price),
+              color: color,
+              note: title || "",
+            });
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
@@ -2489,9 +2641,15 @@ export default function DashboardPage() {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
             lineStyle: style,
-            axisLabelVisible: true, title: title || "",
+            axisLabelVisible: false, title: "",
           });
           alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+          axisTagItemsRef.current.push({
+            id: `alarm-${a.id}`,
+            price: Number(a.price),
+            color: color,
+            note: title || "",
+          });
         }
       } catch {}
     });
@@ -2500,6 +2658,7 @@ export default function DashboardPage() {
     // Paint true-vertical DOM lines
     paintVLines();
     paintRays();
+    paintPriceTags();
     paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
     const scheduleOverlaySync = () => {
@@ -2891,9 +3050,58 @@ export default function DashboardPage() {
     updateMargins();
   }, [showVol, volVisible, hideIndicators, updateMargins]);
 
+  const removeTCP = useCallback(() => {
+    const series = seriesRef.current;
+    if (series && tcpLinesRef.current.length) {
+      for (const pl of tcpLinesRef.current) {
+        try { series.removePriceLine(pl); } catch {}
+      }
+    }
+    tcpLinesRef.current = [];
+  }, []);
+
+  const applyTCP = useCallback(() => {
+    removeTCP();
+    if (!showTCP || !tcpVisible || hideIndicators || !seriesRef.current) return;
+    const series = seriesRef.current;
+    // Auto-fill entry from last close if not set
+    const candles = candlesRef.current || [];
+    const lastClose = candles.length ? Number(candles[candles.length - 1].close) : 0;
+    const entry = Number(tcpEntry) > 0 ? Number(tcpEntry) : lastClose;
+    const sl = Number(tcpSL) > 0 ? Number(tcpSL) : (entry > 0 ? entry * 0.98 : 0);
+    if (!(entry > 0)) return;
+    const add = (price: number, color: string, title: string, width = 2) => {
+      if (!(price > 0) || Number.isNaN(price)) return;
+      try {
+        const pl = series.createPriceLine({
+          price,
+          color,
+          lineWidth: width as 1 | 2 | 3 | 4,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title,
+        });
+        tcpLinesRef.current.push(pl);
+      } catch {}
+    };
+    add(entry, "#ffffff", "Entry", 1);
+    if (sl > 0) add(sl, "#ef4444", "SL", 2);
+    const targets: { on: boolean; price: number; label: string }[] = [
+      { on: tcpT1on, price: Number(tcpT1), label: "T1" },
+      { on: tcpT2on, price: Number(tcpT2), label: "T2" },
+      { on: tcpT3on, price: Number(tcpT3), label: "T3" },
+      { on: tcpT4on, price: Number(tcpT4), label: "T4" },
+      { on: tcpT5on, price: Number(tcpT5), label: "T5" },
+    ];
+    for (const t of targets) {
+      if (t.on && t.price > 0) add(t.price, "#22c55e", t.label, 1);
+    }
+  }, [showTCP, tcpVisible, hideIndicators, tcpEntry, tcpSL,
+    tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5, removeTCP]);
+
   const rebuildIndicators = useCallback(() => {
-    applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume]);
+    applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP]);
 
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
@@ -6061,6 +6269,7 @@ export default function DashboardPage() {
         setTrendSettings(false);
         setRsiSettings(false);
         setDmiSettings(false);
+        setTcpSettings(false);
         setHideMenuOpen(false);
         setTrashMenuOpen(false);
       }
@@ -6196,6 +6405,8 @@ export default function DashboardPage() {
     showPivot, pivotVisible, pivotTf, pivotFib,
     showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
     showVol, volVisible,
+    showTCP, tcpVisible, tcpEntry, tcpSL,
+    tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5,
     hideIndicators,
     rebuildIndicators,
   ]);
@@ -6865,6 +7076,7 @@ export default function DashboardPage() {
     setShowRSI(false);
     setShowDMI(false);
     setShowVol(false);
+    setShowTCP(false);
   };
   const clearMeasure = () => {
     measureStartRef.current = null;
@@ -7323,6 +7535,7 @@ export default function DashboardPage() {
                   { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
                   { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
                   { key: "vol", label: "Volume", on: showVol, set: setShowVol },
+                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP },
                 ].map((it) => (
                   <button
                     key={it.key}
@@ -8172,6 +8385,7 @@ export default function DashboardPage() {
                       setShowRSI(false);
                       setShowDMI(false);
                       setShowVol(false);
+                      setShowTCP(false);
                       setTrashMenuOpen(false);
                     }}
                     className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-red-400 hover:bg-red-950/50 flex items-center gap-2 border-t border-gray-700 mt-0.5 pt-2"
@@ -8259,8 +8473,8 @@ export default function DashboardPage() {
               />
               <div
                 ref={vlineOverlayRef}
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 4 }}
+                className="absolute inset-0 pointer-events-none overflow-visible rounded-xl"
+                style={{ zIndex: 30 }}
               />
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -8488,8 +8702,66 @@ export default function DashboardPage() {
               <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible((v) => !v)}
                 onRemove={() => { setShowVol(false); applyVolume(); }} />
             )}
+            {!hideIndicators && showTCP && (
+              <IndChip label="TCP" visible={tcpVisible} onToggleVisible={() => setTcpVisible((v) => !v)}
+                onSettings={() => setTcpSettings((v) => !v)} onRemove={() => { setShowTCP(false); removeTCP(); }} />
+            )}
           </div>
 
+          {/* TCP money-management table */}
+          {!hideIndicators && showTCP && tcpVisible && (
+            <div className="absolute top-12 left-2 z-20 bg-gray-950/90 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-none tabular-nums">
+              {(() => {
+                const candles = candlesRef.current || [];
+                const lastClose = candles.length ? Number(candles[candles.length - 1].close) : 0;
+                const entry = Number(tcpEntry) > 0 ? Number(tcpEntry) : lastClose;
+                const sl = Number(tcpSL) > 0 ? Number(tcpSL) : (entry > 0 ? entry * 0.98 : 0);
+                const risk = Math.abs(entry - sl);
+                const riskAmt = Number(tcpCapital) * (Number(tcpRiskPct) / 100);
+                const lev = Math.max(0.01, Number(tcpLeverage) || 1);
+                const posSize = risk > 0 && entry > 0 ? riskAmt / ((risk / entry) * lev) : 0;
+                const isLong = entry > sl;
+                const rows: { lab: string; val: string }[] = [
+                  { lab: "Capital", val: `$${Number(tcpCapital).toFixed(2)}` },
+                  { lab: "Entry", val: String(formatPrice(entry)) },
+                  { lab: "Stop Loss", val: String(formatPrice(sl)) },
+                  { lab: "Risk $", val: `$${riskAmt.toFixed(2)}` },
+                  { lab: "Pos Size", val: posSize.toFixed(4) },
+                  { lab: "Leverage", val: String(lev) },
+                  { lab: "Side", val: isLong ? "LONG" : "SHORT" },
+                ];
+                const tgts = [
+                  [tcpT1on, tcpT1, tcpT1rr, "T1"],
+                  [tcpT2on, tcpT2, tcpT2rr, "T2"],
+                  [tcpT3on, tcpT3, tcpT3rr, "T3"],
+                  [tcpT4on, tcpT4, tcpT4rr, "T4"],
+                  [tcpT5on, tcpT5, tcpT5rr, "T5"],
+                ] as const;
+                for (const [on, price, rr, lab] of tgts) {
+                  if (!on || !(Number(price) > 0) || !(risk > 0)) continue;
+                  const reward = isLong ? Number(price) - entry : entry - Number(price);
+                  const actualRr = reward / risk;
+                  const closePct = actualRr > 0 ? (Number(rr) / actualRr) * 100 : 0;
+                  const closeVal = (closePct / 100) * posSize * lev;
+                  rows.push({
+                    lab,
+                    val: `RR ${Number(rr)} · $${closeVal.toFixed(2)} (${closePct.toFixed(1)}%)`,
+                  });
+                }
+                return (
+                  <>
+                    <div className="font-semibold text-orange-300 mb-1">TCP</div>
+                    {rows.map((r) => (
+                      <div key={r.lab} className="flex justify-between gap-2 leading-relaxed">
+                        <span className="text-gray-400">{r.lab}</span>
+                        <span className="text-right">{r.val}</span>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
+            </div>
+          )}
           {/* Measure HUD — updated via DOM during drag (no React lag) */}
           <div
             ref={measureHudRef}
@@ -8848,6 +9120,57 @@ export default function DashboardPage() {
                 <input type="color" value={trendDownColor} onChange={(e) => setTrendDownColor(e.target.value)} className="w-6 h-6" />
               </div>
               <button type="button" onClick={() => setTrendSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
+            </div>
+          )}
+          {tcpSettings && showTCP && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-56 text-sm max-h-[70vh] overflow-y-auto">
+              <p className="font-medium mb-2">TCP — Money Management</p>
+              {[
+                ["Capital $", tcpCapital, setTcpCapital],
+                ["Risk %", tcpRiskPct, setTcpRiskPct],
+                ["Leverage", tcpLeverage, setTcpLeverage],
+                ["Entry", tcpEntry, setTcpEntry],
+                ["Stop Loss", tcpSL, setTcpSL],
+              ].map(([lab, val, set]: any) => (
+                <div key={lab} className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] w-16 text-gray-400">{lab}</span>
+                  <input type="number" step="any" value={val}
+                    onChange={(e) => set(parseFloat(e.target.value) || 0)}
+                    className="flex-1 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+                </div>
+              ))}
+              <p className="text-[10px] text-gray-500 mt-2 mb-1">Targets</p>
+              {[
+                [1, tcpT1on, setTcpT1on, tcpT1, setTcpT1, tcpT1rr, setTcpT1rr],
+                [2, tcpT2on, setTcpT2on, tcpT2, setTcpT2, tcpT2rr, setTcpT2rr],
+                [3, tcpT3on, setTcpT3on, tcpT3, setTcpT3, tcpT3rr, setTcpT3rr],
+                [4, tcpT4on, setTcpT4on, tcpT4, setTcpT4, tcpT4rr, setTcpT4rr],
+                [5, tcpT5on, setTcpT5on, tcpT5, setTcpT5, tcpT5rr, setTcpT5rr],
+              ].map(([n, on, setOn, price, setPrice, rr, setRr]: any) => (
+                <div key={n} className="flex items-center gap-1 mb-1">
+                  <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} className="accent-orange-500" />
+                  <span className="text-[10px] w-5">T{n}</span>
+                  <input type="number" step="any" value={price} title="Price"
+                    onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
+                    className="w-16 bg-gray-800 rounded px-1 py-0.5 text-[10px]" />
+                  <span className="text-[10px] text-gray-500">RR</span>
+                  <input type="number" step="any" value={rr} title="RR goal"
+                    onChange={(e) => setRr(parseFloat(e.target.value) || 0)}
+                    className="w-10 bg-gray-800 rounded px-1 py-0.5 text-[10px]" />
+                </div>
+              ))}
+              <button type="button" onClick={() => {
+                const c = candlesRef.current || [];
+                if (c.length) {
+                  const last = Number(c[c.length - 1].close);
+                  if (!(tcpEntry > 0)) setTcpEntry(last);
+                  if (!(tcpSL > 0)) setTcpSL(Number((last * 0.98).toFixed(6)));
+                  if (!(tcpT1 > 0)) setTcpT1(Number((last * 1.02).toFixed(6)));
+                  if (!(tcpT2 > 0)) setTcpT2(Number((last * 1.04).toFixed(6)));
+                  if (!(tcpT3 > 0)) setTcpT3(Number((last * 1.06).toFixed(6)));
+                }
+              }} className="text-[10px] text-orange-300 mt-1">Fill from last price</button>
+              <button type="button" onClick={() => setTcpSettings(false)} className="block text-xs text-gray-400 mt-2">Close</button>
             </div>
           )}
           {rsiSettings && showRSI && (
