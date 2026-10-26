@@ -2082,7 +2082,7 @@ export default function DashboardPage() {
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (l.start_time != null && !isDiagonalLine(l) && l.note !== "__vline__" && !String(l.note || "").startsWith("__vline__:")) {
-          // Half-line: pure DOM (stays half on every TF) + right-edge price/note tag
+          // Half-line: DOM body (never full) + tiny future series only for axis price/note label
           const t0 = Number(l.start_time);
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
@@ -2094,6 +2094,29 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
               note: title || "",
             } as any);
+            try {
+              const bars = candlesRef.current || [];
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+              // Points only in the future empty area — not drawn over candles
+              const tA = lastT + barSec * 2;
+              const tB = lastT + barSec * 4;
+              const ls: any = chart.addLineSeries({
+                color: color,
+                lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted as any,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: false,
+                title: title || "",
+                autoscaleInfoProvider: () => null as any,
+              });
+              ls.setData([
+                { time: tA as any, value: Number(l.price) },
+                { time: tB as any, value: Number(l.price) },
+              ]);
+              chartLinesRef.current.set(l.id, ls);
+            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2173,6 +2196,28 @@ export default function DashboardPage() {
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
               note: title || "",
             } as any);
+            try {
+              const bars = candlesRef.current || [];
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+              const tA = lastT + barSec * 2;
+              const tB = lastT + barSec * 4;
+              const ls: any = chart.addLineSeries({
+                color: color,
+                lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted as any,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: false,
+                title: title || "",
+                autoscaleInfoProvider: () => null as any,
+              });
+              ls.setData([
+                { time: tA as any, value: Number(a.price) },
+                { time: tB as any, value: Number(a.price) },
+              ]);
+              chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
+            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2240,51 +2285,56 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // Start of ray: if off left → 0; if off right → skip
         const startVisible = x != null && !Number.isNaN(x);
-        const x0 = startVisible ? Math.max(0, x as number) : 0;
+        // If start is to the right of view → not visible
         if (startVisible && (x as number) > hostW) continue;
+        // Ray starts at max(start, 0) so it never draws left of origin
+        const x0 = startVisible ? Math.max(0, x as number) : 0;
+        const w = Math.max(2, hostW - x0);
+        const lh = Math.max(1, Math.min(4, Number(r.width) || 2));
 
         const el = document.createElement("div");
         el.dataset.rayId = r.id;
+        el.dataset.rayRole = "line";
         el.style.position = "absolute";
         el.style.left = `${x0}px`;
         el.style.top = `${y}px`;
-        el.style.width = `${Math.max(4, hostW - x0)}px`;
-        el.style.height = `${Math.max(1, r.width)}px`;
+        el.style.width = `${w}px`;
+        el.style.height = `${lh}px`;
         el.style.transform = "translateY(-50%)";
-        el.style.background = r.color;
-        el.style.opacity = "0.95";
         el.style.pointerEvents = "none";
         el.style.zIndex = "5";
-        el.style.willChange = "left, top, width";
+        el.style.boxSizing = "border-box";
         if (r.dash === "dashed") {
           el.style.background = "transparent";
-          el.style.borderTop = `${Math.max(1, r.width)}px dashed ${r.color}`;
+          el.style.borderTop = `${lh}px dashed ${r.color}`;
           el.style.height = "0px";
+        } else if (r.dash === "dotted") {
+          el.style.background = "transparent";
+          el.style.borderTop = `${lh}px dotted ${r.color}`;
+          el.style.height = "0px";
+        } else {
+          el.style.background = r.color;
         }
         host.appendChild(el);
 
-        // Start marker (shows it is a half-line, not full)
+        // Start cap — only when start is on screen
         if (startVisible && (x as number) >= 0 && (x as number) <= hostW) {
           const cap = document.createElement("div");
           cap.dataset.rayId = r.id;
-          cap.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:7px;height:7px;border-radius:50%;
-            background:${r.color};transform:translate(-50%,-50%);pointer-events:none;z-index:6;`;
+          cap.dataset.rayRole = "cap";
+          cap.style.position = "absolute";
+          cap.style.left = `${x}px`;
+          cap.style.top = `${y}px`;
+          cap.style.width = "6px";
+          cap.style.height = "6px";
+          cap.style.borderRadius = "50%";
+          cap.style.background = r.color;
+          cap.style.transform = "translate(-50%,-50%)";
+          cap.style.pointerEvents = "none";
+          cap.style.zIndex = "6";
           host.appendChild(cap);
         }
-
-        // Right-edge price + note tag (like full-line axis label)
-        const tag = document.createElement("div");
-        tag.dataset.rayLabel = r.id;
-        const priceTxt = formatPrice(r.price);
-        const noteTxt = (r as any).note ? String((r as any).note).trim() : "";
-        tag.textContent = noteTxt ? `${priceTxt}  ${noteTxt}` : String(priceTxt);
-        tag.style.cssText = `position:absolute;right:0;top:${y}px;transform:translateY(-50%);
-          background:${r.color};color:#0b1220;font-size:10px;font-weight:600;line-height:1;
-          padding:2px 6px;border-radius:3px 0 0 3px;pointer-events:none;z-index:7;
-          white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis;`;
-        host.appendChild(tag);
       }
     };
 
@@ -2319,35 +2369,35 @@ export default function DashboardPage() {
             continue;
           }
           const startVisible = x != null && !Number.isNaN(x);
-          const x0 = startVisible ? Math.max(0, x as number) : 0;
           if (startVisible && (x as number) > hostW) {
             child.style.visibility = "hidden";
             continue;
           }
-          child.style.visibility = "visible";
-          // line bar vs start cap
-          if (child.style.borderRadius === "50%" || child.style.width === "7px") {
+          const role = child.dataset.rayRole || "line";
+          const lh = Math.max(1, Math.min(4, Number(item.width) || 2));
+          if (role === "cap") {
             if (startVisible && (x as number) >= 0) {
+              child.style.visibility = "visible";
               child.style.left = `${x}px`;
               child.style.top = `${y}px`;
+              child.style.width = "6px";
+              child.style.height = "6px";
             } else {
               child.style.visibility = "hidden";
             }
           } else {
+            const x0 = startVisible ? Math.max(0, x as number) : 0;
+            child.style.visibility = "visible";
             child.style.left = `${x0}px`;
             child.style.top = `${y}px`;
-            child.style.width = `${Math.max(4, hostW - x0)}px`;
-          }
-        } else if (child.dataset.rayLabel && ser) {
-          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayLabel);
-          if (!item) continue;
-          let y: number | null = null;
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (y == null || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.top = `${y}px`;
+            child.style.width = `${Math.max(2, hostW - x0)}px`;
+            // keep thin — never let height grow during pan/zoom
+            if (item.dash === "dashed" || item.dash === "dotted") {
+              child.style.height = "0px";
+              child.style.borderTopWidth = `${lh}px`;
+            } else {
+              child.style.height = `${lh}px`;
+            }
           }
         } else if (child.dataset.arrowRing && ser) {
           const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
