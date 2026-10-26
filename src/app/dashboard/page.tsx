@@ -1077,6 +1077,7 @@ export default function DashboardPage() {
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
+  const paneLegendRef = useRef<HTMLDivElement | null>(null);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   /** in-flight triggers — prevents concurrent double-fire */
@@ -3239,6 +3240,8 @@ export default function DashboardPage() {
     const s = chartRef.current.addLineSeries({
       color: rocColor, lineWidth: 2, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      title: "ROC",
     });
     s.setData(calcROC(candlesRef.current, rocPeriod) as any);
     try {
@@ -3260,6 +3263,8 @@ export default function DashboardPage() {
     const s = chartRef.current.addLineSeries({
       color: atrColor, lineWidth: 2, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      title: "ATR",
     });
     s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
     atrSeriesRef.current = s;
@@ -4599,6 +4604,85 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
+        // TV-style pane labels: name + value at hovered bar (left of each oscillator)
+        try {
+          const host = paneLegendRef.current;
+          if (host) {
+            if (!param || param.time == null || !param.point) {
+              host.innerHTML = "";
+            } else {
+            const items: { id: string; label: string; color: string; value: string; bottom: number }[] = [];
+            const sd = param?.seriesData;
+            const fmt = (v: number) => {
+              const a = Math.abs(v);
+              if (a >= 1000) return v.toFixed(2);
+              if (a >= 1) return v.toFixed(2);
+              if (a >= 0.01) return v.toFixed(4);
+              return v.toFixed(6);
+            };
+            // Same stack order as updateMargins (bottom → up)
+            const stack: { id: string; on: boolean; h: number; series: any; label: string; color: string; multi?: { series: any; label: string; color: string }[] }[] = [
+              { id: "dmi", on: !!dmiSeriesRef.current, h: 0.12, series: dmiSeriesRef.current?.adx, label: "DMI", color: "#3b82f6", multi: dmiSeriesRef.current ? [
+                { series: dmiSeriesRef.current.plus, label: "+DI", color: "#22c55e" },
+                { series: dmiSeriesRef.current.minus, label: "-DI", color: "#ef4444" },
+                { series: dmiSeriesRef.current.adx, label: "ADX", color: "#3b82f6" },
+              ] : undefined },
+              { id: "stoch", on: !!stochSeriesRef.current, h: 0.12, series: stochSeriesRef.current?.k, label: "Stoch", color: "#2962FF", multi: stochSeriesRef.current ? [
+                { series: stochSeriesRef.current.k, label: "K", color: "#2962FF" },
+                { series: stochSeriesRef.current.d, label: "D", color: "#FF6D00" },
+              ] : undefined },
+              { id: "macd", on: !!macdSeriesRef.current, h: 0.13, series: macdSeriesRef.current?.macd, label: "MACD", color: "#2962FF", multi: macdSeriesRef.current ? [
+                { series: macdSeriesRef.current.macd, label: "MACD", color: "#2962FF" },
+                { series: macdSeriesRef.current.signal, label: "Signal", color: "#FF6D00" },
+              ] : undefined },
+              { id: "rsi", on: !!rsiSeriesRef.current, h: 0.12, series: rsiSeriesRef.current, label: "RSI", color: "#c084fc" },
+              { id: "roc", on: !!rocSeriesRef.current, h: 0.11, series: rocSeriesRef.current, label: "ROC", color: "#2962FF" },
+              { id: "atr", on: !!atrSeriesRef.current, h: 0.11, series: atrSeriesRef.current, label: "ATR", color: "#B71C1C" },
+            ];
+            // Note: showROC etc may be stale in closure — use refs where possible; series presence is enough
+            const active = stack.filter((p) => p.on && p.series);
+            let totalH = active.reduce((s, p) => s + p.h, 0);
+            const scale = totalH > 0.55 ? 0.55 / totalH : 1;
+            let used = 0;
+            // volume sits below osc panes in margins; legends only for oscillators
+            const hostH = host.clientHeight || 400;
+            for (const p of active) {
+              const h = p.h * scale;
+              const bottomPx = used * hostH;
+              const paneH = h * hostH;
+              used += h;
+              const rows: string[] = [];
+              const sources = p.multi || [{ series: p.series, label: p.label, color: p.color }];
+              for (const src of sources) {
+                if (!src.series || !sd) continue;
+                try {
+                  const d: any = sd.get(src.series);
+                  if (d && typeof d.value === "number" && !Number.isNaN(d.value)) {
+                    rows.push(`<span style="color:${src.color};font-weight:600">${src.label}</span> <span style="color:#e5e7eb">${fmt(d.value)}</span>`);
+                  }
+                } catch {}
+              }
+              if (!rows.length) continue;
+              items.push({
+                id: p.id,
+                label: rows.join("&nbsp;&nbsp;"),
+                color: p.color,
+                value: "",
+                bottom: bottomPx + Math.max(4, paneH * 0.15),
+              });
+            }
+            // also include volume height offset so osc labels sit above volume
+            let volH = 0;
+            try {
+              if (volumeSeriesRef.current) volH = 0.10 * (totalH > 0.55 ? 0.55 / (totalH + 0.10) : 1) * hostH;
+            } catch {}
+            host.innerHTML = items.map((it) =>
+              `<div style="position:absolute;left:6px;bottom:${it.bottom + volH}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.3;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(0,0,0,0.35);padding:1px 5px;border-radius:3px">${it.label}</div>`
+            ).join("");
+            }
+          }
+        } catch {}
+
         const mm = modeRef.current;
         // No horizontal price-line preview for these tools
         if (
@@ -8743,6 +8827,12 @@ export default function DashboardPage() {
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
                 style={{ zIndex: 4 }}
               />
+              <div
+                ref={paneLegendRef}
+                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
+                style={{ zIndex: 26 }}
+              />
+
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
                   <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
