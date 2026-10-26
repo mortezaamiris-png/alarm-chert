@@ -1858,6 +1858,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -1878,7 +1879,6 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
-        
         } else if (typeof l.note === "string" && l.note.startsWith("__callout:")) {
           const t = Number(l.start_time);
           if (!Number.isNaN(t) && t > 0) {
@@ -1890,7 +1890,6 @@ export default function DashboardPage() {
               color: color,
             });
           }
-
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
@@ -2087,14 +2086,13 @@ export default function DashboardPage() {
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (l.start_time != null) {
-          // Half-line (ray): LWC series to future + price label on scale (like full line)
+          // Half-line: DOM overlay (no TF gap) + price-scale label like full line
           const bars = candlesRef.current || [];
           const barSec = intervalToSeconds(String(intervalRef.current));
           const t0 = snapTimeToBars(Number(l.start_time), bars);
           const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
           const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
-            // DOM overlay for crisp half-line (no TF gaps)
             rayItemsRef.current.push({
               id: String(l.id),
               time: t0,
@@ -2103,7 +2101,7 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
             });
-            // Invisible LWC series only for axis price label + note title (matches full line)
+            // Price label on right scale (same style as full line last-value / axis tag)
             try {
               const ls: any = chart.addLineSeries({
                 color: color,
@@ -2115,9 +2113,10 @@ export default function DashboardPage() {
                 title: title || "",
                 autoscaleInfoProvider: () => null as any,
               });
-              // Only last point near right edge so drawn segment is minimal; DOM draws the real half-line
+              // Short segment at far right — label only; DOM draws the real half-line
+              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
               ls.setData([
-                { time: Math.max(t0, rayEnd - barSec) as any, value: Number(l.price) },
+                { time: tLabel as any, value: Number(l.price) },
                 { time: rayEnd as any, value: Number(l.price) },
               ]);
               chartLinesRef.current.set(l.id, ls);
@@ -2190,7 +2189,7 @@ export default function DashboardPage() {
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Half-line alarm: DOM + axis price label
+          // Half-line alarm: DOM + price label on scale
           const bars = candlesRef.current || [];
           const barSec = intervalToSeconds(String(intervalRef.current));
           const t0 = snapTimeToBars(Number(a.start_time), bars);
@@ -2209,14 +2208,16 @@ export default function DashboardPage() {
               const ls: any = chart.addLineSeries({
                 color: color,
                 lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted as any,
                 priceLineVisible: false,
                 lastValueVisible: true,
                 crosshairMarkerVisible: false,
                 title: title || "",
                 autoscaleInfoProvider: () => null as any,
               });
+              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
               ls.setData([
-                { time: t0 as any, value: Number(a.price) },
+                { time: tLabel as any, value: Number(a.price) },
                 { time: rayEnd as any, value: Number(a.price) },
               ]);
               chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
@@ -2386,31 +2387,15 @@ export default function DashboardPage() {
         const wrap = document.createElement("div");
         wrap.dataset.calloutId = c.id;
         wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:20;pointer-events:auto;`;
-        // stem
         const stem = document.createElement("div");
         stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
-        // bubble
         const bubble = document.createElement("div");
         bubble.contentEditable = "true";
         bubble.spellcheck = false;
         bubble.textContent = c.text || "";
-        bubble.dataset.placeholder = "Add text";
-        bubble.style.cssText = `
-          position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));
-          min-width:48px;max-width:160px;padding:4px 8px;border-radius:8px;
-          background:#0d9488;color:#fff;font-size:11px;line-height:1.3;
-          border:1px solid rgba(255,255,255,0.25);outline:none;cursor:move;
-          white-space:pre-wrap;word-break:break-word;text-align:center;
-        `;
-        if (!c.text) {
-          bubble.style.opacity = "0.85";
-        }
-        // anchor dot
+        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:48px;max-width:160px;padding:4px 8px;border-radius:8px;background:#0d9488;color:#fff;font-size:11px;line-height:1.3;border:1px solid rgba(255,255,255,0.25);outline:none;cursor:move;white-space:pre-wrap;word-break:break-word;text-align:center;`;
         const dot = document.createElement("div");
-        dot.style.cssText = `position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;
-          border:2px solid ${c.color};background:transparent;transform:translate(-50%,-50%);cursor:grab;`;
-
-        // save text on blur
+        dot.style.cssText = `position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;border:2px solid ${c.color};background:transparent;transform:translate(-50%,-50%);cursor:grab;`;
         bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
         bubble.addEventListener("blur", async () => {
           const val = (bubble.textContent || "").trim();
@@ -2418,64 +2403,47 @@ export default function DashboardPage() {
           setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
           try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
         });
-        // drag whole callout by bubble → moves price/time via chart click approximation
-        let drag: null | { kind: "bubble" | "anchor"; ox: number; oy: number; } = null;
-        const startDrag = (kind: "bubble" | "anchor", e: PointerEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          drag = { kind, ox: e.clientX, oy: e.clientY };
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const startDrag = (e: PointerEvent) => {
+          e.preventDefault(); e.stopPropagation();
+          dragging = true; lastX = e.clientX; lastY = e.clientY;
           (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
         };
         const onMove = (e: PointerEvent) => {
-          if (!drag) return;
-          const dx = e.clientX - drag.ox;
-          const dy = e.clientY - drag.oy;
-          drag.ox = e.clientX;
-          drag.oy = e.clientY;
-          const rect = host.getBoundingClientRect();
-          const nx = (parseFloat(wrap.style.left) || 0) + dx;
-          const ny = (parseFloat(wrap.style.top) || 0) + dy;
-          wrap.style.left = `${nx}px`;
-          wrap.style.top = `${ny}px`;
+          if (!dragging) return;
+          const dx = e.clientX - lastX, dy = e.clientY - lastY;
+          lastX = e.clientX; lastY = e.clientY;
+          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
+          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
         };
-        const onUp = async (e: PointerEvent) => {
-          if (!drag) return;
-          drag = null;
-          // convert pixel back to time/price and save
+        const onUp = async () => {
+          if (!dragging) return;
+          dragging = false;
           try {
             const left = parseFloat(wrap.style.left) || 0;
             const top = parseFloat(wrap.style.top) || 0;
             const t = chart2.timeScale().coordinateToTime(left);
             const p = ser.coordinateToPrice(top);
             if (t != null && p != null) {
-              const tu = typeof t === "number" ? t : (t as any).timestamp ?? Number(t);
-              setLines((prev) =>
-                prev.map((l) =>
-                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
-                )
-              );
+              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
+              setLines((prev) => prev.map((l) => l.id === c.id ? { ...l, start_time: tu, end_time: tu, price: Number(p) } : l));
               try {
-                await supabase
-                  .from("chart_lines")
-                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
-                  .eq("id", c.id);
+                await supabase.from("chart_lines").update({ start_time: tu, end_time: tu, price: Number(p) }).eq("id", c.id);
               } catch {}
             }
           } catch {}
         };
-        bubble.addEventListener("pointerdown", (e) => startDrag("bubble", e as PointerEvent));
-        dot.addEventListener("pointerdown", (e) => startDrag("anchor", e as PointerEvent));
+        bubble.addEventListener("pointerdown", (e) => startDrag(e as PointerEvent));
+        dot.addEventListener("pointerdown", (e) => startDrag(e as PointerEvent));
         wrap.addEventListener("pointermove", onMove as any);
         wrap.addEventListener("pointerup", onUp as any);
         wrap.addEventListener("pointercancel", onUp as any);
-
         wrap.appendChild(stem);
         wrap.appendChild(bubble);
         wrap.appendChild(dot);
         host.appendChild(wrap);
-        if (!c.text) {
-          try { bubble.focus(); } catch {}
-        }
+        if (!c.text) { try { bubble.focus(); } catch {} }
       }
     };
 
@@ -5246,47 +5214,48 @@ export default function DashboardPage() {
 
         // Arrow mark up / down / marker — single click (TradingView-style, stay in tool)
         
-        // Callout: single click places bubble
         if (m === "callout") {
           const t = resolveTime(param);
           if (t == null) return;
           clickLockRef.current = true;
           setSaving(true);
-          const uid = (await supabase.auth.getSession()).data.session?.user?.id;
-          let payload: any = {
-            symbol: symbolRef.current.toUpperCase(),
-            price: fp,
-            start_time: t,
-            end_time: t,
-            color: drawColorRef.current || "#0d9488",
-            width: 2,
-            note: "__callout:",
-          };
-          if (uid) payload.user_id = uid;
-          let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-          if (error) {
-            payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:" };
-            if (uid) payload.user_id = uid;
-            ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
-          }
-          if (!error && data) {
-            const saved: ChartLine = {
-              ...(data as ChartLine),
-              start_time: (data as any).start_time ?? t,
-              end_time: (data as any).end_time ?? t,
-              note: "__callout:",
+          try {
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            let payload: any = {
+              symbol: symbolRef.current.toUpperCase(),
               price: fp,
+              start_time: t,
+              end_time: t,
+              color: drawColorRef.current || "#0d9488",
+              width: 2,
+              note: "__callout:",
             };
-            pushUndo();
-            setLines((prev) => [saved, ...prev]);
-            setStatusMsg("Callout placed — type text");
-          } else {
-            setStatusMsg("Callout save failed");
+            if (uid) payload.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+            if (error) {
+              payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:" };
+              if (uid) payload.user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{
+                ...(data as ChartLine),
+                start_time: (data as any).start_time ?? t,
+                end_time: (data as any).end_time ?? t,
+                note: "__callout:",
+                price: fp,
+              }, ...prev]);
+              setStatusMsg("Callout placed — type text");
+            } else {
+              setStatusMsg("Callout save failed");
+            }
+          } finally {
+            setMode("none");
+            modeRef.current = "none";
+            setSaving(false);
+            setTimeout(() => { clickLockRef.current = false; }, 300);
           }
-          setMode("none");
-          modeRef.current = "none";
-          setSaving(false);
-          setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
 
@@ -7869,7 +7838,7 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
                 title="Shapes & tools"
                 onClick={() => setDrawToolsOpen((v) => !v)}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "callout"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -7883,6 +7852,32 @@ if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
               </button>
               {drawToolsOpen && (
                 <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Arrows</div>
+                  {[
+                    { id: "arrow-up", label: "Arrow mark up", icon: "↑" },
+                    { id: "arrow-down", label: "Arrow mark down", icon: "↓" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
+                      onClick={() => {
+                        clearPreview();
+                        setDrawToolsOpen(false);
+                        setDiagStart(null);
+                        setMovingId(null);
+                        pathPointsRef.current = [];
+                        setMode(t.id as any);
+                        if (t.id === "arrow-up") setDrawColor("#22c55e");
+                        if (t.id === "arrow-down") setDrawColor("#ef4444");
+                        setStatusMsg(t.id === "arrow-up" ? "Arrow up: tap on chart" : "Arrow down: tap on chart");
+                      }}
+                    >
+                      <span className="w-4 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Text</div>
                   <button
                     type="button"
