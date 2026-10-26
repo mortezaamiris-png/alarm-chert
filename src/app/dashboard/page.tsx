@@ -859,6 +859,7 @@ export default function DashboardPage() {
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
   const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
+  const axisTagItemsRef = useRef<{ id: string; price: number; color: string; note: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
@@ -1827,6 +1828,7 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
+    axisTagItemsRef.current = [];
     calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
     try {
@@ -1873,12 +1875,58 @@ export default function DashboardPage() {
     };
 
     const paintRays = () => {
-      // Rays are drawn by LWC line series (native price-axis tags, no start circle).
-      // Clear any leftover DOM from older versions.
       const host = vlineOverlayRef.current;
       if (!host) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+    };
+
+    /** Price/note tags on the right — black text on colored bar (all line types) */
+    const paintPriceTags = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-axis-tag]").forEach((el) => el.remove());
+      if (hideLines && hideAlarms) return;
+      let plotW = host.clientWidth || 800;
+      try {
+        const tw = (chart2.timeScale() as any).width?.();
+        if (typeof tw === "number" && tw > 40) plotW = tw;
+        else plotW = Math.max(80, plotW - 64);
+      } catch {
+        plotW = Math.max(80, plotW - 64);
+      }
+      for (const t of axisTagItemsRef.current) {
+        let y: number | null = null;
+        try { y = ser.priceToCoordinate(t.price); } catch { y = null; }
+        if (y == null || Number.isNaN(y)) continue;
+        const tag = document.createElement("div");
+        tag.dataset.axisTag = t.id;
+        const priceTxt = formatPrice(t.price);
+        const noteTxt = (t.note || "").trim();
+        tag.textContent = noteTxt ? `${noteTxt}  ${priceTxt}` : priceTxt;
+        tag.style.cssText = [
+          "position:absolute",
+          `left:${plotW}px`,
+          `top:${y}px`,
+          "transform:translate(-100%,-50%)",
+          `background:${t.color}`,
+          "color:#000000",
+          "font-size:10px",
+          "font-weight:600",
+          "line-height:1.25",
+          "padding:2px 6px",
+          "border-radius:3px 0 0 3px",
+          "pointer-events:none",
+          "z-index:8",
+          "white-space:nowrap",
+          "max-width:160px",
+          "overflow:hidden",
+          "text-overflow:ellipsis",
+        ].join(";");
+        host.appendChild(tag);
+      }
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -1968,6 +2016,26 @@ export default function DashboardPage() {
           } else {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        } else if (child.dataset.axisTag && ser) {
+          const item = axisTagItemsRef.current.find((v) => v.id === child.dataset.axisTag);
+          if (!item) continue;
+          let y: number | null = null;
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          let plotW = hostW;
+          try {
+            const tw = (chart2.timeScale() as any).width?.();
+            if (typeof tw === "number" && tw > 40) plotW = tw;
+            else plotW = Math.max(80, hostW - 64);
+          } catch {
+            plotW = Math.max(80, hostW - 64);
+          }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${plotW}px`;
             child.style.top = `${y}px`;
           }
         } else if (child.dataset.calloutId && ser) {
@@ -2165,7 +2233,7 @@ export default function DashboardPage() {
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
-            title: title || "",
+            title: "",
             // prevent diagonal from pulling price scale / stretching candles
             autoscaleInfoProvider: () => null as any,
           });
@@ -2199,6 +2267,12 @@ export default function DashboardPage() {
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
+          axisTagItemsRef.current.push({
+            id: `diag-${l.id}`,
+            price: Number(l.price),
+            color: color,
+            note: title || "",
+          });
         } else if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
           const raw = l.note.replace(/^__rect:/, "");
           const parts = raw.split("|");
@@ -2357,9 +2431,9 @@ export default function DashboardPage() {
               lineWidth: width,
               lineStyle: style,
               priceLineVisible: false,
-              lastValueVisible: true,
+              lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: title || "",
+              title: "",
               autoscaleInfoProvider: () => null as any,
             });
             // Only points at/after origin — LWC will not draw left of t0
@@ -2368,6 +2442,12 @@ export default function DashboardPage() {
               { time: rayEnd as any, value: Number(l.price) },
             ]);
             chartLinesRef.current.set(l.id, ls);
+            axisTagItemsRef.current.push({
+              id: `ray-${l.id}`,
+              price: Number(l.price),
+              color: color,
+              note: title || "",
+            });
             // Keep rayItems for hit-testing / move, but paintRays draws nothing visible (no cap)
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2382,14 +2462,20 @@ export default function DashboardPage() {
         } else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
-            axisLabelVisible: true, title: title || "",
+            axisLabelVisible: false, title: "",
           });
           alarmLinesRef.current.set(`line-${l.id}`, pl);
+          axisTagItemsRef.current.push({
+            id: `line-${l.id}`,
+            price: Number(l.price),
+            color: color,
+            note: title || "",
+          });
         }
       } catch {}
     });
     // Rays/vlines appear immediately with candles (before slower alarm series work)
-    try { paintVLines(); paintRays(); } catch {}
+    try { paintVLines(); paintRays(); paintPriceTags(); } catch {}
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
@@ -2447,6 +2533,12 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
+          axisTagItemsRef.current.push({
+            id: `alarm-diag-${a.id}`,
+            price: Number(a.price),
+            color: color,
+            note: title || "",
+          });
         } else if (
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
           (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
@@ -2465,9 +2557,9 @@ export default function DashboardPage() {
               lineWidth: width,
               lineStyle: style,
               priceLineVisible: false,
-              lastValueVisible: true,
+              lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: title || "",
+              title: "",
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData([
@@ -2475,6 +2567,12 @@ export default function DashboardPage() {
               { time: rayEnd as any, value: Number(a.price) },
             ]);
             chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
+            axisTagItemsRef.current.push({
+              id: `alarm-ray-${a.id}`,
+              price: Number(a.price),
+              color: color,
+              note: title || "",
+            });
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
@@ -2489,9 +2587,15 @@ export default function DashboardPage() {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
             lineStyle: style,
-            axisLabelVisible: true, title: title || "",
+            axisLabelVisible: false, title: "",
           });
           alarmLinesRef.current.set(`alarm-${a.id}`, pl);
+          axisTagItemsRef.current.push({
+            id: `alarm-${a.id}`,
+            price: Number(a.price),
+            color: color,
+            note: title || "",
+          });
         }
       } catch {}
     });
@@ -2500,6 +2604,7 @@ export default function DashboardPage() {
     // Paint true-vertical DOM lines
     paintVLines();
     paintRays();
+    paintPriceTags();
     paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
     const scheduleOverlaySync = () => {
