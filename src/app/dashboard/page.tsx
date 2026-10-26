@@ -854,8 +854,7 @@ export default function DashboardPage() {
   const chartLinesRef = useRef<Map<string, any>>(new Map());
   /** DOM vertical lines (true vertical — LWC series cannot draw true vertical) */
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
-  const pathPointsRef = useRef<{ time: number; price: number }[]>([])
-  const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
+  const pathPointsRef = useRef<{ time: number; price: number }[]>([]);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
@@ -1689,13 +1688,6 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
-    try {
-      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
-    } catch {}
-    try {
-      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview-tip]").forEach((el) => el.remove());
-    } catch {}
-    // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
     try {
@@ -1829,12 +1821,6 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
-    try {
-      vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview]").forEach((el) => el.remove());
-    } catch {}
-    try {
-      vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
-    } catch {}
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
@@ -1905,29 +1891,16 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           if (isArrow) {
-            // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
             try {
-              const host = vlineOverlayRef.current;
-              if (host && chart) {
-                const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
-                const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
-                const y0 = series.priceToCoordinate(Number(l.price));
-                const y1 = series.priceToCoordinate(Number(l.end_price));
-                if (x0 != null && x1 != null && y0 != null && y1 != null) {
-                  const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
-                  let el = host.querySelector(`[data-arrow-dir="${l.id}"]`) as HTMLDivElement | null;
-                  if (!el) {
-                    el = document.createElement("div");
-                    el.dataset.arrowDir = String(l.id);
-                    el.style.cssText =
-                      "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:28;";
-                    host.appendChild(el);
-                  }
-                  el.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${color}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-                  el.style.left = `${x1}px`;
-                  el.style.top = `${y1}px`;
-                }
-              }
+              ls.setMarkers([
+                {
+                  time: et as any,
+                  position: "inBar",
+                  color,
+                  shape: "arrowUp",
+                  size: 2,
+                },
+              ]);
             } catch {}
           }
           chartLinesRef.current.set(l.id, ls);
@@ -3616,58 +3589,21 @@ export default function DashboardPage() {
         if (t1 === t0) return;
         const v0 = start.time <= tCursor ? start.price : price;
         const v1 = start.time <= tCursor ? price : start.price;
-        const isArrowMode = modeRef.current === "arrow";
         try {
           if (!previewDiagSeriesRef.current) {
             previewDiagSeriesRef.current = chart.addLineSeries({
               color: drawColorRef.current,
               lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-              lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
+              lineStyle: LineStyle.Dashed,
               priceLineVisible: false,
               lastValueVisible: false,
-              crosshairMarkerVisible: false,
+              crosshairMarkerVisible: true,
             });
-          } else {
-            try {
-              previewDiagSeriesRef.current.applyOptions({
-                color: drawColorRef.current,
-                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                lineStyle: isArrowMode ? LineStyle.Solid : LineStyle.Dashed,
-              });
-            } catch {}
           }
           previewDiagSeriesRef.current.setData([
             { time: t0 as any, value: v0 },
             { time: t1 as any, value: v1 },
           ]);
-        } catch {}
-        // Live arrow head at tip while drawing (TradingView-style)
-        try {
-          const host = vlineOverlayRef.current;
-          if (!host) return;
-          let tipEl = host.querySelector("[data-arrow-preview-tip]") as HTMLDivElement | null;
-          if (!isArrowMode) {
-            if (tipEl) tipEl.remove();
-            return;
-          }
-          if (!tipEl) {
-            tipEl = document.createElement("div");
-            tipEl.dataset.arrowPreviewTip = "1";
-            tipEl.style.cssText =
-              "position:absolute;width:22px;height:22px;margin-left:-3px;margin-top:-11px;pointer-events:none;z-index:40;";
-            host.appendChild(tipEl);
-          }
-          const x0 = chart.timeScale().timeToCoordinate(start.time as any);
-          const y0 = series.priceToCoordinate(start.price);
-          const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
-          const y1 = series.priceToCoordinate(price);
-          if (x0 == null || y0 == null || x1 == null || y1 == null) return;
-          const ang = Math.atan2(y1 - y0, x1 - x0) * (180 / Math.PI);
-          const col = drawColorRef.current || "#f97316";
-          tipEl.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${ang}deg)"><path d="M3 12 H15 M15 12 L10 7 M15 12 L10 17" stroke="${col}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-          tipEl.style.left = `${x1}px`;
-          tipEl.style.top = `${y1}px`;
-          tipEl.style.display = "block";
         } catch {}
       };
 
@@ -3972,7 +3908,7 @@ export default function DashboardPage() {
           mm === "arrow-down" ||
           mm === "arrow-marker"
         ) {
-          // Clear horizontal ghost
+          // Clear any leftover horizontal ghost / stuck DOM guide
           if (
             mm === "vline" ||
             mm === "arrow-up" ||
@@ -3992,51 +3928,7 @@ export default function DashboardPage() {
                 .forEach((el) => el.remove());
             } catch {}
           }
-          // Arrow tools: show floating dashed arrow under cursor before place
-          if (
-            (mm === "arrow-up" || mm === "arrow-down" || mm === "arrow-marker") &&
-            param.point &&
-            param.point.x >= 0 &&
-            param.point.y >= 0
-          ) {
-            try {
-              const host = vlineOverlayRef.current;
-              if (host) {
-                let el = host.querySelector("[data-arrow-preview]") as HTMLDivElement | null;
-                if (!el) {
-                  el = document.createElement("div");
-                  el.dataset.arrowPreview = "1";
-                  el.style.cssText =
-                    "position:absolute;width:28px;height:28px;margin-left:-14px;margin-top:-14px;pointer-events:none;z-index:35;";
-                  host.appendChild(el);
-                }
-                const stroke =
-                  mm === "arrow-up"
-                    ? "#22c55e"
-                    : mm === "arrow-down"
-                    ? "#ef4444"
-                    : (drawColorRef.current || "#f97316");
-                const svg =
-                  mm === "arrow-up"
-                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 6 L26 18 L20 18 L20 26 L12 26 L12 18 L6 18 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
-                    : mm === "arrow-down"
-                    ? `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><path d="M16 26 L6 14 L12 14 L12 6 L20 6 L20 14 L26 14 Z" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`
-                    : `<svg width="28" height="28" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="8" stroke="${stroke}" stroke-width="2" fill="${stroke}" fill-opacity="0.25"/></svg>`;
-                el.innerHTML = svg;
-                el.style.left = `${param.point.x}px`;
-                el.style.top = `${param.point.y}px`;
-                el.style.display = "block";
-              }
-            } catch {}
-            return;
-          }
-          // Leaving arrow mode → remove preview
-          try {
-            vlineOverlayRef.current
-              ?.querySelectorAll("[data-arrow-preview]")
-              .forEach((el) => el.remove());
-          } catch {}
-          // Vertical tool: rely on LWC crosshair vertLine only
+          // Vertical tool: rely on LWC crosshair vertLine only (follows pan/zoom, never sticks)
           return;
         }
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
@@ -4118,25 +4010,21 @@ export default function DashboardPage() {
                 l.note === "__arrow_down__" ||
                 l.note === "__arrow_marker__" ||
                 l.note.startsWith("__arrow"));
-            const isRayNote =
-              typeof l.note === "string" && l.note.startsWith("__ray:");
             const isV =
               !isArrow &&
-              !isRayNote &&
               (l.note === "__vline__" ||
                 (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                 (l.start_time != null &&
                   l.end_time != null &&
                   Number(l.start_time) === Number(l.end_time) &&
-                  l.end_price != null &&
-                  !isDiagonalLine(l)));
+                  l.end_price != null));
             const isDiag = isDiagonalLine(l);
             const isRay =
               !isV &&
               !isDiag &&
               !isArrow &&
               l.start_time != null &&
-              (isRayNote || l.end_time == null || l.end_price == null);
+              (l.end_time == null || l.end_price == null);
             try {
               if (isV && l.start_time != null) {
                 const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
@@ -4577,34 +4465,15 @@ export default function DashboardPage() {
                   setStatusMsg("Vertical line moved");
                 }
               } else {
-              // Ray vs arrow: different geometry
-              const cur = (linesRef.current || []).find((x) => x.id === id);
-              const isArrowMove =
-                !!cur &&
-                typeof cur.note === "string" &&
-                (cur.note === "__arrow_up__" ||
-                  cur.note === "__arrow_down__" ||
-                  cur.note === "__arrow_marker__" ||
-                  cur.note.startsWith("__arrow"));
+              // Ray / arrow: move price + origin time (left-right and up-down)
               const patch: any = { price: fp };
               if (isRay && tMove != null && !Number.isNaN(tMove)) {
                 patch.start_time = tMove;
-                if (isArrowMove) {
-                  // Arrow is a point — keep both times equal
-                  patch.end_time = tMove;
-                  patch.end_price = fp;
-                } else {
-                  // Half-line (ray): origin + price only — never set end_time=start_time
-                  // (that would turn it into a vertical line)
-                  patch.end_time = null;
-                  patch.end_price = null;
-                  if (cur?.note?.startsWith("__ray:")) {
-                    patch.note = `__ray:${tMove}`;
-                  }
-                }
+                patch.end_time = tMove; // keep arrow point consistent
+                patch.end_price = fp;
               }
               const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
-              if (error && patch.start_time != null && !isArrowMove) {
+              if (error && patch.start_time != null) {
                 await supabase
                   .from("chart_lines")
                   .update({ price: fp, note: `__ray:${patch.start_time}` })
@@ -4618,27 +4487,14 @@ export default function DashboardPage() {
                         price: fp,
                         start_time:
                           isRay && tMove != null ? tMove : l.start_time,
-                        end_time: isArrowMove
-                          ? tMove != null
-                            ? tMove
-                            : l.end_time
-                          : isRay
-                          ? null
-                          : l.end_time,
-                        end_price: isArrowMove
-                          ? fp
-                          : isRay
-                          ? null
-                          : l.end_price,
-                        note:
-                          isRay && !isArrowMove && tMove != null && l.note?.startsWith("__ray:")
-                            ? `__ray:${tMove}`
-                            : l.note,
+                        end_time:
+                          isRay && tMove != null ? tMove : l.end_time,
+                        end_price: isRay ? fp : l.end_price,
                       }
                     : l
                 )
               );
-              setStatusMsg(isArrowMove ? "Arrow moved" : isRay ? "Ray moved" : "Line moved");
+              setStatusMsg(isRay ? "Moved" : "Line moved");
               }
             } else if (typ === "alarm") {
               const isRayAl = movingRayRef.current;
@@ -4820,10 +4676,10 @@ export default function DashboardPage() {
                 previewDiagSeriesRef.current = chart.addLineSeries({
                   color: drawColorRef.current,
                   lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                  lineStyle: m === "arrow" ? LineStyle.Solid : LineStyle.Dashed,
+                  lineStyle: LineStyle.Dashed,
                   priceLineVisible: false,
                   lastValueVisible: false,
-                  crosshairMarkerVisible: false,
+                  crosshairMarkerVisible: true,
                 });
               }
               const barSec = intervalToSeconds(String(intervalRef.current));
@@ -4832,7 +4688,6 @@ export default function DashboardPage() {
                 { time: (t + barSec) as any, value: fp },
               ]);
             } catch {}
-            setStatusMsg(m === "arrow" ? "① start set — move then tap tip" : "① set — drag to ② then tap");
             return;
           }
           // Need two distinct times (at least 1 bar apart)
@@ -5565,7 +5420,6 @@ export default function DashboardPage() {
               background: { color: "#000000" } as any,
               textColor: "#9ca3af",
               fontSize: 10,
-              attributionLogo: false as any,
             },
             grid: {
               vertLines: { color: "rgba(42,46,57,0.5)" },
@@ -5574,7 +5428,7 @@ export default function DashboardPage() {
             rightPriceScale: { borderVisible: false },
             timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
             crosshair: { mode: CrosshairMode.Normal },
-          } as any);
+          });
           const series = chart.addCandlestickSeries({
             upColor: "#089981",
             downColor: "#f23645",
@@ -5583,9 +5437,6 @@ export default function DashboardPage() {
             wickUpColor: "#089981",
             wickDownColor: "#f23645",
           });
-          try {
-            chart.applyOptions({ layout: { attributionLogo: false } as any });
-          } catch {}
           entry = { chart, series, symbol: cleanSym, interval: iv };
           secondaryChartsRef.current.set(idx, entry);
         } catch {
@@ -6821,22 +6672,7 @@ export default function DashboardPage() {
     setEditingNoteType(null);
   };
 
-  const goToSymbol = (sym: string) => {
-    const s = chartSymbol(sym);
-    if (!s) return;
-    // Immediate ref so loadCandles sees new symbol even before React re-render
-    symbolRef.current = s;
-    setSymbol(s);
-    // iPad: force a fresh load (otherwise chart can stick on previous coin)
-    try {
-      loadGenRef.current += 1;
-    } catch {}
-    requestAnimationFrame(() => {
-      try {
-        loadCandlesRef.current?.();
-      } catch {}
-    });
-  };
+  const goToSymbol = (sym: string) => setSymbol(chartSymbol(sym));
 
   // Auto-register push if permission already granted (e.g. returning user on iPad PWA)
   useEffect(() => {
@@ -6916,18 +6752,6 @@ export default function DashboardPage() {
         input[type="color"]::-webkit-color-swatch-wrapper{padding:0;border-radius:9999px}
         input[type="color"]::-webkit-color-swatch{border:none;border-radius:9999px}
         input[type="color"]::-moz-color-swatch{border:none;border-radius:9999px}
-        /* Hide Lightweight Charts / TradingView attribution logo on all panes */
-        #tv-attr-logo,
-        a#tv-attr-logo,
-        a[href*="tradingview.com"][title*="Charting"],
-        a[href*="tradingview.com"][aria-label*="TradingView"] {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
-          width: 0 !important;
-          height: 0 !important;
-        }
       `}</style>
       {/* Header — symbol search + timeframes + indicators on the left */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -8272,57 +8096,6 @@ export default function DashboardPage() {
             mode === "alarm-diag" ||
             mode === "move") && (
             <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
-              {mode === "path" && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const pts = [...pathPointsRef.current];
-                    if (pts.length < 2) {
-                      setStatusMsg("Need at least 2 points");
-                      return;
-                    }
-                    clickLockRef.current = true;
-                    setSaving(true);
-                    const first = pts[0];
-                    const last = pts[pts.length - 1];
-                    const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
-                    const base: any = {
-                      symbol: symbolRef.current.toUpperCase(),
-                      price: first.price,
-                      color: drawColorRef.current,
-                      width: drawWidthRef.current,
-                      dash: drawDashRef.current,
-                      start_time: first.time,
-                      end_time: last.time,
-                      end_price: last.price,
-                      note,
-                    };
-                    try {
-                      (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-                      let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
-                      if (error) {
-                        const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
-                        (fb as any).user_id = base.user_id;
-                        ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-                      }
-                      if (!error && data) {
-                        pushUndo();
-                        setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-                        setStatusMsg("Path saved");
-                      } else setStatusMsg("Path save failed");
-                    } catch { setStatusMsg("Path save failed"); }
-                    pathPointsRef.current = [];
-                    clearPreview();
-                    setMode("none");
-                    setSaving(false);
-                    setTimeout(() => { clickLockRef.current = false; }, 200);
-                  }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
-                >
-                  ✓ Finish path
-                </button>
-              )}
-
               <div className="relative" data-menu>
                 <button
                   type="button"
@@ -9279,57 +9052,48 @@ export default function DashboardPage() {
                       data-item-id={row.itemId || ""}
                       onPointerDown={(e) => {
                         if ((e.target as HTMLElement).closest("button")) return;
-                        coinPressRef.current = { sym, x: e.clientX, y: e.clientY, t: Date.now() };
+                        e.preventDefault();
                         try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+                        setDraggingSym(sym);
                         setDragOverSym(null);
                       }}
                       onPointerMove={(e) => {
-                        const press = coinPressRef.current;
-                        if (press && !draggingSym) {
-                          if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) {
-                            setDraggingSym(press.sym);
-                          }
-                        }
                         if (!draggingSym) return;
                         const el = document.elementFromPoint(e.clientX, e.clientY);
                         const rowEl = el?.closest?.("[data-sym]") as HTMLElement | null;
                         const target = rowEl?.dataset?.sym || null;
                         if (target && target !== draggingSym) setDragOverSym((prev) => (prev === target ? prev : target));
                       }}
-                      onPointerUp={async (e) => {
-                        coinPressRef.current = null;
-                        const wasDrag = !!draggingSym;
+                      onPointerUp={async () => {
+                        if (!draggingSym) {
+                          setDraggingSym(null);
+                          setDragOverSym(null);
+                          return;
+                        }
                         const fromSym = draggingSym;
                         const toSym = dragOverSym;
                         setDraggingSym(null);
                         setDragOverSym(null);
-                        // Tap or no drop target → switch coin
-                        if (!wasDrag || !fromSym || !toSym || fromSym === toSym) {
-                          try { e?.stopPropagation?.(); } catch {}
-                          goToSymbol(sym);
-                          return;
-                        }
-                        const dragFrom: string = fromSym;
-                        const dragTo: string = toSym;
+                        if (!toSym || fromSym === toSym) return;
 
                         if (sideViewId === SIDE_VIEW_ALARMS) {
                           const keys: string[] = [];
                           sidePanelRows.forEach((r) => {
                             if (r.kind === "section") keys.push(`__SEC__:${r.id}`);
-                            else if (r.symbol) keys.push(r.symbol);
+                            else keys.push(r.symbol);
                           });
-                          if (!keys.includes(dragFrom)) keys.push(dragFrom);
-                          const fromIdx = keys.indexOf(dragFrom);
-                          const toIdxOrig = dragTo === "__END__" ? keys.length : keys.indexOf(dragTo);
-                          const without = keys.filter((k) => k !== dragFrom);
+                          if (!keys.includes(fromSym)) keys.push(fromSym);
+                          const fromIdx = keys.indexOf(fromSym);
+                          const toIdxOrig = toSym === "__END__" ? keys.length : keys.indexOf(toSym);
+                          const without = keys.filter((k) => k !== fromSym);
                           let insertAt = without.length;
-                          if (dragTo && dragTo !== "__END__") {
-                            const ti = without.indexOf(dragTo);
+                          if (toSym && toSym !== "__END__") {
+                            const ti = without.indexOf(toSym);
                             if (ti >= 0) {
                               insertAt = fromIdx >= 0 && fromIdx < toIdxOrig ? ti + 1 : ti;
                             }
                           }
-                          without.splice(insertAt, 0, dragFrom);
+                          without.splice(insertAt, 0, fromSym);
                           const newSymOrder: string[] = [];
                           const newSecs: { id: string; name: string; sort_order: number }[] = [];
                           without.forEach((k, i) => {
@@ -9351,29 +9115,29 @@ export default function DashboardPage() {
                           .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
                         const fromItem = listRows.find(
                           (w) =>
-                            chartSymbol(w.symbol) === dragFrom &&
+                            chartSymbol(w.symbol) === fromSym &&
                             !String(w.symbol).startsWith("__SECTION__")
                         );
                         if (!fromItem) return;
                         const fromIdx = listRows.findIndex((w) => w.id === fromItem.id);
                         const without = listRows.filter((w) => w.id !== fromItem.id);
                         let insertAt = without.length;
-                        if (dragTo && dragTo !== "__END__") {
+                        if (toSym && toSym !== "__END__") {
                           let ti = -1;
                           let toIdxOrig = -1;
-                          if (dragTo.startsWith("__SEC__:")) {
-                            const tid = dragTo.slice("__SEC__:".length);
+                          if (toSym.startsWith("__SEC__:")) {
+                            const tid = toSym.slice("__SEC__:".length);
                             toIdxOrig = listRows.findIndex((w) => w.id === tid);
                             ti = without.findIndex((w) => w.id === tid);
                           } else {
                             toIdxOrig = listRows.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === dragTo &&
+                                chartSymbol(w.symbol) === toSym &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                             ti = without.findIndex(
                               (w) =>
-                                chartSymbol(w.symbol) === dragTo &&
+                                chartSymbol(w.symbol) === toSym &&
                                 !String(w.symbol).startsWith("__SECTION__")
                             );
                           }
@@ -9402,7 +9166,8 @@ export default function DashboardPage() {
                         } catch {}
                       }}
                       onPointerCancel={() => { setDraggingSym(null); setDragOverSym(null); }}
-                      className={`group flex items-center gap-1.5 px-1.5 py-1.5 mb-0.5 rounded-lg text-[11px] select-none cursor-pointer touch-manipulation ${
+                      onClick={() => { if (!draggingSym) goToSymbol(sym); }}
+                      className={`group flex items-center gap-1.5 px-1.5 py-1 mb-0.5 rounded-lg text-[11px] select-none cursor-default ${
                         isDrag
                           ? "opacity-40 pointer-events-none"
                           : symbolUpper === sym
@@ -9930,24 +9695,18 @@ export default function DashboardPage() {
                             l.note === "__arrow_down__" ||
                             l.note === "__arrow_marker__" ||
                             l.note.startsWith("__arrow"));
-                        const isRayNote =
-                          typeof l.note === "string" && l.note.startsWith("__ray:");
                         const isV =
                           !isArrowL &&
-                          !isRayNote &&
                           (l.note === "__vline__" ||
-                            (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
                             (l.start_time != null &&
                               l.end_time != null &&
                               Number(l.start_time) === Number(l.end_time) &&
-                              l.end_price != null &&
-                              !isDiagonalLine(l)));
+                              l.end_price != null));
                         movingVLineRef.current = !!isV;
                         // Ray / arrow: can move in time + price (left-right and up-down)
                         movingRayRef.current =
                           !isV &&
                           (isArrowL ||
-                            isRayNote ||
                             (l.start_time != null && !isDiagonalLine(l)));
                         if (isDiagonalLine(l)) {
                           movingRayRef.current = false;
@@ -10020,31 +9779,35 @@ export default function DashboardPage() {
 
         {/* Alarm history for current symbol */}
         <div>
-          <div className="flex flex-nowrap items-center gap-1 mb-2 min-h-[28px] overflow-hidden">
+          <div className="relative flex items-center mb-2 min-h-[28px]">
             <button
               type="button"
               onClick={() => setHistoryMode("coin")}
-              title={`History — ${symbolUpper}`}
-              className={`text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation max-w-[9.5rem] truncate ${
+              className={`relative z-10 text-sm font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 ${
                 historyMode === "coin"
-                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
+                  ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
                   : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
               }`}
             >
-              Hist · {symbolUpper.replace(/USDT$/i, "")}
+              History — {symbolUpper}
             </button>
-            <button
-              type="button"
-              title="All history"
-              onClick={() => setHistoryMode("all")}
-              className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation ${
-                historyMode === "all"
-                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
-                  : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
-              }`}
-            >
-              All ({historyAlarms.length})
-            </button>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="pointer-events-auto flex items-center gap-1.5">
+                <button
+                  type="button"
+                  title="All history"
+                  onClick={() => setHistoryMode("all")}
+                  className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border transition-colors ${
+                    historyMode === "all"
+                      ? "text-orange-300/80 border-orange-500/40 bg-orange-500/10"
+                      : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
+                  }`}
+                >
+                  All History
+                </button>
+                <span className="text-xs text-gray-600">({historyAlarms.length})</span>
+              </div>
+            </div>
             {historyAlarms.length > 0 && (
               <button
                 type="button"
@@ -10055,7 +9818,7 @@ export default function DashboardPage() {
                     await supabase.from("alarms").delete().in("id", ids);
                   } catch {}
                 }}
-                className="ml-auto shrink-0 text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50 touch-manipulation"
+                className="ml-auto text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50"
               >
                 Delete all
               </button>
@@ -10067,7 +9830,7 @@ export default function DashboardPage() {
               return (
                 <div
                   key={a.id}
-                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-2 text-xs cursor-pointer hover:border-amber-600/50 touch-manipulation active:bg-gray-900"
+                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-1.5 text-xs cursor-pointer hover:border-amber-600/50"
                   onClick={() => {
                     // Resolve diagonal geometry (columns or note fallback)
                     let st = a.start_time ?? null;
