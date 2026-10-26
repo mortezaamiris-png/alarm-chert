@@ -967,58 +967,6 @@ const FUTURE_BARS = 800;
 /** How many future bars are visible on first load (rest remains scrollable) */
 const FUTURE_VISIBLE = 55;
 
-/** Opaque area fill for an oscillator price scale — paints over main-chart bleed in that pane */
-function addOscPaneBackground(
-  chart: IChartApi,
-  priceScaleId: string,
-  candles: { time: number }[],
-  fixedRange?: { min: number; max: number } | null
-) {
-  try {
-    const minV = fixedRange ? fixedRange.min : 0;
-    const maxV = fixedRange ? fixedRange.max : 1;
-    const opts: any = {
-      priceScaleId,
-      topColor: "#0b0e11",
-      bottomColor: "#0b0e11",
-      lineColor: "#0b0e11",
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-      // Fill from pane floor to ceiling
-      baseValue: { type: "price", price: minV },
-      autoscaleInfoProvider: () => ({
-        priceRange: { minValue: minV, maxValue: maxV },
-      }),
-    };
-    const series = chart.addAreaSeries(opts);
-    if (!candles.length) return series;
-    const times: number[] = candles.map((c) => Number(c.time));
-    const lastT = times[times.length - 1];
-    const dt =
-      times.length > 1 ? Math.max(1, times[times.length - 1] - times[times.length - 2]) : 60;
-    for (let i = 1; i <= Math.max(FUTURE_VISIBLE, 80) + 120; i++) {
-      times.push(lastT + dt * i);
-    }
-    const firstT = times[0];
-    for (let i = 1; i <= 40; i++) {
-      times.unshift(firstT - dt * i);
-    }
-    series.setData(times.map((t) => ({ time: t as any, value: maxV })));
-    return series;
-  } catch {
-    return null;
-  }
-}
-
-function removeOscPaneBackground(chart: IChartApi | null, store: Record<string, any>, id: string) {
-  try {
-    const s = store[id];
-    if (s && chart) chart.removeSeries(s);
-  } catch {}
-  delete store[id];
-}
 
 /** Convert OHLC candles to Heikin-Ashi */
 function toHeikinAshi(candles: any[]): any[] {
@@ -1235,8 +1183,6 @@ export default function DashboardPage() {
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
   const paneSepRef = useRef<HTMLDivElement | null>(null);
-  /** Solid fills for oscillator panes (covers main chart bleed in those bands) */
-  const oscBgSeriesRef = useRef<Record<string, any>>({});
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   /** in-flight triggers — prevents concurrent double-fire */
@@ -2253,13 +2199,6 @@ export default function DashboardPage() {
     previewDiagSeriesRef.current = null;
     seriesRef.current = null;
     futureSeriesRef.current = null;
-    try {
-      const chart = chartRef.current;
-      for (const id of Object.keys(oscBgSeriesRef.current || {})) {
-        removeOscPaneBackground(chart, oscBgSeriesRef.current, id);
-      }
-      oscBgSeriesRef.current = {};
-    } catch {}
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch {}
       chartRef.current = null;
@@ -3180,7 +3119,6 @@ export default function DashboardPage() {
   }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
-    removeOscPaneBackground(chartRef.current, oscBgSeriesRef.current, "rsi");
     if (rsiSeriesRef.current && chartRef.current) {
       try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
       rsiSeriesRef.current = null;
@@ -3189,8 +3127,6 @@ export default function DashboardPage() {
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const bg = addOscPaneBackground(chartRef.current, "rsi", candlesRef.current, { min: 0, max: 100 });
-    if (bg) oscBgSeriesRef.current["rsi"] = bg;
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -3235,7 +3171,6 @@ export default function DashboardPage() {
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
-    removeOscPaneBackground(chartRef.current, oscBgSeriesRef.current, "dmi");
     if (dmiSeriesRef.current && chartRef.current) {
       try {
         chartRef.current.removeSeries(dmiSeriesRef.current.plus);
@@ -3248,8 +3183,6 @@ export default function DashboardPage() {
   const applyDMI = useCallback(() => {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const bg = addOscPaneBackground(chartRef.current, "dmi", candlesRef.current, { min: 0, max: 100 });
-    if (bg) oscBgSeriesRef.current["dmi"] = bg;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
     const paneOpts = {
       priceScaleId: "dmi",
@@ -3563,7 +3496,6 @@ export default function DashboardPage() {
   }, [showBB, bbVisible, hideIndicators, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor, removeBB]);
 
   const removeHARSI = useCallback(() => {
-    removeOscPaneBackground(chartRef.current, oscBgSeriesRef.current, "harsi");
     if (harsiSeriesRef.current) {
       try { chartRef.current?.removeSeries(harsiSeriesRef.current); } catch {}
       harsiSeriesRef.current = null;
@@ -3576,8 +3508,6 @@ export default function DashboardPage() {
     const candles = candlesRef.current as any[];
     const ha = calcHARSI(candles, harsiLen, Math.max(1, harsiSmooth));
     try {
-      const bg = addOscPaneBackground(chart, "harsi", candles, { min: -50, max: 50 });
-      if (bg) oscBgSeriesRef.current["harsi"] = bg;
       const cs = chart.addCandlestickSeries({
         priceScaleId: "harsi",
         upColor: harsiUpColor,
@@ -3588,7 +3518,6 @@ export default function DashboardPage() {
         wickDownColor: "#9ca3af",
         lastValueVisible: false,
         priceLineVisible: false,
-        autoscaleInfoProvider: () => ({ priceRange: { minValue: -50, maxValue: 50 } }),
       });
       cs.setData(ha.map((c) => ({
         time: c.time as any,
@@ -3681,7 +3610,6 @@ export default function DashboardPage() {
     tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5, removeTCP]);
 
   const removeROC = useCallback(() => {
-    removeOscPaneBackground(chartRef.current, oscBgSeriesRef.current, "roc");
     if (rocSeriesRef.current && chartRef.current) {
       try { chartRef.current.removeSeries(rocSeriesRef.current); } catch {}
       rocSeriesRef.current = null;
@@ -3690,20 +3618,13 @@ export default function DashboardPage() {
   const applyROC = useCallback(() => {
     removeROC();
     if (!showROC || !rocVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const rocData = calcROC(candlesRef.current, rocPeriod);
-    let lo = 0, hi = 0;
-    for (const p of rocData) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
-    const pad = Math.max(Math.abs(hi - lo) * 0.2, 0.5);
-    const bg = addOscPaneBackground(chartRef.current, "roc", candlesRef.current, { min: lo - pad, max: hi + pad });
-    if (bg) oscBgSeriesRef.current["roc"] = bg;
     const s = chartRef.current.addLineSeries({
       color: rocColor, lineWidth: 2, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
       crosshairMarkerVisible: true,
       title: "ROC",
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: lo - pad, maxValue: hi + pad } }),
     });
-    s.setData(rocData as any);
+    s.setData(calcROC(candlesRef.current, rocPeriod) as any);
     try {
       s.createPriceLine({ price: 0, color: "rgba(120,123,134,0.6)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
     } catch {}
@@ -3712,7 +3633,6 @@ export default function DashboardPage() {
   }, [showROC, rocVisible, hideIndicators, rocPeriod, rocColor, removeROC, updateMargins]);
 
   const removeATR = useCallback(() => {
-    removeOscPaneBackground(chartRef.current, oscBgSeriesRef.current, "atr");
     if (atrSeriesRef.current && chartRef.current) {
       try { chartRef.current.removeSeries(atrSeriesRef.current); } catch {}
       atrSeriesRef.current = null;
@@ -3721,27 +3641,19 @@ export default function DashboardPage() {
   const applyATR = useCallback(() => {
     removeATR();
     if (!showATR || !atrVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const atrData = calcATR(candlesRef.current as any, atrPeriod, atrSmooth);
-    let lo = 0, hi = 0;
-    for (const p of atrData) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
-    const pad = Math.max(Math.abs(hi - lo) * 0.15, Math.abs(hi) * 0.05, 1e-9);
-    const bg = addOscPaneBackground(chartRef.current, "atr", candlesRef.current, { min: Math.min(0, lo - pad), max: hi + pad });
-    if (bg) oscBgSeriesRef.current["atr"] = bg;
     const s = chartRef.current.addLineSeries({
       color: atrColor, lineWidth: 2, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: true,
       crosshairMarkerVisible: true,
       title: "ATR",
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: Math.min(0, lo - pad), maxValue: hi + pad } }),
     });
-    s.setData(atrData as any);
+    s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
     atrSeriesRef.current = s;
     updateMargins();
   }, [showATR, atrVisible, hideIndicators, atrPeriod, atrSmooth, atrColor, removeATR, updateMargins]);
 
   const removeMACD = useCallback(() => {
     const chart = chartRef.current;
-    removeOscPaneBackground(chart, oscBgSeriesRef.current, "macd");
     if (macdSeriesRef.current && chart) {
       try { chart.removeSeries(macdSeriesRef.current.macd); } catch {}
       try { chart.removeSeries(macdSeriesRef.current.signal); } catch {}
@@ -3754,17 +3666,8 @@ export default function DashboardPage() {
     if (!showMACD || !macdVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
-    // Fixed-ish range from data so solid pane bg covers main chart
-    let lo = 0, hi = 0;
-    for (const p of macdLine) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
-    for (const p of signalLine) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
-    for (const p of hist) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
-    const pad = Math.max(Math.abs(hi - lo) * 0.15, 1e-9);
-    const bg = addOscPaneBackground(chart, "macd", candlesRef.current, { min: lo - pad, max: hi + pad });
-    if (bg) oscBgSeriesRef.current["macd"] = bg;
     const histS = chart.addHistogramSeries({
       priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: lo - pad, maxValue: hi + pad } }),
     });
     histS.setData(hist as any);
     const macdS = chart.addLineSeries({
@@ -3786,7 +3689,6 @@ export default function DashboardPage() {
 
   const removeStoch = useCallback(() => {
     const chart = chartRef.current;
-    removeOscPaneBackground(chart, oscBgSeriesRef.current, "stoch");
     if (stochSeriesRef.current && chart) {
       try { chart.removeSeries(stochSeriesRef.current.k); } catch {}
       try { chart.removeSeries(stochSeriesRef.current.d); } catch {}
@@ -3797,8 +3699,6 @@ export default function DashboardPage() {
     removeStoch();
     if (!showStoch || !stochVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
-    const bg = addOscPaneBackground(chart, "stoch", candlesRef.current, { min: 0, max: 100 });
-    if (bg) oscBgSeriesRef.current["stoch"] = bg;
     const { k, d } = calcStochRSI(candlesRef.current, stochRsiLen, stochLen, stochK, stochD);
     const kS = chart.addLineSeries({
       color: stochKColor, lineWidth: 2, priceScaleId: "stoch",
@@ -5120,16 +5020,19 @@ export default function DashboardPage() {
                 { series: macdSeriesRef.current.macd, label: "MACD", color: "#2962FF" },
                 { series: macdSeriesRef.current.signal, label: "Signal", color: "#FF6D00" },
               ] : undefined },
+              { id: "harsi", on: !!harsiSeriesRef.current, h: 0.14, series: harsiSeriesRef.current, label: "HARSI", color: "#22c55e" },
               { id: "rsi", on: !!rsiSeriesRef.current, h: 0.12, series: rsiSeriesRef.current, label: "RSI", color: "#c084fc" },
               { id: "roc", on: !!rocSeriesRef.current, h: 0.11, series: rocSeriesRef.current, label: "ROC", color: "#2962FF" },
               { id: "atr", on: !!atrSeriesRef.current, h: 0.11, series: atrSeriesRef.current, label: "ATR", color: "#B71C1C" },
             ];
             // Note: showROC etc may be stale in closure — use refs where possible; series presence is enough
+            // Match updateMargins: volume is in the stack height budget
+            const volOn = !!volumeSeriesRef.current;
+            const volHFrac = volOn ? 0.10 : 0;
             const active = stack.filter((p) => p.on && p.series);
-            let totalH = active.reduce((s, p) => s + p.h, 0);
+            let totalH = active.reduce((s, p) => s + p.h, 0) + volHFrac;
             const scale = totalH > 0.55 ? 0.55 / totalH : 1;
-            let used = 0;
-            // volume sits below osc panes in margins; legends only for oscillators
+            let used = volHFrac * scale; // start above volume band
             const hostH = host.clientHeight || 400;
             for (const p of active) {
               const h = p.h * scale;
@@ -5142,8 +5045,12 @@ export default function DashboardPage() {
                 if (!src.series || !sd) continue;
                 try {
                   const d: any = sd.get(src.series);
-                  if (d && typeof d.value === "number" && !Number.isNaN(d.value)) {
-                    rows.push(`<span style="color:${src.color};font-weight:600">${src.label}</span> <span style="color:#e5e7eb">${fmt(d.value)}</span>`);
+                  // line/area: .value  |  candlestick (HARSI): .close
+                  let val: number | null = null;
+                  if (d && typeof d.value === "number" && !Number.isNaN(d.value)) val = d.value;
+                  else if (d && typeof d.close === "number" && !Number.isNaN(d.close)) val = d.close;
+                  if (val != null) {
+                    rows.push(`<span style="color:${src.color};font-weight:600">${src.label}</span> <span style="color:#e5e7eb">${fmt(val)}</span>`);
                   }
                 } catch {}
               }
@@ -5153,16 +5060,11 @@ export default function DashboardPage() {
                 label: rows.join("&nbsp;&nbsp;"),
                 color: p.color,
                 value: "",
-                bottom: bottomPx + Math.max(4, paneH * 0.15),
+                bottom: bottomPx + Math.max(4, paneH * 0.2),
               });
             }
-            // also include volume height offset so osc labels sit above volume
-            let volH = 0;
-            try {
-              if (volumeSeriesRef.current) volH = 0.10 * (totalH > 0.55 ? 0.55 / (totalH + 0.10) : 1) * hostH;
-            } catch {}
             host.innerHTML = items.map((it) =>
-              `<div style="position:absolute;left:6px;bottom:${it.bottom + volH}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.3;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(0,0,0,0.35);padding:1px 5px;border-radius:3px">${it.label}</div>`
+              `<div style="position:absolute;left:6px;bottom:${it.bottom}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.35;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
             ).join("");
             }
           }
