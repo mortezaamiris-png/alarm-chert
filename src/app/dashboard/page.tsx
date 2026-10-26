@@ -2081,13 +2081,9 @@ export default function DashboardPage() {
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
-        } else if (l.start_time != null) {
-          // Half-line locked to saved time+price (no re-snap → no drift while panning)
+        } else if (l.start_time != null && !isDiagonalLine(l) && l.note !== "__vline__" && !String(l.note || "").startsWith("__vline__:")) {
+          // Half-line: pure DOM (stays half on every TF) + right-edge price/note tag
           const t0 = Number(l.start_time);
-          const barSec = intervalToSeconds(String(intervalRef.current));
-          const bars = candlesRef.current || [];
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2096,28 +2092,11 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
-            });
-            // Axis price tag + note (same as full line)
-            try {
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
-              ls.setData([
-                { time: tLabel as any, value: Number(l.price) },
-                { time: rayEnd as any, value: Number(l.price) },
-              ]);
-              chartLinesRef.current.set(l.id, ls);
-            } catch {}
+              note: title || "",
+            } as any);
           }
         } else {
+} else {
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
             axisLabelVisible: true, title: title || "",
@@ -2183,12 +2162,8 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-        } else if (a.start_time != null) {
+        } else if (a.start_time != null && !isDiagonalLine(a)) {
           const t0 = Number(a.start_time);
-          const barSec = intervalToSeconds(String(intervalRef.current));
-          const bars = candlesRef.current || [];
-          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
@@ -2197,27 +2172,11 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
-            });
-            try {
-              const ls: any = chart.addLineSeries({
-                color: color,
-                lineWidth: 1,
-                lineStyle: LineStyle.SparseDotted as any,
-                priceLineVisible: false,
-                lastValueVisible: true,
-                crosshairMarkerVisible: false,
-                title: title || "",
-                autoscaleInfoProvider: () => null as any,
-              });
-              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
-              ls.setData([
-                { time: tLabel as any, value: Number(a.price) },
-                { time: rayEnd as any, value: Number(a.price) },
-              ]);
-              chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
-            } catch {}
+              note: title || "",
+            } as any);
           }
         } else {
+} else {
           const pl = series.createPriceLine({
             price: a.price, color, lineWidth: width,
             lineStyle: style,
@@ -2270,6 +2229,7 @@ export default function DashboardPage() {
       const ser = seriesRef.current;
       if (!host || !chart2 || !ser) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
       if (hideLines) return;
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const r of rayItemsRef.current) {
@@ -2282,9 +2242,11 @@ export default function DashboardPage() {
           y = ser.priceToCoordinate(r.price);
         } catch { y = null; }
         if (y == null || Number.isNaN(y)) continue;
-        // If origin is left of viewport, start at 0 so ray still spans to the right edge
-        const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
-        if (x0 > hostW) continue;
+        // Start of ray: if off left → 0; if off right → skip
+        const startVisible = x != null && !Number.isNaN(x);
+        const x0 = startVisible ? Math.max(0, x as number) : 0;
+        if (startVisible && (x as number) > hostW) continue;
+
         const el = document.createElement("div");
         el.dataset.rayId = r.id;
         el.style.position = "absolute";
@@ -2304,6 +2266,27 @@ export default function DashboardPage() {
           el.style.height = "0px";
         }
         host.appendChild(el);
+
+        // Start marker (shows it is a half-line, not full)
+        if (startVisible && (x as number) >= 0 && (x as number) <= hostW) {
+          const cap = document.createElement("div");
+          cap.dataset.rayId = r.id;
+          cap.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:7px;height:7px;border-radius:50%;
+            background:${r.color};transform:translate(-50%,-50%);pointer-events:none;z-index:6;`;
+          host.appendChild(cap);
+        }
+
+        // Right-edge price + note tag (like full-line axis label)
+        const tag = document.createElement("div");
+        tag.dataset.rayLabel = r.id;
+        const priceTxt = formatPrice(r.price);
+        const noteTxt = (r as any).note ? String((r as any).note).trim() : "";
+        tag.textContent = noteTxt ? `${priceTxt}  ${noteTxt}` : String(priceTxt);
+        tag.style.cssText = `position:absolute;right:0;top:${y}px;transform:translateY(-50%);
+          background:${r.color};color:#0b1220;font-size:10px;font-weight:600;line-height:1;
+          padding:2px 6px;border-radius:3px 0 0 3px;pointer-events:none;z-index:7;
+          white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis;`;
+        host.appendChild(tag);
       }
     };
 
@@ -2337,15 +2320,37 @@ export default function DashboardPage() {
             child.style.visibility = "hidden";
             continue;
           }
-          const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
-          if (x0 > hostW) {
+          const startVisible = x != null && !Number.isNaN(x);
+          const x0 = startVisible ? Math.max(0, x as number) : 0;
+          if (startVisible && (x as number) > hostW) {
             child.style.visibility = "hidden";
             continue;
           }
           child.style.visibility = "visible";
-          child.style.left = `${x0}px`;
-          child.style.top = `${y}px`;
-          child.style.width = `${Math.max(4, hostW - x0)}px`;
+          // line bar vs start cap
+          if (child.style.borderRadius === "50%" || child.style.width === "7px") {
+            if (startVisible && (x as number) >= 0) {
+              child.style.left = `${x}px`;
+              child.style.top = `${y}px`;
+            } else {
+              child.style.visibility = "hidden";
+            }
+          } else {
+            child.style.left = `${x0}px`;
+            child.style.top = `${y}px`;
+            child.style.width = `${Math.max(4, hostW - x0)}px`;
+          }
+        } else if (child.dataset.rayLabel && ser) {
+          const item = rayItemsRef.current.find((v) => v.id === child.dataset.rayLabel);
+          if (!item) continue;
+          let y: number | null = null;
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.top = `${y}px`;
+          }
         } else if (child.dataset.arrowRing && ser) {
           const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
           if (!item) continue;
@@ -6007,7 +6012,7 @@ export default function DashboardPage() {
       dmiSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !alarmMenuOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -6021,6 +6026,7 @@ export default function DashboardPage() {
       }
       if (drawToolsOpen && !el.closest?.("[data-menu]")) {
         setDrawToolsOpen(false);
+        setAlarmMenuOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -6063,6 +6069,7 @@ export default function DashboardPage() {
     editingNoteType,
     wlMenuOpen,
     drawToolsOpen,
+    alarmMenuOpen,
   ]);
 
   // Cancel tool / move: outside click (move only) OR right-click (any tool)
