@@ -793,16 +793,58 @@ function IndChip({
   return (
     <div
       data-ind-panel
-      className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100"
+      className="group inline-flex items-center gap-0.5 bg-black/45 backdrop-blur-sm rounded-md px-1.5 py-0.5 text-[11px] text-gray-100 border border-white/5"
     >
       <span className="px-0.5 font-medium whitespace-nowrap opacity-90">{label}</span>
-      <button type="button" onClick={onToggleVisible} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
-        {visible ? "👁" : "⊘"}
+      {/* Eye — always visible */}
+      <button
+        type="button"
+        title={visible ? "Hide" : "Show"}
+        onClick={onToggleVisible}
+        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-300 hover:text-white hover:bg-white/10 transition-colors duration-150"
+      >
+        {visible ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+            <path d="M4 4l16 16" />
+          </svg>
+        )}
       </button>
+      {/* Settings — show on hover */}
       {onSettings && (
-        <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">⚙</button>
+        <button
+          type="button"
+          title="Settings"
+          onClick={onSettings}
+          className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-white/10 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+          </svg>
+        </button>
       )}
-      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">×</button>
+      {/* Trash — show on hover */}
+      <button
+        type="button"
+        title="Remove"
+        onClick={onRemove}
+        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-red-400 hover:bg-red-500/15 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <line x1="10" y1="11" x2="10" y2="17" />
+          <line x1="14" y1="11" x2="14" y2="17" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -8589,7 +8631,13 @@ export default function DashboardPage() {
 
           {/* TCP info table — bottom-left so it does not cover indicator chips */}
           {!hideIndicators && showTCP && tcpVisible && (
-            <div className="absolute bottom-14 left-2 z-20 bg-gray-950/90 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-none tabular-nums">
+            <div
+              data-ind-panel
+              role="button"
+              title="Open TCP settings"
+              onClick={() => setTcpSettings(true)}
+              className="absolute bottom-14 left-2 z-20 bg-gray-950/90 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
+            >
               {(() => {
                 const candles = candlesRef.current || [];
                 const lastClose = candles.length ? Number(candles[candles.length - 1].close) : 0;
