@@ -1873,108 +1873,12 @@ export default function DashboardPage() {
     };
 
     const paintRays = () => {
+      // Rays are drawn by LWC line series (native price-axis tags, no start circle).
+      // Clear any leftover DOM from older versions.
       const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2 || !ser) return;
+      if (!host) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
-      if (hideLines) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
-      // Plot width only (exclude right price scale) so line never runs under labels
-      let plotW = hostW;
-      try {
-        const tw = (chart2.timeScale() as any).width?.();
-        if (typeof tw === "number" && tw > 40) plotW = tw;
-        else plotW = Math.max(80, hostW - 64);
-      } catch {
-        plotW = Math.max(80, hostW - 64);
-      }
-      for (const r of rayItemsRef.current) {
-        let x: number | null = null;
-        let y: number | null = null;
-        try {
-          x = chart2.timeScale().timeToCoordinate(r.time as any);
-        } catch { x = null; }
-        try {
-          y = ser.priceToCoordinate(r.price);
-        } catch { y = null; }
-        if (y == null || Number.isNaN(y)) continue;
-        const startVisible = x != null && !Number.isNaN(x);
-        if (startVisible && (x as number) > plotW) continue;
-        const x0 = startVisible ? Math.max(0, x as number) : 0;
-        const w = Math.max(2, plotW - x0);
-        const lh = Math.max(1, Math.min(3, Number(r.width) || 2));
-
-        const el = document.createElement("div");
-        el.dataset.rayId = r.id;
-        el.dataset.rayRole = "line";
-        el.style.position = "absolute";
-        el.style.left = `${x0}px`;
-        el.style.top = `${y}px`;
-        el.style.width = `${w}px`;
-        el.style.height = `${lh}px`;
-        el.style.transform = "translateY(-50%)";
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "5";
-        el.style.boxSizing = "border-box";
-        if (r.dash === "dashed") {
-          el.style.background = "transparent";
-          el.style.borderTop = `${lh}px dashed ${r.color}`;
-          el.style.height = "0px";
-        } else if (r.dash === "dotted") {
-          el.style.background = "transparent";
-          el.style.borderTop = `${lh}px dotted ${r.color}`;
-          el.style.height = "0px";
-        } else {
-          el.style.background = r.color;
-        }
-        host.appendChild(el);
-
-        if (startVisible && (x as number) >= 0 && (x as number) <= plotW) {
-          const cap = document.createElement("div");
-          cap.dataset.rayId = r.id;
-          cap.dataset.rayRole = "cap";
-          cap.style.position = "absolute";
-          cap.style.left = `${x}px`;
-          cap.style.top = `${y}px`;
-          cap.style.width = "6px";
-          cap.style.height = "6px";
-          cap.style.borderRadius = "50%";
-          cap.style.background = r.color;
-          cap.style.transform = "translate(-50%,-50%)";
-          cap.style.pointerEvents = "none";
-          cap.style.zIndex = "6";
-          host.appendChild(cap);
-        }
-
-        // Price + note tag at plot edge (same place as full-line axis labels) — not over price scale
-        const tag = document.createElement("div");
-        tag.dataset.rayLabel = r.id;
-        const priceTxt = formatPrice(r.price);
-        const noteTxt = (r as any).note ? String((r as any).note).trim() : "";
-        // Note first (left), then price — matches full line look
-        tag.innerHTML = noteTxt
-          ? `<span style="opacity:.95">${noteTxt}</span> <span style="font-weight:700">${priceTxt}</span>`
-          : `<span style="font-weight:700">${priceTxt}</span>`;
-        tag.style.position = "absolute";
-        tag.style.left = `${plotW}px`;
-        tag.style.top = `${y}px`;
-        tag.style.transform = "translate(-100%, -50%)";
-        tag.style.background = r.color;
-        tag.style.color = "#0b1220";
-        tag.style.fontSize = "10px";
-        tag.style.lineHeight = "1.2";
-        tag.style.padding = "2px 6px";
-        tag.style.borderRadius = "3px 0 0 3px";
-        tag.style.pointerEvents = "none";
-        tag.style.zIndex = "7";
-        tag.style.whiteSpace = "nowrap";
-        tag.style.maxWidth = "150px";
-        tag.style.overflow = "hidden";
-        tag.style.textOverflow = "ellipsis";
-        host.appendChild(tag);
-      }
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -2428,20 +2332,43 @@ export default function DashboardPage() {
         } else if (
           (typeof l.note === "string" && l.note.startsWith("__ray:")) ||
           (l.start_time != null &&
-            l.end_time == null &&
-            l.end_price == null &&
+            (l.end_time == null || l.end_price == null) &&
             !isDiagonalLine(l) &&
             l.note !== "__vline__" &&
             !String(l.note || "").startsWith("__vline:") &&
             !String(l.note || "").startsWith("__arrow") &&
             !String(l.note || "").startsWith("__callout:"))
         ) {
-          // Half-line: DOM only (stays half on every TF). Resolve time from start_time or __ray:
+          // Half-line via LWC: 2 points (origin → future). Native axis price tag like full lines.
+          // NEVER createPriceLine (that is always full-width both ways).
           let t0 = Number(l.start_time);
           if ((!t0 || Number.isNaN(t0)) && typeof l.note === "string" && l.note.startsWith("__ray:")) {
-            t0 = Number(String(l.note).replace(/^__ray:/, "").split("|")[0]);
+            const head = String(l.note).replace(/^__ray:/, "").split("|")[0];
+            t0 = Number(head);
           }
           if (!Number.isNaN(t0) && t0 > 0) {
+            const bars = candlesRef.current || [];
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+            // End far in the future so it always extends right of origin on every TF
+            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
+            const ls: any = chart.addLineSeries({
+              color,
+              lineWidth: width,
+              lineStyle: style,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+              title: title || "",
+              autoscaleInfoProvider: () => null as any,
+            });
+            // Only points at/after origin — LWC will not draw left of t0
+            ls.setData([
+              { time: t0 as any, value: Number(l.price) },
+              { time: rayEnd as any, value: Number(l.price) },
+            ]);
+            chartLinesRef.current.set(l.id, ls);
+            // Keep rayItems for hit-testing / move, but paintRays draws nothing visible (no cap)
             rayItemsRef.current.push({
               id: String(l.id),
               time: t0,
@@ -2522,13 +2449,32 @@ export default function DashboardPage() {
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
-          (a.start_time != null && a.end_time == null && a.end_price == null && !isDiagonalLine(a))
+          (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
         ) {
           let t0 = Number(a.start_time);
           if ((!t0 || Number.isNaN(t0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
             t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0]);
           }
           if (!Number.isNaN(t0) && t0 > 0) {
+            const bars = candlesRef.current || [];
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
+            const ls: any = chart.addLineSeries({
+              color,
+              lineWidth: width,
+              lineStyle: style,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              crosshairMarkerVisible: false,
+              title: title || "",
+              autoscaleInfoProvider: () => null as any,
+            });
+            ls.setData([
+              { time: t0 as any, value: Number(a.price) },
+              { time: rayEnd as any, value: Number(a.price) },
+            ]);
+            chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
@@ -5610,9 +5556,12 @@ export default function DashboardPage() {
             dash: drawDashRef.current,
           };
           if (m === "ray") {
-            // Always resolve time from click (works on empty/future area too)
+            // Always resolve time from click; encode origin in note so TF changes never lose half-line identity
             const t = resolveTime(param);
-            if (t != null && !Number.isNaN(t)) base.start_time = t;
+            if (t != null && !Number.isNaN(t)) {
+              base.start_time = t;
+              base.note = `__ray:${t}`;
+            }
           }
           let payload = { ...base };
           (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
