@@ -219,6 +219,170 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
   return out;
 }
 
+
+function calcROC(candles: { time: number; close: number }[], length = 9) {
+  const out: { time: number; value: number }[] = [];
+  const n = Math.max(1, length);
+  for (let i = n; i < candles.length; i++) {
+    const prev = candles[i - n].close;
+    if (!prev) continue;
+    out.push({ time: candles[i].time, value: (100 * (candles[i].close - prev)) / prev });
+  }
+  return out;
+}
+
+function calcEMASeries(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  const p = Math.max(1, length);
+  if (values.length < p) return out;
+  let sum = 0;
+  for (let i = 0; i < p; i++) sum += values[i];
+  let ema = sum / p;
+  out[p - 1] = ema;
+  const k = 2 / (p + 1);
+  for (let i = p; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+    out[i] = ema;
+  }
+  return out;
+}
+
+function calcSMASeries(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  const p = Math.max(1, length);
+  if (values.length < p) return out;
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= p) sum -= values[i - p];
+    if (i >= p - 1) out[i] = sum / p;
+  }
+  return out;
+}
+
+function calcRMASeries(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  const p = Math.max(1, length);
+  if (values.length < p) return out;
+  let sum = 0;
+  for (let i = 0; i < p; i++) sum += values[i];
+  let rma = sum / p;
+  out[p - 1] = rma;
+  for (let i = p; i < values.length; i++) {
+    rma = (rma * (p - 1) + values[i]) / p;
+    out[i] = rma;
+  }
+  return out;
+}
+
+function calcWMASeries(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  const p = Math.max(1, length);
+  const denom = (p * (p + 1)) / 2;
+  for (let i = p - 1; i < values.length; i++) {
+    let s = 0;
+    for (let j = 0; j < p; j++) s += values[i - j] * (p - j);
+    out[i] = s / denom;
+  }
+  return out;
+}
+
+function calcATR(
+  candles: { time: number; high: number; low: number; close: number }[],
+  length = 14,
+  smoothing: "RMA" | "SMA" | "EMA" | "WMA" = "RMA"
+) {
+  const out: { time: number; value: number }[] = [];
+  if (candles.length < 2) return out;
+  const tr: number[] = [candles[0].high - candles[0].low];
+  for (let i = 1; i < candles.length; i++) {
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  const smoothed =
+    smoothing === "SMA" ? calcSMASeries(tr, length)
+    : smoothing === "EMA" ? calcEMASeries(tr, length)
+    : smoothing === "WMA" ? calcWMASeries(tr, length)
+    : calcRMASeries(tr, length);
+  for (let i = 0; i < candles.length; i++) {
+    if (smoothed[i] != null) out.push({ time: candles[i].time, value: smoothed[i] as number });
+  }
+  return out;
+}
+
+function calcMACD(
+  candles: { time: number; close: number }[],
+  fast = 12,
+  slow = 26,
+  signal = 9
+) {
+  const closes = candles.map((c) => c.close);
+  const emaFast = calcEMASeries(closes, fast);
+  const emaSlow = calcEMASeries(closes, slow);
+  const macdArr: (number | null)[] = closes.map((_, i) =>
+    emaFast[i] != null && emaSlow[i] != null ? (emaFast[i] as number) - (emaSlow[i] as number) : null
+  );
+  // signal = EMA of macd (only over valid macd points — approximate with full array nulls→0 skip)
+  const macdNums = macdArr.map((v) => (v == null ? 0 : v));
+  const sigRaw = calcEMASeries(macdNums, signal);
+  const macdLine: { time: number; value: number }[] = [];
+  const signalLine: { time: number; value: number }[] = [];
+  const hist: { time: number; value: number; color?: string }[] = [];
+  let prevHist: number | null = null;
+  for (let i = 0; i < candles.length; i++) {
+    if (macdArr[i] == null) continue;
+    // signal valid after slow+signal bars roughly
+    if (sigRaw[i] == null || i < slow + signal - 2) continue;
+    const m = macdArr[i] as number;
+    const s = sigRaw[i] as number;
+    const h = m - s;
+    macdLine.push({ time: candles[i].time, value: m });
+    signalLine.push({ time: candles[i].time, value: s });
+    let color = "#26a69a";
+    if (h >= 0) color = prevHist != null && h > prevHist ? "#26a69a" : "#b2dfdb";
+    else color = prevHist != null && h > prevHist ? "#ffcdd2" : "#ff5252";
+    hist.push({ time: candles[i].time, value: h, color });
+    prevHist = h;
+  }
+  return { macdLine, signalLine, hist };
+}
+
+function calcStochRSI(
+  candles: { time: number; close: number }[],
+  lengthRSI = 14,
+  lengthStoch = 14,
+  smoothK = 3,
+  smoothD = 3
+) {
+  const rsi = calcRSI(candles, lengthRSI);
+  const kRaw: { time: number; value: number }[] = [];
+  for (let i = 0; i < rsi.length; i++) {
+    if (i < lengthStoch - 1) continue;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = 0; j < lengthStoch; j++) {
+      const v = rsi[i - j].value;
+      if (v > hi) hi = v;
+      if (v < lo) lo = v;
+    }
+    const stoch = hi === lo ? 0 : ((rsi[i].value - lo) / (hi - lo)) * 100;
+    kRaw.push({ time: rsi[i].time, value: stoch });
+  }
+  // smooth K with SMA
+  const kVals = kRaw.map((x) => x.value);
+  const kSmooth = calcSMASeries(kVals, smoothK);
+  const kLine: { time: number; value: number }[] = [];
+  for (let i = 0; i < kRaw.length; i++) {
+    if (kSmooth[i] != null) kLine.push({ time: kRaw[i].time, value: kSmooth[i] as number });
+  }
+  const dVals = kLine.map((x) => x.value);
+  const dSmooth = calcSMASeries(dVals, smoothD);
+  const dLine: { time: number; value: number }[] = [];
+  for (let i = 0; i < kLine.length; i++) {
+    if (dSmooth[i] != null) dLine.push({ time: kLine[i].time, value: dSmooth[i] as number });
+  }
+  return { k: kLine, d: dLine };
+}
+
 function calcDMI(
   candles: { time: number; high: number; low: number; close: number }[],
   period = 14
@@ -906,6 +1070,10 @@ export default function DashboardPage() {
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
+  const rocSeriesRef = useRef<any>(null);
+  const atrSeriesRef = useRef<any>(null);
+  const macdSeriesRef = useRef<{ macd: any; signal: any; hist: any } | null>(null);
+  const stochSeriesRef = useRef<{ k: any; d: any } | null>(null);
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
@@ -1212,6 +1380,38 @@ export default function DashboardPage() {
   const [dmiPlusColor, setDmiPlusColor] = useState(() => loadLS("dmi_pc", "#22c55e"));
   const [dmiMinusColor, setDmiMinusColor] = useState(() => loadLS("dmi_mc", "#ef4444"));
   const [dmiAdxColor, setDmiAdxColor] = useState(() => loadLS("dmi_ac", "#3b82f6"));
+
+  const [showROC, setShowROC] = useState(() => loadLS("ind_roc", false));
+  const [rocVisible, setRocVisible] = useState(() => loadLS("vis_roc", true));
+  const [rocSettings, setRocSettings] = useState(false);
+  const [rocPeriod, setRocPeriod] = useState(() => loadLS("roc_p", 9));
+  const [rocColor, setRocColor] = useState(() => loadLS("roc_c", "#2962FF"));
+
+  const [showATR, setShowATR] = useState(() => loadLS("ind_atr", false));
+  const [atrVisible, setAtrVisible] = useState(() => loadLS("vis_atr", true));
+  const [atrSettings, setAtrSettings] = useState(false);
+  const [atrPeriod, setAtrPeriod] = useState(() => loadLS("atr_p", 14));
+  const [atrSmooth, setAtrSmooth] = useState<"RMA" | "SMA" | "EMA" | "WMA">(() => loadLS("atr_s", "RMA"));
+  const [atrColor, setAtrColor] = useState(() => loadLS("atr_c", "#B71C1C"));
+
+  const [showMACD, setShowMACD] = useState(() => loadLS("ind_macd", false));
+  const [macdVisible, setMacdVisible] = useState(() => loadLS("vis_macd", true));
+  const [macdSettings, setMacdSettings] = useState(false);
+  const [macdFast, setMacdFast] = useState(() => loadLS("macd_f", 12));
+  const [macdSlow, setMacdSlow] = useState(() => loadLS("macd_s", 26));
+  const [macdSignal, setMacdSignal] = useState(() => loadLS("macd_sig", 9));
+  const [macdColor, setMacdColor] = useState(() => loadLS("macd_c", "#2962FF"));
+  const [macdSigColor, setMacdSigColor] = useState(() => loadLS("macd_sc", "#FF6D00"));
+
+  const [showStoch, setShowStoch] = useState(() => loadLS("ind_stoch", false));
+  const [stochVisible, setStochVisible] = useState(() => loadLS("vis_stoch", true));
+  const [stochSettings, setStochSettings] = useState(false);
+  const [stochRsiLen, setStochRsiLen] = useState(() => loadLS("stoch_rsi", 14));
+  const [stochLen, setStochLen] = useState(() => loadLS("stoch_len", 14));
+  const [stochK, setStochK] = useState(() => loadLS("stoch_k", 3));
+  const [stochD, setStochD] = useState(() => loadLS("stoch_d", 3));
+  const [stochKColor, setStochKColor] = useState(() => loadLS("stoch_kc", "#2962FF"));
+  const [stochDColor, setStochDColor] = useState(() => loadLS("stoch_dc", "#FF6D00"));
 
   const [showVol, setShowVol] = useState(() => loadLS("ind_vol", true));
   const [volVisible, setVolVisible] = useState(() => loadLS("vis_vol", true));
@@ -1526,6 +1726,25 @@ export default function DashboardPage() {
     saveLS("dmi_p", dmiPeriod); saveLS("dmi_pc", dmiPlusColor);
     saveLS("dmi_mc", dmiMinusColor); saveLS("dmi_ac", dmiAdxColor);
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor]);
+  useEffect(() => {
+    saveLS("ind_roc", showROC); saveLS("vis_roc", rocVisible);
+    saveLS("roc_p", rocPeriod); saveLS("roc_c", rocColor);
+  }, [showROC, rocVisible, rocPeriod, rocColor]);
+  useEffect(() => {
+    saveLS("ind_atr", showATR); saveLS("vis_atr", atrVisible);
+    saveLS("atr_p", atrPeriod); saveLS("atr_s", atrSmooth); saveLS("atr_c", atrColor);
+  }, [showATR, atrVisible, atrPeriod, atrSmooth, atrColor]);
+  useEffect(() => {
+    saveLS("ind_macd", showMACD); saveLS("vis_macd", macdVisible);
+    saveLS("macd_f", macdFast); saveLS("macd_s", macdSlow); saveLS("macd_sig", macdSignal);
+    saveLS("macd_c", macdColor); saveLS("macd_sc", macdSigColor);
+  }, [showMACD, macdVisible, macdFast, macdSlow, macdSignal, macdColor, macdSigColor]);
+  useEffect(() => {
+    saveLS("ind_stoch", showStoch); saveLS("vis_stoch", stochVisible);
+    saveLS("stoch_rsi", stochRsiLen); saveLS("stoch_len", stochLen);
+    saveLS("stoch_k", stochK); saveLS("stoch_d", stochD);
+    saveLS("stoch_kc", stochKColor); saveLS("stoch_dc", stochDColor);
+  }, [showStoch, stochVisible, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor]);
   useEffect(() => { saveLS("ind_vol", showVol); saveLS("vis_vol", volVisible); }, [showVol, volVisible]);
   useEffect(() => {
     saveLS("ind_trend", showTrend); saveLS("vis_trend", trendVisible);
@@ -1657,50 +1876,39 @@ export default function DashboardPage() {
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const hasVol = showVol && volVisible;
-    const hasRsi = showRSI && rsiVisible && !hideIndicators;
-    const hasDmi = showDMI && dmiVisible && !hideIndicators;
-    // Stack panes from bottom: DMI (lowest) → RSI → Volume → main chart
-    // Each pane ~12–14% height, TradingView-style
+    const panes: { id: string; on: boolean; h: number }[] = [
+      { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators), h: 0.12 },
+      { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators), h: 0.12 },
+      { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators), h: 0.13 },
+      { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators), h: 0.12 },
+      { id: "roc", on: !!(showROC && rocVisible && !hideIndicators), h: 0.11 },
+      { id: "atr", on: !!(showATR && atrVisible && !hideIndicators), h: 0.11 },
+      { id: "volume", on: !!(showVol && volVisible), h: 0.10 },
+    ];
+    // Cap total pane height so main chart stays usable
+    const active = panes.filter((p) => p.on);
+    let totalH = active.reduce((s, p) => s + p.h, 0);
+    const maxTotal = 0.55;
+    const scale = totalH > maxTotal ? maxTotal / totalH : 1;
     let used = 0;
-    if (hasDmi) {
-      const h = 0.13;
+    for (const p of active) {
+      const h = p.h * scale;
       try {
-        chart.priceScale("dmi").applyOptions({
+        chart.priceScale(p.id).applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
           borderVisible: false,
         });
       } catch {}
       used += h;
     }
-    if (hasRsi) {
-      const h = 0.14;
-      try {
-        chart.priceScale("rsi").applyOptions({
-          scaleMargins: { top: 1 - used - h, bottom: used },
-          borderVisible: false,
-        });
-      } catch {}
-      used += h;
-    }
-    if (hasVol) {
-      const h = 0.12;
-      try {
-        chart.priceScale("volume").applyOptions({
-          scaleMargins: { top: 1 - used - h, bottom: used },
-          borderVisible: false,
-        });
-      } catch {}
-      used += h;
-    }
-    // Main price pane leaves room for lower panes
     chart.priceScale("right").applyOptions({
       scaleMargins: {
         top: 0.05,
         bottom: Math.max(0.05, used + 0.02),
       },
     });
-  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible, hideIndicators]);
+  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
+    showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible, hideIndicators]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -3019,9 +3227,118 @@ export default function DashboardPage() {
   }, [showTCP, tcpVisible, hideIndicators, tcpEntry, tcpSL,
     tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5, removeTCP]);
 
+  const removeROC = useCallback(() => {
+    if (rocSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(rocSeriesRef.current); } catch {}
+      rocSeriesRef.current = null;
+    }
+  }, []);
+  const applyROC = useCallback(() => {
+    removeROC();
+    if (!showROC || !rocVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const s = chartRef.current.addLineSeries({
+      color: rocColor, lineWidth: 2, priceScaleId: "roc",
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    s.setData(calcROC(candlesRef.current, rocPeriod) as any);
+    try {
+      s.createPriceLine({ price: 0, color: "rgba(120,123,134,0.6)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+    } catch {}
+    rocSeriesRef.current = s;
+    updateMargins();
+  }, [showROC, rocVisible, hideIndicators, rocPeriod, rocColor, removeROC, updateMargins]);
+
+  const removeATR = useCallback(() => {
+    if (atrSeriesRef.current && chartRef.current) {
+      try { chartRef.current.removeSeries(atrSeriesRef.current); } catch {}
+      atrSeriesRef.current = null;
+    }
+  }, []);
+  const applyATR = useCallback(() => {
+    removeATR();
+    if (!showATR || !atrVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const s = chartRef.current.addLineSeries({
+      color: atrColor, lineWidth: 2, priceScaleId: "atr",
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
+    atrSeriesRef.current = s;
+    updateMargins();
+  }, [showATR, atrVisible, hideIndicators, atrPeriod, atrSmooth, atrColor, removeATR, updateMargins]);
+
+  const removeMACD = useCallback(() => {
+    const chart = chartRef.current;
+    if (macdSeriesRef.current && chart) {
+      try { chart.removeSeries(macdSeriesRef.current.macd); } catch {}
+      try { chart.removeSeries(macdSeriesRef.current.signal); } catch {}
+      try { chart.removeSeries(macdSeriesRef.current.hist); } catch {}
+      macdSeriesRef.current = null;
+    }
+  }, []);
+  const applyMACD = useCallback(() => {
+    removeMACD();
+    if (!showMACD || !macdVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
+    const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
+    const histS = chart.addHistogramSeries({
+      priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
+    });
+    histS.setData(hist as any);
+    const macdS = chart.addLineSeries({
+      color: macdColor, lineWidth: 2, priceScaleId: "macd",
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    macdS.setData(macdLine as any);
+    const sigS = chart.addLineSeries({
+      color: macdSigColor, lineWidth: 2, priceScaleId: "macd",
+      priceLineVisible: false, lastValueVisible: false,
+    });
+    sigS.setData(signalLine as any);
+    try {
+      macdS.createPriceLine({ price: 0, color: "rgba(120,123,134,0.5)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+    } catch {}
+    macdSeriesRef.current = { macd: macdS, signal: sigS, hist: histS };
+    updateMargins();
+  }, [showMACD, macdVisible, hideIndicators, macdFast, macdSlow, macdSignal, macdColor, macdSigColor, removeMACD, updateMargins]);
+
+  const removeStoch = useCallback(() => {
+    const chart = chartRef.current;
+    if (stochSeriesRef.current && chart) {
+      try { chart.removeSeries(stochSeriesRef.current.k); } catch {}
+      try { chart.removeSeries(stochSeriesRef.current.d); } catch {}
+      stochSeriesRef.current = null;
+    }
+  }, []);
+  const applyStoch = useCallback(() => {
+    removeStoch();
+    if (!showStoch || !stochVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
+    const { k, d } = calcStochRSI(candlesRef.current, stochRsiLen, stochLen, stochK, stochD);
+    const kS = chart.addLineSeries({
+      color: stochKColor, lineWidth: 2, priceScaleId: "stoch",
+      priceLineVisible: false, lastValueVisible: true,
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    });
+    kS.setData(k as any);
+    const dS = chart.addLineSeries({
+      color: stochDColor, lineWidth: 2, priceScaleId: "stoch",
+      priceLineVisible: false, lastValueVisible: false,
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    });
+    dS.setData(d as any);
+    try {
+      kS.createPriceLine({ price: 80, color: "rgba(120,123,134,0.7)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+      kS.createPriceLine({ price: 50, color: "rgba(120,123,134,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+      kS.createPriceLine({ price: 20, color: "rgba(120,123,134,0.7)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+    } catch {}
+    stochSeriesRef.current = { k: kS, d: dS };
+    updateMargins();
+  }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
+
   const rebuildIndicators = useCallback(() => {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP]);
+    applyROC(); applyATR(); applyMACD(); applyStoch();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch]);
 
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
@@ -6160,6 +6477,10 @@ export default function DashboardPage() {
       rsiSettings ||
       dmiSettings ||
       tcpSettings ||
+      rocSettings ||
+      atrSettings ||
+      macdSettings ||
+      stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
     if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !alarmMenuOpen) return;
@@ -6191,6 +6512,10 @@ export default function DashboardPage() {
         setRsiSettings(false);
         setDmiSettings(false);
         setTcpSettings(false);
+        setRocSettings(false);
+        setAtrSettings(false);
+        setMacdSettings(false);
+        setStochSettings(false);
         setHideMenuOpen(false);
         setTrashMenuOpen(false);
       }
@@ -6214,6 +6539,10 @@ export default function DashboardPage() {
     rsiSettings,
     dmiSettings,
     tcpSettings,
+    rocSettings,
+    atrSettings,
+    macdSettings,
+    stochSettings,
     hideMenuOpen,
     trashMenuOpen,
     editingNoteId,
@@ -6329,6 +6658,10 @@ export default function DashboardPage() {
     showVol, volVisible,
     showTCP, tcpVisible, tcpEntry, tcpSL,
     tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5,
+    showROC, rocVisible, rocPeriod, rocColor,
+    showATR, atrVisible, atrPeriod, atrSmooth, atrColor,
+    showMACD, macdVisible, macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
+    showStoch, stochVisible, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
     hideIndicators,
     rebuildIndicators,
   ]);
@@ -6999,6 +7332,10 @@ export default function DashboardPage() {
     setShowDMI(false);
     setShowVol(false);
     setShowTCP(false);
+    setShowROC(false);
+    setShowATR(false);
+    setShowMACD(false);
+    setShowStoch(false);
   };
   const clearMeasure = () => {
     measureStartRef.current = null;
@@ -7458,6 +7795,10 @@ export default function DashboardPage() {
                   { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
                   { key: "vol", label: "Volume", on: showVol, set: setShowVol },
                   { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP },
+                  { key: "roc", label: "ROC", on: showROC, set: setShowROC },
+                  { key: "atr", label: "ATR", on: showATR, set: setShowATR },
+                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD },
+                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch },
                 ].map((it) => (
                   <button
                     key={it.key}
@@ -8307,6 +8648,11 @@ export default function DashboardPage() {
                       setShowRSI(false);
                       setShowDMI(false);
                       setShowVol(false);
+                      setShowTCP(false);
+                      setShowROC(false);
+                      setShowATR(false);
+                      setShowMACD(false);
+                      setShowStoch(false);
                       setTrashMenuOpen(false);
                     }}
                     className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-red-400 hover:bg-red-950/50 flex items-center gap-2 border-t border-gray-700 mt-0.5 pt-2"
@@ -8626,6 +8972,22 @@ export default function DashboardPage() {
             {!hideIndicators && showTCP && (
               <IndChip label="TCP" visible={tcpVisible} onToggleVisible={() => setTcpVisible((v) => !v)}
                 onSettings={() => setTcpSettings((v) => !v)} onRemove={() => { setShowTCP(false); removeTCP(); }} />
+            )}
+            {!hideIndicators && showROC && (
+              <IndChip label="ROC" visible={rocVisible} onToggleVisible={() => setRocVisible((v) => !v)}
+                onSettings={() => setRocSettings((v) => !v)} onRemove={() => { setShowROC(false); removeROC(); }} />
+            )}
+            {!hideIndicators && showATR && (
+              <IndChip label="ATR" visible={atrVisible} onToggleVisible={() => setAtrVisible((v) => !v)}
+                onSettings={() => setAtrSettings((v) => !v)} onRemove={() => { setShowATR(false); removeATR(); }} />
+            )}
+            {!hideIndicators && showMACD && (
+              <IndChip label="MACD" visible={macdVisible} onToggleVisible={() => setMacdVisible((v) => !v)}
+                onSettings={() => setMacdSettings((v) => !v)} onRemove={() => { setShowMACD(false); removeMACD(); }} />
+            )}
+            {!hideIndicators && showStoch && (
+              <IndChip label="Stoch" visible={stochVisible} onToggleVisible={() => setStochVisible((v) => !v)}
+                onSettings={() => setStochSettings((v) => !v)} onRemove={() => { setShowStoch(false); removeStoch(); }} />
             )}
           </div>
 
@@ -9101,7 +9463,91 @@ export default function DashboardPage() {
               <button type="button" onClick={() => setTcpSettings(false)} className="block text-xs text-gray-400 mt-2">Close</button>
             </div>
           )}
+          {rocSettings && showROC && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">ROC</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">Length</span>
+                <input type="number" min={1} value={rocPeriod} onChange={(e) => setRocPeriod(Math.max(1, parseInt(e.target.value, 10) || 9))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">Color</span>
+                <input type="color" value={rocColor} onChange={(e) => setRocColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setRocSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+          {atrSettings && showATR && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">ATR</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Length</span>
+                <input type="number" min={1} value={atrPeriod} onChange={(e) => setAtrPeriod(Math.max(1, parseInt(e.target.value, 10) || 14))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+              </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">Smooth</span>
+                <select value={atrSmooth} onChange={(e) => setAtrSmooth(e.target.value as any)} className="bg-gray-800 rounded px-1 py-0.5 text-xs">
+                  {["RMA", "SMA", "EMA", "WMA"].map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-14">Color</span>
+                <input type="color" value={atrColor} onChange={(e) => setAtrColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setAtrSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+          {macdSettings && showMACD && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
+              <p className="font-medium mb-2">MACD</p>
+              {[
+                ["Fast", macdFast, setMacdFast],
+                ["Slow", macdSlow, setMacdSlow],
+                ["Signal", macdSignal, setMacdSignal],
+              ].map(([lab, val, set]: any) => (
+                <div key={lab} className="flex items-center gap-2 mb-1">
+                  <span className="text-xs w-12">{lab}</span>
+                  <input type="number" min={1} value={val} onChange={(e) => set(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+                </div>
+              ))}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-12">MACD</span>
+                <input type="color" value={macdColor} onChange={(e) => setMacdColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-12">Signal</span>
+                <input type="color" value={macdSigColor} onChange={(e) => setMacdSigColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setMacdSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
+          {stochSettings && showStoch && (
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
+              <p className="font-medium mb-2">Stoch RSI</p>
+              {[
+                ["RSI Len", stochRsiLen, setStochRsiLen],
+                ["Stoch", stochLen, setStochLen],
+                ["K", stochK, setStochK],
+                ["D", stochD, setStochD],
+              ].map(([lab, val, set]: any) => (
+                <div key={lab} className="flex items-center gap-2 mb-1">
+                  <span className="text-xs w-14">{lab}</span>
+                  <input type="number" min={1} value={val} onChange={(e) => set(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
+                </div>
+              ))}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs w-14">K color</span>
+                <input type="color" value={stochKColor} onChange={(e) => setStochKColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs w-14">D color</span>
+                <input type="color" value={stochDColor} onChange={(e) => setStochDColor(e.target.value)} className="w-6 h-6" />
+              </div>
+              <button type="button" onClick={() => setStochSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
+            </div>
+          )}
           {rsiSettings && showRSI && (
+
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
               <p className="font-medium mb-2">RSI</p>
               <div className="flex items-center gap-2 mb-1">
