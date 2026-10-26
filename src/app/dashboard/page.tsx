@@ -128,10 +128,19 @@ const ALL_TIMEFRAMES = [
 ];
 
 const PIVOT_TFS = [
+  { label: "1m", value: "1" },
+  { label: "3m", value: "3" },
+  { label: "5m", value: "5" },
+  { label: "15m", value: "15" },
+  { label: "30m", value: "30" },
+  { label: "45m", value: "45" },
   { label: "1H", value: "60" },
+  { label: "2H", value: "120" },
+  { label: "3H", value: "180" },
   { label: "4H", value: "240" },
   { label: "1D", value: "D" },
   { label: "1W", value: "W" },
+  { label: "1M", value: "M" },
 ];
 
 const TIMEZONES = [
@@ -1365,6 +1374,7 @@ export default function DashboardPage() {
   const [pivotSettings, setPivotSettings] = useState(false);
   const [pivotTf, setPivotTf] = useState(() => loadLS("pivot_tf", "D"));
   const [pivotFib, setPivotFib] = useState(() => loadLS("pivot_fib", false));
+  const [pivotShowLast, setPivotShowLast] = useState(() => loadLS("pivot_last", true));
 
   const [showRSI, setShowRSI] = useState(() => loadLS("ind_rsi", false));
   const [rsiVisible, setRsiVisible] = useState(() => loadLS("vis_rsi", true));
@@ -1717,7 +1727,8 @@ export default function DashboardPage() {
   useEffect(() => {
     saveLS("ind_pivot", showPivot); saveLS("vis_pivot", pivotVisible);
     saveLS("pivot_tf", pivotTf); saveLS("pivot_fib", pivotFib);
-  }, [showPivot, pivotVisible, pivotTf, pivotFib]);
+    saveLS("pivot_last", pivotShowLast);
+  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast]);
   useEffect(() => {
     saveLS("ind_rsi", showRSI); saveLS("vis_rsi", rsiVisible);
     saveLS("rsi_p", rsiPeriod); saveLS("rsi_c", rsiColor);
@@ -3061,45 +3072,101 @@ export default function DashboardPage() {
     removePivot();
     if (!showPivot || !pivotVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     try {
-      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=3`);
+      const chart = chartRef.current;
+      const limit = pivotShowLast ? 8 : 40;
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=${limit}`);
       const data = await res.json();
-      const rows = Array.isArray(data) ? data : data?.data || data?.result?.list || [];
+      let rows: any[] = Array.isArray(data) ? data : data?.data || data?.result?.list || [];
       if (!rows.length) return;
-      const last = rows[rows.length - 2] || rows[rows.length - 1];
-      const h = parseFloat(last.high || last[2]);
-      const l = parseFloat(last.low || last[3]);
-      const c = parseFloat(last.close || last[4]);
-      if (!h || !l || !c) return;
-      const pp = (h + l + c) / 3;
-      const r1 = 2 * pp - l, s1 = 2 * pp - h;
-      const r2 = pp + (h - l), s2 = pp - (h - l);
-      const r3 = h + 2 * (pp - l), s3 = l - 2 * (h - pp);
-      const levels = pivotFib
-        ? [
-            { p: pp, col: "#eab308", t: "P" },
-            { p: pp + 0.382 * (h - l), col: "#22c55e", t: "R1" },
-            { p: pp + 0.618 * (h - l), col: "#16a34a", t: "R2" },
-            { p: pp + (h - l), col: "#15803d", t: "R3" },
-            { p: pp - 0.382 * (h - l), col: "#ef4444", t: "S1" },
-            { p: pp - 0.618 * (h - l), col: "#dc2626", t: "S2" },
-            { p: pp - (h - l), col: "#b91c1c", t: "S3" },
-          ]
-        : [
-            { p: pp, col: "#eab308", t: "P" },
-            { p: r1, col: "#22c55e", t: "R1" }, { p: r2, col: "#16a34a", t: "R2" }, { p: r3, col: "#15803d", t: "R3" },
-            { p: s1, col: "#ef4444", t: "S1" }, { p: s2, col: "#dc2626", t: "S2" }, { p: s3, col: "#b91c1c", t: "S3" },
+      // normalize + sort ascending by time
+      const bars = rows.map((r: any) => {
+        const t = Number(r.time ?? r.openTime ?? r[0]);
+        const time = t > 1e12 ? Math.floor(t / 1000) : t;
+        return {
+          time,
+          high: parseFloat(r.high ?? r[2]),
+          low: parseFloat(r.low ?? r[3]),
+          close: parseFloat(r.close ?? r[4]),
+        };
+      }).filter((b: any) => b.time > 0 && b.high > 0 && b.low > 0)
+        .sort((a: any, b: any) => a.time - b.time);
+      if (bars.length < 2) return;
+
+      const chartCandles = candlesRef.current;
+      const chartLastT = Number(chartCandles[chartCandles.length - 1]?.time) || bars[bars.length - 1].time;
+      const barSec = intervalToSeconds(String(pivotTf));
+
+      const makeLevels = (h: number, l: number, c: number) => {
+        const range = h - l;
+        const pp = (h + l + c) / 3;
+        if (pivotFib) {
+          return [
+            { p: pp, col: "#ffffff", t: "P" },
+            { p: pp + 0.382 * range, col: "#00ff00", t: "R1" },
+            { p: pp + 0.618 * range, col: "#00ff00", t: "R2" },
+            { p: pp + range, col: "#00ff00", t: "R3" },
+            { p: pp + 1.382 * range, col: "#00ff00", t: "R4" },
+            { p: pp - 0.382 * range, col: "#ff0000", t: "S1" },
+            { p: pp - 0.618 * range, col: "#ff0000", t: "S2" },
+            { p: pp - range, col: "#ff0000", t: "S3" },
+            { p: pp - 1.382 * range, col: "#ff0000", t: "S4" },
           ];
-      const times = candlesRef.current.map((x: any) => x.time);
-      levels.forEach(({ p, col, t }) => {
-        const ls = chartRef.current!.addLineSeries({
-          color: col, lineWidth: 1, lineStyle: LineStyle.Dashed,
-          priceLineVisible: false, lastValueVisible: true, title: t,
-        });
-        ls.setData(times.map((tm: number) => ({ time: tm as any, value: p })));
-        pivotSeriesRef.current.push(ls);
-      });
+        }
+        // Floor trader
+        const r1 = 2 * pp - l, s1 = 2 * pp - h;
+        const r2 = pp + range, s2 = pp - range;
+        const r3 = r1 + range, s3 = s1 - range;
+        return [
+          { p: pp, col: "#ffffff", t: "P" },
+          { p: r1, col: "#00ffff", t: "R1" },
+          { p: r2, col: "#00ffff", t: "R2" },
+          { p: r3, col: "#00ffff", t: "R3" },
+          { p: s1, col: "#ff00ff", t: "S1" },
+          { p: s2, col: "#ff00ff", t: "S2" },
+          { p: s3, col: "#ff00ff", t: "S3" },
+        ];
+      };
+
+      // Pivots from completed bar i apply during bar i+1
+      const lastIdx = bars.length - 1;
+      // Prefer previous completed bar as source for "current" period (like Pine high[1])
+      const startI = pivotShowLast ? Math.max(0, lastIdx - 2) : 0;
+      const endI = lastIdx - 1; // last completed source bar
+
+      for (let i = startI; i <= endI; i++) {
+        if (pivotShowLast && i < endI) continue; // only last completed
+        const src = bars[i];
+        const tStart = bars[i + 1] ? bars[i + 1].time : src.time + barSec;
+        const tEnd = bars[i + 2]
+          ? bars[i + 2].time
+          : Math.max(chartLastT, tStart + barSec);
+        if (!(tEnd > tStart)) continue;
+        const levels = makeLevels(src.high, src.low, src.close);
+        const isLast = i === endI;
+        for (const { p, col, t } of levels) {
+          if (!(p > 0) || Number.isNaN(p)) continue;
+          try {
+            const ls = chart.addLineSeries({
+              color: col,
+              lineWidth: isLast ? 2 : 1,
+              lineStyle: LineStyle.Solid,
+              priceLineVisible: false,
+              lastValueVisible: isLast,
+              crosshairMarkerVisible: false,
+              title: isLast ? t : "",
+              // keep short segment — only 2 points, no full-chart dashed line
+              autoscaleInfoProvider: () => null as any,
+            });
+            ls.setData([
+              { time: tStart as any, value: p },
+              { time: tEnd as any, value: p },
+            ]);
+            pivotSeriesRef.current.push(ls);
+          } catch {}
+        }
+      }
     } catch {}
-  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, removePivot]);
+  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, pivotShowLast, removePivot]);
 
   const removeTrend = useCallback(() => {
     trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
@@ -6737,7 +6804,7 @@ export default function DashboardPage() {
     showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3,
     showRSI, rsiVisible, rsiPeriod, rsiColor,
     showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
-    showPivot, pivotVisible, pivotTf, pivotFib,
+    showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast,
     showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
     showVol, volVisible,
     showTCP, tcpVisible, tcpEntry, tcpSL,
@@ -9455,19 +9522,24 @@ export default function DashboardPage() {
             </div>
           )}
           {pivotSettings && showPivot && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
-              <p className="font-medium mb-2">Pivot TF</p>
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-56 text-sm max-h-[70vh] overflow-y-auto">
+              <p className="font-medium mb-2">Pivot Points</p>
+              <p className="text-[10px] text-gray-500 mb-1">Timeframe</p>
               <div className="flex flex-wrap gap-1 mb-2">
                 {PIVOT_TFS.map((t) => (
                   <button key={t.value} type="button" onClick={() => setPivotTf(t.value)}
-                    className={`px-2 py-0.5 rounded text-xs ${pivotTf === t.value ? "bg-orange-500" : "bg-gray-800"}`}>
+                    className={`px-1.5 py-0.5 rounded text-[10px] ${pivotTf === t.value ? "bg-orange-500 text-white" : "bg-gray-800 text-gray-300"}`}>
                     {t.label}
                   </button>
                 ))}
               </div>
+              <label className="flex items-center gap-2 text-xs mb-1.5">
+                <input type="checkbox" checked={pivotShowLast} onChange={(e) => setPivotShowLast(e.target.checked)} className="accent-orange-500" />
+                Show only last period
+              </label>
               <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
-                Fib levels
+                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} className="accent-orange-500" />
+                Fibonacci levels
               </label>
               <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
             </div>
