@@ -185,14 +185,6 @@ function getPrecision(price: number) {
   if (price < 1000) return { precision: 3, minMove: 0.001 };
   return { precision: 2, minMove: 0.01 };
 }
-function hexToRgba(hex: string, alpha = 1) {
-  const h = String(hex || "#00ffff").replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const n = parseInt(full.slice(0, 6), 16);
-  if (Number.isNaN(n)) return `rgba(0,255,255,${alpha})`;
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, alpha))})`;
-}
 function formatPrice(price: number) {
   const { precision } = getPrecision(price);
   return Number(price.toFixed(precision));
@@ -1095,6 +1087,7 @@ export default function DashboardPage() {
   const trendSeriesRef = useRef<any[]>([]);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
+  const paneSepRef = useRef<HTMLDivElement | null>(null);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   /** in-flight triggers — prevents concurrent double-fire */
@@ -1383,9 +1376,6 @@ export default function DashboardPage() {
   const [pivotTf, setPivotTf] = useState(() => loadLS("pivot_tf", "D"));
   const [pivotFib, setPivotFib] = useState(() => loadLS("pivot_fib", false));
   const [pivotShowLast, setPivotShowLast] = useState(() => loadLS("pivot_last", true));
-  const [pivotShowLabels, setPivotShowLabels] = useState(() => loadLS("pivot_labels", true));
-  const [pivotColor, setPivotColor] = useState(() => loadLS("pivot_color", "#00ffff"));
-  const [pivotOpacity, setPivotOpacity] = useState(() => loadLS("pivot_op", 85));
 
   const [showRSI, setShowRSI] = useState(() => loadLS("ind_rsi", false));
   const [rsiVisible, setRsiVisible] = useState(() => loadLS("vis_rsi", true));
@@ -1739,10 +1729,7 @@ export default function DashboardPage() {
     saveLS("ind_pivot", showPivot); saveLS("vis_pivot", pivotVisible);
     saveLS("pivot_tf", pivotTf); saveLS("pivot_fib", pivotFib);
     saveLS("pivot_last", pivotShowLast);
-    saveLS("pivot_labels", pivotShowLabels);
-    saveLS("pivot_color", pivotColor);
-    saveLS("pivot_op", pivotOpacity);
-  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotColor, pivotOpacity]);
+  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast]);
   useEffect(() => {
     saveLS("ind_rsi", showRSI); saveLS("vis_rsi", rsiVisible);
     saveLS("rsi_p", rsiPeriod); saveLS("rsi_c", rsiColor);
@@ -1933,6 +1920,40 @@ export default function DashboardPage() {
         bottom: Math.max(0.05, used + 0.02),
       },
     });
+    // Horizontal separators between oscillator panes (TV-style)
+    try {
+      const host = paneSepRef.current;
+      if (host) {
+        const oscIds = new Set(["dmi", "stoch", "macd", "rsi", "roc", "atr"]);
+        const oscActive = active.filter((p) => oscIds.has(p.id));
+        // recompute bottoms for active list (same loop as above)
+        let u = 0;
+        const tops: number[] = []; // from bottom: cumulative top edge of each active pane (fraction from bottom)
+        for (const p of active) {
+          const h = p.h * scale;
+          tops.push(u + h); // top edge of this pane as fraction from bottom
+          u += h;
+        }
+        // separators at top edge of each osc pane except the uppermost osc
+        const seps: number[] = [];
+        for (let i = 0; i < active.length; i++) {
+          if (!oscIds.has(active[i].id)) continue;
+          // top edge of this pane (fraction from bottom of chart)
+          const topFromBottom = tops[i];
+          // skip the highest osc pane top (closest to main chart) — still draw between oscs
+          seps.push(topFromBottom);
+        }
+        // also draw line at bottom of main chart / top of highest lower pane
+        const hostH = host.clientHeight || 1;
+        // remove last sep if it's the top of the stack of all lower panes (border with main) — keep it, useful
+        host.innerHTML = seps
+          .map((fracFromBottom) => {
+            const y = hostH * (1 - fracFromBottom);
+            return `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.18);pointer-events:none;"></div>`;
+          })
+          .join("");
+      }
+    } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
     showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible, hideIndicators]);
 
@@ -3110,39 +3131,34 @@ export default function DashboardPage() {
       const chartLastT = Number(chartCandles[chartCandles.length - 1]?.time) || bars[bars.length - 1].time;
       const barSec = intervalToSeconds(String(pivotTf));
 
-      const alpha = Math.max(0.15, Math.min(1, Number(pivotOpacity) / 100));
-      const base = pivotColor || "#00ffff";
-      // resistance slightly brighter, support tinted toward magenta relative to base
-      const colP = hexToRgba("#ffffff", Math.min(1, alpha + 0.1));
-      const colR = hexToRgba(base, alpha);
-      const colS = hexToRgba(base, Math.max(0.2, alpha * 0.85));
       const makeLevels = (h: number, l: number, c: number) => {
         const range = h - l;
         const pp = (h + l + c) / 3;
         if (pivotFib) {
           return [
-            { p: pp, col: colP, t: "P" },
-            { p: pp + 0.382 * range, col: colR, t: "R1" },
-            { p: pp + 0.618 * range, col: colR, t: "R2" },
-            { p: pp + range, col: colR, t: "R3" },
-            { p: pp + 1.382 * range, col: colR, t: "R4" },
-            { p: pp - 0.382 * range, col: colS, t: "S1" },
-            { p: pp - 0.618 * range, col: colS, t: "S2" },
-            { p: pp - range, col: colS, t: "S3" },
-            { p: pp - 1.382 * range, col: colS, t: "S4" },
+            { p: pp, col: "#ffffff", t: "P" },
+            { p: pp + 0.382 * range, col: "#00ff00", t: "R1" },
+            { p: pp + 0.618 * range, col: "#00ff00", t: "R2" },
+            { p: pp + range, col: "#00ff00", t: "R3" },
+            { p: pp + 1.382 * range, col: "#00ff00", t: "R4" },
+            { p: pp - 0.382 * range, col: "#ff0000", t: "S1" },
+            { p: pp - 0.618 * range, col: "#ff0000", t: "S2" },
+            { p: pp - range, col: "#ff0000", t: "S3" },
+            { p: pp - 1.382 * range, col: "#ff0000", t: "S4" },
           ];
         }
+        // Floor trader
         const r1 = 2 * pp - l, s1 = 2 * pp - h;
         const r2 = pp + range, s2 = pp - range;
         const r3 = r1 + range, s3 = s1 - range;
         return [
-          { p: pp, col: colP, t: "P" },
-          { p: r1, col: colR, t: "R1" },
-          { p: r2, col: colR, t: "R2" },
-          { p: r3, col: colR, t: "R3" },
-          { p: s1, col: colS, t: "S1" },
-          { p: s2, col: colS, t: "S2" },
-          { p: s3, col: colS, t: "S3" },
+          { p: pp, col: "#ffffff", t: "P" },
+          { p: r1, col: "#00ffff", t: "R1" },
+          { p: r2, col: "#00ffff", t: "R2" },
+          { p: r3, col: "#00ffff", t: "R3" },
+          { p: s1, col: "#ff00ff", t: "S1" },
+          { p: s2, col: "#ff00ff", t: "S2" },
+          { p: s3, col: "#ff00ff", t: "S3" },
         ];
       };
 
@@ -3170,9 +3186,10 @@ export default function DashboardPage() {
               lineWidth: isLast ? 2 : 1,
               lineStyle: LineStyle.Solid,
               priceLineVisible: false,
-              lastValueVisible: !!(pivotShowLabels && isLast),
+              lastValueVisible: isLast,
               crosshairMarkerVisible: false,
-              title: pivotShowLabels && isLast ? t : "",
+              title: isLast ? t : "",
+              // keep short segment — only 2 points, no full-chart dashed line
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData([
@@ -3184,7 +3201,7 @@ export default function DashboardPage() {
         }
       }
     } catch {}
-  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotColor, pivotOpacity, removePivot]);
+  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, pivotShowLast, removePivot]);
 
   const removeTrend = useCallback(() => {
     trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
@@ -6822,7 +6839,7 @@ export default function DashboardPage() {
     showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3,
     showRSI, rsiVisible, rsiPeriod, rsiColor,
     showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
-    showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotColor, pivotOpacity,
+    showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast,
     showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
     showVol, volVisible,
     showTCP, tcpVisible, tcpEntry, tcpSL,
@@ -7957,31 +7974,43 @@ export default function DashboardPage() {
                 }}
               >
                 {[
-                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
-                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
-                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
-                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
-                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
-                  { key: "vol", label: "Volume", on: showVol, set: setShowVol },
-                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP },
-                  { key: "roc", label: "ROC", on: showROC, set: setShowROC },
-                  { key: "atr", label: "ATR", on: showATR, set: setShowATR },
-                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD },
-                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch },
-                ].map((it) => (
-                  <button
-                    key={it.key}
-                    type="button"
-                    data-ind-panel
-                    onClick={() => it.set((v: boolean) => !v)}
-                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
-                      it.on ? "text-orange-300" : "text-gray-200"
-                    }`}
-                  >
-                    <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
-                    <span>{it.label}</span>
-                  </button>
-                ))}
+                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
+                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
+                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
+                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
+                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
+                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
+                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
+                  { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
+                  { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
+                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD, group: "osc" },
+                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch, group: "osc" },
+                ].map((it, idx, arr) => {
+                  const prev = idx > 0 ? arr[idx - 1] : null;
+                  const showSep = prev && prev.group === "main" && it.group === "osc";
+                  return (
+                    <div key={it.key}>
+                      {showSep && (
+                        <div className="px-3 py-1.5 flex items-center gap-2 pointer-events-none">
+                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
+                          <span className="text-[9px] text-gray-500 shrink-0 tracking-wide">اسیلاتور</span>
+                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        data-ind-panel
+                        onClick={() => it.set((v: boolean) => !v)}
+                        className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                          it.on ? "text-orange-300" : "text-gray-200"
+                        }`}
+                      >
+                        <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
+                        <span>{it.label}</span>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -8917,6 +8946,12 @@ export default function DashboardPage() {
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
                 style={{ zIndex: 26 }}
               />
+              <div
+                ref={paneSepRef}
+                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
+                style={{ zIndex: 18 }}
+              />
+
 
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -9540,14 +9575,14 @@ export default function DashboardPage() {
             </div>
           )}
           {pivotSettings && showPivot && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-56 text-sm">
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
               <p className="font-medium mb-2">Pivot Points</p>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-[10px] text-gray-400 w-16 shrink-0">Timeframe</span>
                 <select
                   value={pivotTf}
                   onChange={(e) => setPivotTf(e.target.value)}
-                  className="flex-1 bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-xs text-gray-100"
+                  className="flex-1 bg-gray-800 border border-gray-600 rounded-md px-2 py-1.5 text-xs text-gray-100"
                 >
                   {PIVOT_TFS.map((t) => (
                     <option key={t.value} value={t.value}>{t.label}</option>
@@ -9558,32 +9593,11 @@ export default function DashboardPage() {
                 <input type="checkbox" checked={pivotShowLast} onChange={(e) => setPivotShowLast(e.target.checked)} className="accent-orange-500" />
                 Show only last period
               </label>
-              <label className="flex items-center gap-2 text-xs mb-1.5">
-                <input type="checkbox" checked={pivotShowLabels} onChange={(e) => setPivotShowLabels(e.target.checked)} className="accent-orange-500" />
-                Show price labels
-              </label>
-              <label className="flex items-center gap-2 text-xs mb-2">
+              <label className="flex items-center gap-2 text-xs">
                 <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} className="accent-orange-500" />
                 Fibonacci levels
               </label>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-[10px] text-gray-400 w-16 shrink-0">Color</span>
-                <input type="color" value={pivotColor} onChange={(e) => setPivotColor(e.target.value)} className="w-8 h-7 rounded cursor-pointer bg-transparent border-0" />
-                <span className="text-[10px] text-gray-500 truncate">{pivotColor}</span>
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-[10px] text-gray-400 w-16 shrink-0">Opacity</span>
-                <input
-                  type="range"
-                  min={15}
-                  max={100}
-                  value={pivotOpacity}
-                  onChange={(e) => setPivotOpacity(parseInt(e.target.value, 10) || 85)}
-                  className="flex-1 accent-orange-500"
-                />
-                <span className="text-[10px] text-gray-400 w-8 text-right">{pivotOpacity}%</span>
-              </div>
-              <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-1 block">Close</button>
+              <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
             </div>
           )}
           {trendSettings && showTrend && (
