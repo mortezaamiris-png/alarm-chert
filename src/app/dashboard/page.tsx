@@ -858,6 +858,7 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
+  const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
@@ -1826,6 +1827,7 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
+    calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
@@ -1843,13 +1845,19 @@ export default function DashboardPage() {
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
         // Title only when note exists (no "Line xxx" label)
-        const noteClean =
-          l.note &&
-          !String(l.note).startsWith("__diag:") &&
-          !String(l.note).startsWith("__ray:") &&
-          l.note !== "__vline__"
-            ? String(l.note)
-            : "";
+        const noteClean = (() => {
+          if (!l.note) return "";
+          const s = String(l.note);
+          if (s === "__vline__" || s.startsWith("__vline__:")) return "";
+          if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
+            const idx = s.indexOf("|");
+            return idx >= 0 ? s.slice(idx + 1).trim() : "";
+          }
+          if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:")) return "";
+          if (s.startsWith("__")) return "";
+          return s;
+        })();
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -1867,6 +1875,17 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
+        } else if (typeof l.note === "string" && l.note.startsWith("__callout:")) {
+          const t = Number(l.start_time);
+          if (!Number.isNaN(t) && t > 0) {
+            calloutItemsRef.current.push({
+              id: String(l.id),
+              time: t,
+              price: Number(l.price),
+              text: String(l.note).replace(/^__callout:/, ""),
+              color: color,
+            });
+          }
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
@@ -2063,9 +2082,12 @@ export default function DashboardPage() {
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (l.start_time != null) {
-          // Horizontal half-line via DOM overlay (no LWC gap on any TF)
+          // Half-line locked to saved time+price (no re-snap → no drift while panning)
+          const t0 = Number(l.start_time);
+          const barSec = intervalToSeconds(String(intervalRef.current));
           const bars = candlesRef.current || [];
-          const t0 = snapTimeToBars(Number(l.start_time), bars);
+          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: String(l.id),
@@ -2075,6 +2097,25 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
             });
+            // Axis price tag + note (same as full line)
+            try {
+              const ls: any = chart.addLineSeries({
+                color: color,
+                lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted as any,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: false,
+                title: title || "",
+                autoscaleInfoProvider: () => null as any,
+              });
+              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
+              ls.setData([
+                { time: tLabel as any, value: Number(l.price) },
+                { time: rayEnd as any, value: Number(l.price) },
+              ]);
+              chartLinesRef.current.set(l.id, ls);
+            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2143,9 +2184,11 @@ export default function DashboardPage() {
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (a.start_time != null) {
-          // Horizontal half-line alarm via DOM overlay
+          const t0 = Number(a.start_time);
+          const barSec = intervalToSeconds(String(intervalRef.current));
           const bars = candlesRef.current || [];
-          const t0 = snapTimeToBars(Number(a.start_time), bars);
+          const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
+          const rayEnd = Math.max(lastT, t0) + FUTURE_BARS * barSec;
           if (!Number.isNaN(t0) && t0 > 0) {
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
@@ -2155,6 +2198,24 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
             });
+            try {
+              const ls: any = chart.addLineSeries({
+                color: color,
+                lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted as any,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                crosshairMarkerVisible: false,
+                title: title || "",
+                autoscaleInfoProvider: () => null as any,
+              });
+              const tLabel = Math.max(t0, rayEnd - Math.max(barSec, 60));
+              ls.setData([
+                { time: tLabel as any, value: Number(a.price) },
+                { time: rayEnd as any, value: Number(a.price) },
+              ]);
+              chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
+            } catch {}
           }
         } else {
           const pl = series.createPriceLine({
@@ -2299,12 +2360,124 @@ export default function DashboardPage() {
             child.style.left = `${x}px`;
             child.style.top = `${y}px`;
           }
+        } else if (child.dataset.calloutId && ser) {
+          const item = calloutItemsRef.current.find((v) => v.id === child.dataset.calloutId);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        }
+      }
+    };
+
+
+    const paintCallouts = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-callout-id]").forEach((el) => el.remove());
+      if (hideLines) return;
+      for (const c of calloutItemsRef.current) {
+        let x: number | null = null;
+        let y: number | null = null;
+        try { x = chart2.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
+        try { y = ser.priceToCoordinate(c.price); } catch { y = null; }
+        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
+        const wrap = document.createElement("div");
+        wrap.dataset.calloutId = c.id;
+        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:25;pointer-events:auto;`;
+        const stem = document.createElement("div");
+        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
+        const bubble = document.createElement("div");
+        bubble.contentEditable = "true";
+        bubble.spellcheck = false;
+        bubble.textContent = c.text || "";
+        bubble.setAttribute("data-placeholder", "Add text");
+        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:52px;max-width:180px;padding:5px 9px;border-radius:8px;background:#0d9488;color:#fff;font-size:12px;line-height:1.3;border:1px solid rgba(255,255,255,0.3);outline:none;cursor:text;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`;
+        const dot = document.createElement("div");
+        dot.title = "Drag to move";
+        dot.style.cssText = `position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;border:2px solid ${c.color};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;`;
+        // stop chart from eating clicks while typing
+        bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
+        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
+        bubble.addEventListener("click", (e) => e.stopPropagation());
+        bubble.addEventListener("blur", async () => {
+          const val = (bubble.textContent || "").trim();
+          const note = `__callout:${val}`;
+          c.text = val;
+          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
+          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
+        });
+        // Drag ONLY via anchor dot — chart pan does not move callout except via coordinate sync
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const onDown = (e: PointerEvent) => {
+          e.preventDefault(); e.stopPropagation();
+          dragging = true; lastX = e.clientX; lastY = e.clientY;
+          try { dot.setPointerCapture(e.pointerId); } catch {}
+          dot.style.cursor = "grabbing";
+        };
+        const onMove = (e: PointerEvent) => {
+          if (!dragging) return;
+          e.preventDefault(); e.stopPropagation();
+          const dx = e.clientX - lastX, dy = e.clientY - lastY;
+          lastX = e.clientX; lastY = e.clientY;
+          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
+          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
+        };
+        const onUp = async (e: PointerEvent) => {
+          if (!dragging) return;
+          dragging = false;
+          dot.style.cursor = "grab";
+          try {
+            const left = parseFloat(wrap.style.left) || 0;
+            const top = parseFloat(wrap.style.top) || 0;
+            const t = chart2.timeScale().coordinateToTime(left);
+            const p = ser.coordinateToPrice(top);
+            if (t != null && p != null) {
+              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
+              c.time = Number(tu);
+              c.price = Number(p);
+              setLines((prev) =>
+                prev.map((l) =>
+                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
+                )
+              );
+              try {
+                await supabase
+                  .from("chart_lines")
+                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
+                  .eq("id", c.id);
+              } catch {}
+            }
+          } catch {}
+        };
+        dot.addEventListener("pointerdown", onDown as any);
+        wrap.addEventListener("pointermove", onMove as any);
+        wrap.addEventListener("pointerup", onUp as any);
+        wrap.addEventListener("pointercancel", onUp as any);
+        wrap.appendChild(stem);
+        wrap.appendChild(bubble);
+        wrap.appendChild(dot);
+        host.appendChild(wrap);
+        if (!c.text) {
+          try { bubble.focus(); } catch {}
         }
       }
     };
 
     paintVLines();
     paintRays();
+    paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
     const scheduleOverlaySync = () => {
       requestAnimationFrame(() => {
@@ -5067,6 +5240,53 @@ export default function DashboardPage() {
 
 
 
+        
+        if (m === "callout") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          clickLockRef.current = true;
+          setSaving(true);
+          try {
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            let payload: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: fp,
+              start_time: t,
+              end_time: t,
+              color: drawColorRef.current || "#0d9488",
+              width: 2,
+              note: "__callout:",
+            };
+            if (uid) payload.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+            if (error) {
+              payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:", start_time: t, end_time: t };
+              if (uid) payload.user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{
+                ...(data as ChartLine),
+                start_time: (data as any).start_time ?? t,
+                end_time: (data as any).end_time ?? t,
+                note: "__callout:",
+                price: fp,
+              }, ...prev]);
+              setStatusMsg("Callout placed — type text, drag the circle to move");
+            } else {
+              setStatusMsg("Callout save failed");
+            }
+          } finally {
+            setMode("none");
+            modeRef.current = "none";
+            setSaving(false);
+            setTimeout(() => { clickLockRef.current = false; }, 300);
+          }
+          return;
+        }
+
+
         // Arrow mark up / down / marker — single click (TradingView-style, stay in tool)
         if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
           clickLockRef.current = true;
@@ -6812,8 +7032,26 @@ export default function DashboardPage() {
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
     if (editingNoteType === "line") {
-      await supabase.from("chart_lines").update({ note: noteDraft }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteDraft } : l)));
+      const cur = linesRef.current?.find?.((l: any) => l.id === editingNoteId)
+        || lines.find((l) => l.id === editingNoteId);
+      let noteToSave = noteDraft;
+      if (cur?.note) {
+        const s = String(cur.note);
+        // Preserve ray / diag / callout encoding; only update user-facing text
+        if (s.startsWith("__ray:")) {
+          const head = s.split("|")[0]; // __ray:unix
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
+        } else if (s.startsWith("__diag:")) {
+          const head = s.split("|")[0];
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
+        } else if (s.startsWith("__callout:")) {
+          noteToSave = `__callout:${noteDraft.trim()}`;
+        } else if (s === "__vline__" || s.startsWith("__vline__:")) {
+          noteToSave = s; // vertical lines have no user note slot
+        }
+      }
+      await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
     } else {
       await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
       setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
