@@ -1197,6 +1197,7 @@ export default function DashboardPage() {
   const priceRangeOverrideRef = useRef<{ from: number; to: number } | null>(null);
   /** Per-oscillator vertical zoom ranges (TV-style scroll on scale numbers) */
   const oscPriceRangeRef = useRef<Record<string, { from: number; to: number }>>({});
+  const oscDraggingRef = useRef(false);
   const clickLockRef = useRef(false);
 
   const [symbol, setSymbol] = useState(() =>
