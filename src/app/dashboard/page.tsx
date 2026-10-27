@@ -3362,7 +3362,7 @@ export default function DashboardPage() {
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
-    if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showRSI || !rsiVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -3418,7 +3418,7 @@ export default function DashboardPage() {
   }, []);
   const applyDMI = useCallback(() => {
     removeDMI();
-    if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showDMI || !dmiVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
     const paneOpts = {
       priceScaleId: "dmi",
@@ -3739,7 +3739,7 @@ export default function DashboardPage() {
   }, []);
   const applyHARSI = useCallback(() => {
     removeHARSI();
-    if (!showHARSI || !harsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showHARSI || !harsiVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const candles = candlesRef.current as any[];
     const ha = calcHARSI(candles, harsiLen, Math.max(1, harsiSmooth));
@@ -3857,7 +3857,7 @@ export default function DashboardPage() {
   }, []);
   const applyROC = useCallback(() => {
     removeROC();
-    if (!showROC || !rocVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showROC || !rocVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const s = chartRef.current.addLineSeries({
       color: rocColor, lineWidth: 2, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
@@ -3880,7 +3880,7 @@ export default function DashboardPage() {
   }, []);
   const applyATR = useCallback(() => {
     removeATR();
-    if (!showATR || !atrVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showATR || !atrVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const s = chartRef.current.addLineSeries({
       color: atrColor, lineWidth: 2, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: true,
@@ -3903,7 +3903,7 @@ export default function DashboardPage() {
   }, []);
   const applyMACD = useCallback(() => {
     removeMACD();
-    if (!showMACD || !macdVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showMACD || !macdVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
     const histS = chart.addHistogramSeries({
@@ -3937,7 +3937,7 @@ export default function DashboardPage() {
   }, []);
   const applyStoch = useCallback(() => {
     removeStoch();
-    if (!showStoch || !stochVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    if (!showStoch || !stochVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { k, d } = calcStochRSI(candlesRef.current, stochRsiLen, stochLen, stochK, stochD);
     const kS = chart.addLineSeries({
