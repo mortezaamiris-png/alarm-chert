@@ -2561,9 +2561,9 @@ export default function DashboardPage() {
               stoch: { from: 0, to: 100 },
               dmi: { from: 0, to: 60 },
               harsi: { from: -40, to: 40 },
-              macd: { from: -1, to: 1 },
-              roc: { from: -10, to: 10 },
-              atr: { from: 0, to: 1 },
+              macd: { from: -50, to: 50 },
+              roc: { from: -25, to: 25 },
+              atr: { from: 0, to: 500 },
             };
             const tickVals: Record<string, number[]> = {
               rsi: [70, 50, 30],
@@ -2585,18 +2585,17 @@ export default function DashboardPage() {
               return null;
             };
             const applyZoom = (from: number, to: number) => {
-              // Strong min spans so MACD/ATR never collapse into solid bars / vanish
+              // min = how small range can get (zoom in); max = how large (zoom out)
               const minSpan: Record<string, number> = {
-                rsi: 15, stoch: 15, dmi: 10, harsi: 15,
-                macd: 5, roc: 3, atr: 20,
+                rsi: 8, stoch: 5, dmi: 8, harsi: 10,
+                macd: 3, roc: 2, atr: 15,
               };
-              let span = Math.max((minSpan[oscId] ?? 10), to - from);
-              // Also cap max zoom-out so range doesn't explode
+              let span = Math.max((minSpan[oscId] ?? 8), to - from);
               const maxSpan: Record<string, number> = {
-                rsi: 120, stoch: 120, dmi: 100, harsi: 120,
-                macd: 500, roc: 80, atr: 5000,
+                rsi: 150, stoch: 150, dmi: 120, harsi: 150,
+                macd: 800, roc: 400, atr: 8000,
               };
-              span = Math.min(span, maxSpan[oscId] ?? 500);
+              span = Math.min(span, maxSpan[oscId] ?? 800);
               const mid = (from + to) / 2;
               from = mid - span / 2;
               to = mid + span / 2;
@@ -2632,29 +2631,52 @@ export default function DashboardPage() {
               } catch {}
             };
 
-            const onStart = (clientY: number) => {
-              dragging = true;
-              oscDraggingRef.current = true;
-              setActive(true);
-              y0 = clientY;
-              // Seed range from current auto/default so first drag is stable
+            // Pending pointer — don't highlight / zoom until real drag (>8px)
+            let pending = false;
+            let moved = false;
+            let startY = 0;
+            let lastRedraw = 0;
+            let lastTap = 0;
+            let lastTapY = 0;
+
+            const seedRange = () => {
               let prev = oscPriceRangeRef.current[oscId];
               if (!prev || !(prev.to > prev.from)) {
                 prev = defaults[oscId] || { from: 0, to: 100 };
-                // For data-driven osc, try a sensible seed
                 if (oscId === "macd") prev = { from: -50, to: 50 };
                 if (oscId === "atr") prev = { from: 0, to: 500 };
                 if (oscId === "harsi") prev = { from: -40, to: 40 };
+                if (oscId === "roc") prev = { from: -20, to: 20 };
                 oscPriceRangeRef.current[oscId] = { ...prev };
               }
-              range0 = { from: prev.from, to: prev.to };
+              return { from: prev.from, to: prev.to };
             };
-            let lastRedraw = 0;
+
+            const onStart = (clientY: number) => {
+              // Only mark pending — no visual change on mere tap
+              pending = true;
+              moved = false;
+              startY = clientY;
+              y0 = clientY;
+              range0 = seedRange();
+            };
+
             const onMove = (clientY: number) => {
-              if (!dragging || !range0) return;
+              if (!pending && !dragging) return;
+              const ady = Math.abs(clientY - startY);
+              // Activate drag only after 8px movement (single tap does nothing)
+              if (!dragging) {
+                if (ady < 8) return;
+                dragging = true;
+                moved = true;
+                oscDraggingRef.current = true;
+                setActive(true);
+                y0 = startY;
+                range0 = seedRange();
+              }
+              if (!range0) return;
               const dy = clientY - y0;
-              // Gentler sensitivity for MACD/ATR (small absolute values blow up easily)
-              const sens = (oscId === "macd" || oscId === "atr") ? 400 : 280;
+              const sens = (oscId === "macd" || oscId === "atr" || oscId === "roc") ? 380 : 280;
               const factor = Math.exp(dy / sens);
               const mid = (range0.from + range0.to) / 2;
               const half0 = Math.max(1e-6, (range0.to - range0.from) / 2);
@@ -2662,8 +2684,8 @@ export default function DashboardPage() {
               let nf = mid - half;
               let nt = mid + half;
               if (oscId === "rsi" || oscId === "stoch") {
-                nf = Math.max(-5, nf);
-                nt = Math.min(105, nt);
+                nf = Math.max(-10, nf);
+                nt = Math.min(110, nt);
               }
               if (oscId === "harsi") {
                 nf = Math.max(-100, nf);
@@ -2681,53 +2703,65 @@ export default function DashboardPage() {
                 oscDraggingRef.current = true;
               }
             };
-            // Double-click / double-tap → reset to default range
-            let lastTap = 0;
+
             const onReset = () => {
               delete oscPriceRangeRef.current[oscId];
               setActive(false);
               dragging = false;
+              pending = false;
+              moved = false;
               range0 = null;
               oscDraggingRef.current = false;
               try { updateMargins(); } catch {}
             };
+
             const onEnd = () => {
-              if (!dragging) return;
-              dragging = false;
-              range0 = null;
-              oscDraggingRef.current = false;
-              setActive(false);
-              try {
-                requestAnimationFrame(() => {
-                  try { updateMargins(); } catch {}
-                });
-              } catch {}
+              const wasDragging = dragging;
+              pending = false;
+              if (dragging) {
+                dragging = false;
+                range0 = null;
+                oscDraggingRef.current = false;
+                setActive(false);
+                try {
+                  requestAnimationFrame(() => {
+                    try { updateMargins(); } catch {}
+                  });
+                } catch {}
+              }
+              return wasDragging;
             };
 
             const ts = (ev: TouchEvent) => {
               if (!ev.touches.length) return;
               ev.preventDefault();
               ev.stopPropagation();
-              const now = Date.now();
-              if (now - lastTap < 320) {
-                lastTap = 0;
-                onReset();
-                return;
-              }
-              lastTap = now;
               onStart(ev.touches[0].clientY);
             };
             const tm = (ev: TouchEvent) => {
-              if (!dragging || !ev.touches.length) return;
+              if ((!pending && !dragging) || !ev.touches.length) return;
               ev.preventDefault();
               ev.stopPropagation();
               onMove(ev.touches[0].clientY);
             };
             const te = (ev: TouchEvent) => {
-              if (!dragging) return;
               ev.preventDefault();
               ev.stopPropagation();
-              onEnd();
+              const y = startY;
+              const didDrag = onEnd();
+              // Double-tap reset: two quick taps with almost no movement
+              if (!didDrag && !moved) {
+                const now = Date.now();
+                if (now - lastTap < 450 && Math.abs(y - lastTapY) < 30) {
+                  lastTap = 0;
+                  onReset();
+                } else {
+                  lastTap = now;
+                  lastTapY = y;
+                }
+              } else {
+                lastTap = 0;
+              }
             };
             const ws = (ev: WheelEvent) => {
               ev.preventDefault();
