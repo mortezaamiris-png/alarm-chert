@@ -2454,6 +2454,15 @@ export default function DashboardPage() {
             let y0 = 0;
             let range0: { from: number; to: number } | null = null;
             let dragging = false;
+            const setActive = (on: boolean) => {
+              try {
+                const node = el as HTMLElement;
+                node.style.borderLeft = on
+                  ? "2px solid rgba(251,146,60,0.95)"
+                  : "1px solid rgba(255,255,255,0.12)";
+                node.style.background = on ? "rgba(251,146,60,0.08)" : "#0b0e11";
+              } catch {}
+            };
 
             const defaults: Record<string, { from: number; to: number }> = {
               rsi: { from: 0, to: 100 },
