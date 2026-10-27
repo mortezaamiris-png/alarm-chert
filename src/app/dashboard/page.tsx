@@ -2091,6 +2091,8 @@ export default function DashboardPage() {
         return;
       }
       if (host && chart) {
+        // During osc scale drag, skip full DOM rebuild (keeps finger target + live LWC series)
+        if (oscDraggingRef.current) return;
         const oscIds = new Set(["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr"]);
         let u = 0;
         const bottoms: number[] = [];
@@ -2115,7 +2117,7 @@ export default function DashboardPage() {
           const topPx = plotH * (1 - tops[i]);
           const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
           parts.push(
-            `<div style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
+            `<div data-osc-mask="${active[i].id}" style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
           );
         }
 
@@ -2316,15 +2318,23 @@ export default function DashboardPage() {
             ser = atrSeriesRef.current;
             ticks = [];
           }
-          if (ser) {
+          if (ser || ticks.length) {
+            const zr = oscPriceRangeRef.current[id];
             for (const t of ticks) {
               try {
-                const y = ser.priceToCoordinate(t.v);
+                let y: number | null = null;
+                if (zr && zr.to > zr.from) {
+                  // linear map inside pane — stable after zoom
+                  if (t.v < zr.from || t.v > zr.to) continue;
+                  const rel = (t.v - zr.from) / (zr.to - zr.from);
+                  y = topPx + (1 - rel) * heightPx;
+                } else {
+                  y = ser ? ser.priceToCoordinate(t.v) : null;
+                }
                 if (y == null || Number.isNaN(Number(y))) continue;
                 if (Number(y) < topPx - 2 || Number(y) > topPx + heightPx + 2) continue;
-                // Sit on the LEFT of the scale strip — flush against the oscillator lines (TV-style)
                 parts.push(
-                  `<div style="position:absolute;left:${hostW - scaleW + 3}px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#d1d5db;pointer-events:none;font-variant-numeric:tabular-nums;text-align:left;padding:0 2px;background:rgba(11,14,17,0.85);border-radius:2px;">${t.label}</div>`
+                  `<div data-osc-label="${id}" style="position:absolute;left:${hostW - scaleW + 3}px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#d1d5db;pointer-events:none;font-variant-numeric:tabular-nums;text-align:left;padding:0 2px;background:rgba(11,14,17,0.85);border-radius:2px;z-index:6;">${t.label}</div>`
                 );
               } catch {}
             }
@@ -2341,7 +2351,8 @@ export default function DashboardPage() {
         try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
-        // Captures touch so chart pan does NOT steal the gesture
+        // Captures touch so chart pan does NOT steal the gesture.
+        // IMPORTANT: do NOT rebuild host.innerHTML during drag (causes lag + lost numbers).
         try {
           const strips = host.querySelectorAll("[data-osc-scale]");
           strips.forEach((el) => {
@@ -2350,7 +2361,7 @@ export default function DashboardPage() {
 
             let y0 = 0;
             let range0: { from: number; to: number } | null = null;
-            let active = false;
+            let dragging = false;
 
             const defaults: Record<string, { from: number; to: number }> = {
               rsi: { from: 0, to: 100 },
@@ -2360,6 +2371,15 @@ export default function DashboardPage() {
               macd: { from: -1, to: 1 },
               roc: { from: -10, to: 10 },
               atr: { from: 0, to: 1 },
+            };
+            const tickVals: Record<string, number[]> = {
+              rsi: [70, 50, 30],
+              stoch: [80, 50, 20],
+              dmi: [40, 20],
+              harsi: [20, 0, -20],
+              macd: [0],
+              roc: [0],
+              atr: [],
             };
             const getSer = (): any => {
               if (oscId === "rsi") return rsiSeriesRef.current;
@@ -2389,43 +2409,80 @@ export default function DashboardPage() {
                 try { chartRef.current?.priceScale(oscId)?.applyOptions?.({ autoScale: true } as any); } catch {}
               } catch {}
             };
-
-            const onStart = (clientY: number) => {
-              active = true;
-              y0 = clientY;
-              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
-              let pTop = prev.to;
-              let pBot = prev.from;
+            // Move tick labels within this strip without full DOM rebuild
+            const refreshLabels = (from: number, to: number) => {
               try {
-                const ser = getSer();
-                const t = ser?.coordinateToPrice?.(1);
-                const b = ser?.coordinateToPrice?.(Math.max(2, (host.parentElement?.clientHeight || 400) - 30));
-                if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
-                  pTop = Math.max(Number(t), Number(b));
-                  pBot = Math.min(Number(t), Number(b));
+                const strip = el as HTMLElement;
+                const topPx = parseFloat(strip.style.top) || 0;
+                const heightPx = parseFloat(strip.style.height) || 1;
+                const hostEl = host as HTMLElement;
+                // remove old labels for this osc
+                hostEl.querySelectorAll(`[data-osc-label="${oscId}"]`).forEach((n) => n.remove());
+                const vals = tickVals[oscId] || [];
+                const scaleW = 56;
+                const hostW = hostEl.clientWidth || 1;
+                for (const v of vals) {
+                  if (v < from || v > to) continue;
+                  const rel = (v - from) / Math.max(1e-9, to - from);
+                  const y = topPx + (1 - rel) * heightPx;
+                  const lab = document.createElement("div");
+                  lab.setAttribute("data-osc-label", oscId);
+                  lab.textContent = String(v);
+                  lab.style.cssText = `position:absolute;left:${hostW - scaleW + 3}px;top:${y - 7}px;font-size:10px;line-height:14px;color:#d1d5db;pointer-events:none;font-variant-numeric:tabular-nums;text-align:left;padding:0 2px;background:rgba(11,14,17,0.85);border-radius:2px;z-index:6;`;
+                  hostEl.appendChild(lab);
                 }
               } catch {}
-              range0 = pTop > pBot ? { from: pBot, to: pTop } : { ...prev };
+            };
+
+            const onStart = (clientY: number) => {
+              dragging = true;
+              oscDraggingRef.current = true;
+              y0 = clientY;
+              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
+              range0 = { from: prev.from, to: prev.to };
+              // Reveal native LWC series for THIS pane so zoom is live (TV-style)
+              try {
+                host.querySelectorAll(`[data-osc-mask="${oscId}"]`).forEach((n) => {
+                  (n as HTMLElement).style.opacity = "0";
+                });
+                const svg = host.querySelector("#osc-overlay-svg") as HTMLElement | null;
+                if (svg) svg.style.opacity = "0.35"; // dim overlay so LWC line is visible
+                getSer()?.applyOptions?.({ visible: true });
+                if (oscId === "stoch") {
+                  stochSeriesRef.current?.k?.applyOptions?.({ visible: true });
+                  stochSeriesRef.current?.d?.applyOptions?.({ visible: true });
+                }
+              } catch {}
             };
             const onMove = (clientY: number) => {
-              if (!active || !range0) return;
+              if (!dragging || !range0) return;
               const dy = clientY - y0;
-              const factor = Math.exp(dy / 200);
+              // TV-like sensitivity
+              const factor = Math.exp(dy / 240);
               const mid = (range0.from + range0.to) / 2;
-              const half = Math.max(((range0.to - range0.from) / 2) * factor, 0.5);
+              const half0 = (range0.to - range0.from) / 2;
+              const half = Math.max(half0 * factor, Math.abs(mid) * 0.05 + 1);
               let nf = mid - half;
               let nt = mid + half;
               if (oscId === "rsi" || oscId === "stoch") {
                 nf = Math.max(-5, nf);
                 nt = Math.min(105, nt);
               }
+              if (!(nt > nf)) return;
               applyZoom(nf, nt);
+              refreshLabels(nf, nt);
             };
             const onEnd = () => {
-              active = false;
+              if (!dragging) return;
+              dragging = false;
               range0 = null;
-              // refresh guide labels at new scale
-              try { requestAnimationFrame(() => updateMargins()); } catch {}
+              oscDraggingRef.current = false;
+              // Restore masks + sharp SVG after gesture
+              try {
+                requestAnimationFrame(() => {
+                  try { updateMargins(); } catch {}
+                });
+              } catch {}
             };
 
             const ts = (ev: TouchEvent) => {
@@ -2435,13 +2492,13 @@ export default function DashboardPage() {
               onStart(ev.touches[0].clientY);
             };
             const tm = (ev: TouchEvent) => {
-              if (!active || !ev.touches.length) return;
+              if (!dragging || !ev.touches.length) return;
               ev.preventDefault();
               ev.stopPropagation();
               onMove(ev.touches[0].clientY);
             };
             const te = (ev: TouchEvent) => {
-              if (!active) return;
+              if (!dragging) return;
               ev.preventDefault();
               ev.stopPropagation();
               onEnd();
@@ -2453,7 +2510,7 @@ export default function DashboardPage() {
               const zoomIn = ev.deltaY < 0;
               const factor = zoomIn ? 0.88 : 1.14;
               const mid = (prev.from + prev.to) / 2;
-              const half = Math.max(((prev.to - prev.from) / 2) * factor, 0.5);
+              const half = Math.max(((prev.to - prev.from) / 2) * factor, 1);
               let nf = mid - half;
               let nt = mid + half;
               if (oscId === "rsi" || oscId === "stoch") {
@@ -2461,7 +2518,8 @@ export default function DashboardPage() {
                 nt = Math.min(105, nt);
               }
               applyZoom(nf, nt);
-              try { requestAnimationFrame(() => updateMargins()); } catch {}
+              refreshLabels(nf, nt);
+              try { requestAnimationFrame(() => { try { updateMargins(); } catch {} }); } catch {}
             };
 
             el.addEventListener("touchstart", ts as any, { passive: false });
