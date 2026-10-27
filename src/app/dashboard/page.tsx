@@ -1406,6 +1406,10 @@ export default function DashboardPage() {
   const [hideOscillators, setHideOscillators] = useState(false);
   const hideOscillatorsRef = useRef(false);
   useEffect(() => { hideOscillatorsRef.current = hideOscillators; }, [hideOscillators]);
+  /** When set, that oscillator fills the chart (TradingView maximize pane) */
+  const [maximizedOsc, setMaximizedOsc] = useState<string | null>(null);
+  const maximizedOscRef = useRef<string | null>(null);
+  useEffect(() => { maximizedOscRef.current = maximizedOsc; }, [maximizedOsc]);
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
@@ -2020,6 +2024,7 @@ export default function DashboardPage() {
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const maxId = maximizedOscRef.current;
     const panes: { id: string; on: boolean; h: number }[] = [
       { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
       { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
@@ -2028,12 +2033,21 @@ export default function DashboardPage() {
       { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
       { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
       { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "volume", on: !!(showVol && volVisible), h: 0.10 },
+      { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     ];
-    // Cap total pane height so main chart stays usable
-    const active = panes.filter((p) => p.on);
+    // Maximize mode: only the selected oscillator fills the chart
+    let active = panes.filter((p) => p.on);
+    if (maxId) {
+      active = active
+        .filter((p) => p.id === maxId)
+        .map((p) => ({ ...p, h: 0.92 }));
+      if (!active.length) {
+        // fallback if indicator was turned off
+        maximizedOscRef.current = null;
+      }
+    }
     let totalH = active.reduce((s, p) => s + p.h, 0);
-    const maxTotal = 0.55;
+    const maxTotal = maxId ? 0.92 : 0.55;
     const scale = totalH > maxTotal ? maxTotal / totalH : 1;
     let used = 0;
     for (const p of active) {
@@ -2051,11 +2065,12 @@ export default function DashboardPage() {
       used += h;
     }
     chart.priceScale("right").applyOptions({
-      scaleMargins: {
-        top: 0.04,
-        // Keep main candles strictly above oscillator stack (no vertical overlap)
-        bottom: Math.max(0.08, used + 0.04),
-      },
+      scaleMargins: maxId
+        ? { top: 0.96, bottom: 0.02 } // collapse main candles when an osc is maximized
+        : {
+            top: 0.04,
+            bottom: Math.max(0.08, used + 0.04),
+          },
     });
     // Hide price scales for inactive oscillators so their labels don't leak onto main axis
     const allOscIds = ["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr", "volume"];
@@ -2457,14 +2472,12 @@ export default function DashboardPage() {
             `</div>`
           );
         }
-        // Crosshair (vertical + horizontal) over oscillator stack — TradingView style
+        // Horizontal dashed crosshair only over osc stack (LWC already draws the vertical — avoids double line)
         parts.push(
           `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;z-index:6;">` +
-          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
           `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW - 56}" y2="-10" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
           `</svg>`
         );
-        // store osc top for crosshair handler
         try { (host as any).__oscTopPx = oscTopPx; (host as any).__plotH = plotH; (host as any).__hostW = hostW; } catch {}
 
         // 3) Separator lines — one line per boundary (avoid double lines)
@@ -2581,17 +2594,43 @@ export default function DashboardPage() {
                 );
               } catch {}
             }
-            // last value label
-            try {
-              const last = candlesRef.current;
-              // skip - left legend already shows values
-            } catch {}
+          }
+          // Maximize / restore button (TradingView-style) — top-right of each osc pane
+          {
+            const isMax = maximizedOscRef.current === id;
+            const btnTop = topPx + 4;
+            const btnLeft = Math.max(0, hostW - scaleW - 28);
+            const icon = isMax
+              ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="2" stroke-linecap="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`
+              : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
+            parts.push(
+              `<button data-osc-max="${id}" title="${isMax ? "Restore" : "Maximize"}" style="position:absolute;left:${btnLeft}px;top:${btnTop}px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.75);border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;pointer-events:auto;z-index:12;padding:0;">${icon}</button>`
+            );
           }
         }
 
         host.innerHTML = parts.join("");
         // Hard clip so nothing can paint over the time labels
         try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
+
+        // Maximize / restore buttons
+        try {
+          host.querySelectorAll("[data-osc-max]").forEach((btn) => {
+            const id = (btn as HTMLElement).getAttribute("data-osc-max") || "";
+            if (!id) return;
+            const onMax = (ev: Event) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const cur = maximizedOscRef.current;
+              const next = cur === id ? null : id;
+              maximizedOscRef.current = next;
+              setMaximizedOsc(next);
+              try { updateMargins(); } catch {}
+            };
+            btn.addEventListener("click", onMax);
+            btn.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+          });
+        } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
         // Captures touch so chart pan does NOT steal the gesture.
@@ -2887,7 +2926,7 @@ export default function DashboardPage() {
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
     showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
-    showHARSI, harsiVisible, hideIndicators, hideOscillators,
+    showHARSI, harsiVisible, hideIndicators, hideOscillators, maximizedOsc,
     rsiPeriod, rsiColor, rocPeriod, rocColor, atrPeriod, atrSmooth, atrColor,
     dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
     stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
@@ -6264,24 +6303,16 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // TradingView-style dashed crosshair over oscillator panes:
-        // vertical always tracks X; horizontal tracks Y only inside osc stack
+        // Horizontal dashed guide only inside oscillator stack (vertical = native LWC only)
         try {
-          const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
           const h = document.getElementById("osc-crosshair-h") as SVGLineElement | null;
           const host = paneSepRef.current as any;
           const oscTop = host?.__oscTopPx ?? 0;
           const plotH = host?.__plotH ?? 0;
           const hostW = host?.__hostW ?? 0;
-          if (param && param.point) {
-            const x = param.point.x;
-            const y = param.point.y;
-            if (v) {
-              v.setAttribute("x1", String(x));
-              v.setAttribute("x2", String(x));
-            }
-            if (h) {
-              // Horizontal guide only when pointer is inside oscillator stack
+          if (h) {
+            if (param && param.point) {
+              const y = param.point.y;
               if (y >= oscTop && y <= plotH - 2) {
                 h.setAttribute("y1", String(y));
                 h.setAttribute("y2", String(y));
@@ -6291,10 +6322,10 @@ export default function DashboardPage() {
                 h.setAttribute("y1", "-10");
                 h.setAttribute("y2", "-10");
               }
+            } else {
+              h.setAttribute("y1", "-10");
+              h.setAttribute("y2", "-10");
             }
-          } else {
-            if (v) { v.setAttribute("x1", "-10"); v.setAttribute("x2", "-10"); }
-            if (h) { h.setAttribute("y1", "-10"); h.setAttribute("y2", "-10"); }
           }
         } catch {}
         // TV-style pane labels: name + value at hovered bar (left of each oscillator)
