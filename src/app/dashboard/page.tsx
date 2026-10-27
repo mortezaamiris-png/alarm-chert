@@ -2046,38 +2046,154 @@ export default function DashboardPage() {
         bottom: Math.max(0.08, used + 0.04),
       },
     });
-    // Horizontal separators above AND below each oscillator pane
+    // Opaque masks over oscillator bands (hide main chart) + SVG redraw of osc lines on top
     try {
       const host = paneSepRef.current;
-      if (host) {
+      const chart = chartRef.current;
+      if (host && chart) {
         const oscIds = new Set(["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr"]);
         let u = 0;
-        const bottoms: number[] = []; // fraction from bottom — bottom edge of pane
-        const tops: number[] = [];    // fraction from bottom — top edge of pane
+        const bottoms: number[] = [];
+        const tops: number[] = [];
         for (const p of active) {
           const h = p.h * scale;
           bottoms.push(u);
           tops.push(u + h);
           u += h;
         }
-        const sepSet = new Set<number>();
         const hostH = host.clientHeight || 1;
+        const hostW = host.clientWidth || 1;
+        const ts = chart.timeScale();
+        const parts: string[] = [];
+
+        // 1) Solid backgrounds — fully hide candles/grid behind each oscillator pane
+        for (let i = 0; i < active.length; i++) {
+          if (!oscIds.has(active[i].id)) continue;
+          const topPx = hostH * (1 - tops[i]);
+          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
+          parts.push(
+            `<div style="position:absolute;left:0;right:0;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
+          );
+        }
+
+        // 2) SVG oscillator lines ABOVE masks — data from candles (series.data() is private)
+        const candles = candlesRef.current || [];
+        const pathFrom = (
+          series: any,
+          rows: { time: any; value: number }[],
+          color: string,
+          width = 1.5
+        ) => {
+          if (!series || !rows.length) return "";
+          try {
+            const pts: string[] = [];
+            for (const r of rows) {
+              const x = ts.timeToCoordinate(r.time as any);
+              const y = series.priceToCoordinate(r.value);
+              if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) continue;
+              // only draw points that fall inside the chart
+              if (Number(x) < -50 || Number(x) > hostW + 50) continue;
+              pts.push(`${x},${y}`);
+            }
+            if (pts.length < 2) return "";
+            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" />`;
+          } catch {
+            return "";
+          }
+        };
+
+        const histRects = (
+          series: any,
+          rows: { time: any; value: number; color?: string }[]
+        ) => {
+          if (!series || !rows.length) return "";
+          try {
+            const zeroY = series.priceToCoordinate(0);
+            if (zeroY == null) return "";
+            const rects: string[] = [];
+            const barW = Math.max(1.5, hostW / Math.max(rows.length, 1) * 0.55);
+            for (const d of rows) {
+              const x = ts.timeToCoordinate(d.time as any);
+              const y = series.priceToCoordinate(d.value);
+              if (x == null || y == null) continue;
+              if (Number(x) < -50 || Number(x) > hostW + 50) continue;
+              const top = Math.min(Number(y), Number(zeroY));
+              const hgt = Math.max(1, Math.abs(Number(y) - Number(zeroY)));
+              const col = d.color || (d.value >= 0 ? "#26a69a" : "#ef5350");
+              rects.push(
+                `<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" opacity="0.85" />`
+              );
+            }
+            return rects.join("");
+          } catch {
+            return "";
+          }
+        };
+
+        const svgBits: string[] = [];
+        try {
+          if (rsiSeriesRef.current) {
+            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2));
+          }
+          if (rocSeriesRef.current) {
+            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2));
+          }
+          if (atrSeriesRef.current) {
+            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2));
+          }
+          if (dmiSeriesRef.current) {
+            const d = calcDMI(candles as any, dmiPeriod);
+            svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25));
+            svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25));
+            svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2));
+          }
+          if (stochSeriesRef.current) {
+            const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
+            svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2));
+            svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5));
+          }
+          if (macdSeriesRef.current) {
+            const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
+            svgBits.push(histRects(macdSeriesRef.current.hist, m.hist as any));
+            svgBits.push(pathFrom(macdSeriesRef.current.macd, m.macdLine as any, macdColor || "#2962FF", 2));
+            svgBits.push(pathFrom(macdSeriesRef.current.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5));
+          }
+          if (harsiSeriesRef.current) {
+            const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
+            const rows = ha.map((c) => ({ time: c.time, value: c.close }));
+            svgBits.push(pathFrom(harsiSeriesRef.current, rows, harsiUpColor || "#22c55e", 1.5));
+          }
+        } catch {}
+
+        parts.push(
+          `<svg width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}</svg>`
+        );
+
+        // 3) Separator lines
+        const sepSet = new Set<number>();
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
           sepSet.add(bottoms[i]);
           sepSet.add(tops[i]);
         }
-        host.innerHTML = Array.from(sepSet)
-          .map((fracFromBottom) => {
-            const y = hostH * (1 - fracFromBottom);
-            return `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;"></div>`;
-          })
-          .join("");
+        for (const fracFromBottom of Array.from(sepSet)) {
+          const y = hostH * (1 - fracFromBottom);
+          parts.push(
+            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;"></div>`
+          );
+        }
+
+        host.innerHTML = parts.join("");
       }
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
     showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
-    showHARSI, harsiVisible, hideIndicators]);
+    showHARSI, harsiVisible, hideIndicators,
+    rsiPeriod, rsiColor, rocPeriod, rocColor, atrPeriod, atrSmooth, atrColor,
+    dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
+    stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
+    macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
+    harsiLen, harsiSmooth, harsiUpColor]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -2973,7 +3089,16 @@ export default function DashboardPage() {
       });
     };
     try {
-      chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleOverlaySync);
+      chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+          scheduleOverlaySync();
+          // keep osc masks/SVG aligned while panning (rAF throttle)
+          try {
+            if ((window as any).__oscMaskRaf) cancelAnimationFrame((window as any).__oscMaskRaf);
+            (window as any).__oscMaskRaf = requestAnimationFrame(() => {
+              try { updateMargins(); } catch {}
+            });
+          } catch {}
+        });
     } catch {}
     // Vertical pan/zoom does not fire timeScale events — listen on container
     try {
