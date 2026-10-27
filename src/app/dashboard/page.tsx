@@ -2172,22 +2172,44 @@ export default function DashboardPage() {
 
         const histRects = (
           series: any,
-          rows: { time: any; value: number; color?: string }[]
+          rows: { time: any; value: number; color?: string }[],
+          clipTop?: number,
+          clipBot?: number,
+          priceFrom?: number,
+          priceTo?: number
         ) => {
-          if (!series || !rows.length) return "";
+          if (!rows.length) return "";
           try {
-            const zeroY = series.priceToCoordinate(0);
+            const hasClip = clipTop != null && clipBot != null && (clipBot as number) > (clipTop as number);
+            const hasLinear = hasClip && priceFrom != null && priceTo != null && (priceTo as number) > (priceFrom as number);
+            const ph = hasClip ? ((clipBot as number) - (clipTop as number)) : 0;
+            let zeroY: number | null = null;
+            if (hasLinear) {
+              const rel0 = Math.max(0, Math.min(1, (0 - (priceFrom as number)) / ((priceTo as number) - (priceFrom as number))));
+              zeroY = (1 - rel0) * ph;
+            } else if (series) {
+              const zy = series.priceToCoordinate(0);
+              zeroY = zy == null ? null : (hasClip ? Math.max(0, Math.min(ph, Number(zy) - (clipTop as number))) : Number(zy));
+            }
             if (zeroY == null) return "";
             const rects: string[] = [];
             const barW = Math.max(1.5, hostW / Math.max(rows.length, 1) * 0.55);
-            for (const d of rows) {
-              const x = ts.timeToCoordinate(d.time as any);
-              const y = series.priceToCoordinate(d.value);
-              if (x == null || y == null) continue;
-              if (Number(x) < -50 || Number(x) > hostW + 50) continue;
+            for (const row of rows) {
+              const x = ts.timeToCoordinate(row.time as any);
+              if (x == null || Number(x) < -50 || Number(x) > hostW + 50) continue;
+              let y: number | null = null;
+              if (hasLinear) {
+                const rel = Math.max(0, Math.min(1, (Number(row.value) - (priceFrom as number)) / ((priceTo as number) - (priceFrom as number))));
+                y = (1 - rel) * ph;
+              } else if (series) {
+                const absY = series.priceToCoordinate(row.value);
+                if (absY == null) continue;
+                y = hasClip ? Math.max(0, Math.min(ph, Number(absY) - (clipTop as number))) : Number(absY);
+              }
+              if (y == null) continue;
               const top = Math.min(Number(y), Number(zeroY));
               const hgt = Math.max(1, Math.abs(Number(y) - Number(zeroY)));
-              const col = d.color || (d.value >= 0 ? "#26a69a" : "#ef5350");
+              const col = row.color || (row.value >= 0 ? "#26a69a" : "#ef5350");
               rects.push(
                 `<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" opacity="0.85" />`
               );
