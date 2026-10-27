@@ -2286,12 +2286,12 @@ export default function DashboardPage() {
           if (!oscIds.has(active[i].id)) continue;
           const topPx = plotH * (1 - tops[i]);
           const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
-          // opaque cover over main price scale in this band
+          // opaque cover + interactive hit target for vertical zoom (iPad/desktop)
+          const id = active[i].id;
           parts.push(
-            `<div style="position:absolute;right:0;width:${scaleW}px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;border-left:1px solid rgba(255,255,255,0.08);"></div>`
+            `<div data-osc-scale="${id}" style="position:absolute;right:0;width:${scaleW + 12}px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:auto;touch-action:none;border-left:1px solid rgba(255,255,255,0.08);z-index:5;"></div>`
           );
           // tick labels per oscillator
-          const id = active[i].id;
           let ticks: { v: number; label: string }[] = [];
           let ser: any = null;
           if (id === "rsi") {
@@ -2339,6 +2339,138 @@ export default function DashboardPage() {
         host.innerHTML = parts.join("");
         // Hard clip so nothing can paint over the time labels
         try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
+
+        // Bind vertical zoom on oscillator scale strips (iPad + desktop)
+        // Captures touch so chart pan does NOT steal the gesture
+        try {
+          const strips = host.querySelectorAll("[data-osc-scale]");
+          strips.forEach((el) => {
+            const oscId = (el as HTMLElement).getAttribute("data-osc-scale") || "";
+            if (!oscId || oscId === "volume") return;
+
+            let y0 = 0;
+            let range0: { from: number; to: number } | null = null;
+            let active = false;
+
+            const defaults: Record<string, { from: number; to: number }> = {
+              rsi: { from: 0, to: 100 },
+              stoch: { from: 0, to: 100 },
+              dmi: { from: 0, to: 60 },
+              harsi: { from: -40, to: 40 },
+              macd: { from: -1, to: 1 },
+              roc: { from: -10, to: 10 },
+              atr: { from: 0, to: 1 },
+            };
+            const getSer = (): any => {
+              if (oscId === "rsi") return rsiSeriesRef.current;
+              if (oscId === "stoch") return stochSeriesRef.current?.k;
+              if (oscId === "dmi") return dmiSeriesRef.current?.adx;
+              if (oscId === "macd") return macdSeriesRef.current?.macd;
+              if (oscId === "roc") return rocSeriesRef.current;
+              if (oscId === "atr") return atrSeriesRef.current;
+              if (oscId === "harsi") return harsiSeriesRef.current;
+              return null;
+            };
+            const applyZoom = (from: number, to: number) => {
+              oscPriceRangeRef.current[oscId] = { from, to };
+              const provider = () => ({ priceRange: { minValue: from, maxValue: to } });
+              try {
+                const ser = getSer();
+                ser?.applyOptions?.({ autoscaleInfoProvider: provider });
+                if (oscId === "stoch") stochSeriesRef.current?.d?.applyOptions?.({ autoscaleInfoProvider: provider });
+                if (oscId === "dmi" && dmiSeriesRef.current) {
+                  dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
+                }
+                if (oscId === "macd" && macdSeriesRef.current) {
+                  macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
+                }
+                try { chartRef.current?.priceScale(oscId)?.applyOptions?.({ autoScale: true } as any); } catch {}
+              } catch {}
+            };
+
+            const onStart = (clientY: number) => {
+              active = true;
+              y0 = clientY;
+              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
+              let pTop = prev.to;
+              let pBot = prev.from;
+              try {
+                const ser = getSer();
+                const t = ser?.coordinateToPrice?.(1);
+                const b = ser?.coordinateToPrice?.(Math.max(2, (host.parentElement?.clientHeight || 400) - 30));
+                if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
+                  pTop = Math.max(Number(t), Number(b));
+                  pBot = Math.min(Number(t), Number(b));
+                }
+              } catch {}
+              range0 = pTop > pBot ? { from: pBot, to: pTop } : { ...prev };
+            };
+            const onMove = (clientY: number) => {
+              if (!active || !range0) return;
+              const dy = clientY - y0;
+              const factor = Math.exp(dy / 200);
+              const mid = (range0.from + range0.to) / 2;
+              const half = Math.max(((range0.to - range0.from) / 2) * factor, 0.5);
+              let nf = mid - half;
+              let nt = mid + half;
+              if (oscId === "rsi" || oscId === "stoch") {
+                nf = Math.max(-5, nf);
+                nt = Math.min(105, nt);
+              }
+              applyZoom(nf, nt);
+            };
+            const onEnd = () => {
+              active = false;
+              range0 = null;
+              // refresh guide labels at new scale
+              try { requestAnimationFrame(() => updateMargins()); } catch {}
+            };
+
+            const ts = (ev: TouchEvent) => {
+              if (!ev.touches.length) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              onStart(ev.touches[0].clientY);
+            };
+            const tm = (ev: TouchEvent) => {
+              if (!active || !ev.touches.length) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              onMove(ev.touches[0].clientY);
+            };
+            const te = (ev: TouchEvent) => {
+              if (!active) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              onEnd();
+            };
+            const ws = (ev: WheelEvent) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
+              const zoomIn = ev.deltaY < 0;
+              const factor = zoomIn ? 0.88 : 1.14;
+              const mid = (prev.from + prev.to) / 2;
+              const half = Math.max(((prev.to - prev.from) / 2) * factor, 0.5);
+              let nf = mid - half;
+              let nt = mid + half;
+              if (oscId === "rsi" || oscId === "stoch") {
+                nf = Math.max(-5, nf);
+                nt = Math.min(105, nt);
+              }
+              applyZoom(nf, nt);
+              try { requestAnimationFrame(() => updateMargins()); } catch {}
+            };
+
+            el.addEventListener("touchstart", ts as any, { passive: false });
+            el.addEventListener("touchmove", tm as any, { passive: false });
+            el.addEventListener("touchend", te as any, { passive: false });
+            el.addEventListener("touchcancel", te as any, { passive: false });
+            el.addEventListener("wheel", ws as any, { passive: false });
+          });
+        } catch {}
       }
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
