@@ -2288,12 +2288,14 @@ export default function DashboardPage() {
                 mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
               }
               if (Number.isFinite(mn) && Number.isFinite(mx)) {
-                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6);
+                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6, 20);
                 const mid = (mn + mx) / 2;
                 zrA = { from: Math.max(0, mid - span * 0.6), to: mid + span * 0.6 };
               } else {
-                zrA = { from: 0, to: 1 };
+                zrA = { from: 0, to: 500 };
               }
+              // Persist so zoom starts from visible range (prevents jump/vanish)
+              oscPriceRangeRef.current["atr"] = { ...zrA };
             }
             pushPane("atr", pathFrom(atrSeriesRef.current, atrRows, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
@@ -2353,12 +2355,13 @@ export default function DashboardPage() {
                 mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
               }
               if (Number.isFinite(mn) && Number.isFinite(mx)) {
-                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 0.01);
+                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 5, 10);
                 const mid = (mn + mx) / 2;
                 zrM = { from: mid - span * 0.6, to: mid + span * 0.6 };
               } else {
-                zrM = { from: -1, to: 1 };
+                zrM = { from: -50, to: 50 };
               }
+              oscPriceRangeRef.current["macd"] = { ...zrM };
             }
             // zero guide
             if (cMacd && zrM.to > zrM.from && 0 >= zrM.from && 0 <= zrM.to) {
@@ -2371,35 +2374,57 @@ export default function DashboardPage() {
             pushPane("macd", pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
             pushPane("macd", pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
           }
-          if (harsiSeriesRef.current) {
+          if (harsiSeriesRef.current || paneClip["harsi"]) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
             const upC = harsiUpColor || "#14b8a6";
             const dnC = harsiDnColor || "#ef4444";
+            const cHa = paneClip["harsi"];
+            // Auto range from HA data when user hasn't zoomed
+            let zrH = oscPriceRangeRef.current["harsi"];
+            if (!zrH || !(zrH.to > zrH.from)) {
+              let mn = Infinity, mx = -Infinity;
+              for (const c of ha || []) {
+                if (c == null) continue;
+                mn = Math.min(mn, c.low, c.open, c.close, c.high);
+                mx = Math.max(mx, c.high, c.open, c.close, c.low);
+              }
+              if (Number.isFinite(mn) && Number.isFinite(mx)) {
+                const span = Math.max(mx - mn, Math.abs(mx) * 0.1 + 1, 15);
+                const mid = (mn + mx) / 2;
+                zrH = { from: mid - span * 0.55, to: mid + span * 0.55 };
+              } else {
+                zrH = { from: -40, to: 40 };
+              }
+              oscPriceRangeRef.current["harsi"] = { ...zrH };
+            }
+            const phH = cHa ? (cHa.bot - cHa.top) : 100;
+            const mapY = (v: number) => {
+              const rel = Math.max(0, Math.min(1, (v - zrH.from) / Math.max(1e-9, zrH.to - zrH.from)));
+              return (1 - rel) * phH;
+            };
+            for (const [pv, col] of [[0, "rgba(251,146,60,0.55)"], [20, "rgba(156,163,175,0.35)"], [-20, "rgba(156,163,175,0.35)"]] as [number, string][]) {
+              if (pv >= zrH.from && pv <= zrH.to) {
+                pushPane("harsi", `<line x1="0" y1="${mapY(pv)}" x2="${hostW - 54}" y2="${mapY(pv)}" stroke="${col}" stroke-width="1" stroke-dasharray="3 3" />`);
+              }
+            }
             const barW = Math.max(1.5, hostW / Math.max(ha.length, 1) * 0.5);
-            const ser = harsiSeriesRef.current;
+            const bits: string[] = [];
             for (const c of ha) {
               try {
                 const x = ts.timeToCoordinate(c.time as any);
                 if (x == null || Number(x) < -50 || Number(x) > hostW + 50) continue;
-                const yO = ser.priceToCoordinate(c.open);
-                const yC = ser.priceToCoordinate(c.close);
-                const yH = ser.priceToCoordinate(c.high);
-                const yL = ser.priceToCoordinate(c.low);
-                if (yO == null || yC == null || yH == null || yL == null) continue;
+                const yO = mapY(c.open);
+                const yC = mapY(c.close);
+                const yHi = mapY(c.high);
+                const yLo = mapY(c.low);
                 const col = c.close >= c.open ? upC : dnC;
-                // wick
-                svgBits.push(`<line x1="${x}" y1="${yH}" x2="${x}" y2="${yL}" stroke="#9ca3af" stroke-width="1" />`);
-                // body
-                const top = Math.min(Number(yO), Number(yC));
-                const hgt = Math.max(1, Math.abs(Number(yC) - Number(yO)));
-                svgBits.push(`<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" stroke="${col}" stroke-width="0.5" />`);
+                bits.push(`<line x1="${x}" y1="${yHi}" x2="${x}" y2="${yLo}" stroke="#9ca3af" stroke-width="1" />`);
+                const top = Math.min(yO, yC);
+                const hgt = Math.max(1, Math.abs(yC - yO));
+                bits.push(`<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" stroke="${col}" stroke-width="0.5" />`);
               } catch {}
             }
-            // zero guide
-            try {
-              const zY = ser.priceToCoordinate(0);
-              if (zY != null) svgBits.push(`<line x1="0" y1="${zY}" x2="${hostW - 56}" y2="${zY}" stroke="rgba(251,146,60,0.55)" stroke-width="1" stroke-dasharray="3 3" />`);
-            } catch {}
+            pushPane("harsi", bits.join(""));
           }
         } catch {}
         // Expose per-pane SVG bits for overflow:hidden containers
@@ -2560,16 +2585,26 @@ export default function DashboardPage() {
               return null;
             };
             const applyZoom = (from: number, to: number) => {
-              // Cap minimum range so line never becomes a chaotic spike
+              // Strong min spans so MACD/ATR never collapse into solid bars / vanish
               const minSpan: Record<string, number> = {
-                rsi: 12, stoch: 12, dmi: 8, harsi: 8, macd: 0.1, roc: 2, atr: 0.05,
+                rsi: 15, stoch: 15, dmi: 10, harsi: 15,
+                macd: 5, roc: 3, atr: 20,
               };
-              const span = Math.max((minSpan[oscId] ?? 8), to - from);
+              let span = Math.max((minSpan[oscId] ?? 10), to - from);
+              // Also cap max zoom-out so range doesn't explode
+              const maxSpan: Record<string, number> = {
+                rsi: 120, stoch: 120, dmi: 100, harsi: 120,
+                macd: 500, roc: 80, atr: 5000,
+              };
+              span = Math.min(span, maxSpan[oscId] ?? 500);
               const mid = (from + to) / 2;
               from = mid - span / 2;
               to = mid + span / 2;
-              // ONLY update our ref — SVG redraws via linear map.
-              // NEVER touch LWC autoscaleInfoProvider during drag (that was the bleed source).
+              // ATR never goes below 0
+              if (oscId === "atr" && from < 0) {
+                to -= from;
+                from = 0;
+              }
               oscPriceRangeRef.current[oscId] = { from, to };
             };
             // Move tick labels within this strip without full DOM rebuild
@@ -2602,18 +2637,28 @@ export default function DashboardPage() {
               oscDraggingRef.current = true;
               setActive(true);
               y0 = clientY;
-              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
+              // Seed range from current auto/default so first drag is stable
+              let prev = oscPriceRangeRef.current[oscId];
+              if (!prev || !(prev.to > prev.from)) {
+                prev = defaults[oscId] || { from: 0, to: 100 };
+                // For data-driven osc, try a sensible seed
+                if (oscId === "macd") prev = { from: -50, to: 50 };
+                if (oscId === "atr") prev = { from: 0, to: 500 };
+                if (oscId === "harsi") prev = { from: -40, to: 40 };
+                oscPriceRangeRef.current[oscId] = { ...prev };
+              }
               range0 = { from: prev.from, to: prev.to };
             };
             let lastRedraw = 0;
             const onMove = (clientY: number) => {
               if (!dragging || !range0) return;
               const dy = clientY - y0;
-              // TV-like sensitivity
-              const factor = Math.exp(dy / 240);
+              // Gentler sensitivity for MACD/ATR (small absolute values blow up easily)
+              const sens = (oscId === "macd" || oscId === "atr") ? 400 : 280;
+              const factor = Math.exp(dy / sens);
               const mid = (range0.from + range0.to) / 2;
-              const half0 = (range0.to - range0.from) / 2;
-              const half = Math.max(half0 * factor, Math.abs(mid) * 0.05 + 1);
+              const half0 = Math.max(1e-6, (range0.to - range0.from) / 2);
+              const half = half0 * factor;
               let nf = mid - half;
               let nt = mid + half;
               if (oscId === "rsi" || oscId === "stoch") {
@@ -2621,21 +2666,30 @@ export default function DashboardPage() {
                 nt = Math.min(105, nt);
               }
               if (oscId === "harsi") {
-                nf = Math.max(-80, nf);
-                nt = Math.min(80, nt);
+                nf = Math.max(-100, nf);
+                nt = Math.min(100, nt);
               }
               if (!(nt > nf)) return;
               applyZoom(nf, nt);
-              // Cheap: move tick numbers only (no full DOM rebuild = no left-side lag)
-              refreshLabels(nf, nt);
-              // Heavier SVG redraw throttled more (150ms) to avoid lag
+              const cur = oscPriceRangeRef.current[oscId];
+              if (cur) refreshLabels(cur.from, cur.to);
               const now = Date.now();
-              if (now - lastRedraw > 150) {
+              if (now - lastRedraw > 120) {
                 lastRedraw = now;
                 oscDraggingRef.current = false;
                 try { updateMargins(); } catch {}
                 oscDraggingRef.current = true;
               }
+            };
+            // Double-click / double-tap → reset to default range
+            let lastTap = 0;
+            const onReset = () => {
+              delete oscPriceRangeRef.current[oscId];
+              setActive(false);
+              dragging = false;
+              range0 = null;
+              oscDraggingRef.current = false;
+              try { updateMargins(); } catch {}
             };
             const onEnd = () => {
               if (!dragging) return;
@@ -2654,6 +2708,13 @@ export default function DashboardPage() {
               if (!ev.touches.length) return;
               ev.preventDefault();
               ev.stopPropagation();
+              const now = Date.now();
+              if (now - lastTap < 320) {
+                lastTap = 0;
+                onReset();
+                return;
+              }
+              lastTap = now;
               onStart(ev.touches[0].clientY);
             };
             const tm = (ev: TouchEvent) => {
@@ -2673,18 +2734,32 @@ export default function DashboardPage() {
               ev.stopPropagation();
               const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
               const zoomIn = ev.deltaY < 0;
-              const factor = zoomIn ? 0.88 : 1.14;
+              const factor = zoomIn ? 0.9 : 1.12;
               const mid = (prev.from + prev.to) / 2;
-              const half = Math.max(((prev.to - prev.from) / 2) * factor, 1);
-              let nf = mid - half;
-              let nt = mid + half;
-              if (oscId === "rsi" || oscId === "stoch") {
-                nf = Math.max(-5, nf);
-                nt = Math.min(105, nt);
-              }
-              applyZoom(nf, nt);
-              refreshLabels(nf, nt);
+              const half = ((prev.to - prev.from) / 2) * factor;
+              applyZoom(mid - half, mid + half);
+              const cur = oscPriceRangeRef.current[oscId];
+              if (cur) refreshLabels(cur.from, cur.to);
               try { requestAnimationFrame(() => { try { updateMargins(); } catch {} }); } catch {}
+            };
+            // Desktop mouse drag on scale
+            const md = (ev: MouseEvent) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              onStart(ev.clientY);
+              const mm = (e: MouseEvent) => { e.preventDefault(); onMove(e.clientY); };
+              const mu = () => {
+                window.removeEventListener("mousemove", mm);
+                window.removeEventListener("mouseup", mu);
+                onEnd();
+              };
+              window.addEventListener("mousemove", mm);
+              window.addEventListener("mouseup", mu);
+            };
+            const dbl = (ev: MouseEvent) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              onReset();
             };
 
             el.addEventListener("touchstart", ts as any, { passive: false });
@@ -2692,6 +2767,8 @@ export default function DashboardPage() {
             el.addEventListener("touchend", te as any, { passive: false });
             el.addEventListener("touchcancel", te as any, { passive: false });
             el.addEventListener("wheel", ws as any, { passive: false });
+            el.addEventListener("mousedown", md as any);
+            el.addEventListener("dblclick", dbl as any);
           });
         } catch {}
       }
