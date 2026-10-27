@@ -2180,7 +2180,8 @@ export default function DashboardPage() {
               const y = series.priceToCoordinate(price);
               if (y == null || Number.isNaN(Number(y))) return "";
               const dash = dashed ? ' stroke-dasharray="4 3"' : "";
-              return `<line x1="0" y1="${y}" x2="${hostW - 56}" y2="${y}" stroke="${color}" stroke-width="1"${dash} />`;
+              // Extend to left edge of right scale strip so numbers sit on the line end
+              return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1"${dash} />`;
             } catch { return ""; }
           };
           if (rsiSeriesRef.current) {
@@ -2319,8 +2320,9 @@ export default function DashboardPage() {
                 const y = ser.priceToCoordinate(t.v);
                 if (y == null || Number.isNaN(Number(y))) continue;
                 if (Number(y) < topPx - 2 || Number(y) > topPx + heightPx + 2) continue;
+                // Sit on the LEFT of the scale strip — flush against the oscillator lines (TV-style)
                 parts.push(
-                  `<div style="position:absolute;right:4px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#9ca3af;pointer-events:none;font-variant-numeric:tabular-nums;">${t.label}</div>`
+                  `<div style="position:absolute;left:${hostW - scaleW + 3}px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#d1d5db;pointer-events:none;font-variant-numeric:tabular-nums;text-align:left;padding:0 2px;background:rgba(11,14,17,0.85);border-radius:2px;">${t.label}</div>`
                 );
               } catch {}
             }
