@@ -2494,13 +2494,50 @@ export default function DashboardPage() {
             ticks = [{ v: 20, label: "20" }, { v: 0, label: "0" }, { v: -20, label: "-20" }];
           } else if (id === "macd") {
             ser = macdSeriesRef.current?.macd;
-            ticks = [{ v: 0, label: "0" }];
+            {
+              const zrM = oscPriceRangeRef.current["macd"];
+              if (zrM && zrM.to > zrM.from) {
+                const span = zrM.to - zrM.from;
+                const step = span / 4;
+                const vals = [zrM.from + step, (zrM.from + zrM.to) / 2, zrM.from + 3 * step];
+                ticks = vals.map((v) => {
+                  const r = Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
+                  return { v, label: String(r) };
+                });
+              } else {
+                ticks = [{ v: 0, label: "0" }];
+              }
+            }
           } else if (id === "roc") {
             ser = rocSeriesRef.current;
-            ticks = [{ v: 0, label: "0" }];
+            {
+              const zrR = oscPriceRangeRef.current["roc"];
+              if (zrR && zrR.to > zrR.from) {
+                const span = zrR.to - zrR.from;
+                const step = span / 4;
+                const vals = [zrR.from + step, (zrR.from + zrR.to) / 2, zrR.from + 3 * step];
+                ticks = vals.map((v) => {
+                  const r = Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
+                  return { v, label: String(r) };
+                });
+              } else {
+                ticks = [{ v: 0, label: "0" }];
+              }
+            }
           } else if (id === "atr") {
             ser = atrSeriesRef.current;
-            ticks = [];
+            const zrA0 = oscPriceRangeRef.current["atr"];
+            if (zrA0 && zrA0.to > zrA0.from) {
+              const span = zrA0.to - zrA0.from;
+              const step = span / 4;
+              const vals = [zrA0.from + step, zrA0.from + 2 * step, zrA0.from + 3 * step];
+              ticks = vals.map((v) => {
+                const r = v >= 1000 ? Math.round(v) : v >= 100 ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100;
+                return { v, label: String(r) };
+              });
+            } else {
+              ticks = [{ v: 0, label: "0" }];
+            }
           }
           if (ser || ticks.length) {
             const zr = oscPriceRangeRef.current[id];
@@ -2572,7 +2609,21 @@ export default function DashboardPage() {
               harsi: [20, 0, -20],
               macd: [0],
               roc: [0],
-              atr: [],
+              atr: [], // dynamic below
+            };
+            const dynamicTicks = (id: string, from: number, to: number): number[] => {
+              if (id === "atr" || id === "macd" || id === "roc") {
+                const span = Math.max(1e-9, to - from);
+                const step = span / 4;
+                return [from + step, from + 2 * step, from + 3 * step];
+              }
+              return tickVals[id] || [];
+            };
+            const fmtTick = (v: number) => {
+              if (Math.abs(v) >= 1000) return String(Math.round(v));
+              if (Math.abs(v) >= 100) return String(Math.round(v * 10) / 10);
+              if (Math.abs(v) >= 10) return String(Math.round(v * 10) / 10);
+              return String(Math.round(v * 100) / 100);
             };
             const getSer = (): any => {
               if (oscId === "rsi") return rsiSeriesRef.current;
@@ -2587,15 +2638,15 @@ export default function DashboardPage() {
             const applyZoom = (from: number, to: number) => {
               // min = how small range can get (zoom in); max = how large (zoom out)
               const minSpan: Record<string, number> = {
-                rsi: 8, stoch: 5, dmi: 8, harsi: 10,
-                macd: 3, roc: 2, atr: 15,
+                rsi: 5, stoch: 2, dmi: 5, harsi: 6,
+                macd: 1, roc: 0.5, atr: 8,
               };
-              let span = Math.max((minSpan[oscId] ?? 8), to - from);
+              let span = Math.max((minSpan[oscId] ?? 5), to - from);
               const maxSpan: Record<string, number> = {
-                rsi: 150, stoch: 150, dmi: 120, harsi: 150,
-                macd: 800, roc: 400, atr: 8000,
+                rsi: 200, stoch: 200, dmi: 150, harsi: 200,
+                macd: 2000, roc: 5000, atr: 50000,
               };
-              span = Math.min(span, maxSpan[oscId] ?? 800);
+              span = Math.min(span, maxSpan[oscId] ?? 5000);
               const mid = (from + to) / 2;
               from = mid - span / 2;
               to = mid + span / 2;
@@ -2613,18 +2664,19 @@ export default function DashboardPage() {
                 const topPx = parseFloat(strip.style.top) || 0;
                 const heightPx = parseFloat(strip.style.height) || 1;
                 const hostEl = host as HTMLElement;
-                // remove old labels for this osc
                 hostEl.querySelectorAll(`[data-osc-label="${oscId}"]`).forEach((n) => n.remove());
-                const vals = tickVals[oscId] || [];
+                const vals = dynamicTicks(oscId, from, to);
+                const fixed = tickVals[oscId] || [];
+                const useVals = (oscId === "atr" || oscId === "macd" || oscId === "roc") ? vals : fixed;
                 const scaleW = 56;
                 const hostW = hostEl.clientWidth || 1;
-                for (const v of vals) {
-                  if (v < from || v > to) continue;
+                for (const v of useVals) {
+                  if (v < from - 1e-9 || v > to + 1e-9) continue;
                   const rel = (v - from) / Math.max(1e-9, to - from);
                   const y = topPx + (1 - rel) * heightPx;
                   const lab = document.createElement("div");
                   lab.setAttribute("data-osc-label", oscId);
-                  lab.textContent = String(v);
+                  lab.textContent = fmtTick(v);
                   lab.style.cssText = `position:absolute;left:${hostW - scaleW + 3}px;top:${y - 7}px;font-size:10px;line-height:14px;color:#d1d5db;pointer-events:none;font-variant-numeric:tabular-nums;text-align:left;padding:0 2px;background:rgba(11,14,17,0.85);border-radius:2px;z-index:6;`;
                   hostEl.appendChild(lab);
                 }
@@ -2676,7 +2728,7 @@ export default function DashboardPage() {
               }
               if (!range0) return;
               const dy = clientY - y0;
-              const sens = (oscId === "macd" || oscId === "atr" || oscId === "roc") ? 380 : 280;
+              const sens = (oscId === "macd" || oscId === "atr") ? 380 : (oscId === "roc" ? 220 : 280);
               const factor = Math.exp(dy / sens);
               const mid = (range0.from + range0.to) / 2;
               const half0 = Math.max(1e-6, (range0.to - range0.from) / 2);
@@ -5585,9 +5637,9 @@ export default function DashboardPage() {
         const applyOscZoom = (id: string, from: number, to: number) => {
           // Only update ref + SVG — never touch LWC autoscale (prevents bleed)
           const minSpan: Record<string, number> = {
-            rsi: 12, stoch: 12, dmi: 8, harsi: 8, macd: 0.1, roc: 2, atr: 0.05,
+            rsi: 5, stoch: 2, dmi: 5, harsi: 6, macd: 1, roc: 0.5, atr: 8,
           };
-          const span = Math.max((minSpan[id] ?? 8), to - from);
+          const span = Math.max((minSpan[id] ?? 5), to - from);
           const mid = (from + to) / 2;
           oscPriceRangeRef.current[id] = { from: mid - span / 2, to: mid + span / 2 };
           try { updateMargins(); } catch {}
