@@ -2238,17 +2238,20 @@ export default function DashboardPage() {
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
             const zrR = oscPriceRangeRef.current["roc"] || { from: -10, to: 10 };
+            const rocBits: string[] = [];
             if (cRoc && zrR.to > zrR.from && 0 >= zrR.from && 0 <= zrR.to) {
               const rel = (0 - zrR.from) / (zrR.to - zrR.from);
               const y = cRoc.top + (1 - rel) * (cRoc.bot - cRoc.top);
-              svgBits.push(`<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
+              rocBits.push(`<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
             }
-            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
+            rocBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
+            svgBits.push(`<g clip-path="url(#clip-roc)">${rocBits.join("")}</g>`);
           }
           if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
             const zrA = oscPriceRangeRef.current["atr"] || { from: 0, to: 1 };
-            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
+            const atrBits = pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to);
+            svgBits.push(`<g clip-path="url(#clip-atr)">${atrBits}</g>`);
           }
           if (dmiSeriesRef.current || paneClip["dmi"]) {
             const d = calcDMI(candles as any, dmiPeriod);
@@ -2292,9 +2295,11 @@ export default function DashboardPage() {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
             const cMacd = paneClip["macd"];
             const zrM = oscPriceRangeRef.current["macd"] || { from: -1, to: 1 };
-            svgBits.push(histRects(macdSeriesRef.current?.hist, m.hist as any));
-            svgBits.push(pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
-            svgBits.push(pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
+            const macdBits: string[] = [];
+            macdBits.push(histRects(macdSeriesRef.current?.hist, m.hist as any));
+            macdBits.push(pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
+            macdBits.push(pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
+            svgBits.push(`<g clip-path="url(#clip-macd)">${macdBits.join("")}</g>`);
           }
           if (harsiSeriesRef.current) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
@@ -4182,16 +4187,21 @@ export default function DashboardPage() {
   const applyROC = useCallback(() => {
     removeROC();
     if (!showROC || !rocVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
+    const rocZoom = oscPriceRangeRef.current["roc"];
     const s = chartRef.current.addLineSeries({
-      color: rocColor, lineWidth: 2, priceScaleId: "roc",
+      color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerVisible: true,
+      crosshairMarkerVisible: false,
       title: "ROC",
+      autoscaleInfoProvider: () => ({
+        priceRange: {
+          minValue: rocZoom ? rocZoom.from : -10,
+          maxValue: rocZoom ? rocZoom.to : 10,
+        },
+      }),
     });
     s.setData(calcROC(candlesRef.current, rocPeriod) as any);
-    try {
-      s.createPriceLine({ price: 0, color: "rgba(120,123,134,0.6)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-    } catch {}
+    try { /* guides on SVG only */ } catch {}
     rocSeriesRef.current = s;
     updateMargins();
   }, [showROC, rocVisible, hideIndicators, rocPeriod, rocColor, removeROC, updateMargins]);
@@ -4205,11 +4215,18 @@ export default function DashboardPage() {
   const applyATR = useCallback(() => {
     removeATR();
     if (!showATR || !atrVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
+    const atrZoom = oscPriceRangeRef.current["atr"];
     const s = chartRef.current.addLineSeries({
-      color: atrColor, lineWidth: 2, priceScaleId: "atr",
+      color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerVisible: true,
+      crosshairMarkerVisible: false,
       title: "ATR",
+      autoscaleInfoProvider: () => ({
+        priceRange: {
+          minValue: atrZoom ? atrZoom.from : 0,
+          maxValue: atrZoom ? atrZoom.to : 1000,
+        },
+      }),
     });
     s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
     atrSeriesRef.current = s;
@@ -4230,23 +4247,32 @@ export default function DashboardPage() {
     if (!showMACD || !macdVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
+    const macdZoom = oscPriceRangeRef.current["macd"];
+    const macdProvider = () => ({
+      priceRange: {
+        minValue: macdZoom ? macdZoom.from : -1,
+        maxValue: macdZoom ? macdZoom.to : 1,
+      },
+    });
     const histS = chart.addHistogramSeries({
       priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
-    });
+      // hist still visible (stays in pane via scaleMargins); lines via SVG
+      autoscaleInfoProvider: macdProvider,
+    } as any);
     histS.setData(hist as any);
     const macdS = chart.addLineSeries({
-      color: macdColor, lineWidth: 2, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: true,
+      color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "macd",
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+      autoscaleInfoProvider: macdProvider,
     });
     macdS.setData(macdLine as any);
     const sigS = chart.addLineSeries({
-      color: macdSigColor, lineWidth: 2, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: false,
+      color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "macd",
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      autoscaleInfoProvider: macdProvider,
     });
     sigS.setData(signalLine as any);
-    try {
-      macdS.createPriceLine({ price: 0, color: "rgba(120,123,134,0.5)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-    } catch {}
+    try { /* zero line on SVG */ } catch {}
     macdSeriesRef.current = { macd: macdS, signal: sigS, hist: histS };
     updateMargins();
   }, [showMACD, macdVisible, hideIndicators, macdFast, macdSlow, macdSignal, macdColor, macdSigColor, removeMACD, updateMargins]);
