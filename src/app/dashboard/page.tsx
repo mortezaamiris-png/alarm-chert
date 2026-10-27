@@ -2457,11 +2457,15 @@ export default function DashboardPage() {
             `</div>`
           );
         }
-        // Crosshair line over whole osc stack
+        // Crosshair (vertical + horizontal) over oscillator stack — TradingView style
         parts.push(
           `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;z-index:6;">` +
-          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
+          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
+          `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW - 56}" y2="-10" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
+          `</svg>`
         );
+        // store osc top for crosshair handler
+        try { (host as any).__oscTopPx = oscTopPx; (host as any).__plotH = plotH; (host as any).__hostW = hostW; } catch {}
 
         // 3) Separator lines — one line per boundary (avoid double lines)
         const sepSet = new Set<number>();
@@ -6260,19 +6264,37 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Dashed vertical crosshair only over oscillator panes (avoids double line on main chart)
+        // TradingView-style dashed crosshair over oscillator panes:
+        // vertical always tracks X; horizontal tracks Y only inside osc stack
         try {
           const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
-          if (v) {
-            if (param && param.point) {
-              const x = param.point.x;
+          const h = document.getElementById("osc-crosshair-h") as SVGLineElement | null;
+          const host = paneSepRef.current as any;
+          const oscTop = host?.__oscTopPx ?? 0;
+          const plotH = host?.__plotH ?? 0;
+          const hostW = host?.__hostW ?? 0;
+          if (param && param.point) {
+            const x = param.point.x;
+            const y = param.point.y;
+            if (v) {
               v.setAttribute("x1", String(x));
               v.setAttribute("x2", String(x));
-              // keep y1/y2 as set in updateMargins (osc region only)
-            } else {
-              v.setAttribute("x1", "-10");
-              v.setAttribute("x2", "-10");
             }
+            if (h) {
+              // Horizontal guide only when pointer is inside oscillator stack
+              if (y >= oscTop && y <= plotH - 2) {
+                h.setAttribute("y1", String(y));
+                h.setAttribute("y2", String(y));
+                h.setAttribute("x1", "0");
+                h.setAttribute("x2", String(Math.max(0, hostW - 56)));
+              } else {
+                h.setAttribute("y1", "-10");
+                h.setAttribute("y2", "-10");
+              }
+            }
+          } else {
+            if (v) { v.setAttribute("x1", "-10"); v.setAttribute("x2", "-10"); }
+            if (h) { h.setAttribute("y1", "-10"); h.setAttribute("y2", "-10"); }
           }
         } catch {}
         // TV-style pane labels: name + value at hovered bar (left of each oscillator)
