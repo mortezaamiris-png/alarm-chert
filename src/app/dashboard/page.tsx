@@ -1411,13 +1411,22 @@ export default function DashboardPage() {
   const maximizedOscRef = useRef<string | null>(null);
   useEffect(() => { maximizedOscRef.current = maximizedOsc; }, [maximizedOsc]);
   // Order of oscillator panes (bottom → top in stack = last drawn near time axis first)
-  const DEFAULT_OSC_ORDER = ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+  const DEFAULT_OSC_ORDER = ["atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi", "volume"];
   const [oscOrder, setOscOrder] = useState<string[]>(() => {
     try {
       const s = localStorage.getItem("osc_order");
       if (s) {
         const arr = JSON.parse(s);
-        if (Array.isArray(arr) && arr.length) return arr;
+        if (Array.isArray(arr) && arr.length) {
+          // Volume sits just under main chart; oscillators stack below it
+          const rest = arr.filter((x: string) => x !== "volume");
+          if (arr.includes("volume")) rest.push("volume");
+          for (const k of DEFAULT_OSC_ORDER) if (!rest.includes(k)) {
+            if (k === "volume") rest.push(k);
+            else rest.unshift(k);
+          }
+          return rest;
+        }
       }
     } catch {}
     return DEFAULT_OSC_ORDER.slice();
@@ -2068,7 +2077,7 @@ export default function DashboardPage() {
     // Order panes by oscOrder (unknown ids appended)
     const order = (typeof window !== "undefined" && (window as any).__oscOrder)
       ? (window as any).__oscOrder as string[]
-      : ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+      : ["atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi", "volume"];
     const panes: { id: string; on: boolean; h: number }[] = [];
     const seen = new Set<string>();
     for (const id of order) {
@@ -2667,8 +2676,8 @@ export default function DashboardPage() {
           {
             const isMax = maximizedOscRef.current === id;
             const btnTop = topPx + 4;
-            const handleRight = scaleW + 4;
-            const barRight = scaleW + 28;
+            const handleRight = scaleW + 8;
+            const barRight = scaleW + 32;
             const btnStyle = "width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#d1d5db;-webkit-tap-highlight-color:transparent;";
             const svgUp = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>`;
             const svgDown = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
@@ -2710,6 +2719,7 @@ export default function DashboardPage() {
             const el = btn as HTMLElement;
             const id = el.getAttribute("data-osc-handle") || "";
             if (!id) return;
+            // Only click — pointerup+click on desktop was open-then-immediately-close
             const toggle = (ev: Event) => {
               ev.preventDefault();
               ev.stopPropagation();
@@ -2717,11 +2727,21 @@ export default function DashboardPage() {
               if (!tb) return;
               const open = tb.style.display === "flex";
               closeAllToolbars();
-              if (!open) tb.style.display = "flex";
+              if (!open) {
+                tb.style.display = "flex";
+                // keep open across the following bubble events
+                (tb as any).__keepOpenUntil = Date.now() + 300;
+              }
             };
-            el.addEventListener("pointerup", toggle);
             el.addEventListener("click", toggle);
-            el.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+            el.addEventListener("pointerdown", (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+            });
+            el.addEventListener("pointerup", (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+            });
           });
           host.querySelectorAll("[data-osc-act]").forEach((btn) => {
             const el = btn as HTMLElement;
@@ -2731,7 +2751,6 @@ export default function DashboardPage() {
             const onAct = (ev: Event) => {
               ev.preventDefault();
               ev.stopPropagation();
-              // close toolbar after action (except max keeps layout rebuild)
               try {
                 if (act === "max") {
                   const cur = maximizedOscRef.current;
@@ -2749,10 +2768,14 @@ export default function DashboardPage() {
                   const fn = (window as any).__oscPaneAction;
                   if (typeof fn === "function") fn(id, act);
                 }
+                // hide toolbar after action
+                try {
+                  const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
+                  if (tb && act !== "max") tb.style.display = "none";
+                } catch {}
               } catch {}
             };
-            // pointerup is more reliable on iPad than click alone
-            el.addEventListener("pointerup", onAct);
+            // single handler — avoid double-fire on desktop
             el.addEventListener("click", onAct);
             el.addEventListener("pointerdown", (ev) => {
               ev.preventDefault();
@@ -2764,10 +2787,18 @@ export default function DashboardPage() {
             const t = ev.target as HTMLElement | null;
             if (!t) return;
             if (t.closest && (t.closest("[data-osc-toolbar]") || t.closest("[data-osc-handle]"))) return;
+            // skip if a toolbar was just opened (same pointer sequence)
+            let skip = false;
+            host.querySelectorAll("[data-osc-toolbar]").forEach((tb) => {
+              const until = (tb as any).__keepOpenUntil || 0;
+              if (Date.now() < until) skip = true;
+            });
+            if (skip) return;
             closeAllToolbars();
           };
-          // Use capture on host so chart gestures still work
-          host.addEventListener("pointerdown", onOutside);
+          // document-level so it works even when host has pointer-events quirks on desktop
+          document.addEventListener("pointerdown", onOutside, true);
+          (host as any).__oscOutside = onOutside;
         } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
@@ -10773,8 +10804,8 @@ export default function DashboardPage() {
               />
               <div
                 ref={paneSepRef}
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 22 }}
+                className="absolute inset-0 overflow-hidden rounded-xl"
+                style={{ zIndex: 22, pointerEvents: "none" }}
               />
 
 
@@ -11035,14 +11066,14 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* TCP info table — bottom-left so it does not cover indicator chips */}
+          {/* TCP info table — top-left above oscillators (not under panes) */}
           {!hideIndicators && showTCP && tcpVisible && (
             <div
               data-ind-panel
               role="button"
               title="Open TCP settings"
               onClick={() => setTcpSettings(true)}
-              className="absolute bottom-14 left-2 z-20 bg-gray-950/90 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
+              className="absolute top-14 left-2 z-30 bg-gray-950/95 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
             >
               {(() => {
                 const candles = candlesRef.current || [];
