@@ -2173,10 +2173,26 @@ export default function DashboardPage() {
 
         const svgBits: string[] = [];
         try {
+          // Horizontal guide line helper (OB / mid / OS) — drawn ABOVE solid masks
+          const guideH = (series: any, price: number, color: string, dashed = true) => {
+            if (!series) return "";
+            try {
+              const y = series.priceToCoordinate(price);
+              if (y == null || Number.isNaN(Number(y))) return "";
+              const dash = dashed ? ' stroke-dasharray="4 3"' : "";
+              return `<line x1="0" y1="${y}" x2="${hostW - 56}" y2="${y}" stroke="${color}" stroke-width="1"${dash} />`;
+            } catch { return ""; }
+          };
           if (rsiSeriesRef.current) {
+            // RSI overbought 70 / mid 50 / oversold 30
+            svgBits.push(guideH(rsiSeriesRef.current, 70, "rgba(148,163,184,0.7)"));
+            svgBits.push(guideH(rsiSeriesRef.current, 50, "rgba(148,163,184,0.35)"));
+            svgBits.push(guideH(rsiSeriesRef.current, 30, "rgba(148,163,184,0.7)"));
             svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2));
           }
           if (rocSeriesRef.current) {
+            // ROC zero mid-line (+ optional weak bands)
+            svgBits.push(guideH(rocSeriesRef.current, 0, "rgba(148,163,184,0.75)"));
             svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2));
           }
           if (atrSeriesRef.current) {
@@ -2184,12 +2200,19 @@ export default function DashboardPage() {
           }
           if (dmiSeriesRef.current) {
             const d = calcDMI(candles as any, dmiPeriod);
+            // DMI strength guides
+            svgBits.push(guideH(dmiSeriesRef.current.adx, 40, "rgba(148,163,184,0.45)"));
+            svgBits.push(guideH(dmiSeriesRef.current.adx, 20, "rgba(148,163,184,0.55)"));
             svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25));
             svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25));
             svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2));
           }
           if (stochSeriesRef.current) {
             const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
+            // Stoch RSI overbought 80 / mid 50 / oversold 20
+            svgBits.push(guideH(stochSeriesRef.current.k, 80, "rgba(148,163,184,0.7)"));
+            svgBits.push(guideH(stochSeriesRef.current.k, 50, "rgba(148,163,184,0.4)"));
+            svgBits.push(guideH(stochSeriesRef.current.k, 20, "rgba(148,163,184,0.7)"));
             svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2));
             svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5));
           }
@@ -9828,9 +9851,10 @@ export default function DashboardPage() {
                 pinnedToRightRef.current = true;
                 setShowGoLive(false);
               }}
-              className="absolute bottom-2 right-14 z-20 flex items-center justify-center w-9 h-9 rounded-full bg-gray-900/95 border border-gray-500 text-white shadow-lg hover:bg-orange-600 hover:border-orange-500 active:scale-95 transition"
+              className="absolute bottom-10 right-16 z-40 flex items-center justify-center w-10 h-10 rounded-full bg-gray-900 border-2 border-orange-500 text-orange-400 shadow-xl hover:bg-orange-600 hover:text-white hover:border-orange-400 active:scale-95 transition touch-manipulation"
+              style={{ marginBottom: 0 }}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="13 17 18 12 13 7" />
                 <polyline points="6 17 11 12 6 7" />
               </svg>
