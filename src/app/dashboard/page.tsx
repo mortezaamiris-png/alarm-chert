@@ -1410,6 +1410,36 @@ export default function DashboardPage() {
   const [maximizedOsc, setMaximizedOsc] = useState<string | null>(null);
   const maximizedOscRef = useRef<string | null>(null);
   useEffect(() => { maximizedOscRef.current = maximizedOsc; }, [maximizedOsc]);
+  // Order of oscillator panes (bottom → top in stack = last drawn near time axis first)
+  const DEFAULT_OSC_ORDER = ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+  const [oscOrder, setOscOrder] = useState<string[]>(() => {
+    try {
+      const s = localStorage.getItem("osc_order");
+      if (s) {
+        const arr = JSON.parse(s);
+        if (Array.isArray(arr) && arr.length) return arr;
+      }
+    } catch {}
+    return DEFAULT_OSC_ORDER.slice();
+  });
+  useEffect(() => {
+    try { localStorage.setItem("osc_order", JSON.stringify(oscOrder)); } catch {}
+    try { (window as any).__oscOrder = oscOrder; } catch {}
+  }, [oscOrder]);
+  useEffect(() => { try { (window as any).__oscOrder = oscOrder; } catch {} }, []);
+  const moveOsc = (id: string, dir: -1 | 1) => {
+    setOscOrder((prev) => {
+      const list = prev.slice();
+      // ensure all known ids present
+      for (const k of DEFAULT_OSC_ORDER) if (!list.includes(k)) list.push(k);
+      const i = list.indexOf(id);
+      if (i < 0) return prev;
+      const j = i + dir;
+      if (j < 0 || j >= list.length) return prev;
+      const t = list[i]; list[i] = list[j]; list[j] = t;
+      return list;
+    });
+  };
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
@@ -2025,16 +2055,28 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!chart) return;
     const maxId = maximizedOscRef.current;
-    const panes: { id: string; on: boolean; h: number }[] = [
-      { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.13 },
-      { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
-      { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
-    ];
+    const panesMap: Record<string, { id: string; on: boolean; h: number }> = {
+      dmi: { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      stoch: { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.13 },
+      harsi: { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
+      rsi: { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
+      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
+      volume: { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
+    };
+    // Order panes by oscOrder (unknown ids appended)
+    const order = (typeof window !== "undefined" && (window as any).__oscOrder)
+      ? (window as any).__oscOrder as string[]
+      : ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+    const panes: { id: string; on: boolean; h: number }[] = [];
+    const seen = new Set<string>();
+    for (const id of order) {
+      if (panesMap[id]) { panes.push(panesMap[id]); seen.add(id); }
+    }
+    for (const id of Object.keys(panesMap)) {
+      if (!seen.has(id)) panes.push(panesMap[id]);
+    }
     // Maximize mode: selected oscillator fills nearly the whole plot (time axis stays)
     let active = panes.filter((p) => p.on);
     if (maxId) {
@@ -2621,16 +2663,27 @@ export default function DashboardPage() {
               } catch {}
             }
           }
-          // Maximize / restore button (TradingView-style) — top-right of each osc pane
+          // TradingView-style pane toolbar: ↑ ↓ trash collapse maximize
           {
             const isMax = maximizedOscRef.current === id;
             const btnTop = topPx + 4;
-            const btnLeft = Math.max(0, hostW - scaleW - 28);
-            const icon = isMax
-              ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="2" stroke-linecap="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`
-              : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
+            const barRight = scaleW + 6; // left of scale strip
+            const btnStyle = "width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#d1d5db;";
+            const svgUp = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>`;
+            const svgDown = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
+            const svgTrash = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+            const svgCollapse = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+            const svgMax = isMax
+              ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`
+              : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
             parts.push(
-              `<button data-osc-max="${id}" title="${isMax ? "Restore" : "Maximize"}" style="position:absolute;left:${btnLeft}px;top:${btnTop}px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.75);border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;pointer-events:auto;z-index:12;padding:0;">${icon}</button>`
+              `<div data-osc-toolbar="${id}" style="position:absolute;right:${barRight}px;top:${btnTop}px;display:flex;flex-direction:row;gap:1px;align-items:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 2px;z-index:12;pointer-events:auto;">` +
+              `<button data-osc-act="up" data-osc-id="${id}" title="Move up" style="${btnStyle}">${svgUp}</button>` +
+              `<button data-osc-act="down" data-osc-id="${id}" title="Move down" style="${btnStyle}">${svgDown}</button>` +
+              `<button data-osc-act="trash" data-osc-id="${id}" title="Remove" style="${btnStyle}">${svgTrash}</button>` +
+              `<button data-osc-act="collapse" data-osc-id="${id}" title="Hide" style="${btnStyle}">${svgCollapse}</button>` +
+              `<button data-osc-act="max" data-osc-id="${id}" title="${isMax ? "Restore" : "Maximize"}" style="${btnStyle}">${svgMax}</button>` +
+              `</div>`
             );
           }
         }
@@ -2639,22 +2692,37 @@ export default function DashboardPage() {
         // Hard clip so nothing can paint over the time labels
         try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
 
-        // Maximize / restore buttons
+        // TradingView-style osc toolbar: up / down / trash / collapse / max
         try {
-          host.querySelectorAll("[data-osc-max]").forEach((btn) => {
-            const id = (btn as HTMLElement).getAttribute("data-osc-max") || "";
-            if (!id) return;
-            const onMax = (ev: Event) => {
+          host.querySelectorAll("[data-osc-act]").forEach((btn) => {
+            const el = btn as HTMLElement;
+            const act = el.getAttribute("data-osc-act") || "";
+            const id = el.getAttribute("data-osc-id") || "";
+            if (!act || !id) return;
+            const onAct = (ev: Event) => {
               ev.preventDefault();
               ev.stopPropagation();
-              const cur = maximizedOscRef.current;
-              const next = cur === id ? null : id;
-              maximizedOscRef.current = next;
-              setMaximizedOsc(next);
-              try { updateMargins(); } catch {}
+              try {
+                if (act === "max") {
+                  const cur = maximizedOscRef.current;
+                  const next = cur === id ? null : id;
+                  maximizedOscRef.current = next;
+                  setMaximizedOsc(next);
+                  try { updateMargins(); } catch {}
+                } else if (act === "up") {
+                  moveOsc(id, 1);
+                  setTimeout(() => { try { updateMargins(); } catch {} }, 30);
+                } else if (act === "down") {
+                  moveOsc(id, -1);
+                  setTimeout(() => { try { updateMargins(); } catch {} }, 30);
+                } else if (act === "trash" || act === "collapse") {
+                  const fn = (window as any).__oscPaneAction;
+                  if (typeof fn === "function") fn(id, act);
+                }
+              } catch {}
             };
-            btn.addEventListener("click", onMax);
-            btn.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+            el.addEventListener("click", onAct);
+            el.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
           });
         } catch {}
 
@@ -2952,7 +3020,7 @@ export default function DashboardPage() {
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
     showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
-    showHARSI, harsiVisible, hideIndicators, hideOscillators, maximizedOsc,
+    showHARSI, harsiVisible, hideIndicators, hideOscillators, maximizedOsc, oscOrder,
     rsiPeriod, rsiColor, rocPeriod, rocColor, atrPeriod, atrSmooth, atrColor,
     dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
     stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
@@ -4671,6 +4739,46 @@ export default function DashboardPage() {
       stochSeriesRef.current = null;
     }
   }, []);
+
+  // Pane toolbar actions (trash = remove indicator, collapse = hide pane)
+  useEffect(() => {
+    (window as any).__oscPaneAction = (id: string, act: string) => {
+      const hide = act === "collapse";
+      const remove = act === "trash";
+      if (id === "rsi") {
+        if (hide) setRsiVisible(false);
+        if (remove) { setShowRSI(false); removeRSI(); }
+      } else if (id === "dmi") {
+        if (hide) setDmiVisible(false);
+        if (remove) { setShowDMI(false); removeDMI(); }
+      } else if (id === "macd") {
+        if (hide) setMacdVisible(false);
+        if (remove) { setShowMACD(false); removeMACD(); }
+      } else if (id === "harsi") {
+        if (hide) setHarsiVisible(false);
+        if (remove) { setShowHARSI(false); removeHARSI(); }
+      } else if (id === "roc") {
+        if (hide) setRocVisible(false);
+        if (remove) { setShowROC(false); removeROC(); }
+      } else if (id === "atr") {
+        if (hide) setAtrVisible(false);
+        if (remove) { setShowATR(false); removeATR(); }
+      } else if (id === "stoch") {
+        if (hide) setStochVisible(false);
+        if (remove) { setShowStoch(false); removeStoch(); }
+      } else if (id === "volume") {
+        if (hide) setVolVisible(false);
+        if (remove) { setShowVol(false); }
+      }
+      if (maximizedOscRef.current === id) {
+        maximizedOscRef.current = null;
+        setMaximizedOsc(null);
+      }
+      setTimeout(() => { try { updateMargins(); } catch {} }, 40);
+    };
+    return () => { try { delete (window as any).__oscPaneAction; } catch {} };
+  }, [removeRSI, removeDMI, removeMACD, removeHARSI, removeROC, removeATR, removeStoch, updateMargins]);
+
   const applyStoch = useCallback(() => {
     removeStoch();
     if (!showStoch || !stochVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
