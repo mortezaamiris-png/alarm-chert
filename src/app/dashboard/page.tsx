@@ -2663,12 +2663,13 @@ export default function DashboardPage() {
               } catch {}
             }
           }
-          // TradingView-style pane toolbar: ↑ ↓ trash collapse maximize
+          // Pane handle (always) + toolbar (hidden until handle clicked)
           {
             const isMax = maximizedOscRef.current === id;
             const btnTop = topPx + 4;
-            const barRight = scaleW + 6; // left of scale strip
-            const btnStyle = "width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#d1d5db;";
+            const handleRight = scaleW + 4;
+            const barRight = scaleW + 28;
+            const btnStyle = "width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#d1d5db;-webkit-tap-highlight-color:transparent;";
             const svgUp = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>`;
             const svgDown = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
             const svgTrash = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
@@ -2676,8 +2677,14 @@ export default function DashboardPage() {
             const svgMax = isMax
               ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`
               : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
+            const svgHandle = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>`;
+            // Always-visible handle (⋮)
             parts.push(
-              `<div data-osc-toolbar="${id}" style="position:absolute;right:${barRight}px;top:${btnTop}px;display:flex;flex-direction:row;gap:1px;align-items:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 2px;z-index:12;pointer-events:auto;">` +
+              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:20px;height:22px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.7);border:1px solid rgba(255,255,255,0.12);border-radius:4px;cursor:pointer;pointer-events:auto;z-index:13;padding:0;color:#9ca3af;-webkit-tap-highlight-color:transparent;">${svgHandle}</button>`
+            );
+            // Toolbar — hidden by default
+            parts.push(
+              `<div data-osc-toolbar="${id}" style="position:absolute;right:${barRight}px;top:${btnTop}px;display:none;flex-direction:row;gap:1px;align-items:center;background:rgba(11,14,17,0.92);border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 3px;z-index:14;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,0.45);">` +
               `<button data-osc-act="up" data-osc-id="${id}" title="Move up" style="${btnStyle}">${svgUp}</button>` +
               `<button data-osc-act="down" data-osc-id="${id}" title="Move down" style="${btnStyle}">${svgDown}</button>` +
               `<button data-osc-act="trash" data-osc-id="${id}" title="Remove" style="${btnStyle}">${svgTrash}</button>` +
@@ -2688,12 +2695,34 @@ export default function DashboardPage() {
           }
         }
 
-        host.innerHTML = parts.join("");
+                host.innerHTML = parts.join("");
         // Hard clip so nothing can paint over the time labels
         try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
 
-        // TradingView-style osc toolbar: up / down / trash / collapse / max
+        // Pane handle + toolbar (hidden until handle tapped)
         try {
+          const closeAllToolbars = () => {
+            host.querySelectorAll("[data-osc-toolbar]").forEach((tb) => {
+              (tb as HTMLElement).style.display = "none";
+            });
+          };
+          host.querySelectorAll("[data-osc-handle]").forEach((btn) => {
+            const el = btn as HTMLElement;
+            const id = el.getAttribute("data-osc-handle") || "";
+            if (!id) return;
+            const toggle = (ev: Event) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
+              if (!tb) return;
+              const open = tb.style.display === "flex";
+              closeAllToolbars();
+              if (!open) tb.style.display = "flex";
+            };
+            el.addEventListener("pointerup", toggle);
+            el.addEventListener("click", toggle);
+            el.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+          });
           host.querySelectorAll("[data-osc-act]").forEach((btn) => {
             const el = btn as HTMLElement;
             const act = el.getAttribute("data-osc-act") || "";
@@ -2702,6 +2731,7 @@ export default function DashboardPage() {
             const onAct = (ev: Event) => {
               ev.preventDefault();
               ev.stopPropagation();
+              // close toolbar after action (except max keeps layout rebuild)
               try {
                 if (act === "max") {
                   const cur = maximizedOscRef.current;
@@ -2711,19 +2741,33 @@ export default function DashboardPage() {
                   try { updateMargins(); } catch {}
                 } else if (act === "up") {
                   moveOsc(id, 1);
-                  setTimeout(() => { try { updateMargins(); } catch {} }, 30);
+                  setTimeout(() => { try { updateMargins(); } catch {} }, 40);
                 } else if (act === "down") {
                   moveOsc(id, -1);
-                  setTimeout(() => { try { updateMargins(); } catch {} }, 30);
+                  setTimeout(() => { try { updateMargins(); } catch {} }, 40);
                 } else if (act === "trash" || act === "collapse") {
                   const fn = (window as any).__oscPaneAction;
                   if (typeof fn === "function") fn(id, act);
                 }
               } catch {}
             };
+            // pointerup is more reliable on iPad than click alone
+            el.addEventListener("pointerup", onAct);
             el.addEventListener("click", onAct);
-            el.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+            el.addEventListener("pointerdown", (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+            });
           });
+          // Tap outside toolbars / handles closes them
+          const onOutside = (ev: Event) => {
+            const t = ev.target as HTMLElement | null;
+            if (!t) return;
+            if (t.closest && (t.closest("[data-osc-toolbar]") || t.closest("[data-osc-handle]"))) return;
+            closeAllToolbars();
+          };
+          // Use capture on host so chart gestures still work
+          host.addEventListener("pointerdown", onOutside);
         } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
