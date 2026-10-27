@@ -4975,21 +4975,110 @@ export default function DashboardPage() {
         };
         container.addEventListener("contextmenu", onCtxChart);
 
-        // iPad / touch: درگ عمودی روی محور قیمت = زوم عمودی
+        // iPad / touch: درگ عمودی روی محور قیمت = زوم عمودی (اصلی یا اسیلاتور)
         let priceTouchY0 = 0;
         let priceTouchRange: { from: number; to: number } | null = null;
         let priceTouchActive = false;
+        let oscTouchId: string | null = null; // null = main chart scale
+        const resolveOscPaneAtY = (rect: DOMRect, clientY: number): string | null => {
+          const plotH = Math.max(1, rect.height - 28);
+          const yRatio = (clientY - rect.top) / plotH;
+          const panes: { id: string; on: boolean; h: number }[] = [
+            { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
+            { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
+            { id: "macd", on: !!(macdSeriesRef.current), h: 0.12 },
+            { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.12 },
+            { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
+            { id: "roc", on: !!(rocSeriesRef.current), h: 0.12 },
+            { id: "atr", on: !!(atrSeriesRef.current), h: 0.12 },
+          ];
+          const active = panes.filter((p) => p.on);
+          let totalH = active.reduce((s, p) => s + p.h, 0);
+          const sc = totalH > 0.55 ? 0.55 / totalH : 1;
+          let used = 0;
+          for (const p of active) {
+            const h = p.h * sc;
+            const top = 1 - used - h;
+            const bot = used;
+            if (yRatio >= top - 0.02 && yRatio <= 1 - bot + 0.02) return p.id;
+            used += h;
+          }
+          return null;
+        };
+        const oscSeriesFor = (id: string): any => {
+          if (id === "rsi") return rsiSeriesRef.current;
+          if (id === "stoch") return stochSeriesRef.current?.k;
+          if (id === "dmi") return dmiSeriesRef.current?.adx;
+          if (id === "macd") return macdSeriesRef.current?.macd;
+          if (id === "roc") return rocSeriesRef.current;
+          if (id === "atr") return atrSeriesRef.current;
+          if (id === "harsi") return harsiSeriesRef.current;
+          return null;
+        };
+        const applyOscZoom = (id: string, from: number, to: number) => {
+          oscPriceRangeRef.current[id] = { from, to };
+          const provider = () => ({ priceRange: { minValue: from, maxValue: to } });
+          try {
+            const ser = oscSeriesFor(id);
+            ser?.applyOptions?.({ autoscaleInfoProvider: provider });
+            if (id === "stoch") {
+              stochSeriesRef.current?.d?.applyOptions?.({ autoscaleInfoProvider: provider });
+            }
+            if (id === "dmi" && dmiSeriesRef.current) {
+              dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
+              dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
+            }
+            if (id === "macd" && macdSeriesRef.current) {
+              macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
+              macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
+            }
+            try { chartRef.current?.priceScale(id)?.applyOptions?.({ autoScale: true } as any); } catch {}
+            try { updateMargins(); } catch {}
+          } catch {}
+        };
         const onTouchStartPrice = (e: TouchEvent) => {
           if (!e.touches.length) return;
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.touches[0].clientX;
-          // فقط نوار باریک محور قیمت (نه کل چارت) — وگرنه در موبایل pan کندل‌ها قفل می‌شود
-          if (fromRight > 56 || fromRight < 0) {
+          // نوار محور قیمت سمت راست (~64px برای لمس آیپد)
+          if (fromRight > 64 || fromRight < 0) {
             priceTouchActive = false;
+            oscTouchId = null;
             return;
           }
           priceTouchActive = true;
           priceTouchY0 = e.touches[0].clientY;
+          oscTouchId = resolveOscPaneAtY(rect, e.touches[0].clientY);
+
+          if (oscTouchId) {
+            // شروع زوم اسیلاتور
+            const defaults: Record<string, { from: number; to: number }> = {
+              rsi: { from: 0, to: 100 },
+              stoch: { from: 0, to: 100 },
+              dmi: { from: 0, to: 60 },
+              harsi: { from: -40, to: 40 },
+              macd: { from: -1, to: 1 },
+              roc: { from: -10, to: 10 },
+              atr: { from: 0, to: 1 },
+            };
+            const prev = oscPriceRangeRef.current[oscTouchId] || defaults[oscTouchId] || { from: 0, to: 100 };
+            let pTop = prev.to;
+            let pBot = prev.from;
+            try {
+              const ser = oscSeriesFor(oscTouchId);
+              const plotH = Math.max(1, rect.height - 28);
+              const t = ser?.coordinateToPrice?.(1);
+              const b = ser?.coordinateToPrice?.(Math.max(2, plotH - 1));
+              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
+                pTop = Math.max(Number(t), Number(b));
+                pBot = Math.min(Number(t), Number(b));
+              }
+            } catch {}
+            priceTouchRange = pTop > pBot ? { from: pBot, to: pTop } : { ...prev };
+            return;
+          }
+
+          // زوم چارت اصلی
           const s = seriesRef.current as any;
           let pTop: number | null = null;
           let pBot: number | null = null;
@@ -5013,16 +5102,25 @@ export default function DashboardPage() {
         };
         const onTouchMovePrice = (e: TouchEvent) => {
           if (!priceTouchActive || !priceTouchRange || !e.touches.length) return;
-          // فقط preventDefault — stopPropagation نکن تا LWC روی بقیه ژست‌ها بماند
           try { e.preventDefault(); } catch {}
           const dy = e.touches[0].clientY - priceTouchY0;
           // drag down = zoom out, drag up = zoom in
-          const factor = Math.exp(dy / 280);
+          const factor = Math.exp(dy / 220); // کمی حساس‌تر برای آیپد
           const mid = (priceTouchRange.from + priceTouchRange.to) / 2;
           const half = ((priceTouchRange.to - priceTouchRange.from) / 2) * factor;
-          const minHalf = Math.max(Math.abs(mid) * 0.00004, 0.25);
+          const minHalf = Math.max(Math.abs(mid) * 0.02 + 0.3, 0.5);
           const h = Math.max(half, minHalf);
-          priceRangeOverrideRef.current = { from: mid - h, to: mid + h };
+          let newFrom = mid - h;
+          let newTo = mid + h;
+          if (oscTouchId === "rsi" || oscTouchId === "stoch") {
+            newFrom = Math.max(-5, newFrom);
+            newTo = Math.min(105, newTo);
+          }
+          if (oscTouchId) {
+            applyOscZoom(oscTouchId, newFrom, newTo);
+            return;
+          }
+          priceRangeOverrideRef.current = { from: newFrom, to: newTo };
           try {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
@@ -5033,6 +5131,7 @@ export default function DashboardPage() {
         const onTouchEndPrice = () => {
           priceTouchActive = false;
           priceTouchRange = null;
+          oscTouchId = null;
         };
         // بدون capture تا LWC اول pan افقی را بگیرد؛ زوم قیمت فقط روی محور راست
         container.addEventListener("touchstart", onTouchStartPrice, { passive: true });
