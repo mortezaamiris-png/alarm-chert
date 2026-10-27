@@ -1400,6 +1400,7 @@ export default function DashboardPage() {
   const [hideMenuOpen, setHideMenuOpen] = useState(false);
   const [hideLines, setHideLines] = useState(false);
   const [hideIndicators, setHideIndicators] = useState(false);
+  const [showIndChips, setShowIndChips] = useState(false);
   useEffect(() => { hideLinesRef.current = hideLines; }, [hideLines]);
   useEffect(() => { hideIndicatorsRef.current = hideIndicators; }, [hideIndicators]);
   /** Double-click: hide only oscillator panes (RSI/HARSI/DMI/ROC/ATR/MACD/Stoch) — chips stay */
@@ -2555,7 +2556,17 @@ export default function DashboardPage() {
           `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW - 56}" y2="-10" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
           `</svg>`
         );
-        try { (host as any).__oscTopPx = oscTopPx; (host as any).__plotH = plotH; (host as any).__hostW = hostW; } catch {}
+        try {
+          (host as any).__oscTopPx = oscTopPx;
+          (host as any).__plotH = plotH;
+          (host as any).__hostW = hostW;
+          (host as any).__paneZones = active.map((p, i) => ({
+            id: p.id,
+            top: tops[i],
+            bot: bottoms[i],
+            h: tops[i] - bottoms[i],
+          }));
+        } catch {}
 
         // 3) Separator lines — one line per boundary (avoid double lines)
         const sepSet = new Set<number>();
@@ -5511,26 +5522,42 @@ export default function DashboardPage() {
           const yFromTop = e.clientY - rect.top;
           const yRatio = yFromTop / plotH; // 0 top → 1 bottom of plot area
 
-          // Build oscillator zones matching updateMargins (bottom-up stack)
-          const panes: { id: string; on: boolean; h: number }[] = [
-            { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
-            { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
-            { id: "macd", on: !!(macdSeriesRef.current), h: 0.12 },
-            { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.12 },
-            { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
-            { id: "roc", on: !!(rocSeriesRef.current), h: 0.12 },
-            { id: "atr", on: !!(atrSeriesRef.current), h: 0.12 },
-            { id: "volume", on: !!(volumeSeriesRef.current), h: 0.10 },
-          ];
-          const active = panes.filter((p) => p.on);
-          let totalH = active.reduce((s, p) => s + p.h, 0);
-          const sc = totalH > 0.55 ? 0.55 / totalH : 1;
-          let used = 0;
-          const zones: { id: string; top: number; bot: number }[] = [];
-          for (const p of active) {
-            const h = p.h * sc;
-            zones.push({ id: p.id, top: 1 - used - h, bot: used });
-            used += h;
+          // Prefer zones written by updateMargins (correct order + heights)
+          let zones: { id: string; top: number; bot: number }[] = [];
+          try {
+            const z = (paneSepRef.current as any)?.__paneZones as any[] | undefined;
+            if (Array.isArray(z) && z.length) {
+              zones = z.map((x) => ({ id: x.id, top: 1 - x.top, bot: x.bot }));
+            }
+          } catch {}
+          if (!zones.length) {
+            const panes: { id: string; on: boolean; h: number }[] = [
+              { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
+              { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
+              { id: "macd", on: !!(macdSeriesRef.current), h: 0.13 },
+              { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.14 },
+              { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
+              { id: "roc", on: !!(rocSeriesRef.current), h: 0.11 },
+              { id: "atr", on: !!(atrSeriesRef.current), h: 0.11 },
+              { id: "volume", on: !!(volumeSeriesRef.current), h: 0.10 },
+            ];
+            const order = ((window as any).__oscOrder as string[]) || ["atr","roc","rsi","harsi","macd","stoch","dmi","volume"];
+            const ordered: typeof panes = [];
+            const seen = new Set<string>();
+            for (const id of order) {
+              const p = panes.find((x) => x.id === id);
+              if (p) { ordered.push(p); seen.add(id); }
+            }
+            for (const p of panes) if (!seen.has(p.id)) ordered.push(p);
+            const active = ordered.filter((p) => p.on);
+            let totalH = active.reduce((s, p) => s + p.h, 0);
+            const sc = totalH > 0.55 ? 0.55 / totalH : 1;
+            let used = 0;
+            for (const p of active) {
+              const h = p.h * sc;
+              zones.push({ id: p.id, top: 1 - used - h, bot: used });
+              used += h;
+            }
           }
           const inPane = zones.find((z) => yRatio >= z.top - 0.015 && yRatio <= 1 - z.bot + 0.015);
 
@@ -5568,14 +5595,19 @@ export default function DashboardPage() {
             const prev = oscPriceRangeRef.current[inPane.id] || defaults[inPane.id] || { from: 0, to: 100 };
             let pBot = prev.from;
             let pTop = prev.to;
-            try {
-              const t = ser.coordinateToPrice?.(1);
-              const b = ser.coordinateToPrice?.(Math.max(2, plotH - 1));
-              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
-                pTop = Math.max(Number(t), Number(b));
-                pBot = Math.min(Number(t), Number(b));
-              }
-            } catch {}
+            // Invisible/SVG-backed series (ATR/ROC/MACD/etc.) give bad coordinateToPrice across full plot —
+            // only trust it for series that actually paint in the pane (RSI/HARSI/DMI/Stoch).
+            const trustCoord = inPane.id === "rsi" || inPane.id === "harsi" || inPane.id === "dmi" || inPane.id === "stoch";
+            if (trustCoord) {
+              try {
+                const t = ser.coordinateToPrice?.(1);
+                const b = ser.coordinateToPrice?.(Math.max(2, plotH - 1));
+                if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
+                  pTop = Math.max(Number(t), Number(b));
+                  pBot = Math.min(Number(t), Number(b));
+                }
+              } catch {}
+            }
 
             const paneTopPx = plotH * inPane.top;
             const paneBotPx = plotH * (1 - inPane.bot);
@@ -6568,48 +6600,42 @@ export default function DashboardPage() {
               if (a >= 0.01) return v.toFixed(4);
               return v.toFixed(6);
             };
-            // Same stack order as updateMargins (bottom → up)
+            // Pane legends aligned to zones from updateMargins
             if (hideOscillatorsRef.current) { host.innerHTML = ""; return; }
-            const stack: { id: string; on: boolean; h: number; series: any; label: string; color: string; multi?: { series: any; label: string; color: string }[] }[] = [
-              { id: "dmi", on: !!dmiSeriesRef.current, h: 0.12, series: dmiSeriesRef.current?.adx, label: "DMI", color: "#3b82f6", multi: dmiSeriesRef.current ? [
+            const meta: Record<string, { series: any; label: string; color: string; multi?: { series: any; label: string; color: string }[] }> = {
+              dmi: { series: dmiSeriesRef.current?.adx, label: "DMI", color: "#3b82f6", multi: dmiSeriesRef.current ? [
                 { series: dmiSeriesRef.current.plus, label: "+DI", color: "#22c55e" },
                 { series: dmiSeriesRef.current.minus, label: "-DI", color: "#ef4444" },
                 { series: dmiSeriesRef.current.adx, label: "ADX", color: "#3b82f6" },
               ] : undefined },
-              { id: "stoch", on: !!stochSeriesRef.current, h: 0.12, series: stochSeriesRef.current?.k, label: "Stoch", color: "#2962FF", multi: stochSeriesRef.current ? [
+              stoch: { series: stochSeriesRef.current?.k, label: "Stoch", color: "#2962FF", multi: stochSeriesRef.current ? [
                 { series: stochSeriesRef.current.k, label: "K", color: "#2962FF" },
                 { series: stochSeriesRef.current.d, label: "D", color: "#FF6D00" },
               ] : undefined },
-              { id: "macd", on: !!macdSeriesRef.current, h: 0.13, series: macdSeriesRef.current?.macd, label: "MACD", color: "#2962FF", multi: macdSeriesRef.current ? [
+              macd: { series: macdSeriesRef.current?.macd, label: "MACD", color: "#2962FF", multi: macdSeriesRef.current ? [
                 { series: macdSeriesRef.current.macd, label: "MACD", color: "#2962FF" },
                 { series: macdSeriesRef.current.signal, label: "Signal", color: "#FF6D00" },
               ] : undefined },
-              { id: "harsi", on: !!harsiSeriesRef.current, h: 0.14, series: harsiSeriesRef.current, label: "HARSI", color: "#22c55e" },
-              { id: "rsi", on: !!rsiSeriesRef.current, h: 0.12, series: rsiSeriesRef.current, label: "RSI", color: "#c084fc" },
-              { id: "roc", on: !!rocSeriesRef.current, h: 0.11, series: rocSeriesRef.current, label: "ROC", color: "#2962FF" },
-              { id: "atr", on: !!atrSeriesRef.current, h: 0.11, series: atrSeriesRef.current, label: "ATR", color: "#B71C1C" },
-            ];
-            // Note: showROC etc may be stale in closure — use refs where possible; series presence is enough
-            // Match updateMargins: volume is in the stack height budget
-            const volOn = !!volumeSeriesRef.current;
-            const volHFrac = volOn ? 0.10 : 0;
-            const active = stack.filter((p) => p.on && p.series);
-            let totalH = active.reduce((s, p) => s + p.h, 0) + volHFrac;
-            const scale = totalH > 0.55 ? 0.55 / totalH : 1;
-            let used = volHFrac * scale; // start above volume band
-            const hostH = host.clientHeight || 400;
-            for (const p of active) {
-              const h = p.h * scale;
-              const bottomPx = used * hostH;
-              const paneH = h * hostH;
-              used += h;
+              harsi: { series: harsiSeriesRef.current, label: "HARSI", color: "#22c55e" },
+              rsi: { series: rsiSeriesRef.current, label: "RSI", color: "#c084fc" },
+              roc: { series: rocSeriesRef.current, label: "ROC", color: "#2962FF" },
+              atr: { series: atrSeriesRef.current, label: "ATR", color: "#f59e0b" },
+            };
+            let zones: { id: string; top: number; bot: number; h: number }[] = [];
+            try {
+              const z = (paneSepRef.current as any)?.__paneZones as any[] | undefined;
+              if (Array.isArray(z)) zones = z.filter((x) => x.id !== "volume");
+            } catch {}
+            const plotH = (paneSepRef.current as any)?.__plotH || host.clientHeight || 400;
+            for (const z of zones) {
+              const metaP = meta[z.id];
+              if (!metaP) continue;
               const rows: string[] = [];
-              const sources = p.multi || [{ series: p.series, label: p.label, color: p.color }];
+              const sources = metaP.multi || [{ series: metaP.series, label: metaP.label, color: metaP.color }];
               for (const src of sources) {
                 if (!src.series || !sd) continue;
                 try {
                   const d: any = sd.get(src.series);
-                  // line/area: .value  |  candlestick (HARSI): .close
                   let val: number | null = null;
                   if (d && typeof d.value === "number" && !Number.isNaN(d.value)) val = d.value;
                   else if (d && typeof d.close === "number" && !Number.isNaN(d.close)) val = d.close;
@@ -6619,16 +6645,18 @@ export default function DashboardPage() {
                 } catch {}
               }
               if (!rows.length) continue;
+              // z.top = fraction from bottom of plot where pane TOP is; convert to CSS top
+              const topPx = Math.max(2, plotH * (1 - z.top) + 4);
               items.push({
-                id: p.id,
+                id: z.id,
                 label: rows.join("&nbsp;&nbsp;"),
-                color: p.color,
+                color: metaP.color,
                 value: "",
-                bottom: bottomPx + Math.max(4, paneH * 0.2),
+                bottom: topPx, // reused as topPx below
               });
             }
             host.innerHTML = items.map((it) =>
-              `<div style="position:absolute;left:6px;bottom:${it.bottom}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.35;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
+              `<div style="position:absolute;left:6px;top:${it.bottom}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.35;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
             ).join("");
             }
           }
@@ -6774,7 +6802,7 @@ export default function DashboardPage() {
         if (m === "none" && param.point) {
           const px = param.point.x;
           const py = param.point.y;
-          const HIT = 28;
+          const HIT = 7; // precise click on the line only
           const symU = symbolRef.current.toUpperCase();
           const list = (linesRef.current || []).filter(
             (l) => String(l.symbol || "").toUpperCase() === symU
@@ -11011,56 +11039,72 @@ export default function DashboardPage() {
             </button>
           )}
 
-          <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto">
-            {!hideIndicators && showSMA && (
+          <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto items-start">
+            {!hideIndicators && (
+              <button
+                type="button"
+                title={showIndChips ? "Hide indicator chips" : "Show indicator chips"}
+                onClick={() => setShowIndChips((v) => !v)}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center border transition-colors ${
+                  showIndChips
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-black/45 border-white/10 text-gray-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 6h16M4 12h10M4 18h14" />
+                </svg>
+              </button>
+            )}
+            {showIndChips && !hideIndicators && showSMA && (
               <IndChip label="3SMA" visible={smaVisible} onToggleVisible={() => setSmaVisible((v) => !v)}
                 onSettings={() => setSmaSettings((v) => !v)} onRemove={() => { setShowSMA(false); removeSMA(); }} />
             )}
-            {!hideIndicators && showPivot && (
+            {showIndChips && !hideIndicators && showPivot && (
               <IndChip label="Pivot" visible={pivotVisible} onToggleVisible={() => setPivotVisible((v) => !v)}
                 onSettings={() => setPivotSettings((v) => !v)} onRemove={() => { setShowPivot(false); removePivot(); }} />
             )}
-            {!hideIndicators && showTrend && (
+            {showIndChips && !hideIndicators && showTrend && (
               <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
                 onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
             )}
-            {!hideIndicators && showBB && (
+            {showIndChips && !hideIndicators && showBB && (
               <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
                 onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
             )}
-            {!hideIndicators && showRSI && (
+            {showIndChips && !hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
             )}
-            {!hideIndicators && showHARSI && (
+            {showIndChips && !hideIndicators && showHARSI && (
               <IndChip label="HARSI" visible={harsiVisible} onToggleVisible={() => setHarsiVisible((v) => !v)}
                 onSettings={() => setHarsiSettings((v) => !v)} onRemove={() => { setShowHARSI(false); removeHARSI(); }} />
             )}
-            {!hideIndicators && showDMI && (
+            {showIndChips && !hideIndicators && showDMI && (
               <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
                 onSettings={() => setDmiSettings((v) => !v)} onRemove={() => { setShowDMI(false); removeDMI(); }} />
             )}
-            {!hideIndicators && showVol && (
+            {showIndChips && !hideIndicators && showVol && (
               <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible((v) => !v)}
                 onRemove={() => { setShowVol(false); applyVolume(); }} />
             )}
-            {!hideIndicators && showTCP && (
+            {showIndChips && !hideIndicators && showTCP && (
               <IndChip label="TCP" visible={tcpVisible} onToggleVisible={() => setTcpVisible((v) => !v)}
                 onSettings={() => setTcpSettings((v) => !v)} onRemove={() => { setShowTCP(false); removeTCP(); }} />
             )}
-            {!hideIndicators && showROC && (
+            {showIndChips && !hideIndicators && showROC && (
               <IndChip label="ROC" visible={rocVisible} onToggleVisible={() => setRocVisible((v) => !v)}
                 onSettings={() => setRocSettings((v) => !v)} onRemove={() => { setShowROC(false); removeROC(); }} />
             )}
-            {!hideIndicators && showATR && (
+            {showIndChips && !hideIndicators && showATR && (
               <IndChip label="ATR" visible={atrVisible} onToggleVisible={() => setAtrVisible((v) => !v)}
                 onSettings={() => setAtrSettings((v) => !v)} onRemove={() => { setShowATR(false); removeATR(); }} />
             )}
-            {!hideIndicators && showMACD && (
+            {showIndChips && !hideIndicators && showMACD && (
               <IndChip label="MACD" visible={macdVisible} onToggleVisible={() => setMacdVisible((v) => !v)}
                 onSettings={() => setMacdSettings((v) => !v)} onRemove={() => { setShowMACD(false); removeMACD(); }} />
             )}
-            {!hideIndicators && showStoch && (
+            {showIndChips && !hideIndicators && showStoch && (
               <IndChip label="Stoch" visible={stochVisible} onToggleVisible={() => setStochVisible((v) => !v)}
                 onSettings={() => setStochSettings((v) => !v)} onRemove={() => { setShowStoch(false); removeStoch(); }} />
             )}
