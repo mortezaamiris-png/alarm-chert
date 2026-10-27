@@ -1059,7 +1059,7 @@ function IndChip({
   return (
     <div
       data-ind-panel
-      className="group inline-flex items-center gap-0.5 bg-black/45 backdrop-blur-sm rounded-md px-1.5 py-0.5 text-[11px] text-gray-100 border border-white/5"
+      className="group inline-flex items-center gap-0.5 bg-black/45 backdrop-blur-sm rounded-md px-1 py-0.5 text-[9px] text-gray-100 border border-white/5"
     >
       <span className="px-0.5 font-medium whitespace-nowrap opacity-90">{label}</span>
       {/* Eye — always visible */}
@@ -1067,10 +1067,10 @@ function IndChip({
         type="button"
         title={visible ? "Hide" : "Show"}
         onClick={onToggleVisible}
-        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-300 hover:text-white hover:bg-white/10 transition-colors duration-150"
+        className="w-4 h-4 flex items-center justify-center rounded text-gray-300 hover:text-white hover:bg-white/10 transition-colors duration-150"
       >
         {visible ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
             <circle cx="12" cy="12" r="3" />
           </svg>
@@ -1088,9 +1088,9 @@ function IndChip({
           type="button"
           title="Settings"
           onClick={onSettings}
-          className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-white/10 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
+          className="w-4 h-4 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-white/10 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <circle cx="12" cy="12" r="3" />
             <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
           </svg>
@@ -1101,9 +1101,9 @@ function IndChip({
         type="button"
         title="Remove"
         onClick={onRemove}
-        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-red-400 hover:bg-red-500/15 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
+        className="w-4 h-4 flex items-center justify-center rounded text-gray-400 hover:text-red-400 hover:bg-red-500/15 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <polyline points="3 6 5 6 21 6" />
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
           <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -1182,6 +1182,8 @@ export default function DashboardPage() {
   const harsiSeriesRef = useRef<any>(null);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
+  const ohlcBarRef = useRef<HTMLDivElement | null>(null);
+
   const paneSepRef = useRef<HTMLDivElement | null>(null);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
@@ -6544,6 +6546,63 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
+        // TV-style OHLC + volume under symbol
+        try {
+          const el = ohlcBarRef.current;
+          if (el) {
+            if (!param || param.time == null) {
+              el.innerHTML = "";
+            } else {
+              const t = Number(param.time as any);
+              const bars = candlesRef.current || [];
+              let bar: any = null;
+              // binary search nearest bar by time
+              let lo = 0, hi = bars.length - 1;
+              while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                const mt = Number(bars[mid].time);
+                if (mt === t) { bar = bars[mid]; break; }
+                if (mt < t) lo = mid + 1; else hi = mid - 1;
+              }
+              if (!bar && bars.length) {
+                const i = Math.max(0, Math.min(bars.length - 1, lo));
+                const cand = [bars[i], bars[i - 1], bars[i + 1]].filter(Boolean);
+                bar = cand.sort((a, b) => Math.abs(Number(a.time) - t) - Math.abs(Number(b.time) - t))[0];
+              }
+              if (bar) {
+                const o = Number(bar.open), h = Number(bar.high), l = Number(bar.low), c = Number(bar.close);
+                const vol = Number(bar.volume || 0);
+                const chg = c - o;
+                const pct = o !== 0 ? (chg / o) * 100 : 0;
+                const up = chg >= 0;
+                const col = up ? "#26a69a" : "#ef5350";
+                const fmtP = (v: number) => {
+                  const a = Math.abs(v);
+                  if (a >= 1000) return v.toFixed(2);
+                  if (a >= 1) return v.toFixed(4);
+                  if (a >= 0.01) return v.toFixed(5);
+                  return v.toFixed(6);
+                };
+                const fmtV = (v: number) => {
+                  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+                  if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+                  if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
+                  return v.toFixed(2);
+                };
+                const sign = up ? "+" : "";
+                el.innerHTML =
+                  `<span style="color:#9ca3af">Vol</span> <span style="color:#e5e7eb">${fmtV(vol)}</span>` +
+                  `&nbsp;&nbsp;<span style="color:#9ca3af">O</span> <span style="color:${col}">${fmtP(o)}</span>` +
+                  `&nbsp;<span style="color:#9ca3af">H</span> <span style="color:${col}">${fmtP(h)}</span>` +
+                  `&nbsp;<span style="color:#9ca3af">L</span> <span style="color:${col}">${fmtP(l)}</span>` +
+                  `&nbsp;<span style="color:#9ca3af">C</span> <span style="color:${col}">${fmtP(c)}</span>` +
+                  `&nbsp;&nbsp;<span style="color:${col};font-weight:600">${sign}${fmtP(chg)} (${sign}${pct.toFixed(2)}%)</span>`;
+              } else {
+                el.innerHTML = "";
+              }
+            }
+          }
+        } catch {}
         // Osc stack crosshair: vertical + horizontal (only inside osc region — no double on main)
         try {
           const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
@@ -6656,7 +6715,7 @@ export default function DashboardPage() {
               });
             }
             host.innerHTML = items.map((it) =>
-              `<div style="position:absolute;left:6px;top:${it.bottom}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.35;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
+              `<div style="position:absolute;left:6px;top:${it.bottom}px;z-index:25;pointer-events:none;font-size:9px;line-height:1.3;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:1px 5px;border-radius:3px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
             ).join("");
             }
           }
@@ -10844,8 +10903,13 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
-              <div className="absolute top-1.5 left-2 z-10 text-[10px] font-semibold text-orange-300/90 pointer-events-none">
-                {symbolUpper}
+              <div className="absolute top-1.5 left-2 z-10 pointer-events-none flex flex-col gap-0.5 max-w-[min(92%,720px)]">
+                <div className="text-[10px] font-semibold text-orange-300/90">{symbolUpper}</div>
+                <div
+                  ref={ohlcBarRef}
+                  className="text-[10px] leading-tight text-gray-300 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis"
+                  style={{ textShadow: "0 1px 2px rgba(0,0,0,0.85)" }}
+                />
               </div>
             </div>
 
