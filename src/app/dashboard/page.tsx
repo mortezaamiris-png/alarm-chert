@@ -2370,7 +2370,7 @@ export default function DashboardPage() {
           const y = plotH * (1 - fracFromBottom);
           if (y >= plotH - 1) continue; // never draw on time axis
           parts.push(
-            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;"></div>`
+            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.38);pointer-events:none;z-index:4;"></div>`
           );
         }
 
@@ -2524,10 +2524,10 @@ export default function DashboardPage() {
             const onStart = (clientY: number) => {
               dragging = true;
               oscDraggingRef.current = true;
+              setActive(true);
               y0 = clientY;
               const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
               range0 = { from: prev.from, to: prev.to };
-              // Keep solid masks opaque — never let series bleed into chart above
             };
             let lastRedraw = 0;
             const onMove = (clientY: number) => {
@@ -2561,7 +2561,7 @@ export default function DashboardPage() {
               dragging = false;
               range0 = null;
               oscDraggingRef.current = false;
-              // Restore masks + sharp SVG after gesture
+              setActive(false);
               try {
                 requestAnimationFrame(() => {
                   try { updateMargins(); } catch {}
@@ -5290,28 +5290,48 @@ export default function DashboardPage() {
         let oscTouchId: string | null = null; // null = main chart scale
         const resolveOscPaneAtY = (rect: DOMRect, clientY: number): string | null => {
           const plotH = Math.max(1, rect.height - 28);
-          const yRatio = (clientY - rect.top) / plotH;
+          const yFromTop = clientY - rect.top;
+          // Same order & heights as updateMargins
           const panes: { id: string; on: boolean; h: number }[] = [
             { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
             { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
-            { id: "macd", on: !!(macdSeriesRef.current), h: 0.12 },
-            { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.12 },
+            { id: "macd", on: !!(macdSeriesRef.current), h: 0.13 },
+            { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.14 },
             { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
-            { id: "roc", on: !!(rocSeriesRef.current), h: 0.12 },
-            { id: "atr", on: !!(atrSeriesRef.current), h: 0.12 },
+            { id: "roc", on: !!(rocSeriesRef.current), h: 0.11 },
+            { id: "atr", on: !!(atrSeriesRef.current), h: 0.11 },
+            { id: "volume", on: !!(/* volume has own scale */ false), h: 0.10 },
           ];
           const active = panes.filter((p) => p.on);
           let totalH = active.reduce((s, p) => s + p.h, 0);
           const sc = totalH > 0.55 ? 0.55 / totalH : 1;
+          // Build exclusive pixel bands from bottom; pick nearest if on boundary
+          type Band = { id: string; top: number; bot: number };
+          const bands: Band[] = [];
           let used = 0;
           for (const p of active) {
             const h = p.h * sc;
-            const top = 1 - used - h;
-            const bot = used;
-            if (yRatio >= top - 0.02 && yRatio <= 1 - bot + 0.02) return p.id;
+            const topPx = plotH * (1 - used - h);
+            const botPx = plotH * (1 - used);
+            bands.push({ id: p.id, top: topPx, bot: botPx });
             used += h;
           }
-          return null;
+          // Exclusive: y in [top, bot). Boundary goes to the pane whose center is closer.
+          for (const b of bands) {
+            if (yFromTop >= b.top && yFromTop < b.bot) return b.id;
+          }
+          // Near miss: within 6px of a band
+          let best: string | null = null;
+          let bestDist = 8;
+          for (const b of bands) {
+            const mid = (b.top + b.bot) / 2;
+            const dist = Math.abs(yFromTop - mid);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = b.id;
+            }
+          }
+          return best;
         };
         const oscSeriesFor = (id: string): any => {
           if (id === "rsi") return rsiSeriesRef.current;
@@ -5324,25 +5344,14 @@ export default function DashboardPage() {
           return null;
         };
         const applyOscZoom = (id: string, from: number, to: number) => {
-          oscPriceRangeRef.current[id] = { from, to };
-          const provider = () => ({ priceRange: { minValue: from, maxValue: to } });
-          try {
-            const ser = oscSeriesFor(id);
-            ser?.applyOptions?.({ autoscaleInfoProvider: provider });
-            if (id === "stoch") {
-              stochSeriesRef.current?.d?.applyOptions?.({ autoscaleInfoProvider: provider });
-            }
-            if (id === "dmi" && dmiSeriesRef.current) {
-              dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
-              dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
-            }
-            if (id === "macd" && macdSeriesRef.current) {
-              macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
-              macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
-            }
-            try { chartRef.current?.priceScale(id)?.applyOptions?.({ autoScale: true } as any); } catch {}
-            try { updateMargins(); } catch {}
-          } catch {}
+          // Only update ref + SVG — never touch LWC autoscale (prevents bleed)
+          const minSpan: Record<string, number> = {
+            rsi: 12, stoch: 12, dmi: 8, harsi: 8, macd: 0.1, roc: 2, atr: 0.05,
+          };
+          const span = Math.max((minSpan[id] ?? 8), to - from);
+          const mid = (from + to) / 2;
+          oscPriceRangeRef.current[id] = { from: mid - span / 2, to: mid + span / 2 };
+          try { updateMargins(); } catch {}
         };
         const onTouchStartPrice = (e: TouchEvent) => {
           if (!e.touches.length) return;
