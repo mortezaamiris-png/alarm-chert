@@ -2194,9 +2194,9 @@ export default function DashboardPage() {
         };
 
         const svgBits: string[] = [];
+        // pane pixel bounds for hard-clip (id -> {top, bot}) — outside try so clipDefs can use it
+        const paneClip: Record<string, { top: number; bot: number }> = {};
         try {
-          // pane pixel bounds for hard-clip (id -> {top, bot})
-          const paneClip: Record<string, { top: number; bot: number }> = {};
           for (let i = 0; i < active.length; i++) {
             if (!oscIds.has(active[i].id)) continue;
             const topPx = plotH * (1 - tops[i]);
