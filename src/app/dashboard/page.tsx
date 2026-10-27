@@ -3407,15 +3407,19 @@ export default function DashboardPage() {
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
+    const rsiZoom = oscPriceRangeRef.current["rsi"];
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
       priceScaleId: "rsi",
       priceLineVisible: false,
       lastValueVisible: true,
-      // Fixed 0–100 range like TradingView RSI pane
+      // Fixed 0–100 range like TradingView RSI pane (or user zoom)
       autoscaleInfoProvider: () => ({
-        priceRange: { minValue: 0, maxValue: 100 },
+        priceRange: {
+          minValue: rsiZoom ? rsiZoom.from : 0,
+          maxValue: rsiZoom ? rsiZoom.to : 100,
+        },
       }),
     });
     s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
@@ -3984,10 +3988,16 @@ export default function DashboardPage() {
     if (!showStoch || !stochVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { k, d } = calcStochRSI(candlesRef.current, stochRsiLen, stochLen, stochK, stochD);
+    const stochZoom = oscPriceRangeRef.current["stoch"];
     const kS = chart.addLineSeries({
       color: stochKColor, lineWidth: 2, priceScaleId: "stoch",
       priceLineVisible: false, lastValueVisible: true,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+      autoscaleInfoProvider: () => ({
+        priceRange: {
+          minValue: stochZoom ? stochZoom.from : 0,
+          maxValue: stochZoom ? stochZoom.to : 100,
+        },
+      }),
     });
     kS.setData(k as any);
     const dS = chart.addLineSeries({
@@ -4617,56 +4627,118 @@ export default function DashboardPage() {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          const yRatio = (e.clientY - rect.top) / Math.max(1, rect.height);
-          // پنل اسیلاتور: هرجای ارتفاع پنل + اسکرول = زوم عمودی همان پنل
-          const hasRsi = !!(rsiSeriesRef.current);
-          const hasDmi = !!(dmiSeriesRef.current);
-          const hasVol = !!(volumeSeriesRef.current);
-          // margins approx (must match updateMargins stacking from bottom)
-          let bot = 0;
+          // account for time axis strip at bottom (~28px)
+          const plotH = Math.max(1, rect.height - 28);
+          const yFromTop = e.clientY - rect.top;
+          const yRatio = yFromTop / plotH; // 0 top → 1 bottom of plot area
+
+          // Build oscillator zones matching updateMargins (bottom-up stack)
+          const panes: { id: string; on: boolean; h: number }[] = [
+            { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
+            { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
+            { id: "macd", on: !!(macdSeriesRef.current), h: 0.12 },
+            { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.12 },
+            { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
+            { id: "roc", on: !!(rocSeriesRef.current), h: 0.12 },
+            { id: "atr", on: !!(atrSeriesRef.current), h: 0.12 },
+            { id: "volume", on: !!(volumeSeriesRef.current), h: 0.10 },
+          ];
+          const active = panes.filter((p) => p.on);
+          let totalH = active.reduce((s, p) => s + p.h, 0);
+          const sc = totalH > 0.55 ? 0.55 / totalH : 1;
+          let used = 0;
           const zones: { id: string; top: number; bot: number }[] = [];
-          if (hasDmi) { const h = 0.13; zones.push({ id: "dmi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasRsi) { const h = 0.14; zones.push({ id: "rsi", top: 1 - bot - h, bot }); bot += h; }
-          if (hasVol) { const h = 0.12; zones.push({ id: "volume", top: 1 - bot - h, bot }); bot += h; }
-          const inPane = zones.find((z) => yRatio >= z.top - 0.01 && yRatio <= 1 - z.bot + 0.01);
-          // فقط لبه راست پنل اسیلاتور — تا اسکرول افقی چارت خراب نشود
-          if (inPane && (inPane.id === "rsi" || inPane.id === "dmi") && fromRight <= 100) {
+          for (const p of active) {
+            const h = p.h * sc;
+            zones.push({ id: p.id, top: 1 - used - h, bot: used });
+            used += h;
+          }
+          const inPane = zones.find((z) => yRatio >= z.top - 0.015 && yRatio <= 1 - z.bot + 0.015);
+
+          // Scroll on RIGHT scale strip of an oscillator pane → zoom that pane's Y range (TV-style)
+          if (inPane && inPane.id !== "volume" && fromRight <= 90 && fromRight >= 0) {
             e.preventDefault();
             e.stopPropagation();
             let delta = e.deltaY;
             if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
             if (e.deltaMode === 1) delta *= 16;
+            if (e.deltaMode === 2) delta *= 40;
             if (delta === 0) return;
+            const steps = Math.max(1, Math.min(3, Math.round(Math.abs(delta) / 100)));
             const zoomIn = delta < 0;
-            // تغییر ارتفاع پنل با scaleMargins
+
+            let ser: any = null;
+            if (inPane.id === "rsi") ser = rsiSeriesRef.current;
+            else if (inPane.id === "stoch") ser = stochSeriesRef.current?.k;
+            else if (inPane.id === "dmi") ser = dmiSeriesRef.current?.adx;
+            else if (inPane.id === "macd") ser = macdSeriesRef.current?.macd;
+            else if (inPane.id === "roc") ser = rocSeriesRef.current;
+            else if (inPane.id === "atr") ser = atrSeriesRef.current;
+            else if (inPane.id === "harsi") ser = harsiSeriesRef.current;
+            if (!ser) return;
+
+            const defaults: Record<string, { from: number; to: number }> = {
+              rsi: { from: 0, to: 100 },
+              stoch: { from: 0, to: 100 },
+              dmi: { from: 0, to: 60 },
+              harsi: { from: -40, to: 40 },
+              macd: { from: -1, to: 1 },
+              roc: { from: -10, to: 10 },
+              atr: { from: 0, to: 1 },
+            };
+            const prev = oscPriceRangeRef.current[inPane.id] || defaults[inPane.id] || { from: 0, to: 100 };
+            let pBot = prev.from;
+            let pTop = prev.to;
             try {
-              const chart = chartRef.current;
-              if (!chart) return;
-              const ps = chart.priceScale(inPane.id) as any;
-              const cur = inPane;
-              const h = (1 - cur.bot) - cur.top;
-              const nh = Math.min(0.28, Math.max(0.08, h * (zoomIn ? 1.08 : 0.92)));
-              const top = 1 - cur.bot - nh;
-              ps.applyOptions({ scaleMargins: { top: Math.max(0.5, top), bottom: cur.bot } });
+              const t = ser.coordinateToPrice?.(1);
+              const b = ser.coordinateToPrice?.(Math.max(2, plotH - 1));
+              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
+                pTop = Math.max(Number(t), Number(b));
+                pBot = Math.min(Number(t), Number(b));
+              }
+            } catch {}
+
+            const paneTopPx = plotH * inPane.top;
+            const paneBotPx = plotH * (1 - inPane.bot);
+            const relInPane = Math.min(1, Math.max(0, (yFromTop - paneTopPx) / Math.max(1, paneBotPx - paneTopPx)));
+            const priceAtCursor = pTop - relInPane * (pTop - pBot);
+
+            let factor = 1;
+            for (let i = 0; i < steps; i++) factor *= zoomIn ? 0.9 : 1.11;
+            const minRange = Math.max(Math.abs(priceAtCursor) * 0.02 + 0.5, (defaults[inPane.id]?.to ?? 100) * 0.05);
+            const newRange = Math.max((pTop - pBot) * factor, minRange);
+            const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
+            let newTop = priceAtCursor + newRange * aboveRatio;
+            let newBot = priceAtCursor - newRange * (1 - aboveRatio);
+            if (inPane.id === "rsi" || inPane.id === "stoch") {
+              newBot = Math.max(-5, newBot);
+              newTop = Math.min(105, newTop);
+            }
+            if (!(newTop > newBot)) return;
+            oscPriceRangeRef.current[inPane.id] = { from: newBot, to: newTop };
+
+            const provider = () => ({ priceRange: { minValue: newBot, maxValue: newTop } });
+            try {
+              ser.applyOptions({ autoscaleInfoProvider: provider });
+              if (inPane.id === "stoch" && stochSeriesRef.current?.d) {
+                stochSeriesRef.current.d.applyOptions({ autoscaleInfoProvider: provider });
+              }
+              if (inPane.id === "dmi" && dmiSeriesRef.current) {
+                dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
+                dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
+              }
+              if (inPane.id === "macd" && macdSeriesRef.current) {
+                macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
+                macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
+              }
               try {
-                const ser = inPane.id === "rsi" ? rsiSeriesRef.current : dmiSeriesRef.current?.adx;
-                if (ser && typeof ser.priceScale === "function") {
-                  const factor = zoomIn ? 0.9 : 1.12;
-                  const mid = 50;
-                  const half = zoomIn ? 40 : 55;
-                  ser.applyOptions({
-                    autoscaleInfoProvider: () => ({
-                      priceRange: {
-                        minValue: Math.max(0, mid - half * factor),
-                        maxValue: Math.min(100, mid + half * factor),
-                      },
-                    }),
-                  });
-                }
+                chartRef.current?.priceScale(inPane.id)?.applyOptions?.({ autoScale: true } as any);
               } catch {}
             } catch {}
+            try { updateMargins(); } catch {}
             return;
           }
+
           // فقط نوار قیمت سمت راست (~90px) برای چارت اصلی
           if (fromRight > 90 || fromRight < 0) return;
           e.preventDefault();
@@ -4774,11 +4846,75 @@ export default function DashboardPage() {
         const onDblPrice = (e: MouseEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // Double-click on right price scale → reset vertical zoom
+          const plotH = Math.max(1, rect.height - 28);
+          const yRatio = (e.clientY - rect.top) / plotH;
+          // Double-click on right price scale → reset vertical zoom (main or oscillator)
           if (fromRight <= 100 && fromRight >= 0) {
             e.preventDefault();
             e.stopPropagation();
-            resetPriceZoom();
+            // Detect oscillator pane under cursor
+            const panes: { id: string; on: boolean; h: number }[] = [
+              { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
+              { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
+              { id: "macd", on: !!(macdSeriesRef.current), h: 0.12 },
+              { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.12 },
+              { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
+              { id: "roc", on: !!(rocSeriesRef.current), h: 0.12 },
+              { id: "atr", on: !!(atrSeriesRef.current), h: 0.12 },
+            ];
+            const active = panes.filter((p) => p.on);
+            let totalH = active.reduce((s, p) => s + p.h, 0);
+            const sc = totalH > 0.55 ? 0.55 / totalH : 1;
+            let used = 0;
+            let hitId: string | null = null;
+            for (const p of active) {
+              const h = p.h * sc;
+              const top = 1 - used - h;
+              const bot = used;
+              if (yRatio >= top - 0.015 && yRatio <= 1 - bot + 0.015) {
+                hitId = p.id;
+                break;
+              }
+              used += h;
+            }
+            if (hitId) {
+              // Reset that oscillator to default range
+              delete oscPriceRangeRef.current[hitId];
+              const defaults: Record<string, { min: number; max: number }> = {
+                rsi: { min: 0, max: 100 },
+                stoch: { min: 0, max: 100 },
+                dmi: { min: 0, max: 60 },
+                harsi: { min: -40, max: 40 },
+                macd: { min: -1, max: 1 },
+                roc: { min: -10, max: 10 },
+                atr: { min: 0, max: 1 },
+              };
+              const def = defaults[hitId] || { min: 0, max: 100 };
+              const provider = () => ({ priceRange: { minValue: def.min, maxValue: def.max } });
+              try {
+                if (hitId === "rsi") rsiSeriesRef.current?.applyOptions({ autoscaleInfoProvider: provider });
+                if (hitId === "stoch") {
+                  stochSeriesRef.current?.k?.applyOptions({ autoscaleInfoProvider: provider });
+                  stochSeriesRef.current?.d?.applyOptions({ autoscaleInfoProvider: provider });
+                }
+                if (hitId === "dmi" && dmiSeriesRef.current) {
+                  dmiSeriesRef.current.adx?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
+                }
+                if (hitId === "macd" && macdSeriesRef.current) {
+                  macdSeriesRef.current.macd?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
+                  macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
+                }
+                if (hitId === "roc") rocSeriesRef.current?.applyOptions({ autoscaleInfoProvider: provider });
+                if (hitId === "atr") atrSeriesRef.current?.applyOptions({ autoscaleInfoProvider: provider });
+                if (hitId === "harsi") harsiSeriesRef.current?.applyOptions({ autoscaleInfoProvider: provider });
+                try { updateMargins(); } catch {}
+              } catch {}
+            } else {
+              resetPriceZoom();
+            }
             return;
           }
           // Double-click on chart body → toggle ONLY oscillator panes (chips stay)
