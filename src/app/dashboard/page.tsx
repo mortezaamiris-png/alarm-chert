@@ -2054,6 +2054,15 @@ export default function DashboardPage() {
         bottom: Math.max(0.08, used + 0.04),
       },
     });
+    // Hide price scales for inactive oscillators so their labels don't leak onto main axis
+    const allOscIds = ["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr", "volume"];
+    const activeIds = new Set(active.map((p) => p.id));
+    for (const id of allOscIds) {
+      if (activeIds.has(id)) continue;
+      try {
+        chart.priceScale(id).applyOptions({ visible: false } as any);
+      } catch {}
+    }
     // Opaque masks over oscillator bands (hide main chart) + SVG redraw of osc lines on top
     try {
       const host = paneSepRef.current;
@@ -2219,6 +2228,61 @@ export default function DashboardPage() {
           );
         }
 
+        // 4) Right-side osc scale strip: hide main price labels, show osc numbers
+        const scaleW = 56;
+        for (let i = 0; i < active.length; i++) {
+          if (!oscIds.has(active[i].id)) continue;
+          const topPx = hostH * (1 - tops[i]);
+          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
+          // opaque cover over main price scale in this band
+          parts.push(
+            `<div style="position:absolute;right:0;width:${scaleW}px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;border-left:1px solid rgba(255,255,255,0.08);"></div>`
+          );
+          // tick labels per oscillator
+          const id = active[i].id;
+          let ticks: { v: number; label: string }[] = [];
+          let ser: any = null;
+          if (id === "rsi") {
+            ser = rsiSeriesRef.current;
+            ticks = [{ v: 70, label: "70" }, { v: 50, label: "50" }, { v: 30, label: "30" }];
+          } else if (id === "stoch") {
+            ser = stochSeriesRef.current?.k;
+            ticks = [{ v: 80, label: "80" }, { v: 50, label: "50" }, { v: 20, label: "20" }];
+          } else if (id === "dmi") {
+            ser = dmiSeriesRef.current?.adx;
+            ticks = [{ v: 40, label: "40" }, { v: 20, label: "20" }];
+          } else if (id === "harsi") {
+            ser = harsiSeriesRef.current;
+            ticks = [{ v: 20, label: "20" }, { v: 0, label: "0" }, { v: -20, label: "-20" }];
+          } else if (id === "macd") {
+            ser = macdSeriesRef.current?.macd;
+            ticks = [{ v: 0, label: "0" }];
+          } else if (id === "roc") {
+            ser = rocSeriesRef.current;
+            ticks = [{ v: 0, label: "0" }];
+          } else if (id === "atr") {
+            ser = atrSeriesRef.current;
+            ticks = [];
+          }
+          if (ser) {
+            for (const t of ticks) {
+              try {
+                const y = ser.priceToCoordinate(t.v);
+                if (y == null || Number.isNaN(Number(y))) continue;
+                if (Number(y) < topPx - 2 || Number(y) > topPx + heightPx + 2) continue;
+                parts.push(
+                  `<div style="position:absolute;right:4px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#9ca3af;pointer-events:none;font-variant-numeric:tabular-nums;">${t.label}</div>`
+                );
+              } catch {}
+            }
+            // last value label
+            try {
+              const last = candlesRef.current;
+              // skip - left legend already shows values
+            } catch {}
+          }
+        }
+
         host.innerHTML = parts.join("");
       }
     } catch {}
@@ -2231,38 +2295,7 @@ export default function DashboardPage() {
     macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
     harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
 
-  // Instant pane collapse when double-click toggles oscillators
-  useEffect(() => {
-    const vis = !hideOscillators;
-    const setVis = (ser: any) => {
-      if (!ser) return;
-      try { ser.applyOptions({ visible: vis }); } catch {}
-    };
-    setVis(rsiSeriesRef.current);
-    setVis(rocSeriesRef.current);
-    setVis(atrSeriesRef.current);
-    if (dmiSeriesRef.current) {
-      setVis(dmiSeriesRef.current.plus);
-      setVis(dmiSeriesRef.current.minus);
-      setVis(dmiSeriesRef.current.adx);
-    }
-    if (stochSeriesRef.current) {
-      setVis(stochSeriesRef.current.k);
-      setVis(stochSeriesRef.current.d);
-    }
-    if (macdSeriesRef.current) {
-      setVis(macdSeriesRef.current.macd);
-      setVis(macdSeriesRef.current.signal);
-      setVis(macdSeriesRef.current.hist);
-    }
-    setVis(harsiSeriesRef.current);
-    setVis(volumeSeriesRef.current);
-    try { updateMargins(); } catch {}
-    // clear osc value legends while hidden
-    if (hideOscillators) {
-      try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
-    }
-  }, [hideOscillators, updateMargins]);
+
 
   const hideHandles = useCallback(() => {
     try {
@@ -3928,6 +3961,46 @@ export default function DashboardPage() {
     applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI();
   }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI]);
 
+  // Double-click hide/show oscillators — placed after apply* so functions exist
+  useEffect(() => {
+    if (hideOscillators) {
+      const clearSer = (ser: any) => {
+        if (!ser) return;
+        try { ser.setData([]); } catch {}
+        try { ser.applyOptions({ visible: false }); } catch {}
+      };
+      clearSer(rsiSeriesRef.current);
+      clearSer(rocSeriesRef.current);
+      clearSer(atrSeriesRef.current);
+      if (dmiSeriesRef.current) {
+        clearSer(dmiSeriesRef.current.plus);
+        clearSer(dmiSeriesRef.current.minus);
+        clearSer(dmiSeriesRef.current.adx);
+      }
+      if (stochSeriesRef.current) {
+        clearSer(stochSeriesRef.current.k);
+        clearSer(stochSeriesRef.current.d);
+      }
+      if (macdSeriesRef.current) {
+        clearSer(macdSeriesRef.current.macd);
+        clearSer(macdSeriesRef.current.signal);
+        clearSer(macdSeriesRef.current.hist);
+      }
+      clearSer(harsiSeriesRef.current);
+      clearSer(volumeSeriesRef.current);
+      try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
+      try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
+      try { updateMargins(); } catch {}
+    } else {
+      try {
+        applyRSI(); applyDMI(); applyROC(); applyATR();
+        applyMACD(); applyStoch(); applyHARSI(); applyVolume();
+        updateMargins();
+      } catch {}
+    }
+  }, [hideOscillators]); // eslint-disable-line react-hooks/exhaustive-deps
+
+
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
     try {
@@ -4612,36 +4685,36 @@ export default function DashboardPage() {
             } catch {}
             return;
           }
-          // Double-click on chart body → toggle ONLY oscillator panes (chips stay visible)
+          // Double-click on chart body → toggle ONLY oscillator panes (chips stay)
           try {
             const next = !hideOscillatorsRef.current;
             hideOscillatorsRef.current = next;
-            // apply visibility immediately (before React re-render) to avoid lag
-            const vis = !next;
-            const setVis = (ser: any) => {
-              if (!ser) return;
-              try { ser.applyOptions({ visible: vis }); } catch {}
-            };
-            setVis(rsiSeriesRef.current);
-            setVis(rocSeriesRef.current);
-            setVis(atrSeriesRef.current);
-            if (dmiSeriesRef.current) {
-              setVis(dmiSeriesRef.current.plus);
-              setVis(dmiSeriesRef.current.minus);
-              setVis(dmiSeriesRef.current.adx);
-            }
-            if (stochSeriesRef.current) {
-              setVis(stochSeriesRef.current.k);
-              setVis(stochSeriesRef.current.d);
-            }
-            if (macdSeriesRef.current) {
-              setVis(macdSeriesRef.current.macd);
-              setVis(macdSeriesRef.current.signal);
-              setVis(macdSeriesRef.current.hist);
-            }
-            setVis(harsiSeriesRef.current);
-            setVis(volumeSeriesRef.current);
+            // Clear immediately so main chart is usable without waiting for React
             if (next) {
+              const clearSer = (ser: any) => {
+                if (!ser) return;
+                try { ser.setData([]); } catch {}
+                try { ser.applyOptions({ visible: false }); } catch {}
+              };
+              clearSer(rsiSeriesRef.current);
+              clearSer(rocSeriesRef.current);
+              clearSer(atrSeriesRef.current);
+              if (dmiSeriesRef.current) {
+                clearSer(dmiSeriesRef.current.plus);
+                clearSer(dmiSeriesRef.current.minus);
+                clearSer(dmiSeriesRef.current.adx);
+              }
+              if (stochSeriesRef.current) {
+                clearSer(stochSeriesRef.current.k);
+                clearSer(stochSeriesRef.current.d);
+              }
+              if (macdSeriesRef.current) {
+                clearSer(macdSeriesRef.current.macd);
+                clearSer(macdSeriesRef.current.signal);
+                clearSer(macdSeriesRef.current.hist);
+              }
+              clearSer(harsiSeriesRef.current);
+              clearSer(volumeSeriesRef.current);
               try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
               try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
             }
