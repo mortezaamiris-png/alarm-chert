@@ -1195,6 +1195,8 @@ export default function DashboardPage() {
   const alarmCooldownUntilRef = useRef<number>(0);
   /** زوم عمودی دستی روی محور قیمت (null = autoScale) */
   const priceRangeOverrideRef = useRef<{ from: number; to: number } | null>(null);
+  /** Per-oscillator vertical zoom ranges (TV-style scroll on scale numbers) */
+  const oscPriceRangeRef = useRef<Record<string, { from: number; to: number }>>({});
   const clickLockRef = useRef(false);
 
   const [symbol, setSymbol] = useState(() =>
