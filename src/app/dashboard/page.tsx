@@ -2268,24 +2268,12 @@ export default function DashboardPage() {
           }
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
-            let zrR = oscPriceRangeRef.current["roc"];
-            if (!zrR || !(zrR.to > zrR.from)) {
-              // Default scale -20 .. 20 so side labels and line amplitude match TradingView-style ROC
-              zrR = { from: -20, to: 20 };
-              oscPriceRangeRef.current["roc"] = { ...zrR };
-            }
+            const zrR = oscPriceRangeRef.current["roc"] || { from: -10, to: 10 };
             const phR = cRoc ? (cRoc.bot - cRoc.top) : 100;
-            if (cRoc && zrR.to > zrR.from) {
-              for (const [pv, col] of [
-                [20, "rgba(148,163,184,0.55)"],
-                [0, "rgba(148,163,184,0.8)"],
-                [-20, "rgba(148,163,184,0.55)"],
-              ] as [number, string][]) {
-                if (pv < zrR.from || pv > zrR.to) continue;
-                const rel = Math.max(0, Math.min(1, (pv - zrR.from) / (zrR.to - zrR.from)));
-                const y = (1 - rel) * phR;
-                pushPane("roc", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${col}" stroke-width="1" stroke-dasharray="4 3" />`);
-              }
+            if (cRoc && zrR.to > zrR.from && 0 >= zrR.from && 0 <= zrR.to) {
+              const rel = Math.max(0, Math.min(1, (0 - zrR.from) / (zrR.to - zrR.from)));
+              const y = (1 - rel) * phR;
+              pushPane("roc", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
             }
             pushPane("roc", pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
           }
@@ -2463,22 +2451,18 @@ export default function DashboardPage() {
           `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
-        // 3) Separator lines — one line per boundary (avoid double lines)
+        // 3) Separator lines (above time axis)
         const sepSet = new Set<number>();
-        let oscStackTop: number | null = null;
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
-          // bottom edge of each osc pane
           sepSet.add(bottoms[i]);
-          if (oscStackTop == null || tops[i] > oscStackTop) oscStackTop = tops[i];
+          sepSet.add(tops[i]);
         }
-        // single top boundary of the whole oscillator stack
-        if (oscStackTop != null) sepSet.add(oscStackTop);
         for (const fracFromBottom of Array.from(sepSet)) {
           const y = plotH * (1 - fracFromBottom);
-          if (y >= plotH - 1 || y <= 1) continue; // never on time axis / top edge
+          if (y >= plotH - 1) continue; // never draw on time axis
           parts.push(
-            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;z-index:4;"></div>`
+            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.38);pointer-events:none;z-index:4;"></div>`
           );
         }
 
@@ -2527,12 +2511,8 @@ export default function DashboardPage() {
           } else if (id === "roc") {
             ser = rocSeriesRef.current;
             {
-              const zrR = oscPriceRangeRef.current["roc"] || { from: -20, to: 20 };
-              // Prefer fixed guide labels -20 / 0 / 20 when visible; else dynamic
-              const fixed = [-20, 0, 20].filter((v) => v >= zrR.from - 1e-9 && v <= zrR.to + 1e-9);
-              if (fixed.length >= 2) {
-                ticks = fixed.map((v) => ({ v, label: String(v) }));
-              } else {
+              const zrR = oscPriceRangeRef.current["roc"];
+              if (zrR && zrR.to > zrR.from) {
                 const span = zrR.to - zrR.from;
                 const step = span / 4;
                 const vals = [zrR.from + step, (zrR.from + zrR.to) / 2, zrR.from + 3 * step];
@@ -2540,6 +2520,8 @@ export default function DashboardPage() {
                   const r = Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
                   return { v, label: String(r) };
                 });
+              } else {
+                ticks = [{ v: 0, label: "0" }];
               }
             }
           } else if (id === "atr") {
@@ -2617,7 +2599,7 @@ export default function DashboardPage() {
               dmi: { from: 0, to: 60 },
               harsi: { from: -40, to: 40 },
               macd: { from: -50, to: 50 },
-              roc: { from: -20, to: 20 },
+              roc: { from: -25, to: 25 },
               atr: { from: 0, to: 500 },
             };
             const tickVals: Record<string, number[]> = {
@@ -2626,14 +2608,10 @@ export default function DashboardPage() {
               dmi: [40, 20],
               harsi: [20, 0, -20],
               macd: [0],
-              roc: [-20, 0, 20],
+              roc: [0],
               atr: [], // dynamic below
             };
             const dynamicTicks = (id: string, from: number, to: number): number[] => {
-              if (id === "roc") {
-                const fixed = [-20, 0, 20].filter((v) => v >= from - 1e-9 && v <= to + 1e-9);
-                if (fixed.length >= 2) return fixed;
-              }
               if (id === "atr" || id === "macd" || id === "roc") {
                 const span = Math.max(1e-9, to - from);
                 const step = span / 4;
@@ -2750,7 +2728,7 @@ export default function DashboardPage() {
               }
               if (!range0) return;
               const dy = clientY - y0;
-              const sens = (oscId === "macd" || oscId === "atr") ? 380 : (oscId === "roc" ? 140 : 280);
+              const sens = (oscId === "macd" || oscId === "atr") ? 380 : (oscId === "roc" ? 220 : 280);
               const factor = Math.exp(dy / sens);
               const mid = (range0.from + range0.to) / 2;
               const half0 = Math.max(1e-6, (range0.to - range0.from) / 2);
@@ -4473,15 +4451,11 @@ export default function DashboardPage() {
       title: "ROC",
       autoscaleInfoProvider: () => ({
         priceRange: {
-          minValue: rocZoom ? rocZoom.from : -20,
-          maxValue: rocZoom ? rocZoom.to : 20,
+          minValue: rocZoom ? rocZoom.from : -10,
+          maxValue: rocZoom ? rocZoom.to : 10,
         },
       }),
     });
-    // Seed default -20..20 on first enable so labels + amplitude are correct
-    if (!oscPriceRangeRef.current["roc"] || !(oscPriceRangeRef.current["roc"].to > oscPriceRangeRef.current["roc"].from)) {
-      oscPriceRangeRef.current["roc"] = { from: -20, to: 20 };
-    }
     s.setData(calcROC(candlesRef.current, rocPeriod) as any);
     try { /* guides on SVG only */ } catch {}
     try { s.applyOptions({ visible: false } as any); } catch {}
@@ -5310,7 +5284,7 @@ export default function DashboardPage() {
               dmi: { from: 0, to: 60 },
               harsi: { from: -40, to: 40 },
               macd: { from: -1, to: 1 },
-              roc: { from: -20, to: 20 },
+              roc: { from: -10, to: 10 },
               atr: { from: 0, to: 1 },
             };
             const prev = oscPriceRangeRef.current[inPane.id] || defaults[inPane.id] || { from: 0, to: 100 };
@@ -5513,7 +5487,7 @@ export default function DashboardPage() {
                 dmi: { min: 0, max: 60 },
                 harsi: { min: -40, max: 40 },
                 macd: { min: -1, max: 1 },
-                roc: { min: -20, max: 20 },
+                roc: { min: -10, max: 10 },
                 atr: { min: 0, max: 1 },
               };
               const def = defaults[hitId] || { min: 0, max: 100 };
@@ -5692,7 +5666,7 @@ export default function DashboardPage() {
               dmi: { from: 0, to: 60 },
               harsi: { from: -40, to: 40 },
               macd: { from: -1, to: 1 },
-              roc: { from: -20, to: 20 },
+              roc: { from: -10, to: 10 },
               atr: { from: 0, to: 1 },
             };
             const prev = oscPriceRangeRef.current[oscTouchId] || defaults[oscTouchId] || { from: 0, to: 100 };
