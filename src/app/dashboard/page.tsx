@@ -2025,7 +2025,7 @@ export default function DashboardPage() {
       { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
       { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
       { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "volume", on: !!(showVol && volVisible && !hideOscillators), h: 0.10 },
+      { id: "volume", on: !!(showVol && volVisible), h: 0.10 },
     ];
     // Cap total pane height so main chart stays usable
     const active = panes.filter((p) => p.on);
@@ -2060,13 +2060,22 @@ export default function DashboardPage() {
     for (const id of allOscIds) {
       if (activeIds.has(id)) continue;
       try {
-        chart.priceScale(id).applyOptions({ visible: false } as any);
+        chart.priceScale(id).applyOptions({
+          visible: false,
+          // collapse so any residual series cannot paint over the main chart
+          scaleMargins: { top: 0.999, bottom: 0 },
+        } as any);
       } catch {}
     }
     // Opaque masks over oscillator bands (hide main chart) + SVG redraw of osc lines on top
     try {
       const host = paneSepRef.current;
       const chart = chartRef.current;
+      // TradingView-style: when oscillators hidden, clear overlay and show full main chart only
+      if (hideOscillators || hideOscillatorsRef.current) {
+        if (host) host.innerHTML = "";
+        return;
+      }
       if (host && chart) {
         const oscIds = new Set(["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr"]);
         let u = 0;
@@ -3987,14 +3996,15 @@ export default function DashboardPage() {
         clearSer(macdSeriesRef.current.hist);
       }
       clearSer(harsiSeriesRef.current);
-      clearSer(volumeSeriesRef.current);
+      // keep volume (TradingView keeps volume when collapsing osc panes)
       try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
       try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
       try { updateMargins(); } catch {}
     } else {
       try {
         applyRSI(); applyDMI(); applyROC(); applyATR();
-        applyMACD(); applyStoch(); applyHARSI(); applyVolume();
+        applyMACD(); applyStoch(); applyHARSI();
+        // volume left as-is
         updateMargins();
       } catch {}
     }
@@ -4714,9 +4724,9 @@ export default function DashboardPage() {
                 clearSer(macdSeriesRef.current.hist);
               }
               clearSer(harsiSeriesRef.current);
-              clearSer(volumeSeriesRef.current);
               try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
               try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
+              try { updateMargins(); } catch {}
             }
             setHideOscillators(next);
           } catch {}
