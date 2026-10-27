@@ -2034,8 +2034,12 @@ export default function DashboardPage() {
       try {
         chart.priceScale(p.id).applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
-          borderVisible: false,
-        });
+          borderVisible: true,
+          visible: true,
+          entireTextOnly: false,
+          ticksVisible: true,
+          minimumWidth: 54,
+        } as any);
       } catch {}
       used += h;
     }
@@ -2072,7 +2076,7 @@ export default function DashboardPage() {
           const topPx = hostH * (1 - tops[i]);
           const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
           parts.push(
-            `<div style="position:absolute;left:0;right:0;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
+            `<div style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
           );
         }
 
@@ -2160,13 +2164,39 @@ export default function DashboardPage() {
           }
           if (harsiSeriesRef.current) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
-            const rows = ha.map((c) => ({ time: c.time, value: c.close }));
-            svgBits.push(pathFrom(harsiSeriesRef.current, rows, harsiUpColor || "#22c55e", 1.5));
+            const upC = harsiUpColor || "#14b8a6";
+            const dnC = harsiDnColor || "#ef4444";
+            const barW = Math.max(1.5, hostW / Math.max(ha.length, 1) * 0.5);
+            const ser = harsiSeriesRef.current;
+            for (const c of ha) {
+              try {
+                const x = ts.timeToCoordinate(c.time as any);
+                if (x == null || Number(x) < -50 || Number(x) > hostW + 50) continue;
+                const yO = ser.priceToCoordinate(c.open);
+                const yC = ser.priceToCoordinate(c.close);
+                const yH = ser.priceToCoordinate(c.high);
+                const yL = ser.priceToCoordinate(c.low);
+                if (yO == null || yC == null || yH == null || yL == null) continue;
+                const col = c.close >= c.open ? upC : dnC;
+                // wick
+                svgBits.push(`<line x1="${x}" y1="${yH}" x2="${x}" y2="${yL}" stroke="#9ca3af" stroke-width="1" />`);
+                // body
+                const top = Math.min(Number(yO), Number(yC));
+                const hgt = Math.max(1, Math.abs(Number(yC) - Number(yO)));
+                svgBits.push(`<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" stroke="${col}" stroke-width="0.5" />`);
+              } catch {}
+            }
+            // zero guide
+            try {
+              const zY = ser.priceToCoordinate(0);
+              if (zY != null) svgBits.push(`<line x1="0" y1="${zY}" x2="${hostW - 56}" y2="${zY}" stroke="rgba(251,146,60,0.55)" stroke-width="1" stroke-dasharray="3 3" />`);
+            } catch {}
           }
         } catch {}
 
         parts.push(
-          `<svg width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}</svg>`
+          `<svg id="osc-overlay-svg" width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}<line id="osc-crosshair-v" x1="-10" y1="0" x2="-10" y2="${hostH}" stroke="rgba(255,255,255,0.45)" stroke-width="1" stroke-dasharray="4 3" />` +
+          `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW}" y2="-10" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
         // 3) Separator lines
@@ -2193,7 +2223,7 @@ export default function DashboardPage() {
     dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
     stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
     macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
-    harsiLen, harsiSmooth, harsiUpColor]);
+    harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -3641,8 +3671,12 @@ export default function DashboardPage() {
         borderDownColor: harsiDnColor,
         wickUpColor: "#9ca3af",
         wickDownColor: "#9ca3af",
-        lastValueVisible: false,
+        lastValueVisible: true,
         priceLineVisible: false,
+        // HARSI typically ranges roughly -50..50 (z-scored RSI HA)
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: -50, maxValue: 50 },
+        }),
       });
       cs.setData(ha.map((c) => ({
         time: c.time as any,
@@ -4528,13 +4562,20 @@ export default function DashboardPage() {
         const onDblPrice = (e: MouseEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          if (fromRight > 100 || fromRight < 0) return;
-          priceRangeOverrideRef.current = null;
+          // Double-click on right price scale → reset vertical zoom
+          if (fromRight <= 100 && fromRight >= 0) {
+            priceRangeOverrideRef.current = null;
+            try {
+              const s = seriesRef.current as any;
+              const ps = s?.priceScale?.() || chart.priceScale("right");
+              ps?.setAutoScale?.(true);
+              ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            } catch {}
+            return;
+          }
+          // Double-click on chart body → toggle all oscillators show/hide
           try {
-            const s = seriesRef.current as any;
-            const ps = s?.priceScale?.() || chart.priceScale("right");
-            ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            setHideIndicators((v) => !v);
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
@@ -5114,6 +5155,26 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
+        // Keep dashed crosshair ON TOP of oscillator masks
+        try {
+          const v = document.getElementById("osc-crosshair-v");
+          const h = document.getElementById("osc-crosshair-h");
+          if (v && h) {
+            if (param && param.point) {
+              const x = param.point.x;
+              const y = param.point.y;
+              v.setAttribute("x1", String(x));
+              v.setAttribute("x2", String(x));
+              h.setAttribute("y1", String(y));
+              h.setAttribute("y2", String(y));
+            } else {
+              v.setAttribute("x1", "-10");
+              v.setAttribute("x2", "-10");
+              h.setAttribute("y1", "-10");
+              h.setAttribute("y2", "-10");
+            }
+          }
+        } catch {}
         // TV-style pane labels: name + value at hovered bar (left of each oscillator)
         try {
           const host = paneLegendRef.current;
