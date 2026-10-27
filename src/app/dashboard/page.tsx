@@ -11066,14 +11066,14 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* TCP info table — top-left above oscillators (not under panes) */}
+          {/* TCP info table — bottom-left on top of oscillator panes */}
           {!hideIndicators && showTCP && tcpVisible && (
             <div
               data-ind-panel
               role="button"
               title="Open TCP settings"
               onClick={() => setTcpSettings(true)}
-              className="absolute top-14 left-2 z-30 bg-gray-950/95 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
+              className="absolute bottom-16 left-2 z-40 bg-gray-950/95 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
             >
               {(() => {
                 const candles = candlesRef.current || [];
