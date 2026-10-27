@@ -1411,7 +1411,8 @@ export default function DashboardPage() {
   const maximizedOscRef = useRef<string | null>(null);
   useEffect(() => { maximizedOscRef.current = maximizedOsc; }, [maximizedOsc]);
   // Order of oscillator panes (bottom → top in stack = last drawn near time axis first)
-  const DEFAULT_OSC_ORDER = ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+  // First items sit near time axis (bottom); volume last = just under main chart
+  const DEFAULT_OSC_ORDER = ["atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi", "volume"];
   const [oscOrder, setOscOrder] = useState<string[]>(() => {
     try {
       const s = localStorage.getItem("osc_order");
@@ -2066,9 +2067,12 @@ export default function DashboardPage() {
       volume: { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     };
     // Order panes by oscOrder (unknown ids appended)
-    const order = (typeof window !== "undefined" && (window as any).__oscOrder)
-      ? (window as any).__oscOrder as string[]
-      : ["volume", "atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi"];
+    // volume always sits just under main chart (last in bottom-first list)
+    let order = (typeof window !== "undefined" && (window as any).__oscOrder)
+      ? ((window as any).__oscOrder as string[]).slice()
+      : ["atr", "roc", "rsi", "harsi", "macd", "stoch", "dmi", "volume"];
+    order = order.filter((id) => id !== "volume");
+    order.push("volume");
     const panes: { id: string; on: boolean; h: number }[] = [];
     const seen = new Set<string>();
     for (const id of order) {
@@ -2768,6 +2772,68 @@ export default function DashboardPage() {
           };
           // Use capture on host so chart gestures still work
           host.addEventListener("pointerdown", onOutside);
+
+          // Double-click / double-tap on oscillator pane → maximize / restore
+          const paneBounds: { id: string; top: number; bot: number }[] = [];
+          try {
+            for (const [cid, box] of Object.entries(paneClip)) {
+              if (cid === "volume") continue;
+              paneBounds.push({ id: cid, top: (box as any).top, bot: (box as any).bot });
+            }
+          } catch {}
+          const hitPane = (y: number) => {
+            for (const p of paneBounds) {
+              if (y >= p.top && y <= p.bot) return p.id;
+            }
+            return null;
+          };
+          let lastTapY = -999;
+          let lastTapT = 0;
+          let lastTapId: string | null = null;
+          const onDbl = (ev: MouseEvent | PointerEvent) => {
+            try {
+              const rect = host.getBoundingClientRect();
+              const y = (("clientY" in ev) ? ev.clientY : 0) - rect.top;
+              // ignore clicks on scale / toolbar / handle
+              const t = ev.target as HTMLElement | null;
+              if (t && t.closest && (t.closest("[data-osc-scale]") || t.closest("[data-osc-toolbar]") || t.closest("[data-osc-handle]") || t.closest("[data-osc-act]"))) return;
+              const id = hitPane(y);
+              if (!id) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              const cur = maximizedOscRef.current;
+              const next = cur === id ? null : id;
+              maximizedOscRef.current = next;
+              setMaximizedOsc(next);
+              try { updateMargins(); } catch {}
+            } catch {}
+          };
+          host.addEventListener("dblclick", onDbl as any);
+          // iPad double-tap
+          host.addEventListener("pointerup", (ev: PointerEvent) => {
+            try {
+              const t = ev.target as HTMLElement | null;
+              if (t && t.closest && (t.closest("[data-osc-scale]") || t.closest("[data-osc-toolbar]") || t.closest("[data-osc-handle]") || t.closest("[data-osc-act]"))) return;
+              const rect = host.getBoundingClientRect();
+              const y = ev.clientY - rect.top;
+              const id = hitPane(y);
+              if (!id) return;
+              const now = Date.now();
+              if (lastTapId === id && Math.abs(y - lastTapY) < 30 && now - lastTapT < 380) {
+                lastTapT = 0;
+                lastTapId = null;
+                const cur = maximizedOscRef.current;
+                const next = cur === id ? null : id;
+                maximizedOscRef.current = next;
+                setMaximizedOsc(next);
+                try { updateMargins(); } catch {}
+              } else {
+                lastTapId = id;
+                lastTapY = y;
+                lastTapT = now;
+              }
+            } catch {}
+          });
         } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
