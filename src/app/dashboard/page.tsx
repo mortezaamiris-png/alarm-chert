@@ -2145,17 +2145,22 @@ export default function DashboardPage() {
               if (Number(x) < -50 || Number(x) > hostW + 50) continue;
               let y: number | null = null;
               if (hasLinear) {
-                // Linear map value -> pane Y (stable zoom, never bleeds)
+                // Linear map value -> pane-local Y (0 = top of pane)
                 const rel = (Number(r.value) - (priceFrom as number)) / ((priceTo as number) - (priceFrom as number));
-                y = (clipTop as number) + (1 - rel) * ((clipBot as number) - (clipTop as number));
+                // Clamp rel so line never leaves the pane box
+                const relC = Math.max(0, Math.min(1, rel));
+                y = (1 - relC) * ((clipBot as number) - (clipTop as number));
               } else if (series) {
-                y = series.priceToCoordinate(r.value);
+                const absY = series.priceToCoordinate(r.value);
+                if (absY == null || Number.isNaN(Number(absY))) continue;
+                if (hasClip) {
+                  if (Number(absY) < (clipTop as number) - 0.5 || Number(absY) > (clipBot as number) + 0.5) continue;
+                  y = Math.max(0, Math.min((clipBot as number) - (clipTop as number), Number(absY) - (clipTop as number)));
+                } else {
+                  y = Number(absY);
+                }
               }
               if (y == null || Number.isNaN(Number(y))) continue;
-              if (hasClip) {
-                if (Number(y) < (clipTop as number) - 0.5 || Number(y) > (clipBot as number) + 0.5) continue;
-                y = Math.max(clipTop as number, Math.min(clipBot as number, Number(y)));
-              }
               pts.push(`${x},${y}`);
             }
             if (pts.length < 2) return "";
@@ -2193,8 +2198,13 @@ export default function DashboardPage() {
           }
         };
 
-        const svgBits: string[] = [];
-        // pane pixel bounds for hard-clip (id -> {top, bot}) — outside try so clipDefs can use it
+        const svgBits: string[] = []; // legacy (unused for osc lines)
+        const paneBits: Record<string, string[]> = {};
+        const pushPane = (id: string, html: string) => {
+          if (!paneBits[id]) paneBits[id] = [];
+          paneBits[id].push(html);
+        };
+        // pane pixel bounds for hard-clip (id -> {top, bot})
         const paneClip: Record<string, { top: number; bot: number }> = {};
         try {
           for (let i = 0; i < active.length; i++) {
@@ -2221,85 +2231,78 @@ export default function DashboardPage() {
           if (rsiSeriesRef.current || paneClip["rsi"]) {
             const c = paneClip["rsi"];
             const zr = oscPriceRangeRef.current["rsi"] || { from: 0, to: 100 };
+            const ph = c ? (c.bot - c.top) : 100;
             const guideLin = (price: number, color: string) => {
               if (!c || !(zr.to > zr.from)) return "";
               if (price < zr.from || price > zr.to) return "";
-              const rel = (price - zr.from) / (zr.to - zr.from);
-              const y = c.top + (1 - rel) * (c.bot - c.top);
+              const rel = Math.max(0, Math.min(1, (price - zr.from) / (zr.to - zr.from)));
+              const y = (1 - rel) * ph; // pane-local
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            const rsiBits: string[] = [];
-            rsiBits.push(guideLin(70, "rgba(148,163,184,0.7)"));
-            rsiBits.push(guideLin(50, "rgba(148,163,184,0.35)"));
-            rsiBits.push(guideLin(30, "rgba(148,163,184,0.7)"));
-            rsiBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot, zr.from, zr.to));
-            svgBits.push(`<g clip-path="url(#clip-rsi)">${rsiBits.join("")}</g>`);
+            pushPane("rsi", guideLin(70, "rgba(148,163,184,0.7)"));
+            pushPane("rsi", guideLin(50, "rgba(148,163,184,0.35)"));
+            pushPane("rsi", guideLin(30, "rgba(148,163,184,0.7)"));
+            pushPane("rsi", pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot, zr.from, zr.to));
           }
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
             const zrR = oscPriceRangeRef.current["roc"] || { from: -10, to: 10 };
-            const rocBits: string[] = [];
+            const phR = cRoc ? (cRoc.bot - cRoc.top) : 100;
             if (cRoc && zrR.to > zrR.from && 0 >= zrR.from && 0 <= zrR.to) {
-              const rel = (0 - zrR.from) / (zrR.to - zrR.from);
-              const y = cRoc.top + (1 - rel) * (cRoc.bot - cRoc.top);
-              rocBits.push(`<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
+              const rel = Math.max(0, Math.min(1, (0 - zrR.from) / (zrR.to - zrR.from)));
+              const y = (1 - rel) * phR;
+              pushPane("roc", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
             }
-            rocBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
-            svgBits.push(`<g clip-path="url(#clip-roc)">${rocBits.join("")}</g>`);
+            pushPane("roc", pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
           }
           if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
             const zrA = oscPriceRangeRef.current["atr"] || { from: 0, to: 1 };
-            const atrBits = pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to);
-            svgBits.push(`<g clip-path="url(#clip-atr)">${atrBits}</g>`);
+            pushPane("atr", pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
           if (dmiSeriesRef.current || paneClip["dmi"]) {
             const d = calcDMI(candles as any, dmiPeriod);
             const cDmi = paneClip["dmi"];
             const zrD = oscPriceRangeRef.current["dmi"] || { from: 0, to: 60 };
+            const phD = cDmi ? (cDmi.bot - cDmi.top) : 100;
             const guideLinD = (price: number, color: string) => {
               if (!cDmi || !(zrD.to > zrD.from)) return "";
               if (price < zrD.from || price > zrD.to) return "";
-              const rel = (price - zrD.from) / (zrD.to - zrD.from);
-              const y = cDmi.top + (1 - rel) * (cDmi.bot - cDmi.top);
+              const rel = Math.max(0, Math.min(1, (price - zrD.from) / (zrD.to - zrD.from)));
+              const y = (1 - rel) * phD;
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            const dmiBits: string[] = [];
-            dmiBits.push(guideLinD(40, "rgba(148,163,184,0.45)"));
-            dmiBits.push(guideLinD(20, "rgba(148,163,184,0.55)"));
-            dmiBits.push(pathFrom(dmiSeriesRef.current?.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
-            dmiBits.push(pathFrom(dmiSeriesRef.current?.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
-            dmiBits.push(pathFrom(dmiSeriesRef.current?.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
-            svgBits.push(`<g clip-path="url(#clip-dmi)">${dmiBits.join("")}</g>`);
+            pushPane("dmi", guideLinD(40, "rgba(148,163,184,0.45)"));
+            pushPane("dmi", guideLinD(20, "rgba(148,163,184,0.55)"));
+            pushPane("dmi", pathFrom(dmiSeriesRef.current?.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            pushPane("dmi", pathFrom(dmiSeriesRef.current?.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            pushPane("dmi", pathFrom(dmiSeriesRef.current?.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
           }
           if (stochSeriesRef.current || paneClip["stoch"]) {
             const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
             const cSt = paneClip["stoch"];
             const zrS = oscPriceRangeRef.current["stoch"] || { from: 0, to: 100 };
+            const phS = cSt ? (cSt.bot - cSt.top) : 100;
             const guideLinS = (price: number, color: string) => {
               if (!cSt || !(zrS.to > zrS.from)) return "";
               if (price < zrS.from || price > zrS.to) return "";
-              const rel = (price - zrS.from) / (zrS.to - zrS.from);
-              const y = cSt.top + (1 - rel) * (cSt.bot - cSt.top);
+              const rel = Math.max(0, Math.min(1, (price - zrS.from) / (zrS.to - zrS.from)));
+              const y = (1 - rel) * phS;
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            const stBits: string[] = [];
-            stBits.push(guideLinS(80, "rgba(148,163,184,0.7)"));
-            stBits.push(guideLinS(50, "rgba(148,163,184,0.4)"));
-            stBits.push(guideLinS(20, "rgba(148,163,184,0.7)"));
-            stBits.push(pathFrom(stochSeriesRef.current?.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot, zrS.from, zrS.to));
-            stBits.push(pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
-            svgBits.push(`<g clip-path="url(#clip-stoch)">${stBits.join("")}</g>`);
+            pushPane("stoch", guideLinS(80, "rgba(148,163,184,0.7)"));
+            pushPane("stoch", guideLinS(50, "rgba(148,163,184,0.4)"));
+            pushPane("stoch", guideLinS(20, "rgba(148,163,184,0.7)"));
+            pushPane("stoch", pathFrom(stochSeriesRef.current?.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot, zrS.from, zrS.to));
+            pushPane("stoch", pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
           }
           if (macdSeriesRef.current || paneClip["macd"]) {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
             const cMacd = paneClip["macd"];
             const zrM = oscPriceRangeRef.current["macd"] || { from: -1, to: 1 };
-            const macdBits: string[] = [];
-            macdBits.push(histRects(macdSeriesRef.current?.hist, m.hist as any));
-            macdBits.push(pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
-            macdBits.push(pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
-            svgBits.push(`<g clip-path="url(#clip-macd)">${macdBits.join("")}</g>`);
+            // hist still via LWC; lines via SVG in clipped pane
+            pushPane("macd", pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
+            pushPane("macd", pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
           }
           if (harsiSeriesRef.current) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
@@ -2332,22 +2335,27 @@ export default function DashboardPage() {
             } catch {}
           }
         } catch {}
+        // Expose per-pane SVG bits for overflow:hidden containers
+        (window as any).__oscPaneBits = Object.fromEntries(
+          Object.entries(paneBits).map(([k, arr]) => [k, arr.join("")])
+        );
 
         // Vertical crosshair only over oscillator stack (native LWC handles main chart)
-        // Use plotH so overlays stop above the time axis
         const oscTopPx = plotH * (1 - used);
-        // Per-pane SVG clipPaths — hard stop so zoomed osc lines NEVER leave their box
-        const clipDefs: string[] = [];
+        // Per-pane CSS overflow:hidden containers — bulletproof clip on iPad/Safari
+        // Each osc SVG uses pane-local coordinates (y=0 at top of pane)
         for (const [cid, box] of Object.entries(paneClip)) {
           const h = Math.max(1, box.bot - box.top);
-          clipDefs.push(
-            `<clipPath id="clip-${cid}"><rect x="0" y="${box.top}" width="${Math.max(1, hostW - 56)}" height="${h}" /></clipPath>`
+          const paneSvg = (window as any).__oscPaneBits?.[cid] || "";
+          parts.push(
+            `<div data-osc-svg="${cid}" style="position:absolute;left:0;right:56px;top:${box.top}px;height:${h}px;overflow:hidden;pointer-events:none;z-index:5;">` +
+            `<svg width="${Math.max(1, hostW - 56)}" height="${h}" style="display:block;overflow:hidden;">${paneSvg}</svg>` +
+            `</div>`
           );
         }
+        // Crosshair line over whole osc stack
         parts.push(
-          `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">` +
-          `<defs>${clipDefs.join("")}</defs>` +
-          `${svgBits.join("")}` +
+          `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;z-index:6;">` +
           `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
@@ -2478,28 +2486,15 @@ export default function DashboardPage() {
             const applyZoom = (from: number, to: number) => {
               // Cap minimum range so line never becomes a chaotic spike
               const minSpan: Record<string, number> = {
-                rsi: 8, stoch: 8, dmi: 5, harsi: 5, macd: 0.05, roc: 1, atr: 0.01,
+                rsi: 12, stoch: 12, dmi: 8, harsi: 8, macd: 0.1, roc: 2, atr: 0.05,
               };
-              const span = Math.max((minSpan[oscId] ?? 5), to - from);
+              const span = Math.max((minSpan[oscId] ?? 8), to - from);
               const mid = (from + to) / 2;
               from = mid - span / 2;
               to = mid + span / 2;
+              // ONLY update our ref — SVG redraws via linear map.
+              // NEVER touch LWC autoscaleInfoProvider during drag (that was the bleed source).
               oscPriceRangeRef.current[oscId] = { from, to };
-              const provider = () => ({ priceRange: { minValue: from, maxValue: to } });
-              try {
-                const ser = getSer();
-                ser?.applyOptions?.({ autoscaleInfoProvider: provider });
-                if (oscId === "stoch") stochSeriesRef.current?.d?.applyOptions?.({ autoscaleInfoProvider: provider });
-                if (oscId === "dmi" && dmiSeriesRef.current) {
-                  dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
-                  dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
-                }
-                if (oscId === "macd" && macdSeriesRef.current) {
-                  macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
-                  macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
-                }
-                try { chartRef.current?.priceScale(oscId)?.applyOptions?.({ autoScale: true } as any); } catch {}
-              } catch {}
             };
             // Move tick labels within this strip without full DOM rebuild
             const refreshLabels = (from: number, to: number) => {
@@ -3731,6 +3726,7 @@ export default function DashboardPage() {
         title: "",
       });
     } catch {}
+    try { s.applyOptions({ visible: false } as any); } catch {}
     rsiSeriesRef.current = s;
     updateMargins();
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
@@ -3781,6 +3777,11 @@ export default function DashboardPage() {
         axisLabelVisible: false,
         title: "",
       });
+    } catch {}
+    try {
+      plus.applyOptions({ visible: false } as any);
+      minus.applyOptions({ visible: false } as any);
+      adxS.applyOptions({ visible: false } as any);
     } catch {}
     dmiSeriesRef.current = { plus, minus, adx: adxS };
     updateMargins();
@@ -4202,6 +4203,7 @@ export default function DashboardPage() {
     });
     s.setData(calcROC(candlesRef.current, rocPeriod) as any);
     try { /* guides on SVG only */ } catch {}
+    try { s.applyOptions({ visible: false } as any); } catch {}
     rocSeriesRef.current = s;
     updateMargins();
   }, [showROC, rocVisible, hideIndicators, rocPeriod, rocColor, removeROC, updateMargins]);
@@ -4229,6 +4231,7 @@ export default function DashboardPage() {
       }),
     });
     s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
+    try { s.applyOptions({ visible: false } as any); } catch {}
     atrSeriesRef.current = s;
     updateMargins();
   }, [showATR, atrVisible, hideIndicators, atrPeriod, atrSmooth, atrColor, removeATR, updateMargins]);
@@ -4273,6 +4276,10 @@ export default function DashboardPage() {
     });
     sigS.setData(signalLine as any);
     try { /* zero line on SVG */ } catch {}
+    try {
+      macdS.applyOptions({ visible: false } as any);
+      sigS.applyOptions({ visible: false } as any);
+    } catch {}
     macdSeriesRef.current = { macd: macdS, signal: sigS, hist: histS };
     updateMargins();
   }, [showMACD, macdVisible, hideIndicators, macdFast, macdSlow, macdSignal, macdColor, macdSigColor, removeMACD, updateMargins]);
@@ -4313,6 +4320,7 @@ export default function DashboardPage() {
       kS.createPriceLine({ price: 50, color: "rgba(120,123,134,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
       kS.createPriceLine({ price: 20, color: "rgba(120,123,134,0.7)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
     } catch {}
+    try { kS.applyOptions({ visible: false } as any); dS.applyOptions({ visible: false } as any); } catch {}
     stochSeriesRef.current = { k: kS, d: dS };
     updateMargins();
   }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
