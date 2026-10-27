@@ -1399,6 +1399,10 @@ export default function DashboardPage() {
   const [hideIndicators, setHideIndicators] = useState(false);
   useEffect(() => { hideLinesRef.current = hideLines; }, [hideLines]);
   useEffect(() => { hideIndicatorsRef.current = hideIndicators; }, [hideIndicators]);
+  /** Double-click: hide only oscillator panes (RSI/HARSI/DMI/ROC/ATR/MACD/Stoch) — chips stay */
+  const [hideOscillators, setHideOscillators] = useState(false);
+  const hideOscillatorsRef = useRef(false);
+  useEffect(() => { hideOscillatorsRef.current = hideOscillators; }, [hideOscillators]);
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
@@ -2014,14 +2018,14 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!chart) return;
     const panes: { id: string; on: boolean; h: number }[] = [
-      { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators), h: 0.12 },
-      { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators), h: 0.12 },
-      { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators), h: 0.13 },
-      { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators), h: 0.14 },
-      { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators), h: 0.12 },
-      { id: "roc", on: !!(showROC && rocVisible && !hideIndicators), h: 0.11 },
-      { id: "atr", on: !!(showATR && atrVisible && !hideIndicators), h: 0.11 },
-      { id: "volume", on: !!(showVol && volVisible), h: 0.10 },
+      { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.13 },
+      { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
+      { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
+      { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
+      { id: "volume", on: !!(showVol && volVisible && !hideOscillators), h: 0.10 },
     ];
     // Cap total pane height so main chart stays usable
     const active = panes.filter((p) => p.on);
@@ -2194,9 +2198,11 @@ export default function DashboardPage() {
           }
         } catch {}
 
+        // Vertical crosshair only over oscillator stack (native LWC handles main chart)
+        const oscTopPx = hostH * (1 - used);
         parts.push(
-          `<svg id="osc-overlay-svg" width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}<line id="osc-crosshair-v" x1="-10" y1="0" x2="-10" y2="${hostH}" stroke="rgba(255,255,255,0.45)" stroke-width="1" stroke-dasharray="4 3" />` +
-          `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW}" y2="-10" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
+          `<svg id="osc-overlay-svg" width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}` +
+          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${hostH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
         // 3) Separator lines
@@ -2218,12 +2224,45 @@ export default function DashboardPage() {
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
     showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
-    showHARSI, harsiVisible, hideIndicators,
+    showHARSI, harsiVisible, hideIndicators, hideOscillators,
     rsiPeriod, rsiColor, rocPeriod, rocColor, atrPeriod, atrSmooth, atrColor,
     dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
     stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
     macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
     harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
+
+  // Instant pane collapse when double-click toggles oscillators
+  useEffect(() => {
+    const vis = !hideOscillators;
+    const setVis = (ser: any) => {
+      if (!ser) return;
+      try { ser.applyOptions({ visible: vis }); } catch {}
+    };
+    setVis(rsiSeriesRef.current);
+    setVis(rocSeriesRef.current);
+    setVis(atrSeriesRef.current);
+    if (dmiSeriesRef.current) {
+      setVis(dmiSeriesRef.current.plus);
+      setVis(dmiSeriesRef.current.minus);
+      setVis(dmiSeriesRef.current.adx);
+    }
+    if (stochSeriesRef.current) {
+      setVis(stochSeriesRef.current.k);
+      setVis(stochSeriesRef.current.d);
+    }
+    if (macdSeriesRef.current) {
+      setVis(macdSeriesRef.current.macd);
+      setVis(macdSeriesRef.current.signal);
+      setVis(macdSeriesRef.current.hist);
+    }
+    setVis(harsiSeriesRef.current);
+    setVis(volumeSeriesRef.current);
+    try { updateMargins(); } catch {}
+    // clear osc value legends while hidden
+    if (hideOscillators) {
+      try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
+    }
+  }, [hideOscillators, updateMargins]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -4573,9 +4612,40 @@ export default function DashboardPage() {
             } catch {}
             return;
           }
-          // Double-click on chart body → toggle all oscillators show/hide
+          // Double-click on chart body → toggle ONLY oscillator panes (chips stay visible)
           try {
-            setHideIndicators((v) => !v);
+            const next = !hideOscillatorsRef.current;
+            hideOscillatorsRef.current = next;
+            // apply visibility immediately (before React re-render) to avoid lag
+            const vis = !next;
+            const setVis = (ser: any) => {
+              if (!ser) return;
+              try { ser.applyOptions({ visible: vis }); } catch {}
+            };
+            setVis(rsiSeriesRef.current);
+            setVis(rocSeriesRef.current);
+            setVis(atrSeriesRef.current);
+            if (dmiSeriesRef.current) {
+              setVis(dmiSeriesRef.current.plus);
+              setVis(dmiSeriesRef.current.minus);
+              setVis(dmiSeriesRef.current.adx);
+            }
+            if (stochSeriesRef.current) {
+              setVis(stochSeriesRef.current.k);
+              setVis(stochSeriesRef.current.d);
+            }
+            if (macdSeriesRef.current) {
+              setVis(macdSeriesRef.current.macd);
+              setVis(macdSeriesRef.current.signal);
+              setVis(macdSeriesRef.current.hist);
+            }
+            setVis(harsiSeriesRef.current);
+            setVis(volumeSeriesRef.current);
+            if (next) {
+              try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
+              try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
+            }
+            setHideOscillators(next);
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
@@ -5155,23 +5225,18 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Keep dashed crosshair ON TOP of oscillator masks
+        // Dashed vertical crosshair only over oscillator panes (avoids double line on main chart)
         try {
-          const v = document.getElementById("osc-crosshair-v");
-          const h = document.getElementById("osc-crosshair-h");
-          if (v && h) {
+          const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
+          if (v) {
             if (param && param.point) {
               const x = param.point.x;
-              const y = param.point.y;
               v.setAttribute("x1", String(x));
               v.setAttribute("x2", String(x));
-              h.setAttribute("y1", String(y));
-              h.setAttribute("y2", String(y));
+              // keep y1/y2 as set in updateMargins (osc region only)
             } else {
               v.setAttribute("x1", "-10");
               v.setAttribute("x2", "-10");
-              h.setAttribute("y1", "-10");
-              h.setAttribute("y2", "-10");
             }
           }
         } catch {}
@@ -5192,6 +5257,7 @@ export default function DashboardPage() {
               return v.toFixed(6);
             };
             // Same stack order as updateMargins (bottom → up)
+            if (hideOscillatorsRef.current) { host.innerHTML = ""; return; }
             const stack: { id: string; on: boolean; h: number; series: any; label: string; color: string; multi?: { series: any; label: string; color: string }[] }[] = [
               { id: "dmi", on: !!dmiSeriesRef.current, h: 0.12, series: dmiSeriesRef.current?.adx, label: "DMI", color: "#3b82f6", multi: dmiSeriesRef.current ? [
                 { series: dmiSeriesRef.current.plus, label: "+DI", color: "#22c55e" },
