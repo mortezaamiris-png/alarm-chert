@@ -2070,11 +2070,11 @@ export default function DashboardPage() {
     const panesMap: Record<string, { id: string; on: boolean; h: number }> = {
       dmi: { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
       stoch: { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.13 },
+      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.15 },
       harsi: { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
       rsi: { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
+      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.12 },
+      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.13 },
       volume: { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     };
     // Order panes by oscOrder (unknown ids appended)
@@ -2090,7 +2090,7 @@ export default function DashboardPage() {
       if (!seen.has(id)) panes.push(panesMap[id]);
     }
     // Maximize mode: selected oscillator fills nearly the whole plot (time axis stays)
-    let active = panes.filter((p) => p.on);
+    let active = panes.filter((p) => p.on).map((p) => ({ ...p }));
     if (maxId) {
       active = active
         .filter((p) => p.id === maxId)
@@ -2100,11 +2100,23 @@ export default function DashboardPage() {
       }
     }
     let totalH = active.reduce((s, p) => s + p.h, 0);
-    const maxTotal = maxId ? 0.98 : 0.55;
-    const scale = totalH > maxTotal ? maxTotal / totalH : 1;
+    // More room for osc stack so MACD/ATR don't collapse when many panes are on
+    const maxTotal = maxId ? 0.98 : 0.68;
+    let scale = totalH > maxTotal ? maxTotal / totalH : 1;
+    // Enforce a readable minimum height per oscillator pane (skip volume)
+    const minH = 0.09;
+    for (const p of active) {
+      if (p.id === "volume") continue;
+      if (p.h * scale < minH && totalH > 0) {
+        // boost this pane; will re-normalize if over maxTotal
+        p.h = Math.max(p.h, minH / Math.max(scale, 0.01));
+      }
+    }
+    totalH = active.reduce((s, p) => s + p.h, 0);
+    scale = totalH > maxTotal ? maxTotal / totalH : 1;
     let used = 0;
     for (const p of active) {
-      const h = p.h * scale;
+      const h = Math.max(p.id === "volume" ? 0.06 : minH * 0.85, p.h * scale);
       try {
         chart.priceScale(p.id).applyOptions({
           // When maximized: from near top (2%) down to time axis
@@ -4739,17 +4751,21 @@ export default function DashboardPage() {
         atrZoom = { from: 0, to: 1 };
       }
     }
+    oscPriceRangeRef.current["atr"] = atrZoom!;
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
       title: "ATR",
-      autoscaleInfoProvider: () => ({
-        priceRange: {
-          minValue: atrZoom!.from,
-          maxValue: atrZoom!.to,
-        },
-      }),
+      autoscaleInfoProvider: () => {
+        const z = oscPriceRangeRef.current["atr"] || atrZoom!;
+        return {
+          priceRange: {
+            minValue: z.from,
+            maxValue: z.to,
+          },
+        };
+      },
     });
     s.setData(atrRows as any);
     try { s.applyOptions({ visible: false } as any); } catch {}
@@ -4778,13 +4794,39 @@ export default function DashboardPage() {
     if (!showMACD || !macdVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
-    const macdZoom = oscPriceRangeRef.current["macd"];
-    const macdProvider = () => ({
-      priceRange: {
-        minValue: macdZoom ? macdZoom.from : -1,
-        maxValue: macdZoom ? macdZoom.to : 1,
-      },
-    });
+    let macdZoom = oscPriceRangeRef.current["macd"];
+    if (!macdZoom || !(macdZoom.to > macdZoom.from)) {
+      let mn = Infinity, mx = -Infinity;
+      for (const r of macdLine || []) {
+        if (r?.value == null || Number.isNaN(r.value)) continue;
+        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+      }
+      for (const r of signalLine || []) {
+        if (r?.value == null || Number.isNaN(r.value)) continue;
+        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+      }
+      for (const r of hist || []) {
+        if (r?.value == null || Number.isNaN(r.value)) continue;
+        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+      }
+      if (Number.isFinite(mn) && Number.isFinite(mx)) {
+        const span = Math.max(mx - mn, Math.abs(mx) * 0.15 + 1e-8);
+        const mid = (mn + mx) / 2;
+        macdZoom = { from: mid - span * 0.7, to: mid + span * 0.7 };
+      } else {
+        macdZoom = { from: -1, to: 1 };
+      }
+      oscPriceRangeRef.current["macd"] = macdZoom;
+    }
+    const macdProvider = () => {
+      const z = oscPriceRangeRef.current["macd"] || macdZoom;
+      return {
+        priceRange: {
+          minValue: z.from,
+          maxValue: z.to,
+        },
+      };
+    };
     const histS = chart.addHistogramSeries({
       priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
       color: "rgba(0,0,0,0)",
@@ -10903,11 +10945,11 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
-              <div className="absolute top-1.5 left-2 z-10 pointer-events-none flex flex-col gap-0.5 max-w-[min(92%,720px)]">
-                <div className="text-[10px] font-semibold text-orange-300/90">{symbolUpper}</div>
+              <div className="absolute top-1.5 left-2 z-10 pointer-events-none flex flex-row items-center gap-2 max-w-[min(96%,900px)] overflow-hidden">
+                <div className="text-[10px] font-semibold text-orange-300/90 shrink-0">{symbolUpper}</div>
                 <div
                   ref={ohlcBarRef}
-                  className="text-[10px] leading-tight text-gray-300 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis"
+                  className="text-[10px] leading-tight text-gray-300 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis min-w-0"
                   style={{ textShadow: "0 1px 2px rgba(0,0,0,0.85)" }}
                 />
               </div>
