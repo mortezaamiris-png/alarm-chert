@@ -2257,8 +2257,23 @@ export default function DashboardPage() {
           }
           if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
-            const zrA = oscPriceRangeRef.current["atr"] || { from: 0, to: 1 };
-            pushPane("atr", pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
+            const atrRows = calcATR(candles as any, atrPeriod, atrSmooth) as any[];
+            let zrA = oscPriceRangeRef.current["atr"];
+            if (!zrA || !(zrA.to > zrA.from)) {
+              let mn = Infinity, mx = -Infinity;
+              for (const r of atrRows || []) {
+                if (r?.value == null || Number.isNaN(r.value)) continue;
+                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+              }
+              if (Number.isFinite(mn) && Number.isFinite(mx)) {
+                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6);
+                const mid = (mn + mx) / 2;
+                zrA = { from: Math.max(0, mid - span * 0.6), to: mid + span * 0.6 };
+              } else {
+                zrA = { from: 0, to: 1 };
+              }
+            }
+            pushPane("atr", pathFrom(atrSeriesRef.current, atrRows, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
           if (dmiSeriesRef.current || paneClip["dmi"]) {
             const d = calcDMI(candles as any, dmiPeriod);
@@ -2299,8 +2314,38 @@ export default function DashboardPage() {
           if (macdSeriesRef.current || paneClip["macd"]) {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
             const cMacd = paneClip["macd"];
-            const zrM = oscPriceRangeRef.current["macd"] || { from: -1, to: 1 };
-            // hist still via LWC; lines via SVG in clipped pane
+            // Auto range from data when user hasn't zoomed
+            let zrM = oscPriceRangeRef.current["macd"];
+            if (!zrM || !(zrM.to > zrM.from)) {
+              let mn = Infinity, mx = -Infinity;
+              for (const r of (m.macdLine || []) as any[]) {
+                if (r?.value == null || Number.isNaN(r.value)) continue;
+                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+              }
+              for (const r of (m.signalLine || []) as any[]) {
+                if (r?.value == null || Number.isNaN(r.value)) continue;
+                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+              }
+              for (const r of (m.hist || []) as any[]) {
+                if (r?.value == null || Number.isNaN(r.value)) continue;
+                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+              }
+              if (Number.isFinite(mn) && Number.isFinite(mx)) {
+                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 0.01);
+                const mid = (mn + mx) / 2;
+                zrM = { from: mid - span * 0.6, to: mid + span * 0.6 };
+              } else {
+                zrM = { from: -1, to: 1 };
+              }
+            }
+            // zero guide
+            if (cMacd && zrM.to > zrM.from && 0 >= zrM.from && 0 <= zrM.to) {
+              const rel = (0 - zrM.from) / (zrM.to - zrM.from);
+              const y = (1 - rel) * (cMacd.bot - cMacd.top);
+              pushPane("macd", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.55)" stroke-width="1" stroke-dasharray="4 3" />`);
+            }
+            // hist bars via SVG
+            pushPane("macd", histRects(macdSeriesRef.current?.hist, (m.hist || []) as any, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
             pushPane("macd", pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
             pushPane("macd", pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
           }
@@ -2553,12 +2598,17 @@ export default function DashboardPage() {
                 nf = Math.max(-5, nf);
                 nt = Math.min(105, nt);
               }
+              if (oscId === "harsi") {
+                nf = Math.max(-80, nf);
+                nt = Math.min(80, nt);
+              }
               if (!(nt > nf)) return;
               applyZoom(nf, nt);
+              // Cheap: move tick numbers only (no full DOM rebuild = no left-side lag)
               refreshLabels(nf, nt);
-              // Throttled full redraw so the line zooms live inside its pane
+              // Heavier SVG redraw throttled more (150ms) to avoid lag
               const now = Date.now();
-              if (now - lastRedraw > 80) {
+              if (now - lastRedraw > 150) {
                 lastRedraw = now;
                 oscDraggingRef.current = false;
                 try { updateMargins(); } catch {}
@@ -3737,7 +3787,14 @@ export default function DashboardPage() {
     } catch {}
     try { s.applyOptions({ visible: false } as any); } catch {}
     rsiSeriesRef.current = s;
-    updateMargins();
+    try {
+      requestAnimationFrame(() => {
+        try { updateMargins(); } catch {}
+        requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+      });
+    } catch {
+      updateMargins();
+    }
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
@@ -4082,20 +4139,23 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     const candles = candlesRef.current as any[];
     const ha = calcHARSI(candles, harsiLen, Math.max(1, harsiSmooth));
+    const zr = oscPriceRangeRef.current["harsi"];
     try {
       const cs = chart.addCandlestickSeries({
         priceScaleId: "harsi",
-        upColor: harsiUpColor,
-        downColor: harsiDnColor,
-        borderUpColor: harsiUpColor,
-        borderDownColor: harsiDnColor,
-        wickUpColor: "#9ca3af",
-        wickDownColor: "#9ca3af",
-        lastValueVisible: true,
+        upColor: "rgba(0,0,0,0)",
+        downColor: "rgba(0,0,0,0)",
+        borderUpColor: "rgba(0,0,0,0)",
+        borderDownColor: "rgba(0,0,0,0)",
+        wickUpColor: "rgba(0,0,0,0)",
+        wickDownColor: "rgba(0,0,0,0)",
+        lastValueVisible: false,
         priceLineVisible: false,
-        // HARSI typically ranges roughly -50..50 (z-scored RSI HA)
         autoscaleInfoProvider: () => ({
-          priceRange: { minValue: -50, maxValue: 50 },
+          priceRange: {
+            minValue: zr ? zr.from : -40,
+            maxValue: zr ? zr.to : 40,
+          },
         }),
       });
       cs.setData(ha.map((c) => ({
@@ -4105,17 +4165,18 @@ export default function DashboardPage() {
         low: c.low,
         close: c.close,
       })));
-      // zero / OB-OS guides via price lines on this scale
-      try {
-        cs.createPriceLine({ price: 0, color: "rgba(251,146,60,0.7)", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: 20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: -20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: 30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: -30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-      } catch {}
+      try { cs.applyOptions({ visible: false } as any); } catch {}
       harsiSeriesRef.current = cs;
     } catch {}
-    updateMargins();
+    // Double rAF so pane geometry is ready before first SVG paint
+    try {
+      requestAnimationFrame(() => {
+        try { updateMargins(); } catch {}
+        requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+      });
+    } catch {
+      updateMargins();
+    }
   }, [showHARSI, harsiVisible, hideIndicators, harsiLen, harsiSmooth, harsiUpColor, harsiDnColor, removeHARSI, updateMargins]);
 
   const applyVolume = useCallback(() => {
@@ -4226,23 +4287,45 @@ export default function DashboardPage() {
   const applyATR = useCallback(() => {
     removeATR();
     if (!showATR || !atrVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
-    const atrZoom = oscPriceRangeRef.current["atr"];
+    const atrRows = calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any[];
+    let atrZoom = oscPriceRangeRef.current["atr"];
+    if (!atrZoom || !(atrZoom.to > atrZoom.from)) {
+      let mn = Infinity, mx = -Infinity;
+      for (const r of atrRows || []) {
+        if (r?.value == null || Number.isNaN(r.value)) continue;
+        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+      }
+      if (Number.isFinite(mn) && Number.isFinite(mx)) {
+        const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6);
+        const mid = (mn + mx) / 2;
+        atrZoom = { from: Math.max(0, mid - span * 0.6), to: mid + span * 0.6 };
+      } else {
+        atrZoom = { from: 0, to: 1 };
+      }
+    }
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "atr",
-      priceLineVisible: false, lastValueVisible: true,
+      priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
       title: "ATR",
       autoscaleInfoProvider: () => ({
         priceRange: {
-          minValue: atrZoom ? atrZoom.from : 0,
-          maxValue: atrZoom ? atrZoom.to : 1000,
+          minValue: atrZoom!.from,
+          maxValue: atrZoom!.to,
         },
       }),
     });
-    s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
+    s.setData(atrRows as any);
     try { s.applyOptions({ visible: false } as any); } catch {}
     atrSeriesRef.current = s;
-    updateMargins();
+    try {
+      requestAnimationFrame(() => {
+        try { updateMargins(); } catch {}
+        requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+      });
+    } catch {
+      updateMargins();
+    }
   }, [showATR, atrVisible, hideIndicators, atrPeriod, atrSmooth, atrColor, removeATR, updateMargins]);
 
   const removeMACD = useCallback(() => {
@@ -4268,13 +4351,13 @@ export default function DashboardPage() {
     });
     const histS = chart.addHistogramSeries({
       priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
-      // hist still visible (stays in pane via scaleMargins); lines via SVG
+      color: "rgba(0,0,0,0)",
       autoscaleInfoProvider: macdProvider,
     } as any);
     histS.setData(hist as any);
     const macdS = chart.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       autoscaleInfoProvider: macdProvider,
     });
     macdS.setData(macdLine as any);
@@ -4284,13 +4367,20 @@ export default function DashboardPage() {
       autoscaleInfoProvider: macdProvider,
     });
     sigS.setData(signalLine as any);
-    try { /* zero line on SVG */ } catch {}
     try {
       macdS.applyOptions({ visible: false } as any);
       sigS.applyOptions({ visible: false } as any);
+      histS.applyOptions({ visible: false } as any);
     } catch {}
     macdSeriesRef.current = { macd: macdS, signal: sigS, hist: histS };
-    updateMargins();
+    try {
+      requestAnimationFrame(() => {
+        try { updateMargins(); } catch {}
+        requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+      });
+    } catch {
+      updateMargins();
+    }
   }, [showMACD, macdVisible, hideIndicators, macdFast, macdSlow, macdSignal, macdColor, macdSigColor, removeMACD, updateMargins]);
 
   const removeStoch = useCallback(() => {
@@ -4331,7 +4421,14 @@ export default function DashboardPage() {
     } catch {}
     try { kS.applyOptions({ visible: false } as any); dS.applyOptions({ visible: false } as any); } catch {}
     stochSeriesRef.current = { k: kS, d: dS };
-    updateMargins();
+    try {
+      requestAnimationFrame(() => {
+        try { updateMargins(); } catch {}
+        requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+      });
+    } catch {
+      updateMargins();
+    }
   }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
 
   
