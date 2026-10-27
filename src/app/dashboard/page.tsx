@@ -2067,13 +2067,25 @@ export default function DashboardPage() {
         } as any);
       } catch {}
     }
+    // Keep time axis visible (never hide under oscillator panes)
+    try {
+      chart.timeScale().applyOptions({
+        visible: true,
+        timeVisible: true,
+        borderVisible: true,
+        borderColor: "#2a2e39",
+      } as any);
+    } catch {}
     // Opaque masks over oscillator bands (hide main chart) + SVG redraw of osc lines on top
     try {
       const host = paneSepRef.current;
       const chart = chartRef.current;
       // TradingView-style: when oscillators hidden, clear overlay and show full main chart only
       if (hideOscillators || hideOscillatorsRef.current) {
-        if (host) host.innerHTML = "";
+        if (host) {
+          host.innerHTML = "";
+          try { host.style.clipPath = ""; } catch {}
+        }
         return;
       }
       if (host && chart) {
@@ -2091,12 +2103,15 @@ export default function DashboardPage() {
         const hostW = host.clientWidth || 1;
         const ts = chart.timeScale();
         const parts: string[] = [];
+        // LWC time scale sits at the very bottom (~26–30px). Masks must NOT cover it.
+        const TIME_AXIS_H = 28;
+        const plotH = Math.max(1, hostH - TIME_AXIS_H);
 
-        // 1) Solid backgrounds — fully hide candles/grid behind each oscillator pane
+        // 1) Solid backgrounds — hide candles/grid behind each oscillator pane (above time axis)
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
-          const topPx = hostH * (1 - tops[i]);
-          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
+          const topPx = plotH * (1 - tops[i]);
+          const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
           parts.push(
             `<div style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
           );
@@ -2217,13 +2232,14 @@ export default function DashboardPage() {
         } catch {}
 
         // Vertical crosshair only over oscillator stack (native LWC handles main chart)
-        const oscTopPx = hostH * (1 - used);
+        // Use plotH so overlays stop above the time axis
+        const oscTopPx = plotH * (1 - used);
         parts.push(
-          `<svg id="osc-overlay-svg" width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}` +
-          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${hostH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
+          `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}` +
+          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
-        // 3) Separator lines
+        // 3) Separator lines (above time axis)
         const sepSet = new Set<number>();
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
@@ -2231,7 +2247,8 @@ export default function DashboardPage() {
           sepSet.add(tops[i]);
         }
         for (const fracFromBottom of Array.from(sepSet)) {
-          const y = hostH * (1 - fracFromBottom);
+          const y = plotH * (1 - fracFromBottom);
+          if (y >= plotH - 1) continue; // never draw on time axis
           parts.push(
             `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;"></div>`
           );
@@ -2241,8 +2258,8 @@ export default function DashboardPage() {
         const scaleW = 56;
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
-          const topPx = hostH * (1 - tops[i]);
-          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
+          const topPx = plotH * (1 - tops[i]);
+          const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
           // opaque cover over main price scale in this band
           parts.push(
             `<div style="position:absolute;right:0;width:${scaleW}px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;border-left:1px solid rgba(255,255,255,0.08);"></div>`
@@ -2293,6 +2310,8 @@ export default function DashboardPage() {
         }
 
         host.innerHTML = parts.join("");
+        // Hard clip so nothing can paint over the time labels
+        try { host.style.clipPath = `inset(0 0 ${TIME_AXIS_H}px 0)`; } catch {}
       }
     } catch {}
   }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
@@ -4681,25 +4700,10 @@ export default function DashboardPage() {
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
-        const onDblPrice = (e: MouseEvent) => {
-          const rect = container.getBoundingClientRect();
-          const fromRight = rect.right - e.clientX;
-          // Double-click on right price scale → reset vertical zoom
-          if (fromRight <= 100 && fromRight >= 0) {
-            priceRangeOverrideRef.current = null;
-            try {
-              const s = seriesRef.current as any;
-              const ps = s?.priceScale?.() || chart.priceScale("right");
-              ps?.setAutoScale?.(true);
-              ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
-            } catch {}
-            return;
-          }
-          // Double-click on chart body → toggle ONLY oscillator panes (chips stay)
+        const toggleOscillatorsHide = () => {
           try {
             const next = !hideOscillatorsRef.current;
             hideOscillatorsRef.current = next;
-            // Clear immediately so main chart is usable without waiting for React
             if (next) {
               const clearSer = (ser: any) => {
                 if (!ser) return;
@@ -4729,11 +4733,62 @@ export default function DashboardPage() {
               try { updateMargins(); } catch {}
             }
             setHideOscillators(next);
+            setStatusMsg(next ? "Oscillators hidden — double-click to show" : "Oscillators shown");
           } catch {}
+        };
+        const resetPriceZoom = () => {
+          priceRangeOverrideRef.current = null;
+          try {
+            const s = seriesRef.current as any;
+            const ps = s?.priceScale?.() || chart.priceScale("right");
+            ps?.setAutoScale?.(true);
+            ps?.applyOptions?.({ autoScale: true });
+            try { updateMargins(); } catch {}
+          } catch {}
+        };
+        const onDblPrice = (e: MouseEvent) => {
+          const rect = container.getBoundingClientRect();
+          const fromRight = rect.right - e.clientX;
+          // Double-click on right price scale → reset vertical zoom
+          if (fromRight <= 100 && fromRight >= 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            resetPriceZoom();
+            return;
+          }
+          // Double-click on chart body → toggle ONLY oscillator panes (chips stay)
+          e.preventDefault();
+          e.stopPropagation();
+          toggleOscillatorsHide();
+        };
+        // iPad: dblclick often doesn't fire — detect double-tap on touchend
+        let lastTapTs = 0;
+        let lastTapX = 0;
+        let lastTapY = 0;
+        const onTouchEndDoubleTap = (e: TouchEvent) => {
+          if (priceTouchActive) return;
+          if (!e.changedTouches || !e.changedTouches.length) return;
+          const t = e.changedTouches[0];
+          const now = Date.now();
+          const dt = now - lastTapTs;
+          const dist = Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY);
+          lastTapTs = now;
+          lastTapX = t.clientX;
+          lastTapY = t.clientY;
+          if (!(dt > 40 && dt < 380 && dist < 48)) return;
+          const rect = container.getBoundingClientRect();
+          const fromRight = rect.right - t.clientX;
+          if (fromRight <= 100 && fromRight >= 0) {
+            resetPriceZoom();
+            return;
+          }
+          // Double-tap on chart body → hide/show oscillators (same as desktop)
+          toggleOscillatorsHide();
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
+        container.addEventListener("touchend", onTouchEndDoubleTap, { passive: true });
         const onCtxChart = (e: MouseEvent) => {
           const m = modeRef.current;
           if (m && m !== "none") {
@@ -4826,6 +4881,7 @@ export default function DashboardPage() {
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
           try { container.removeEventListener("dblclick", onDblPrice); } catch {}
+          try { container.removeEventListener("touchend", onTouchEndDoubleTap); } catch {}
           try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
           try { container.removeEventListener("touchmove", onTouchMovePrice); } catch {}
           try { container.removeEventListener("touchend", onTouchEndPrice); } catch {}
