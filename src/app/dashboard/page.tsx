@@ -2221,7 +2221,6 @@ export default function DashboardPage() {
           if (rsiSeriesRef.current || paneClip["rsi"]) {
             const c = paneClip["rsi"];
             const zr = oscPriceRangeRef.current["rsi"] || { from: 0, to: 100 };
-            // guide lines via linear map
             const guideLin = (price: number, color: string) => {
               if (!c || !(zr.to > zr.from)) return "";
               if (price < zr.from || price > zr.to) return "";
@@ -2229,10 +2228,12 @@ export default function DashboardPage() {
               const y = c.top + (1 - rel) * (c.bot - c.top);
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            svgBits.push(guideLin(70, "rgba(148,163,184,0.7)"));
-            svgBits.push(guideLin(50, "rgba(148,163,184,0.35)"));
-            svgBits.push(guideLin(30, "rgba(148,163,184,0.7)"));
-            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot, zr.from, zr.to));
+            const rsiBits: string[] = [];
+            rsiBits.push(guideLin(70, "rgba(148,163,184,0.7)"));
+            rsiBits.push(guideLin(50, "rgba(148,163,184,0.35)"));
+            rsiBits.push(guideLin(30, "rgba(148,163,184,0.7)"));
+            rsiBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot, zr.from, zr.to));
+            svgBits.push(`<g clip-path="url(#clip-rsi)">${rsiBits.join("")}</g>`);
           }
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
@@ -2260,11 +2261,13 @@ export default function DashboardPage() {
               const y = cDmi.top + (1 - rel) * (cDmi.bot - cDmi.top);
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            svgBits.push(guideLinD(40, "rgba(148,163,184,0.45)"));
-            svgBits.push(guideLinD(20, "rgba(148,163,184,0.55)"));
-            svgBits.push(pathFrom(dmiSeriesRef.current?.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
-            svgBits.push(pathFrom(dmiSeriesRef.current?.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
-            svgBits.push(pathFrom(dmiSeriesRef.current?.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            const dmiBits: string[] = [];
+            dmiBits.push(guideLinD(40, "rgba(148,163,184,0.45)"));
+            dmiBits.push(guideLinD(20, "rgba(148,163,184,0.55)"));
+            dmiBits.push(pathFrom(dmiSeriesRef.current?.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            dmiBits.push(pathFrom(dmiSeriesRef.current?.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            dmiBits.push(pathFrom(dmiSeriesRef.current?.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            svgBits.push(`<g clip-path="url(#clip-dmi)">${dmiBits.join("")}</g>`);
           }
           if (stochSeriesRef.current || paneClip["stoch"]) {
             const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
@@ -2277,11 +2280,13 @@ export default function DashboardPage() {
               const y = cSt.top + (1 - rel) * (cSt.bot - cSt.top);
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
             };
-            svgBits.push(guideLinS(80, "rgba(148,163,184,0.7)"));
-            svgBits.push(guideLinS(50, "rgba(148,163,184,0.4)"));
-            svgBits.push(guideLinS(20, "rgba(148,163,184,0.7)"));
-            svgBits.push(pathFrom(stochSeriesRef.current?.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot, zrS.from, zrS.to));
-            svgBits.push(pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
+            const stBits: string[] = [];
+            stBits.push(guideLinS(80, "rgba(148,163,184,0.7)"));
+            stBits.push(guideLinS(50, "rgba(148,163,184,0.4)"));
+            stBits.push(guideLinS(20, "rgba(148,163,184,0.7)"));
+            stBits.push(pathFrom(stochSeriesRef.current?.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot, zrS.from, zrS.to));
+            stBits.push(pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
+            svgBits.push(`<g clip-path="url(#clip-stoch)">${stBits.join("")}</g>`);
           }
           if (macdSeriesRef.current || paneClip["macd"]) {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
@@ -2326,8 +2331,18 @@ export default function DashboardPage() {
         // Vertical crosshair only over oscillator stack (native LWC handles main chart)
         // Use plotH so overlays stop above the time axis
         const oscTopPx = plotH * (1 - used);
+        // Per-pane SVG clipPaths — hard stop so zoomed osc lines NEVER leave their box
+        const clipDefs: string[] = [];
+        for (const [cid, box] of Object.entries(paneClip)) {
+          const h = Math.max(1, box.bot - box.top);
+          clipDefs.push(
+            `<clipPath id="clip-${cid}"><rect x="0" y="${box.top}" width="${Math.max(1, hostW - 56)}" height="${h}" /></clipPath>`
+          );
+        }
         parts.push(
-          `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}` +
+          `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">` +
+          `<defs>${clipDefs.join("")}</defs>` +
+          `${svgBits.join("")}` +
           `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
         );
 
@@ -2456,6 +2471,14 @@ export default function DashboardPage() {
               return null;
             };
             const applyZoom = (from: number, to: number) => {
+              // Cap minimum range so line never becomes a chaotic spike
+              const minSpan: Record<string, number> = {
+                rsi: 8, stoch: 8, dmi: 5, harsi: 5, macd: 0.05, roc: 1, atr: 0.01,
+              };
+              const span = Math.max((minSpan[oscId] ?? 5), to - from);
+              const mid = (from + to) / 2;
+              from = mid - span / 2;
+              to = mid + span / 2;
               oscPriceRangeRef.current[oscId] = { from, to };
               const provider = () => ({ priceRange: { minValue: from, maxValue: to } });
               try {
