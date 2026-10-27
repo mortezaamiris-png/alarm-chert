@@ -85,7 +85,6 @@ type ToolMode =
   | "brush"
   | "curve"
   | "rect"
-  | "callout"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -128,19 +127,10 @@ const ALL_TIMEFRAMES = [
 ];
 
 const PIVOT_TFS = [
-  { label: "1m", value: "1" },
-  { label: "3m", value: "3" },
-  { label: "5m", value: "5" },
-  { label: "15m", value: "15" },
-  { label: "30m", value: "30" },
-  { label: "45m", value: "45" },
   { label: "1H", value: "60" },
-  { label: "2H", value: "120" },
-  { label: "3H", value: "180" },
   { label: "4H", value: "240" },
   { label: "1D", value: "D" },
   { label: "1W", value: "W" },
-  { label: "1M", value: "M" },
 ];
 
 const TIMEZONES = [
@@ -185,14 +175,6 @@ function getPrecision(price: number) {
   if (price < 1000) return { precision: 3, minMove: 0.001 };
   return { precision: 2, minMove: 0.01 };
 }
-function hexToRgba(hex: string, alpha = 1) {
-  const h = String(hex || "#00ffff").replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const n = parseInt(full.slice(0, 6), 16);
-  if (Number.isNaN(n)) return `rgba(0,255,255,${alpha})`;
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, alpha))})`;
-}
 function formatPrice(price: number) {
   const { precision } = getPrecision(price);
   return Number(price.toFixed(precision));
@@ -234,170 +216,6 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
     });
   }
   return out;
-}
-
-
-function calcROC(candles: { time: number; close: number }[], length = 9) {
-  const out: { time: number; value: number }[] = [];
-  const n = Math.max(1, length);
-  for (let i = n; i < candles.length; i++) {
-    const prev = candles[i - n].close;
-    if (!prev) continue;
-    out.push({ time: candles[i].time, value: (100 * (candles[i].close - prev)) / prev });
-  }
-  return out;
-}
-
-function calcEMASeries(values: number[], length: number): (number | null)[] {
-  const out: (number | null)[] = new Array(values.length).fill(null);
-  const p = Math.max(1, length);
-  if (values.length < p) return out;
-  let sum = 0;
-  for (let i = 0; i < p; i++) sum += values[i];
-  let ema = sum / p;
-  out[p - 1] = ema;
-  const k = 2 / (p + 1);
-  for (let i = p; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
-    out[i] = ema;
-  }
-  return out;
-}
-
-function calcSMASeries(values: number[], length: number): (number | null)[] {
-  const out: (number | null)[] = new Array(values.length).fill(null);
-  const p = Math.max(1, length);
-  if (values.length < p) return out;
-  let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= p) sum -= values[i - p];
-    if (i >= p - 1) out[i] = sum / p;
-  }
-  return out;
-}
-
-function calcRMASeries(values: number[], length: number): (number | null)[] {
-  const out: (number | null)[] = new Array(values.length).fill(null);
-  const p = Math.max(1, length);
-  if (values.length < p) return out;
-  let sum = 0;
-  for (let i = 0; i < p; i++) sum += values[i];
-  let rma = sum / p;
-  out[p - 1] = rma;
-  for (let i = p; i < values.length; i++) {
-    rma = (rma * (p - 1) + values[i]) / p;
-    out[i] = rma;
-  }
-  return out;
-}
-
-function calcWMASeries(values: number[], length: number): (number | null)[] {
-  const out: (number | null)[] = new Array(values.length).fill(null);
-  const p = Math.max(1, length);
-  const denom = (p * (p + 1)) / 2;
-  for (let i = p - 1; i < values.length; i++) {
-    let s = 0;
-    for (let j = 0; j < p; j++) s += values[i - j] * (p - j);
-    out[i] = s / denom;
-  }
-  return out;
-}
-
-function calcATR(
-  candles: { time: number; high: number; low: number; close: number }[],
-  length = 14,
-  smoothing: "RMA" | "SMA" | "EMA" | "WMA" = "RMA"
-) {
-  const out: { time: number; value: number }[] = [];
-  if (candles.length < 2) return out;
-  const tr: number[] = [candles[0].high - candles[0].low];
-  for (let i = 1; i < candles.length; i++) {
-    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
-    tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
-  }
-  const smoothed =
-    smoothing === "SMA" ? calcSMASeries(tr, length)
-    : smoothing === "EMA" ? calcEMASeries(tr, length)
-    : smoothing === "WMA" ? calcWMASeries(tr, length)
-    : calcRMASeries(tr, length);
-  for (let i = 0; i < candles.length; i++) {
-    if (smoothed[i] != null) out.push({ time: candles[i].time, value: smoothed[i] as number });
-  }
-  return out;
-}
-
-function calcMACD(
-  candles: { time: number; close: number }[],
-  fast = 12,
-  slow = 26,
-  signal = 9
-) {
-  const closes = candles.map((c) => c.close);
-  const emaFast = calcEMASeries(closes, fast);
-  const emaSlow = calcEMASeries(closes, slow);
-  const macdArr: (number | null)[] = closes.map((_, i) =>
-    emaFast[i] != null && emaSlow[i] != null ? (emaFast[i] as number) - (emaSlow[i] as number) : null
-  );
-  // signal = EMA of macd (only over valid macd points — approximate with full array nulls→0 skip)
-  const macdNums = macdArr.map((v) => (v == null ? 0 : v));
-  const sigRaw = calcEMASeries(macdNums, signal);
-  const macdLine: { time: number; value: number }[] = [];
-  const signalLine: { time: number; value: number }[] = [];
-  const hist: { time: number; value: number; color?: string }[] = [];
-  let prevHist: number | null = null;
-  for (let i = 0; i < candles.length; i++) {
-    if (macdArr[i] == null) continue;
-    // signal valid after slow+signal bars roughly
-    if (sigRaw[i] == null || i < slow + signal - 2) continue;
-    const m = macdArr[i] as number;
-    const s = sigRaw[i] as number;
-    const h = m - s;
-    macdLine.push({ time: candles[i].time, value: m });
-    signalLine.push({ time: candles[i].time, value: s });
-    let color = "#26a69a";
-    if (h >= 0) color = prevHist != null && h > prevHist ? "#26a69a" : "#b2dfdb";
-    else color = prevHist != null && h > prevHist ? "#ffcdd2" : "#ff5252";
-    hist.push({ time: candles[i].time, value: h, color });
-    prevHist = h;
-  }
-  return { macdLine, signalLine, hist };
-}
-
-function calcStochRSI(
-  candles: { time: number; close: number }[],
-  lengthRSI = 14,
-  lengthStoch = 14,
-  smoothK = 3,
-  smoothD = 3
-) {
-  const rsi = calcRSI(candles, lengthRSI);
-  const kRaw: { time: number; value: number }[] = [];
-  for (let i = 0; i < rsi.length; i++) {
-    if (i < lengthStoch - 1) continue;
-    let hi = -Infinity, lo = Infinity;
-    for (let j = 0; j < lengthStoch; j++) {
-      const v = rsi[i - j].value;
-      if (v > hi) hi = v;
-      if (v < lo) lo = v;
-    }
-    const stoch = hi === lo ? 0 : ((rsi[i].value - lo) / (hi - lo)) * 100;
-    kRaw.push({ time: rsi[i].time, value: stoch });
-  }
-  // smooth K with SMA
-  const kVals = kRaw.map((x) => x.value);
-  const kSmooth = calcSMASeries(kVals, smoothK);
-  const kLine: { time: number; value: number }[] = [];
-  for (let i = 0; i < kRaw.length; i++) {
-    if (kSmooth[i] != null) kLine.push({ time: kRaw[i].time, value: kSmooth[i] as number });
-  }
-  const dVals = kLine.map((x) => x.value);
-  const dSmooth = calcSMASeries(dVals, smoothD);
-  const dLine: { time: number; value: number }[] = [];
-  for (let i = 0; i < kLine.length; i++) {
-    if (dSmooth[i] != null) dLine.push({ time: kLine[i].time, value: dSmooth[i] as number });
-  }
-  return { k: kLine, d: dLine };
 }
 
 function calcDMI(
@@ -443,90 +261,6 @@ function calcDMI(
     }
   }
   return { plusDI, minusDI, adx };
-}
-
-
-function calcBollinger(
-  candles: { time: number; close: number }[],
-  length = 20,
-  mult = 2
-) {
-  const basis: { time: number; value: number }[] = [];
-  const upper: { time: number; value: number }[] = [];
-  const lower: { time: number; value: number }[] = [];
-  const p = Math.max(1, length);
-  for (let i = p - 1; i < candles.length; i++) {
-    let sum = 0;
-    for (let j = 0; j < p; j++) sum += candles[i - j].close;
-    const mean = sum / p;
-    let varSum = 0;
-    for (let j = 0; j < p; j++) {
-      const d = candles[i - j].close - mean;
-      varSum += d * d;
-    }
-    const std = Math.sqrt(varSum / p);
-    basis.push({ time: candles[i].time, value: mean });
-    upper.push({ time: candles[i].time, value: mean + mult * std });
-    lower.push({ time: candles[i].time, value: mean - mult * std });
-  }
-  return { basis, upper, lower };
-}
-
-/** Zero-median RSI series for a value stream */
-function calcZRsiFromValues(values: number[], length: number): (number | null)[] {
-  const p = Math.max(2, length);
-  const out: (number | null)[] = new Array(values.length).fill(null);
-  if (values.length < p + 1) return out;
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= p; i++) {
-    const d = values[i] - values[i - 1];
-    if (d >= 0) gains += d; else losses -= d;
-  }
-  let avgGain = gains / p, avgLoss = losses / p;
-  out[p] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) - 50;
-  for (let i = p + 1; i < values.length; i++) {
-    const d = values[i] - values[i - 1];
-    avgGain = (avgGain * (p - 1) + (d > 0 ? d : 0)) / p;
-    avgLoss = (avgLoss * (p - 1) + (d < 0 ? -d : 0)) / p;
-    out[i] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss)) - 50;
-  }
-  return out;
-}
-
-function calcHARSI(
-  candles: { time: number; open: number; high: number; low: number; close: number }[],
-  length = 14,
-  openSmooth = 1
-) {
-  const closes = candles.map((c) => c.close);
-  const highs = candles.map((c) => c.high);
-  const lows = candles.map((c) => c.low);
-  const zClose = calcZRsiFromValues(closes, length);
-  const zHigh = calcZRsiFromValues(highs, length);
-  const zLow = calcZRsiFromValues(lows, length);
-  const out: { time: number; open: number; high: number; low: number; close: number }[] = [];
-  let prevOpen: number | null = null;
-  let prevClose: number | null = null;
-  for (let i = 0; i < candles.length; i++) {
-    if (zClose[i] == null || zHigh[i] == null || zLow[i] == null) continue;
-    const closeRSI = zClose[i] as number;
-    const openRSI = i > 0 && zClose[i - 1] != null ? (zClose[i - 1] as number) : closeRSI;
-    const highRSI = Math.max(zHigh[i] as number, zLow[i] as number);
-    const lowRSI = Math.min(zHigh[i] as number, zLow[i] as number);
-    const haClose = (openRSI + highRSI + lowRSI + closeRSI) / 4;
-    let haOpen: number;
-    if (prevOpen == null || prevClose == null) {
-      haOpen = (openRSI + closeRSI) / 2;
-    } else {
-      haOpen = (prevOpen * openSmooth + prevClose) / (openSmooth + 1);
-    }
-    const haHigh = Math.max(highRSI, Math.max(haOpen, haClose));
-    const haLow = Math.min(lowRSI, Math.min(haOpen, haClose));
-    out.push({ time: candles[i].time, open: haOpen, high: haHigh, low: haLow, close: haClose });
-    prevOpen = haOpen;
-    prevClose = haClose;
-  }
-  return out;
 }
 
 function findPivots(candles: any[], leftRight: number) {
@@ -967,7 +701,6 @@ const FUTURE_BARS = 800;
 /** How many future bars are visible on first load (rest remains scrollable) */
 const FUTURE_VISIBLE = 55;
 
-
 /** Convert OHLC candles to Heikin-Ashi */
 function toHeikinAshi(candles: any[]): any[] {
   if (!candles.length) return [];
@@ -1059,58 +792,16 @@ function IndChip({
   return (
     <div
       data-ind-panel
-      className="group inline-flex items-center gap-0.5 bg-black/45 backdrop-blur-sm rounded-md px-1.5 py-0.5 text-[11px] text-gray-100 border border-white/5"
+      className="inline-flex items-center gap-0.5 bg-black/40 backdrop-blur-[2px] rounded px-1 py-0.5 text-[11px] text-gray-100"
     >
       <span className="px-0.5 font-medium whitespace-nowrap opacity-90">{label}</span>
-      {/* Eye — always visible */}
-      <button
-        type="button"
-        title={visible ? "Hide" : "Show"}
-        onClick={onToggleVisible}
-        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-300 hover:text-white hover:bg-white/10 transition-colors duration-150"
-      >
-        {visible ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
-            <circle cx="12" cy="12" r="3" />
-          </svg>
-        ) : (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
-            <circle cx="12" cy="12" r="3" />
-            <path d="M4 4l16 16" />
-          </svg>
-        )}
+      <button type="button" onClick={onToggleVisible} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">
+        {visible ? "👁" : "⊘"}
       </button>
-      {/* Settings — show on hover */}
       {onSettings && (
-        <button
-          type="button"
-          title="Settings"
-          onClick={onSettings}
-          className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-white/10 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="12" cy="12" r="3" />
-            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-          </svg>
-        </button>
+        <button type="button" onClick={onSettings} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-xs">⚙</button>
       )}
-      {/* Trash — show on hover */}
-      <button
-        type="button"
-        title="Remove"
-        onClick={onRemove}
-        className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-red-400 hover:bg-red-500/15 opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 ease-out"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-          <line x1="10" y1="11" x2="10" y2="17" />
-          <line x1="14" y1="11" x2="14" y2="17" />
-        </svg>
-      </button>
+      <button type="button" onClick={onRemove} className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-red-400 text-xs">×</button>
     </div>
   );
 }
@@ -1166,23 +857,13 @@ export default function DashboardPage() {
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
   const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
-  const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
-  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
+  const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string; note?: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
   const smaSeriesRef = useRef<{ s1: any; s2: any; s3: any } | null>(null);
   const rsiSeriesRef = useRef<any>(null);
   const dmiSeriesRef = useRef<{ plus: any; minus: any; adx: any } | null>(null);
-  const rocSeriesRef = useRef<any>(null);
-  const atrSeriesRef = useRef<any>(null);
-  const macdSeriesRef = useRef<{ macd: any; signal: any; hist: any } | null>(null);
-  const stochSeriesRef = useRef<{ k: any; d: any } | null>(null);
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
-  const bbSeriesRef = useRef<{ basis: any; upper: any; lower: any } | null>(null);
-  const harsiSeriesRef = useRef<any>(null);
-  const tcpLinesRef = useRef<IPriceLine[]>([]);
-  const paneLegendRef = useRef<HTMLDivElement | null>(null);
-  const paneSepRef = useRef<HTMLDivElement | null>(null);
   const candlesRef = useRef<any[]>([]);
   const notifiedAlarmsRef = useRef<Set<string>>(new Set());
   /** in-flight triggers — prevents concurrent double-fire */
@@ -1278,6 +959,8 @@ export default function DashboardPage() {
   const [paneSearchQ, setPaneSearchQ] = useState("");
   /** 0 = main chart, 1..5 = secondary panes (index+1 in UI = paneSymbols index) */
   const [activePane, setActivePane] = useState(0);
+  const activePaneRef = useRef(0);
+  useEffect(() => { activePaneRef.current = activePane; }, [activePane]);
   /** Independent TF for each secondary pane (same values as main interval) */
   const [paneIntervals, setPaneIntervals] = useState<string[]>(() => {
     const def = ["15", "15", "15", "15", "15"];
@@ -1292,7 +975,7 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("pane_intervals", paneIntervals); }, [paneIntervals]);
   const paneRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null, null]);
   const secondaryChartsRef = useRef<
-    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string }>
+    Map<number, { chart: IChartApi; series: any; symbol: string; interval: string; priceLines?: any[] }>
   >(new Map());
   const layoutWrapRef = useRef<HTMLDivElement>(null);
 
@@ -1399,10 +1082,6 @@ export default function DashboardPage() {
   const [hideIndicators, setHideIndicators] = useState(false);
   useEffect(() => { hideLinesRef.current = hideLines; }, [hideLines]);
   useEffect(() => { hideIndicatorsRef.current = hideIndicators; }, [hideIndicators]);
-  /** Double-click: hide only oscillator panes (RSI/HARSI/DMI/ROC/ATR/MACD/Stoch) — chips stay */
-  const [hideOscillators, setHideOscillators] = useState(false);
-  const hideOscillatorsRef = useRef(false);
-  useEffect(() => { hideOscillatorsRef.current = hideOscillators; }, [hideOscillators]);
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
@@ -1474,9 +1153,6 @@ export default function DashboardPage() {
   const [pivotSettings, setPivotSettings] = useState(false);
   const [pivotTf, setPivotTf] = useState(() => loadLS("pivot_tf", "D"));
   const [pivotFib, setPivotFib] = useState(() => loadLS("pivot_fib", false));
-  const [pivotShowLast, setPivotShowLast] = useState(() => loadLS("pivot_last", true));
-  const [pivotShowLabels, setPivotShowLabels] = useState(() => loadLS("pivot_labels", true));
-  const [pivotOpacity, setPivotOpacity] = useState(() => loadLS("pivot_op", 85));
 
   const [showRSI, setShowRSI] = useState(() => loadLS("ind_rsi", false));
   const [rsiVisible, setRsiVisible] = useState(() => loadLS("vis_rsi", true));
@@ -1494,93 +1170,17 @@ export default function DashboardPage() {
   const [dmiMinusColor, setDmiMinusColor] = useState(() => loadLS("dmi_mc", "#ef4444"));
   const [dmiAdxColor, setDmiAdxColor] = useState(() => loadLS("dmi_ac", "#3b82f6"));
 
-  const [showROC, setShowROC] = useState(() => loadLS("ind_roc", false));
-  const [rocVisible, setRocVisible] = useState(() => loadLS("vis_roc", true));
-  const [rocSettings, setRocSettings] = useState(false);
-  const [rocPeriod, setRocPeriod] = useState(() => loadLS("roc_p", 9));
-  const [rocColor, setRocColor] = useState(() => loadLS("roc_c", "#2962FF"));
-
-  const [showATR, setShowATR] = useState(() => loadLS("ind_atr", false));
-  const [atrVisible, setAtrVisible] = useState(() => loadLS("vis_atr", true));
-  const [atrSettings, setAtrSettings] = useState(false);
-  const [atrPeriod, setAtrPeriod] = useState(() => loadLS("atr_p", 14));
-  const [atrSmooth, setAtrSmooth] = useState<"RMA" | "SMA" | "EMA" | "WMA">(() => loadLS("atr_s", "RMA"));
-  const [atrColor, setAtrColor] = useState(() => loadLS("atr_c", "#B71C1C"));
-
-  const [showMACD, setShowMACD] = useState(() => loadLS("ind_macd", false));
-  const [macdVisible, setMacdVisible] = useState(() => loadLS("vis_macd", true));
-  const [macdSettings, setMacdSettings] = useState(false);
-  const [macdFast, setMacdFast] = useState(() => loadLS("macd_f", 12));
-  const [macdSlow, setMacdSlow] = useState(() => loadLS("macd_s", 26));
-  const [macdSignal, setMacdSignal] = useState(() => loadLS("macd_sig", 9));
-  const [macdColor, setMacdColor] = useState(() => loadLS("macd_c", "#2962FF"));
-  const [macdSigColor, setMacdSigColor] = useState(() => loadLS("macd_sc", "#FF6D00"));
-
-  const [showStoch, setShowStoch] = useState(() => loadLS("ind_stoch", false));
-  const [stochVisible, setStochVisible] = useState(() => loadLS("vis_stoch", true));
-  const [stochSettings, setStochSettings] = useState(false);
-  const [stochRsiLen, setStochRsiLen] = useState(() => loadLS("stoch_rsi", 14));
-  const [stochLen, setStochLen] = useState(() => loadLS("stoch_len", 14));
-  const [stochK, setStochK] = useState(() => loadLS("stoch_k", 3));
-  const [stochD, setStochD] = useState(() => loadLS("stoch_d", 3));
-  const [stochKColor, setStochKColor] = useState(() => loadLS("stoch_kc", "#2962FF"));
-  const [stochDColor, setStochDColor] = useState(() => loadLS("stoch_dc", "#FF6D00"));
-
   const [showVol, setShowVol] = useState(() => loadLS("ind_vol", true));
   const [volVisible, setVolVisible] = useState(() => loadLS("vis_vol", true));
 
   const [showTrend, setShowTrend] = useState(() => loadLS("ind_trend", false));
   const [trendVisible, setTrendVisible] = useState(() => loadLS("vis_trend", true));
   const [trendSettings, setTrendSettings] = useState(false);
-  const [trendPeriod, setTrendPeriod] = useState(() => loadLS("trend_p", 24));
-  const [trendPeriodStr, setTrendPeriodStr] = useState(() => String(loadLS("trend_p", 24)));
+  const [trendPeriod, setTrendPeriod] = useState(() => loadLS("trend_p", 12));
+  const [trendPeriodStr, setTrendPeriodStr] = useState(() => String(loadLS("trend_p", 12)));
   const [trendUpColor, setTrendUpColor] = useState(() => loadLS("trend_up", "#84cc16"));
   const [trendDownColor, setTrendDownColor] = useState(() => loadLS("trend_dn", "#ef4444"));
-  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 6));
-
-  // Bollinger Bands
-  const [showBB, setShowBB] = useState(() => loadLS("ind_bb", false));
-  const [bbVisible, setBbVisible] = useState(() => loadLS("vis_bb", true));
-  const [bbSettings, setBbSettings] = useState(false);
-  const [bbLength, setBbLength] = useState(() => loadLS("bb_len", 20));
-  const [bbMult, setBbMult] = useState(() => loadLS("bb_mult", 2));
-  const [bbBasisColor, setBbBasisColor] = useState(() => loadLS("bb_bc", "#2962FF"));
-  const [bbUpperColor, setBbUpperColor] = useState(() => loadLS("bb_uc", "#F23645"));
-  const [bbLowerColor, setBbLowerColor] = useState(() => loadLS("bb_lc", "#089981"));
-
-  // HARSI oscillator
-  const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
-  const [harsiVisible, setHarsiVisible] = useState(() => loadLS("vis_harsi", true));
-  const [harsiSettings, setHarsiSettings] = useState(false);
-  const [harsiLen, setHarsiLen] = useState(() => loadLS("harsi_len", 14));
-  const [harsiSmooth, setHarsiSmooth] = useState(() => loadLS("harsi_sm", 1));
-  const [harsiUpColor, setHarsiUpColor] = useState(() => loadLS("harsi_up", "#14b8a6"));
-  const [harsiDnColor, setHarsiDnColor] = useState(() => loadLS("harsi_dn", "#ef4444"));
-
-  // TCP — Money Management
-  const [showTCP, setShowTCP] = useState(() => loadLS("ind_tcp", false));
-  const [tcpVisible, setTcpVisible] = useState(() => loadLS("vis_tcp", true));
-  const [tcpSettings, setTcpSettings] = useState(false);
-  const [tcpCapital, setTcpCapital] = useState(() => loadLS("tcp_capital", 1000));
-  const [tcpRiskPct, setTcpRiskPct] = useState(() => loadLS("tcp_risk", 1));
-  const [tcpLeverage, setTcpLeverage] = useState(() => loadLS("tcp_lev", 1));
-  const [tcpEntry, setTcpEntry] = useState(() => loadLS("tcp_entry", 0));
-  const [tcpSL, setTcpSL] = useState(() => loadLS("tcp_sl", 0));
-  const [tcpT1on, setTcpT1on] = useState(() => loadLS("tcp_t1on", true));
-  const [tcpT1, setTcpT1] = useState(() => loadLS("tcp_t1", 0));
-  const [tcpT1rr, setTcpT1rr] = useState(() => loadLS("tcp_t1rr", 2));
-  const [tcpT2on, setTcpT2on] = useState(() => loadLS("tcp_t2on", true));
-  const [tcpT2, setTcpT2] = useState(() => loadLS("tcp_t2", 0));
-  const [tcpT2rr, setTcpT2rr] = useState(() => loadLS("tcp_t2rr", 3));
-  const [tcpT3on, setTcpT3on] = useState(() => loadLS("tcp_t3on", true));
-  const [tcpT3, setTcpT3] = useState(() => loadLS("tcp_t3", 0));
-  const [tcpT3rr, setTcpT3rr] = useState(() => loadLS("tcp_t3rr", 4));
-  const [tcpT4on, setTcpT4on] = useState(() => loadLS("tcp_t4on", false));
-  const [tcpT4, setTcpT4] = useState(() => loadLS("tcp_t4", 0));
-  const [tcpT4rr, setTcpT4rr] = useState(() => loadLS("tcp_t4rr", 5));
-  const [tcpT5on, setTcpT5on] = useState(() => loadLS("tcp_t5on", false));
-  const [tcpT5, setTcpT5] = useState(() => loadLS("tcp_t5", 0));
-  const [tcpT5rr, setTcpT5rr] = useState(() => loadLS("tcp_t5rr", 6));
+  const [trendMax, setTrendMax] = useState(() => loadLS("trend_max", 3));
 
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteType, setEditingNoteType] = useState<"line" | "alarm" | null>(null);
@@ -1848,10 +1448,7 @@ export default function DashboardPage() {
   useEffect(() => {
     saveLS("ind_pivot", showPivot); saveLS("vis_pivot", pivotVisible);
     saveLS("pivot_tf", pivotTf); saveLS("pivot_fib", pivotFib);
-    saveLS("pivot_last", pivotShowLast);
-    saveLS("pivot_labels", pivotShowLabels);
-    saveLS("pivot_op", pivotOpacity);
-  }, [showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotOpacity]);
+  }, [showPivot, pivotVisible, pivotTf, pivotFib]);
   useEffect(() => {
     saveLS("ind_rsi", showRSI); saveLS("vis_rsi", rsiVisible);
     saveLS("rsi_p", rsiPeriod); saveLS("rsi_c", rsiColor);
@@ -1861,49 +1458,12 @@ export default function DashboardPage() {
     saveLS("dmi_p", dmiPeriod); saveLS("dmi_pc", dmiPlusColor);
     saveLS("dmi_mc", dmiMinusColor); saveLS("dmi_ac", dmiAdxColor);
   }, [showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor]);
-  useEffect(() => {
-    saveLS("ind_roc", showROC); saveLS("vis_roc", rocVisible);
-    saveLS("roc_p", rocPeriod); saveLS("roc_c", rocColor);
-  }, [showROC, rocVisible, rocPeriod, rocColor]);
-  useEffect(() => {
-    saveLS("ind_atr", showATR); saveLS("vis_atr", atrVisible);
-    saveLS("atr_p", atrPeriod); saveLS("atr_s", atrSmooth); saveLS("atr_c", atrColor);
-  }, [showATR, atrVisible, atrPeriod, atrSmooth, atrColor]);
-  useEffect(() => {
-    saveLS("ind_macd", showMACD); saveLS("vis_macd", macdVisible);
-    saveLS("macd_f", macdFast); saveLS("macd_s", macdSlow); saveLS("macd_sig", macdSignal);
-    saveLS("macd_c", macdColor); saveLS("macd_sc", macdSigColor);
-  }, [showMACD, macdVisible, macdFast, macdSlow, macdSignal, macdColor, macdSigColor]);
-  useEffect(() => {
-    saveLS("ind_stoch", showStoch); saveLS("vis_stoch", stochVisible);
-    saveLS("stoch_rsi", stochRsiLen); saveLS("stoch_len", stochLen);
-    saveLS("stoch_k", stochK); saveLS("stoch_d", stochD);
-    saveLS("stoch_kc", stochKColor); saveLS("stoch_dc", stochDColor);
-  }, [showStoch, stochVisible, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor]);
   useEffect(() => { saveLS("ind_vol", showVol); saveLS("vis_vol", volVisible); }, [showVol, volVisible]);
   useEffect(() => {
     saveLS("ind_trend", showTrend); saveLS("vis_trend", trendVisible);
     saveLS("trend_p", trendPeriod); saveLS("trend_up", trendUpColor);
-    saveLS("ind_bb", showBB); saveLS("vis_bb", bbVisible);
-    saveLS("bb_len", bbLength); saveLS("bb_mult", bbMult);
-    saveLS("bb_bc", bbBasisColor); saveLS("bb_uc", bbUpperColor); saveLS("bb_lc", bbLowerColor);
-    saveLS("ind_harsi", showHARSI); saveLS("vis_harsi", harsiVisible);
-    saveLS("harsi_len", harsiLen); saveLS("harsi_sm", harsiSmooth);
-    saveLS("harsi_up", harsiUpColor); saveLS("harsi_dn", harsiDnColor);
     saveLS("trend_dn", trendDownColor); saveLS("trend_max", trendMax);
   }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
-  useEffect(() => {
-    saveLS("ind_tcp", showTCP); saveLS("vis_tcp", tcpVisible);
-    saveLS("tcp_capital", tcpCapital); saveLS("tcp_risk", tcpRiskPct); saveLS("tcp_lev", tcpLeverage);
-    saveLS("tcp_entry", tcpEntry); saveLS("tcp_sl", tcpSL);
-    saveLS("tcp_t1on", tcpT1on); saveLS("tcp_t1", tcpT1); saveLS("tcp_t1rr", tcpT1rr);
-    saveLS("tcp_t2on", tcpT2on); saveLS("tcp_t2", tcpT2); saveLS("tcp_t2rr", tcpT2rr);
-    saveLS("tcp_t3on", tcpT3on); saveLS("tcp_t3", tcpT3); saveLS("tcp_t3rr", tcpT3rr);
-    saveLS("tcp_t4on", tcpT4on); saveLS("tcp_t4", tcpT4); saveLS("tcp_t4rr", tcpT4rr);
-    saveLS("tcp_t5on", tcpT5on); saveLS("tcp_t5", tcpT5); saveLS("tcp_t5rr", tcpT5rr);
-  }, [showTCP, tcpVisible, tcpCapital, tcpRiskPct, tcpLeverage, tcpEntry, tcpSL,
-    tcpT1on, tcpT1, tcpT1rr, tcpT2on, tcpT2, tcpT2rr, tcpT3on, tcpT3, tcpT3rr,
-    tcpT4on, tcpT4, tcpT4rr, tcpT5on, tcpT5, tcpT5rr]);
 
   const favTfButtons = useMemo(
     () => ALL_TIMEFRAMES.filter((t) => favTfs.includes(t.value)),
@@ -2017,285 +1577,68 @@ export default function DashboardPage() {
   const updateMargins = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const panes: { id: string; on: boolean; h: number }[] = [
-      { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.13 },
-      { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
-      { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
-      { id: "volume", on: !!(showVol && volVisible && !hideOscillators), h: 0.10 },
-    ];
-    // Cap total pane height so main chart stays usable
-    const active = panes.filter((p) => p.on);
-    let totalH = active.reduce((s, p) => s + p.h, 0);
-    const maxTotal = 0.55;
-    const scale = totalH > maxTotal ? maxTotal / totalH : 1;
+    const hasVol = showVol && volVisible && !hideIndicators;
+    const hasRsi = showRSI && rsiVisible && !hideIndicators;
+    const hasDmi = showDMI && dmiVisible && !hideIndicators;
+    // TradingView-style: stack from bottom — DMI → RSI → Volume → main
+    // Main chart SHRINKS when oscillators are on (exactly like TV)
     let used = 0;
-    for (const p of active) {
-      const h = p.h * scale;
+    const gap = 0.012; // thin separator gap between panes
+    if (hasDmi) {
+      const h = 0.15;
       try {
-        chart.priceScale(p.id).applyOptions({
+        chart.priceScale("dmi").applyOptions({
           scaleMargins: { top: 1 - used - h, bottom: used },
           borderVisible: true,
-          visible: true,
+          borderColor: "rgba(42,46,57,0.9)",
           entireTextOnly: false,
-          ticksVisible: true,
-          minimumWidth: 54,
-        } as any);
+        });
       } catch {}
-      used += h;
+      used += h + gap;
     }
-    chart.priceScale("right").applyOptions({
-      scaleMargins: {
-        top: 0.04,
-        // Keep main candles strictly above oscillator stack (no vertical overlap)
-        bottom: Math.max(0.08, used + 0.04),
-      },
-    });
-    // Hide price scales for inactive oscillators so their labels don't leak onto main axis
-    const allOscIds = ["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr", "volume"];
-    const activeIds = new Set(active.map((p) => p.id));
-    for (const id of allOscIds) {
-      if (activeIds.has(id)) continue;
+    if (hasRsi) {
+      const h = 0.16;
       try {
-        chart.priceScale(id).applyOptions({ visible: false } as any);
+        chart.priceScale("rsi").applyOptions({
+          scaleMargins: { top: 1 - used - h, bottom: used },
+          borderVisible: true,
+          borderColor: "rgba(42,46,57,0.9)",
+          entireTextOnly: false,
+        });
       } catch {}
+      used += h + gap;
     }
-    // Opaque masks over oscillator bands (hide main chart) + SVG redraw of osc lines on top
+    if (hasVol) {
+      const h = 0.11;
+      try {
+        chart.priceScale("volume").applyOptions({
+          scaleMargins: { top: 1 - used - h, bottom: used },
+          borderVisible: false,
+        });
+      } catch {}
+      used += h + gap;
+    }
+    // Main price pane — bottom margin = space taken by oscillators
     try {
-      const host = paneSepRef.current;
-      const chart = chartRef.current;
-      if (host && chart) {
-        const oscIds = new Set(["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr"]);
-        let u = 0;
-        const bottoms: number[] = [];
-        const tops: number[] = [];
-        for (const p of active) {
-          const h = p.h * scale;
-          bottoms.push(u);
-          tops.push(u + h);
-          u += h;
-        }
-        const hostH = host.clientHeight || 1;
-        const hostW = host.clientWidth || 1;
-        const ts = chart.timeScale();
-        const parts: string[] = [];
-
-        // 1) Solid backgrounds — fully hide candles/grid behind each oscillator pane
-        for (let i = 0; i < active.length; i++) {
-          if (!oscIds.has(active[i].id)) continue;
-          const topPx = hostH * (1 - tops[i]);
-          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
-          parts.push(
-            `<div style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
-          );
-        }
-
-        // 2) SVG oscillator lines ABOVE masks — data from candles (series.data() is private)
-        const candles = candlesRef.current || [];
-        const pathFrom = (
-          series: any,
-          rows: { time: any; value: number }[],
-          color: string,
-          width = 1.5
-        ) => {
-          if (!series || !rows.length) return "";
-          try {
-            const pts: string[] = [];
-            for (const r of rows) {
-              const x = ts.timeToCoordinate(r.time as any);
-              const y = series.priceToCoordinate(r.value);
-              if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) continue;
-              // only draw points that fall inside the chart
-              if (Number(x) < -50 || Number(x) > hostW + 50) continue;
-              pts.push(`${x},${y}`);
-            }
-            if (pts.length < 2) return "";
-            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" />`;
-          } catch {
-            return "";
-          }
-        };
-
-        const histRects = (
-          series: any,
-          rows: { time: any; value: number; color?: string }[]
-        ) => {
-          if (!series || !rows.length) return "";
-          try {
-            const zeroY = series.priceToCoordinate(0);
-            if (zeroY == null) return "";
-            const rects: string[] = [];
-            const barW = Math.max(1.5, hostW / Math.max(rows.length, 1) * 0.55);
-            for (const d of rows) {
-              const x = ts.timeToCoordinate(d.time as any);
-              const y = series.priceToCoordinate(d.value);
-              if (x == null || y == null) continue;
-              if (Number(x) < -50 || Number(x) > hostW + 50) continue;
-              const top = Math.min(Number(y), Number(zeroY));
-              const hgt = Math.max(1, Math.abs(Number(y) - Number(zeroY)));
-              const col = d.color || (d.value >= 0 ? "#26a69a" : "#ef5350");
-              rects.push(
-                `<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" opacity="0.85" />`
-              );
-            }
-            return rects.join("");
-          } catch {
-            return "";
-          }
-        };
-
-        const svgBits: string[] = [];
-        try {
-          if (rsiSeriesRef.current) {
-            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2));
-          }
-          if (rocSeriesRef.current) {
-            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2));
-          }
-          if (atrSeriesRef.current) {
-            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2));
-          }
-          if (dmiSeriesRef.current) {
-            const d = calcDMI(candles as any, dmiPeriod);
-            svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25));
-            svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25));
-            svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2));
-          }
-          if (stochSeriesRef.current) {
-            const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
-            svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2));
-            svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5));
-          }
-          if (macdSeriesRef.current) {
-            const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
-            svgBits.push(histRects(macdSeriesRef.current.hist, m.hist as any));
-            svgBits.push(pathFrom(macdSeriesRef.current.macd, m.macdLine as any, macdColor || "#2962FF", 2));
-            svgBits.push(pathFrom(macdSeriesRef.current.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5));
-          }
-          if (harsiSeriesRef.current) {
-            const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
-            const upC = harsiUpColor || "#14b8a6";
-            const dnC = harsiDnColor || "#ef4444";
-            const barW = Math.max(1.5, hostW / Math.max(ha.length, 1) * 0.5);
-            const ser = harsiSeriesRef.current;
-            for (const c of ha) {
-              try {
-                const x = ts.timeToCoordinate(c.time as any);
-                if (x == null || Number(x) < -50 || Number(x) > hostW + 50) continue;
-                const yO = ser.priceToCoordinate(c.open);
-                const yC = ser.priceToCoordinate(c.close);
-                const yH = ser.priceToCoordinate(c.high);
-                const yL = ser.priceToCoordinate(c.low);
-                if (yO == null || yC == null || yH == null || yL == null) continue;
-                const col = c.close >= c.open ? upC : dnC;
-                // wick
-                svgBits.push(`<line x1="${x}" y1="${yH}" x2="${x}" y2="${yL}" stroke="#9ca3af" stroke-width="1" />`);
-                // body
-                const top = Math.min(Number(yO), Number(yC));
-                const hgt = Math.max(1, Math.abs(Number(yC) - Number(yO)));
-                svgBits.push(`<rect x="${Number(x) - barW / 2}" y="${top}" width="${barW}" height="${hgt}" fill="${col}" stroke="${col}" stroke-width="0.5" />`);
-              } catch {}
-            }
-            // zero guide
-            try {
-              const zY = ser.priceToCoordinate(0);
-              if (zY != null) svgBits.push(`<line x1="0" y1="${zY}" x2="${hostW - 56}" y2="${zY}" stroke="rgba(251,146,60,0.55)" stroke-width="1" stroke-dasharray="3 3" />`);
-            } catch {}
-          }
-        } catch {}
-
-        // Vertical crosshair only over oscillator stack (native LWC handles main chart)
-        const oscTopPx = hostH * (1 - used);
-        parts.push(
-          `<svg id="osc-overlay-svg" width="${hostW}" height="${hostH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;">${svgBits.join("")}` +
-          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${hostH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" /></svg>`
-        );
-
-        // 3) Separator lines
-        const sepSet = new Set<number>();
-        for (let i = 0; i < active.length; i++) {
-          if (!oscIds.has(active[i].id)) continue;
-          sepSet.add(bottoms[i]);
-          sepSet.add(tops[i]);
-        }
-        for (const fracFromBottom of Array.from(sepSet)) {
-          const y = hostH * (1 - fracFromBottom);
-          parts.push(
-            `<div style="position:absolute;left:0;right:0;top:${y}px;height:1px;background:rgba(255,255,255,0.28);pointer-events:none;"></div>`
-          );
-        }
-
-        // 4) Right-side osc scale strip: hide main price labels, show osc numbers
-        const scaleW = 56;
-        for (let i = 0; i < active.length; i++) {
-          if (!oscIds.has(active[i].id)) continue;
-          const topPx = hostH * (1 - tops[i]);
-          const heightPx = Math.max(1, hostH * (tops[i] - bottoms[i]));
-          // opaque cover over main price scale in this band
-          parts.push(
-            `<div style="position:absolute;right:0;width:${scaleW}px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;border-left:1px solid rgba(255,255,255,0.08);"></div>`
-          );
-          // tick labels per oscillator
-          const id = active[i].id;
-          let ticks: { v: number; label: string }[] = [];
-          let ser: any = null;
-          if (id === "rsi") {
-            ser = rsiSeriesRef.current;
-            ticks = [{ v: 70, label: "70" }, { v: 50, label: "50" }, { v: 30, label: "30" }];
-          } else if (id === "stoch") {
-            ser = stochSeriesRef.current?.k;
-            ticks = [{ v: 80, label: "80" }, { v: 50, label: "50" }, { v: 20, label: "20" }];
-          } else if (id === "dmi") {
-            ser = dmiSeriesRef.current?.adx;
-            ticks = [{ v: 40, label: "40" }, { v: 20, label: "20" }];
-          } else if (id === "harsi") {
-            ser = harsiSeriesRef.current;
-            ticks = [{ v: 20, label: "20" }, { v: 0, label: "0" }, { v: -20, label: "-20" }];
-          } else if (id === "macd") {
-            ser = macdSeriesRef.current?.macd;
-            ticks = [{ v: 0, label: "0" }];
-          } else if (id === "roc") {
-            ser = rocSeriesRef.current;
-            ticks = [{ v: 0, label: "0" }];
-          } else if (id === "atr") {
-            ser = atrSeriesRef.current;
-            ticks = [];
-          }
-          if (ser) {
-            for (const t of ticks) {
-              try {
-                const y = ser.priceToCoordinate(t.v);
-                if (y == null || Number.isNaN(Number(y))) continue;
-                if (Number(y) < topPx - 2 || Number(y) > topPx + heightPx + 2) continue;
-                parts.push(
-                  `<div style="position:absolute;right:4px;top:${Number(y) - 7}px;font-size:10px;line-height:14px;color:#9ca3af;pointer-events:none;font-variant-numeric:tabular-nums;">${t.label}</div>`
-                );
-              } catch {}
-            }
-            // last value label
-            try {
-              const last = candlesRef.current;
-              // skip - left legend already shows values
-            } catch {}
-          }
-        }
-
-        host.innerHTML = parts.join("");
-      }
+      chart.priceScale("right").applyOptions({
+        scaleMargins: {
+          top: 0.04,
+          bottom: Math.max(0.04, used),
+        },
+        borderVisible: true,
+        borderColor: "rgba(42,46,57,0.9)",
+      });
     } catch {}
-  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible,
-    showROC, rocVisible, showATR, atrVisible, showMACD, macdVisible, showStoch, stochVisible,
-    showHARSI, harsiVisible, hideIndicators, hideOscillators,
-    rsiPeriod, rsiColor, rocPeriod, rocColor, atrPeriod, atrSmooth, atrColor,
-    dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
-    stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
-    macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
-    harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
-
-
+    // Also apply to series' own price scale if different
+    try {
+      seriesRef.current?.priceScale?.()?.applyOptions?.({
+        scaleMargins: {
+          top: 0.04,
+          bottom: Math.max(0.04, used),
+        },
+      });
+    } catch {}
+  }, [showVol, volVisible, showRSI, rsiVisible, showDMI, dmiVisible, hideIndicators]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -2413,7 +1756,6 @@ export default function DashboardPage() {
     pivotSeriesRef.current = [];
     trendSeriesRef.current = [];
     volumeSeriesRef.current = null;
-    tcpLinesRef.current = [];
     previewDiagSeriesRef.current = null;
     seriesRef.current = null;
     futureSeriesRef.current = null;
@@ -2503,7 +1845,6 @@ export default function DashboardPage() {
 
     vlineItemsRef.current = [];
     rayItemsRef.current = [];
-    calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
@@ -2514,274 +1855,14 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
-    const paintVLines = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      if (!host || !chart2) return;
-      // Only remove vertical line nodes — keep rays intact
-      host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
-      if (hideLines) return;
-      for (const v of vlineItemsRef.current) {
-        let x: number | null = null;
-        try {
-          x = chart2.timeScale().timeToCoordinate(v.time as any);
-        } catch { x = null; }
-        if (x == null || Number.isNaN(x)) continue;
-        const el = document.createElement("div");
-        el.dataset.vlineId = v.id;
-        el.style.position = "absolute";
-        el.style.top = "0";
-        el.style.bottom = "0";
-        el.style.left = `${x}px`;
-        el.style.width = `${Math.max(1, v.width)}px`;
-        el.style.transform = "translateX(-50%)";
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "5";
-        if (v.dash === "dashed" || v.dash === "dotted") {
-          el.style.background = "transparent";
-          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
-          el.style.width = "0";
-        } else {
-          el.style.background = v.color;
-        }
-        host.appendChild(el);
-      }
-    };
-
-    const paintRays = () => {
-      // Rays are drawn by LWC line series (native price-axis tags, no start circle).
-      // Clear any leftover DOM from older versions.
-      const host = vlineOverlayRef.current;
-      if (!host) return;
-      host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
-      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
-    };
-
-    /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
-    const syncOverlayPositions = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2) return;
-      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
-      for (const child of Array.from(host.children) as HTMLElement[]) {
-        if (child.dataset.vlineId) {
-          const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
-          if (!item) continue;
-          let x: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          if (x == null || Number.isNaN(x)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-          }
-        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
-          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
-          const item = rayItemsRef.current.find((v) => v.id === rid);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (y == null || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-            continue;
-          }
-          let plotW = hostW;
-          try {
-            const tw = (chart2.timeScale() as any).width?.();
-            if (typeof tw === "number" && tw > 40) plotW = tw;
-            else plotW = Math.max(80, hostW - 64);
-          } catch {
-            plotW = Math.max(80, hostW - 64);
-          }
-          const startVisible = x != null && !Number.isNaN(x);
-          if (startVisible && (x as number) > plotW) {
-            child.style.visibility = "hidden";
-            continue;
-          }
-          if (child.dataset.rayLabel) {
-            child.style.visibility = "visible";
-            child.style.left = `${plotW}px`;
-            child.style.top = `${y}px`;
-            continue;
-          }
-          const role = child.dataset.rayRole || "line";
-          const lh = Math.max(1, Math.min(3, Number(item.width) || 2));
-          if (role === "cap") {
-            if (startVisible && (x as number) >= 0) {
-              child.style.visibility = "visible";
-              child.style.left = `${x}px`;
-              child.style.top = `${y}px`;
-              child.style.width = "6px";
-              child.style.height = "6px";
-            } else {
-              child.style.visibility = "hidden";
-            }
-          } else {
-            const x0 = startVisible ? Math.max(0, x as number) : 0;
-            child.style.visibility = "visible";
-            child.style.left = `${x0}px`;
-            child.style.top = `${y}px`;
-            child.style.width = `${Math.max(2, plotW - x0)}px`;
-            if (item.dash === "dashed" || item.dash === "dotted") {
-              child.style.height = "0px";
-              child.style.borderTopWidth = `${lh}px`;
-            } else {
-              child.style.height = `${lh}px`;
-            }
-          }
-        } else if (child.dataset.arrowRing && ser) {
-          const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-            child.style.top = `${y}px`;
-          }
-        } else if (child.dataset.calloutId && ser) {
-          const item = calloutItemsRef.current.find((v) => v.id === child.dataset.calloutId);
-          if (!item) continue;
-          let x: number | null = null;
-          let y: number | null = null;
-          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
-          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
-          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
-            child.style.visibility = "hidden";
-          } else {
-            child.style.visibility = "visible";
-            child.style.left = `${x}px`;
-            child.style.top = `${y}px`;
-          }
-        }
-      }
-    };
-
-
-    const paintCallouts = () => {
-      const host = vlineOverlayRef.current;
-      const chart2 = chartRef.current;
-      const ser = seriesRef.current;
-      if (!host || !chart2 || !ser) return;
-      host.querySelectorAll("[data-callout-id]").forEach((el) => el.remove());
-      if (hideLines) return;
-      for (const c of calloutItemsRef.current) {
-        let x: number | null = null;
-        let y: number | null = null;
-        try { x = chart2.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
-        try { y = ser.priceToCoordinate(c.price); } catch { y = null; }
-        if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) continue;
-        const wrap = document.createElement("div");
-        wrap.dataset.calloutId = c.id;
-        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:25;pointer-events:auto;`;
-        const stem = document.createElement("div");
-        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:36px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;`;
-        const bubble = document.createElement("div");
-        bubble.contentEditable = "true";
-        bubble.spellcheck = false;
-        bubble.textContent = c.text || "";
-        bubble.setAttribute("data-placeholder", "Add text");
-        bubble.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - 36px));min-width:52px;max-width:180px;padding:5px 9px;border-radius:8px;background:#0d9488;color:#fff;font-size:12px;line-height:1.3;border:1px solid rgba(255,255,255,0.3);outline:none;cursor:text;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`;
-        const dot = document.createElement("div");
-        dot.title = "Drag to move";
-        dot.style.cssText = `position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;border:2px solid ${c.color};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;`;
-        // stop chart from eating clicks while typing
-        bubble.addEventListener("pointerdown", (e) => e.stopPropagation());
-        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
-        bubble.addEventListener("click", (e) => e.stopPropagation());
-        bubble.addEventListener("blur", async () => {
-          const val = (bubble.textContent || "").trim();
-          const note = `__callout:${val}`;
-          c.text = val;
-          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
-          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
-        });
-        // Drag ONLY via anchor dot — chart pan does not move callout except via coordinate sync
-        let dragging = false;
-        let lastX = 0, lastY = 0;
-        const onDown = (e: PointerEvent) => {
-          e.preventDefault(); e.stopPropagation();
-          dragging = true; lastX = e.clientX; lastY = e.clientY;
-          try { dot.setPointerCapture(e.pointerId); } catch {}
-          dot.style.cursor = "grabbing";
-        };
-        const onMove = (e: PointerEvent) => {
-          if (!dragging) return;
-          e.preventDefault(); e.stopPropagation();
-          const dx = e.clientX - lastX, dy = e.clientY - lastY;
-          lastX = e.clientX; lastY = e.clientY;
-          wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
-          wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
-        };
-        const onUp = async (e: PointerEvent) => {
-          if (!dragging) return;
-          dragging = false;
-          dot.style.cursor = "grab";
-          try {
-            const left = parseFloat(wrap.style.left) || 0;
-            const top = parseFloat(wrap.style.top) || 0;
-            const t = chart2.timeScale().coordinateToTime(left);
-            const p = ser.coordinateToPrice(top);
-            if (t != null && p != null) {
-              const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
-              c.time = Number(tu);
-              c.price = Number(p);
-              setLines((prev) =>
-                prev.map((l) =>
-                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
-                )
-              );
-              try {
-                await supabase
-                  .from("chart_lines")
-                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
-                  .eq("id", c.id);
-              } catch {}
-            }
-          } catch {}
-        };
-        dot.addEventListener("pointerdown", onDown as any);
-        wrap.addEventListener("pointermove", onMove as any);
-        wrap.addEventListener("pointerup", onUp as any);
-        wrap.addEventListener("pointercancel", onUp as any);
-        wrap.appendChild(stem);
-        wrap.appendChild(bubble);
-        wrap.appendChild(dot);
-        host.appendChild(wrap);
-        if (!c.text) {
-          try { bubble.focus(); } catch {}
-        }
-      }
-    };
-
-
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
         const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
         const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
         const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
-        // Title only when note exists (no "Line xxx" label)
-        const noteClean = (() => {
-          if (!l.note) return "";
-          const s = String(l.note);
-          if (s === "__vline__" || s.startsWith("__vline__:")) return "";
-          if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
-            const idx = s.indexOf("|");
-            return idx >= 0 ? s.slice(idx + 1).trim() : "";
-          }
-          if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:")) return "";
-          if (s.startsWith("__")) return "";
-          return s;
-        })();
+        // Title from user note (rays/diags: text after |)
+        const noteClean = userFacingNote(l.note);
         const title = isMoving ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
@@ -2799,17 +1880,6 @@ export default function DashboardPage() {
               l.end_price != null));
         if (hideLines) {
           // skip drawing lines when eye-hide is on
-        } else if (typeof l.note === "string" && l.note.startsWith("__callout:")) {
-          const t = Number(l.start_time);
-          if (!Number.isNaN(t) && t > 0) {
-            calloutItemsRef.current.push({
-              id: String(l.id),
-              time: t,
-              price: Number(l.price),
-              text: String(l.note).replace(/^__callout:/, ""),
-              color: color,
-            });
-          }
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
           const t = Number(l.start_time);
@@ -3005,46 +2075,11 @@ export default function DashboardPage() {
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
-        } else if (
-          (typeof l.note === "string" && l.note.startsWith("__ray:")) ||
-          (l.start_time != null &&
-            (l.end_time == null || l.end_price == null) &&
-            !isDiagonalLine(l) &&
-            l.note !== "__vline__" &&
-            !String(l.note || "").startsWith("__vline:") &&
-            !String(l.note || "").startsWith("__arrow") &&
-            !String(l.note || "").startsWith("__callout:"))
-        ) {
-          // Half-line via LWC: 2 points (origin → future). Native axis price tag like full lines.
-          // NEVER createPriceLine (that is always full-width both ways).
-          let t0 = Number(l.start_time);
-          if ((!t0 || Number.isNaN(t0)) && typeof l.note === "string" && l.note.startsWith("__ray:")) {
-            const head = String(l.note).replace(/^__ray:/, "").split("|")[0];
-            t0 = Number(head);
-          }
+        } else if (l.start_time != null) {
+          // Horizontal half-line via DOM overlay (no LWC gap on any TF)
+          const bars = candlesRef.current || [];
+          const t0 = snapTimeToBars(Number(l.start_time), bars);
           if (!Number.isNaN(t0) && t0 > 0) {
-            const bars = candlesRef.current || [];
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-            // End far in the future so it always extends right of origin on every TF
-            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
-            const ls: any = chart.addLineSeries({
-              color,
-              lineWidth: width,
-              lineStyle: style,
-              priceLineVisible: false,
-              lastValueVisible: true,
-              crosshairMarkerVisible: false,
-              title: title || "",
-              autoscaleInfoProvider: () => null as any,
-            });
-            // Only points at/after origin — LWC will not draw left of t0
-            ls.setData([
-              { time: t0 as any, value: Number(l.price) },
-              { time: rayEnd as any, value: Number(l.price) },
-            ]);
-            chartLinesRef.current.set(l.id, ls);
-            // Keep rayItems for hit-testing / move, but paintRays draws nothing visible (no cap)
             rayItemsRef.current.push({
               id: String(l.id),
               time: t0,
@@ -3052,8 +2087,8 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
-              note: title || "",
-            } as any);
+              note: title || userFacingNote(l.note) || "",
+            });
           }
         } else {
           const pl = series.createPriceLine({
@@ -3064,8 +2099,6 @@ export default function DashboardPage() {
         }
       } catch {}
     });
-    // Rays/vlines appear immediately with candles (before slower alarm series work)
-    try { paintVLines(); paintRays(); } catch {}
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
@@ -3084,13 +2117,7 @@ export default function DashboardPage() {
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA =
-          a.note &&
-          !String(a.note).startsWith("__diag:") &&
-          !String(a.note).startsWith("__ray:") &&
-          a.note !== "Diag"
-            ? String(a.note)
-            : null;
+        const noteCleanA = userFacingNote(a.note);
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -3123,34 +2150,11 @@ export default function DashboardPage() {
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
-        } else if (
-          (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
-          (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
-        ) {
-          let t0 = Number(a.start_time);
-          if ((!t0 || Number.isNaN(t0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
-            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0]);
-          }
+        } else if (a.start_time != null) {
+          // Horizontal half-line alarm via DOM overlay
+          const bars = candlesRef.current || [];
+          const t0 = snapTimeToBars(Number(a.start_time), bars);
           if (!Number.isNaN(t0) && t0 > 0) {
-            const bars = candlesRef.current || [];
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
-            const ls: any = chart.addLineSeries({
-              color,
-              lineWidth: width,
-              lineStyle: style,
-              priceLineVisible: false,
-              lastValueVisible: true,
-              crosshairMarkerVisible: false,
-              title: title || "",
-              autoscaleInfoProvider: () => null as any,
-            });
-            ls.setData([
-              { time: t0 as any, value: Number(a.price) },
-              { time: rayEnd as any, value: Number(a.price) },
-            ]);
-            chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
@@ -3158,8 +2162,8 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
-              note: title || "",
-            } as any);
+              note: title || userFacingNote(a.note) || "",
+            });
           }
         } else {
           const pl = series.createPriceLine({
@@ -3174,9 +2178,169 @@ export default function DashboardPage() {
 
     // History / temp highlight: yellow dashed HORIZONTAL line (full)
     // Paint true-vertical DOM lines
+    const paintVLines = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      if (!host || !chart2) return;
+      // Only remove vertical line nodes — keep rays intact
+      host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
+      if (hideLines) return;
+      for (const v of vlineItemsRef.current) {
+        let x: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(v.time as any);
+        } catch { x = null; }
+        if (x == null || Number.isNaN(x)) continue;
+        const el = document.createElement("div");
+        el.dataset.vlineId = v.id;
+        el.style.position = "absolute";
+        el.style.top = "0";
+        el.style.bottom = "0";
+        el.style.left = `${x}px`;
+        el.style.width = `${Math.max(1, v.width)}px`;
+        el.style.transform = "translateX(-50%)";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        if (v.dash === "dashed" || v.dash === "dotted") {
+          el.style.background = "transparent";
+          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
+          el.style.width = "0";
+        } else {
+          el.style.background = v.color;
+        }
+        host.appendChild(el);
+      }
+    };
+
+    const paintRays = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2 || !ser) return;
+      host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+      // Clip DOM overlay to MAIN pane only (match updateMargins stacking)
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 400;
+      let used = 0;
+      const gap = 0.012;
+      try {
+        if (dmiSeriesRef.current) used += 0.15 + gap;
+        if (rsiSeriesRef.current) used += 0.16 + gap;
+        if (volumeSeriesRef.current) used += 0.11 + gap;
+      } catch {}
+      const mainH = Math.max(40, hostH * (1 - Math.max(0.04, used)));
+      host.style.clipPath = `inset(0 0 ${Math.max(0, hostH - mainH)}px 0)`;
+      if (hideLines) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      for (const r of rayItemsRef.current) {
+        let x: number | null = null;
+        let y: number | null = null;
+        try {
+          x = chart2.timeScale().timeToCoordinate(r.time as any);
+        } catch { x = null; }
+        try {
+          y = ser.priceToCoordinate(r.price);
+        } catch { y = null; }
+        if (y == null || Number.isNaN(y)) continue;
+        const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
+        if (x0 > hostW) continue;
+        const el = document.createElement("div");
+        el.dataset.rayId = r.id;
+        el.style.position = "absolute";
+        el.style.left = `${x0}px`;
+        el.style.top = `${y}px`;
+        el.style.width = `${Math.max(4, hostW - x0)}px`;
+        el.style.height = `${Math.max(1, r.width)}px`;
+        el.style.transform = "translateY(-50%)";
+        el.style.background = r.color;
+        el.style.opacity = "0.95";
+        el.style.pointerEvents = "none";
+        el.style.zIndex = "5";
+        el.style.willChange = "left, top, width";
+        if (r.dash === "dashed") {
+          el.style.background = "transparent";
+          el.style.borderTop = `${Math.max(1, r.width)}px dashed ${r.color}`;
+          el.style.height = "0px";
+        }
+        host.appendChild(el);
+        // Note chip at the right end of the half-line (not a second full line)
+        const labelText = (r.note || "").trim();
+        if (labelText) {
+          const lab = document.createElement("div");
+          lab.dataset.rayLabel = r.id;
+          lab.textContent = labelText;
+          lab.style.cssText = `position:absolute;left:${hostW - 4}px;top:${y}px;transform:translate(-100%,-50%);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;color:#fff;background:${r.color};pointer-events:none;z-index:8;`;
+          host.appendChild(lab);
+        }
+      }
+    };
+
+    /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
+    const syncOverlayPositions = () => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart2) return;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
+      for (const child of Array.from(host.children) as HTMLElement[]) {
+        if (child.dataset.vlineId) {
+          const item = vlineItemsRef.current.find((v) => v.id === child.dataset.vlineId);
+          if (!item) continue;
+          let x: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          if (x == null || Number.isNaN(x)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+          }
+        } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
+          const rid = child.dataset.rayId || child.dataset.rayLabel || "";
+          const item = rayItemsRef.current.find((v) => v.id === rid);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (y == null || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          if (child.dataset.rayLabel) {
+            child.style.visibility = "visible";
+            child.style.left = `${hostW - 4}px`;
+            child.style.top = `${y}px`;
+            continue;
+          }
+          const x0 = x == null || Number.isNaN(x) ? 0 : Math.max(0, x);
+          if (x0 > hostW) {
+            child.style.visibility = "hidden";
+            continue;
+          }
+          child.style.visibility = "visible";
+          child.style.left = `${x0}px`;
+          child.style.top = `${y}px`;
+          child.style.width = `${Math.max(4, hostW - x0)}px`;
+        } else if (child.dataset.arrowRing && ser) {
+          const item = arrowMoveItemsRef.current.find((a) => a.id === child.dataset.arrowRing);
+          if (!item) continue;
+          let x: number | null = null;
+          let y: number | null = null;
+          try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+          try { y = ser.priceToCoordinate(item.price); } catch { y = null; }
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            child.style.visibility = "hidden";
+          } else {
+            child.style.visibility = "visible";
+            child.style.left = `${x}px`;
+            child.style.top = `${y}px`;
+          }
+        }
+      }
+    };
+
     paintVLines();
     paintRays();
-    paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
     const scheduleOverlaySync = () => {
       requestAnimationFrame(() => {
@@ -3191,16 +2355,7 @@ export default function DashboardPage() {
       });
     };
     try {
-      chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-          scheduleOverlaySync();
-          // keep osc masks/SVG aligned while panning (rAF throttle)
-          try {
-            if ((window as any).__oscMaskRaf) cancelAnimationFrame((window as any).__oscMaskRaf);
-            (window as any).__oscMaskRaf = requestAnimationFrame(() => {
-              try { updateMargins(); } catch {}
-            });
-          } catch {}
-        });
+      chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleOverlaySync);
     } catch {}
     // Vertical pan/zoom does not fire timeScale events — listen on container
     try {
@@ -3346,14 +2501,66 @@ export default function DashboardPage() {
   }, [showSMA, smaVisible, hideIndicators, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3, removeSMA]);
 
   const removeRSI = useCallback(() => {
-    if (rsiSeriesRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+    if (chartRef.current) {
+      try {
+        const bg = (rsiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (rsiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
+      } catch {}
+      (rsiSeriesRef as any)._bg = null;
+      (rsiSeriesRef as any)._bg2 = null;
+      if (rsiSeriesRef.current) {
+        try { chartRef.current.removeSeries(rsiSeriesRef.current); } catch {}
+      }
       rsiSeriesRef.current = null;
     }
   }, []);
   const applyRSI = useCallback(() => {
     removeRSI();
     if (!showRSI || !rsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const candles = candlesRef.current;
+    // Opaque RSI pane fill (past + future) so main chart never shows through
+    try {
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      const bg: any = chartRef.current.addHistogramSeries({
+        priceScaleId: "rsi",
+        color: "#0b0e11",
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(bgData);
+      (rsiSeriesRef as any)._bg = bg;
+      // Extra area fill for denser coverage
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "rsi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (rsiSeriesRef as any)._bg2 = bg2;
+    } catch {}
     const s = chartRef.current.addLineSeries({
       color: rsiColor,
       lineWidth: 2,
@@ -3365,7 +2572,7 @@ export default function DashboardPage() {
         priceRange: { minValue: 0, maxValue: 100 },
       }),
     });
-    s.setData(calcRSI(candlesRef.current, rsiPeriod) as any);
+    s.setData(calcRSI(candles, rsiPeriod) as any);
     // Overbought / mid / oversold dashed guides
     try {
       s.createPriceLine({
@@ -3398,12 +2605,22 @@ export default function DashboardPage() {
   }, [showRSI, rsiVisible, hideIndicators, rsiPeriod, rsiColor, removeRSI, updateMargins]);
 
   const removeDMI = useCallback(() => {
-    if (dmiSeriesRef.current && chartRef.current) {
+    if (chartRef.current) {
       try {
-        chartRef.current.removeSeries(dmiSeriesRef.current.plus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.minus);
-        chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        const bg = (dmiSeriesRef as any)._bg;
+        if (bg) chartRef.current.removeSeries(bg);
+        const bg2 = (dmiSeriesRef as any)._bg2;
+        if (bg2) chartRef.current.removeSeries(bg2);
       } catch {}
+      (dmiSeriesRef as any)._bg = null;
+      (dmiSeriesRef as any)._bg2 = null;
+      if (dmiSeriesRef.current) {
+        try {
+          chartRef.current.removeSeries(dmiSeriesRef.current.plus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.minus);
+          chartRef.current.removeSeries(dmiSeriesRef.current.adx);
+        } catch {}
+      }
       dmiSeriesRef.current = null;
     }
   }, []);
@@ -3411,6 +2628,47 @@ export default function DashboardPage() {
     removeDMI();
     if (!showDMI || !dmiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const { plusDI, minusDI, adx } = calcDMI(candlesRef.current, dmiPeriod);
+    // Opaque DMI pane fill (past + future)
+    try {
+      const candles = candlesRef.current;
+      const barSec = intervalToSeconds(String(intervalRef.current));
+      const lastT = Number(candles[candles.length - 1]?.time) || 0;
+      const bgData: any[] = candles.map((c: any) => ({
+        time: c.time,
+        value: 100,
+        color: "#0b0e11",
+      }));
+      for (let i = 1; i <= FUTURE_BARS; i++) {
+        bgData.push({ time: (lastT + i * barSec) as any, value: 100, color: "#0b0e11" });
+      }
+      const bg: any = chartRef.current.addHistogramSeries({
+        priceScaleId: "dmi",
+        color: "#0b0e11",
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg.setData(bgData);
+      (dmiSeriesRef as any)._bg = bg;
+      const bg2: any = chartRef.current.addAreaSeries({
+        priceScaleId: "dmi",
+        topColor: "#0b0e11",
+        bottomColor: "#0b0e11",
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: 0, maxValue: 100 },
+        }),
+      } as any);
+      bg2.setData(bgData.map((p: any) => ({ time: p.time, value: 100 })));
+      (dmiSeriesRef as any)._bg2 = bg2;
+    } catch {}
     const paneOpts = {
       priceScaleId: "dmi",
       priceLineVisible: false,
@@ -3456,319 +2714,102 @@ export default function DashboardPage() {
     removePivot();
     if (!showPivot || !pivotVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     try {
-      const chart = chartRef.current;
-      const limit = pivotShowLast ? 8 : 40;
-      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=${limit}`);
+      const res = await fetch(`/api/kline?symbol=${symbolRef.current}&interval=${pivotTf}&limit=3`);
       const data = await res.json();
-      let rows: any[] = Array.isArray(data) ? data : data?.data || data?.result?.list || [];
+      const rows = Array.isArray(data) ? data : data?.data || data?.result?.list || [];
       if (!rows.length) return;
-      // normalize + sort ascending by time
-      const bars = rows.map((r: any) => {
-        const t = Number(r.time ?? r.openTime ?? r[0]);
-        const time = t > 1e12 ? Math.floor(t / 1000) : t;
-        return {
-          time,
-          high: parseFloat(r.high ?? r[2]),
-          low: parseFloat(r.low ?? r[3]),
-          close: parseFloat(r.close ?? r[4]),
-        };
-      }).filter((b: any) => b.time > 0 && b.high > 0 && b.low > 0)
-        .sort((a: any, b: any) => a.time - b.time);
-      if (bars.length < 2) return;
-
-      const chartCandles = candlesRef.current;
-      const chartLastT = Number(chartCandles[chartCandles.length - 1]?.time) || bars[bars.length - 1].time;
-      const barSec = intervalToSeconds(String(pivotTf));
-
-      const alpha = Math.max(0.12, Math.min(1, Number(pivotOpacity) / 100));
-      const colP = hexToRgba("#ffffff", Math.min(1, alpha + 0.08));
-      const colR = hexToRgba("#00ffff", alpha);
-      const colS = hexToRgba("#ff00ff", alpha);
-      const colRF = hexToRgba("#00ff00", alpha);
-      const colSF = hexToRgba("#ff0000", alpha);
-      const makeLevels = (h: number, l: number, c: number) => {
-        const range = h - l;
-        const pp = (h + l + c) / 3;
-        if (pivotFib) {
-          return [
-            { p: pp, col: colP, t: "P" },
-            { p: pp + 0.382 * range, col: colRF, t: "R1" },
-            { p: pp + 0.618 * range, col: colRF, t: "R2" },
-            { p: pp + range, col: colRF, t: "R3" },
-            { p: pp + 1.382 * range, col: colRF, t: "R4" },
-            { p: pp - 0.382 * range, col: colSF, t: "S1" },
-            { p: pp - 0.618 * range, col: colSF, t: "S2" },
-            { p: pp - range, col: colSF, t: "S3" },
-            { p: pp - 1.382 * range, col: colSF, t: "S4" },
+      const last = rows[rows.length - 2] || rows[rows.length - 1];
+      const h = parseFloat(last.high || last[2]);
+      const l = parseFloat(last.low || last[3]);
+      const c = parseFloat(last.close || last[4]);
+      if (!h || !l || !c) return;
+      const pp = (h + l + c) / 3;
+      const r1 = 2 * pp - l, s1 = 2 * pp - h;
+      const r2 = pp + (h - l), s2 = pp - (h - l);
+      const r3 = h + 2 * (pp - l), s3 = l - 2 * (h - pp);
+      const levels = pivotFib
+        ? [
+            { p: pp, col: "#eab308", t: "P" },
+            { p: pp + 0.382 * (h - l), col: "#22c55e", t: "R1" },
+            { p: pp + 0.618 * (h - l), col: "#16a34a", t: "R2" },
+            { p: pp + (h - l), col: "#15803d", t: "R3" },
+            { p: pp - 0.382 * (h - l), col: "#ef4444", t: "S1" },
+            { p: pp - 0.618 * (h - l), col: "#dc2626", t: "S2" },
+            { p: pp - (h - l), col: "#b91c1c", t: "S3" },
+          ]
+        : [
+            { p: pp, col: "#eab308", t: "P" },
+            { p: r1, col: "#22c55e", t: "R1" }, { p: r2, col: "#16a34a", t: "R2" }, { p: r3, col: "#15803d", t: "R3" },
+            { p: s1, col: "#ef4444", t: "S1" }, { p: s2, col: "#dc2626", t: "S2" }, { p: s3, col: "#b91c1c", t: "S3" },
           ];
-        }
-        const r1 = 2 * pp - l, s1 = 2 * pp - h;
-        const r2 = pp + range, s2 = pp - range;
-        const r3 = r1 + range, s3 = s1 - range;
-        return [
-          { p: pp, col: colP, t: "P" },
-          { p: r1, col: colR, t: "R1" },
-          { p: r2, col: colR, t: "R2" },
-          { p: r3, col: colR, t: "R3" },
-          { p: s1, col: colS, t: "S1" },
-          { p: s2, col: colS, t: "S2" },
-          { p: s3, col: colS, t: "S3" },
-        ];
-      };
-
-      // Pivots from completed bar i apply during bar i+1
-      const lastIdx = bars.length - 1;
-      // Prefer previous completed bar as source for "current" period (like Pine high[1])
-      const startI = pivotShowLast ? Math.max(0, lastIdx - 2) : 0;
-      const endI = lastIdx - 1; // last completed source bar
-
-      for (let i = startI; i <= endI; i++) {
-        if (pivotShowLast && i < endI) continue; // only last completed
-        const src = bars[i];
-        const tStart = bars[i + 1] ? bars[i + 1].time : src.time + barSec;
-        const tEnd = bars[i + 2]
-          ? bars[i + 2].time
-          : Math.max(chartLastT, tStart + barSec);
-        if (!(tEnd > tStart)) continue;
-        const levels = makeLevels(src.high, src.low, src.close);
-        const isLast = i === endI;
-        for (const { p, col, t } of levels) {
-          if (!(p > 0) || Number.isNaN(p)) continue;
-          try {
-            const ls = chart.addLineSeries({
-              color: col,
-              lineWidth: isLast ? 2 : 1,
-              lineStyle: LineStyle.Solid,
-              priceLineVisible: false,
-              lastValueVisible: !!(pivotShowLabels && isLast),
-              crosshairMarkerVisible: false,
-              title: pivotShowLabels && isLast ? t : "",
-              autoscaleInfoProvider: () => null as any,
-            });
-            ls.setData([
-              { time: tStart as any, value: p },
-              { time: tEnd as any, value: p },
-            ]);
-            pivotSeriesRef.current.push(ls);
-          } catch {}
-        }
-      }
+      const times = candlesRef.current.map((x: any) => x.time);
+      levels.forEach(({ p, col, t }) => {
+        const ls = chartRef.current!.addLineSeries({
+          color: col, lineWidth: 1, lineStyle: LineStyle.Dashed,
+          priceLineVisible: false, lastValueVisible: true, title: t,
+        });
+        ls.setData(times.map((tm: number) => ({ time: tm as any, value: p })));
+        pivotSeriesRef.current.push(ls);
+      });
     } catch {}
-  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotOpacity, removePivot]);
+  }, [showPivot, pivotVisible, hideIndicators, pivotTf, pivotFib, removePivot]);
 
   const removeTrend = useCallback(() => {
     trendSeriesRef.current.forEach((s) => { try { chartRef.current?.removeSeries(s); } catch {} });
     trendSeriesRef.current = [];
   }, []);
-  /** Trend Line AdamMoradi_v1 — Pine-accurate (confirmation bar_index + unbroken close path) */
   const applyTrend = useCallback(() => {
     removeTrend();
     if (!showTrend || !trendVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const chart = chartRef.current;
-    const candles = candlesRef.current as { time: number; open: number; high: number; low: number; close: number }[];
-    const n = candles.length;
-    const period = Math.max(10, Math.min(50, Number(trendPeriod) || 24));
-    const pivotN = Math.max(2, Math.min(6, Number(trendMax) || 6));
-    const maxLines = 3;
-    if (n < period * 2 + 10) return;
-
-    // Like Pine ta.pivothigh/low: value is at pivot bar `i`, but stored bar_index is confirmation = i+period
-    const topVals: number[] = [];
-    const topPos: number[] = [];
-    const botVals: number[] = [];
-    const botPos: number[] = [];
-    for (let confirm = period * 2; confirm < n; confirm++) {
-      const i = confirm - period;
-      let isH = true, isL = true;
-      for (let j = 1; j <= period; j++) {
-        if (candles[i].high < candles[i - j].high || candles[i].high < candles[i + j].high) isH = false;
-        if (candles[i].low > candles[i - j].low || candles[i].low > candles[i + j].low) isL = false;
+    const candles = candlesRef.current;
+    const period = Math.max(4, trendPeriod);
+    const maxLines = Math.max(1, Math.min(5, trendMax));
+    const { highs, lows } = findPivots(candles, period);
+    const recentLows = lows.slice(-6);
+    const recentHighs = highs.slice(-6);
+    let upCount = 0;
+    for (let i = 0; i < recentLows.length - 1 && upCount < maxLines; i++) {
+      const a = recentLows[i], b = recentLows[i + 1];
+      if (b.price <= a.price) continue;
+      const slope = (b.price - a.price) / (b.index - a.index);
+      let valid = true;
+      for (let x = a.index + 1; x < candles.length; x++) {
+        if (candles[x].low < (a.price + slope * (x - a.index)) * 0.998) { valid = false; break; }
       }
-      if (isH) {
-        topVals.unshift(candles[i].high);
-        topPos.unshift(confirm);
-        if (topVals.length > pivotN) { topVals.pop(); topPos.pop(); }
-      }
-      if (isL) {
-        botVals.unshift(candles[i].low);
-        botPos.unshift(confirm);
-        if (botVals.length > pivotN) { botVals.pop(); botPos.pop(); }
-      }
+      if (!valid) continue;
+      const endIdx = candles.length - 1;
+      try {
+        const ls = chartRef.current!.addLineSeries({ color: trendUpColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+        ls.setData([
+          { time: a.time as any, value: a.price },
+          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
+        ]);
+        trendSeriesRef.current.push(ls);
+        upCount++;
+      } catch {}
     }
-
-    const lastBar = n - 1;
-
-    // Bottom / uptrend support
-    let countLow = 0;
-    for (let pivot1 = 0; pivot1 <= Math.min(pivotN, botVals.length) - 2 && countLow < maxLines; pivot1++) {
-      let found = false;
-      for (let pivot2 = Math.min(pivotN, botVals.length) - 1; pivot2 >= pivot1 + 1; pivot2--) {
-        const value1 = botVals[pivot1];
-        const value2 = botVals[pivot2];
-        const position1 = botPos[pivot1];
-        const position2 = botPos[pivot2];
-        if (!(value1 > value2) || position1 === position2) continue;
-        const different = (value1 - value2) / (position1 - position2);
-        let highLine = value2 + different;
-        let lowLocation = lastBar;
-        let valid = true;
-        const startX = position2 + 1 - period;
-        for (let x = Math.max(0, startX); x <= lastBar; x++) {
-          if (candles[x].close < highLine) { valid = false; break; }
-          lowLocation = x;
-          highLine += different;
-        }
-        if (!valid) continue;
-        const upVal1 = highLine - different;
-        const upVal2 = value2;
-        const startIdx = Math.max(0, position2 - period);
-        try {
-          const ls = chart.addLineSeries({
-            color: trendUpColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          ls.setData([
-            { time: candles[startIdx].time as any, value: upVal2 },
-            { time: candles[lowLocation].time as any, value: upVal1 },
-          ]);
-          trendSeriesRef.current.push(ls);
-          countLow++;
-          found = true;
-        } catch {}
-        if (found) break;
+    let dnCount = 0;
+    for (let i = 0; i < recentHighs.length - 1 && dnCount < maxLines; i++) {
+      const a = recentHighs[i], b = recentHighs[i + 1];
+      if (b.price >= a.price) continue;
+      const slope = (b.price - a.price) / (b.index - a.index);
+      let valid = true;
+      for (let x = a.index + 1; x < candles.length; x++) {
+        if (candles[x].high > (a.price + slope * (x - a.index)) * 1.002) { valid = false; break; }
       }
-    }
-
-    // Top / downtrend resistance
-    let countHigh = 0;
-    for (let pivot1 = 0; pivot1 <= Math.min(pivotN, topVals.length) - 2 && countHigh < maxLines; pivot1++) {
-      let found = false;
-      for (let pivot2 = Math.min(pivotN, topVals.length) - 1; pivot2 >= pivot1 + 1; pivot2--) {
-        const value1 = topVals[pivot1];
-        const value2 = topVals[pivot2];
-        const position1 = topPos[pivot1];
-        const position2 = topPos[pivot2];
-        if (!(value1 < value2) || position1 === position2) continue;
-        const different = (value2 - value1) / (position1 - position2);
-        let highLine = value2 - different;
-        let lowLocation = lastBar;
-        let valid = true;
-        const startX = position2 + 1 - period;
-        for (let x = Math.max(0, startX); x <= lastBar; x++) {
-          if (candles[x].close > highLine) { valid = false; break; }
-          lowLocation = x;
-          highLine -= different;
-        }
-        if (!valid) continue;
-        const dVal1 = highLine + different;
-        const dVal2 = value2;
-        const startIdx = Math.max(0, position2 - period);
-        try {
-          const ls = chart.addLineSeries({
-            color: trendDownColor,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          ls.setData([
-            { time: candles[startIdx].time as any, value: dVal2 },
-            { time: candles[lowLocation].time as any, value: dVal1 },
-          ]);
-          trendSeriesRef.current.push(ls);
-          countHigh++;
-          found = true;
-        } catch {}
-        if (found) break;
-      }
+      if (!valid) continue;
+      const endIdx = candles.length - 1;
+      try {
+        const ls = chartRef.current!.addLineSeries({ color: trendDownColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+        ls.setData([
+          { time: a.time as any, value: a.price },
+          { time: candles[endIdx].time as any, value: a.price + slope * (endIdx - a.index) },
+        ]);
+        trendSeriesRef.current.push(ls);
+        dnCount++;
+      } catch {}
     }
   }, [showTrend, trendVisible, hideIndicators, trendPeriod, trendMax, trendUpColor, trendDownColor, removeTrend]);
-
-
-
-  const removeBB = useCallback(() => {
-    const s = bbSeriesRef.current;
-    if (!s) return;
-    try { chartRef.current?.removeSeries(s.basis); } catch {}
-    try { chartRef.current?.removeSeries(s.upper); } catch {}
-    try { chartRef.current?.removeSeries(s.lower); } catch {}
-    bbSeriesRef.current = null;
-  }, []);
-  const applyBB = useCallback(() => {
-    removeBB();
-    if (!showBB || !bbVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const chart = chartRef.current;
-    const data = calcBollinger(candlesRef.current, bbLength, bbMult);
-    try {
-      const basis = chart.addLineSeries({
-        color: bbBasisColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Basis",
-      });
-      const upper = chart.addLineSeries({
-        color: bbUpperColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Upper",
-      });
-      const lower = chart.addLineSeries({
-        color: bbLowerColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Lower",
-      });
-      basis.setData(data.basis.map((d) => ({ time: d.time as any, value: d.value })));
-      upper.setData(data.upper.map((d) => ({ time: d.time as any, value: d.value })));
-      lower.setData(data.lower.map((d) => ({ time: d.time as any, value: d.value })));
-      bbSeriesRef.current = { basis, upper, lower };
-    } catch {}
-  }, [showBB, bbVisible, hideIndicators, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor, removeBB]);
-
-  const removeHARSI = useCallback(() => {
-    if (harsiSeriesRef.current) {
-      try { chartRef.current?.removeSeries(harsiSeriesRef.current); } catch {}
-      harsiSeriesRef.current = null;
-    }
-  }, []);
-  const applyHARSI = useCallback(() => {
-    removeHARSI();
-    if (!showHARSI || !harsiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const chart = chartRef.current;
-    const candles = candlesRef.current as any[];
-    const ha = calcHARSI(candles, harsiLen, Math.max(1, harsiSmooth));
-    try {
-      const cs = chart.addCandlestickSeries({
-        priceScaleId: "harsi",
-        upColor: harsiUpColor,
-        downColor: harsiDnColor,
-        borderUpColor: harsiUpColor,
-        borderDownColor: harsiDnColor,
-        wickUpColor: "#9ca3af",
-        wickDownColor: "#9ca3af",
-        lastValueVisible: true,
-        priceLineVisible: false,
-        // HARSI typically ranges roughly -50..50 (z-scored RSI HA)
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: -50, maxValue: 50 },
-        }),
-      });
-      cs.setData(ha.map((c) => ({
-        time: c.time as any,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      })));
-      // zero / OB-OS guides via price lines on this scale
-      try {
-        cs.createPriceLine({ price: 0, color: "rgba(251,146,60,0.7)", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: 20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: -20, color: "rgba(156,163,175,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: 30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-        cs.createPriceLine({ price: -30, color: "rgba(156,163,175,0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-      } catch {}
-      harsiSeriesRef.current = cs;
-    } catch {}
-    updateMargins();
-  }, [showHARSI, harsiVisible, hideIndicators, harsiLen, harsiSmooth, harsiUpColor, harsiDnColor, removeHARSI, updateMargins]);
 
   const applyVolume = useCallback(() => {
     if (volumeSeriesRef.current && chartRef.current) {
@@ -3780,8 +2821,20 @@ export default function DashboardPage() {
       return;
     }
     const vol = chartRef.current.addHistogramSeries({
-      priceScaleId: "volume", priceLineVisible: false, lastValueVisible: false,
-    });
+      priceScaleId: "volume",
+      priceLineVisible: false,
+      lastValueVisible: false,
+      // Keep volume on its own scale — never stretch main price pane
+      autoscaleInfoProvider: () => {
+        try {
+          const vals = (candlesRef.current || []).map((c: any) => Number(c.volume) || 0);
+          const mx = Math.max(1, ...vals.slice(-200));
+          return { priceRange: { minValue: 0, maxValue: mx * 1.15 } };
+        } catch {
+          return { priceRange: { minValue: 0, maxValue: 1 } };
+        }
+      },
+    } as any);
     vol.setData(
       candlesRef.current.map((c: any) => ({
         time: c.time,
@@ -3793,213 +2846,9 @@ export default function DashboardPage() {
     updateMargins();
   }, [showVol, volVisible, hideIndicators, updateMargins]);
 
-  const removeTCP = useCallback(() => {
-    const series = seriesRef.current;
-    if (series && tcpLinesRef.current.length) {
-      for (const pl of tcpLinesRef.current) {
-        try { series.removePriceLine(pl); } catch {}
-      }
-    }
-    tcpLinesRef.current = [];
-  }, []);
-
-  const applyTCP = useCallback(() => {
-    removeTCP();
-    if (!showTCP || !tcpVisible || hideIndicators || !seriesRef.current) return;
-    const series = seriesRef.current;
-    const candles = candlesRef.current || [];
-    const lastClose = candles.length ? Number(candles[candles.length - 1].close) : 0;
-    const entry = Number(tcpEntry) > 0 ? Number(tcpEntry) : lastClose;
-    const sl = Number(tcpSL) > 0 ? Number(tcpSL) : 0;
-    if (!(entry > 0)) return;
-    const add = (price: number, color: string, title: string, width = 2) => {
-      if (!(price > 0) || Number.isNaN(price)) return;
-      try {
-        const pl = series.createPriceLine({
-          price,
-          color,
-          lineWidth: width as 1 | 2 | 3 | 4,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title,
-        });
-        tcpLinesRef.current.push(pl);
-      } catch {}
-    };
-    add(entry, "#ffffff", "Entry", 1);
-    if (sl > 0) add(sl, "#ef4444", "SL", 2);
-    for (const t of [
-      { on: tcpT1on, price: Number(tcpT1), label: "T1" },
-      { on: tcpT2on, price: Number(tcpT2), label: "T2" },
-      { on: tcpT3on, price: Number(tcpT3), label: "T3" },
-      { on: tcpT4on, price: Number(tcpT4), label: "T4" },
-      { on: tcpT5on, price: Number(tcpT5), label: "T5" },
-    ]) {
-      if (t.on && t.price > 0) add(t.price, "#22c55e", t.label, 1);
-    }
-  }, [showTCP, tcpVisible, hideIndicators, tcpEntry, tcpSL,
-    tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5, removeTCP]);
-
-  const removeROC = useCallback(() => {
-    if (rocSeriesRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(rocSeriesRef.current); } catch {}
-      rocSeriesRef.current = null;
-    }
-  }, []);
-  const applyROC = useCallback(() => {
-    removeROC();
-    if (!showROC || !rocVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const s = chartRef.current.addLineSeries({
-      color: rocColor, lineWidth: 2, priceScaleId: "roc",
-      priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerVisible: true,
-      title: "ROC",
-    });
-    s.setData(calcROC(candlesRef.current, rocPeriod) as any);
-    try {
-      s.createPriceLine({ price: 0, color: "rgba(120,123,134,0.6)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-    } catch {}
-    rocSeriesRef.current = s;
-    updateMargins();
-  }, [showROC, rocVisible, hideIndicators, rocPeriod, rocColor, removeROC, updateMargins]);
-
-  const removeATR = useCallback(() => {
-    if (atrSeriesRef.current && chartRef.current) {
-      try { chartRef.current.removeSeries(atrSeriesRef.current); } catch {}
-      atrSeriesRef.current = null;
-    }
-  }, []);
-  const applyATR = useCallback(() => {
-    removeATR();
-    if (!showATR || !atrVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const s = chartRef.current.addLineSeries({
-      color: atrColor, lineWidth: 2, priceScaleId: "atr",
-      priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerVisible: true,
-      title: "ATR",
-    });
-    s.setData(calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any);
-    atrSeriesRef.current = s;
-    updateMargins();
-  }, [showATR, atrVisible, hideIndicators, atrPeriod, atrSmooth, atrColor, removeATR, updateMargins]);
-
-  const removeMACD = useCallback(() => {
-    const chart = chartRef.current;
-    if (macdSeriesRef.current && chart) {
-      try { chart.removeSeries(macdSeriesRef.current.macd); } catch {}
-      try { chart.removeSeries(macdSeriesRef.current.signal); } catch {}
-      try { chart.removeSeries(macdSeriesRef.current.hist); } catch {}
-      macdSeriesRef.current = null;
-    }
-  }, []);
-  const applyMACD = useCallback(() => {
-    removeMACD();
-    if (!showMACD || !macdVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const chart = chartRef.current;
-    const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
-    const histS = chart.addHistogramSeries({
-      priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false,
-    });
-    histS.setData(hist as any);
-    const macdS = chart.addLineSeries({
-      color: macdColor, lineWidth: 2, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: true,
-    });
-    macdS.setData(macdLine as any);
-    const sigS = chart.addLineSeries({
-      color: macdSigColor, lineWidth: 2, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    sigS.setData(signalLine as any);
-    try {
-      macdS.createPriceLine({ price: 0, color: "rgba(120,123,134,0.5)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-    } catch {}
-    macdSeriesRef.current = { macd: macdS, signal: sigS, hist: histS };
-    updateMargins();
-  }, [showMACD, macdVisible, hideIndicators, macdFast, macdSlow, macdSignal, macdColor, macdSigColor, removeMACD, updateMargins]);
-
-  const removeStoch = useCallback(() => {
-    const chart = chartRef.current;
-    if (stochSeriesRef.current && chart) {
-      try { chart.removeSeries(stochSeriesRef.current.k); } catch {}
-      try { chart.removeSeries(stochSeriesRef.current.d); } catch {}
-      stochSeriesRef.current = null;
-    }
-  }, []);
-  const applyStoch = useCallback(() => {
-    removeStoch();
-    if (!showStoch || !stochVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
-    const chart = chartRef.current;
-    const { k, d } = calcStochRSI(candlesRef.current, stochRsiLen, stochLen, stochK, stochD);
-    const kS = chart.addLineSeries({
-      color: stochKColor, lineWidth: 2, priceScaleId: "stoch",
-      priceLineVisible: false, lastValueVisible: true,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-    });
-    kS.setData(k as any);
-    const dS = chart.addLineSeries({
-      color: stochDColor, lineWidth: 2, priceScaleId: "stoch",
-      priceLineVisible: false, lastValueVisible: false,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-    });
-    dS.setData(d as any);
-    try {
-      kS.createPriceLine({ price: 80, color: "rgba(120,123,134,0.7)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-      kS.createPriceLine({ price: 50, color: "rgba(120,123,134,0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-      kS.createPriceLine({ price: 20, color: "rgba(120,123,134,0.7)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
-    } catch {}
-    stochSeriesRef.current = { k: kS, d: dS };
-    updateMargins();
-  }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
-
-  
-  useEffect(() => { applyBB(); }, [applyBB]);
-  useEffect(() => { applyHARSI(); }, [applyHARSI]);
-
   const rebuildIndicators = useCallback(() => {
-    applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
-    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI]);
-
-  // Double-click hide/show oscillators — placed after apply* so functions exist
-  useEffect(() => {
-    if (hideOscillators) {
-      const clearSer = (ser: any) => {
-        if (!ser) return;
-        try { ser.setData([]); } catch {}
-        try { ser.applyOptions({ visible: false }); } catch {}
-      };
-      clearSer(rsiSeriesRef.current);
-      clearSer(rocSeriesRef.current);
-      clearSer(atrSeriesRef.current);
-      if (dmiSeriesRef.current) {
-        clearSer(dmiSeriesRef.current.plus);
-        clearSer(dmiSeriesRef.current.minus);
-        clearSer(dmiSeriesRef.current.adx);
-      }
-      if (stochSeriesRef.current) {
-        clearSer(stochSeriesRef.current.k);
-        clearSer(stochSeriesRef.current.d);
-      }
-      if (macdSeriesRef.current) {
-        clearSer(macdSeriesRef.current.macd);
-        clearSer(macdSeriesRef.current.signal);
-        clearSer(macdSeriesRef.current.hist);
-      }
-      clearSer(harsiSeriesRef.current);
-      clearSer(volumeSeriesRef.current);
-      try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
-      try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
-      try { updateMargins(); } catch {}
-    } else {
-      try {
-        applyRSI(); applyDMI(); applyROC(); applyATR();
-        applyMACD(); applyStoch(); applyHARSI(); applyVolume();
-        updateMargins();
-      } catch {}
-    }
-  }, [hideOscillators]); // eslint-disable-line react-hooks/exhaustive-deps
-
+    applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume]);
 
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
@@ -4171,12 +3020,10 @@ export default function DashboardPage() {
                     ? candlesRef.current.length
                     : candles.length);
                   if (n < 2) return;
-                  series.priceScale().applyOptions({
-                    autoScale: true,
-                    scaleMargins: { top: 0.08, bottom: 0.12 },
-                  });
+                  // Only time snap — do NOT touch scaleMargins (keeps RSI/DMI room + price scroll)
+                  priceRangeOverrideRef.current = null;
+                  series.priceScale().applyOptions({ autoScale: true });
                   chart.priceScale("right").applyOptions({ autoScale: true });
-                  // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
                   const past = Math.min(500, n);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
@@ -4199,10 +3046,8 @@ export default function DashboardPage() {
             }
           } else {
             try {
-              series.priceScale().applyOptions({
-                autoScale: true,
-                scaleMargins: { top: 0.08, bottom: 0.12 },
-              });
+              priceRangeOverrideRef.current = null;
+              series.priceScale().applyOptions({ autoScale: true });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
           }
@@ -4390,7 +3235,7 @@ export default function DashboardPage() {
         crosshair: { mode: CrosshairMode.Normal },
         rightPriceScale: {
           borderColor: "#2a2e39",
-          scaleMargins: { top: 0.06, bottom: 0.08 },
+          scaleMargins: { top: 0.04, bottom: 0.08 },
           entireTextOnly: false,
           autoScale: true,
           mode: 0, // Normal — drag/scroll price axis freely (TV-style)
@@ -4639,8 +3484,19 @@ export default function DashboardPage() {
             pTop = ov0.to;
           } else {
             try {
-              const t = s.coordinateToPrice?.(1);
-              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+              // Only sample inside the MAIN price pane (exclude RSI/DMI/Vol)
+              let used = 0.04;
+              const gap = 0.012;
+              try {
+                if (dmiSeriesRef.current) used += 0.15 + gap;
+                if (rsiSeriesRef.current) used += 0.16 + gap;
+                if (volumeSeriesRef.current) used += 0.11 + gap;
+              } catch {}
+              const h = Math.max(2, container.clientHeight);
+              const yTop = Math.max(1, h * 0.04);
+              const yBot = Math.max(yTop + 2, h * (1 - Math.max(0.04, used)));
+              const t = s.coordinateToPrice?.(yTop);
+              const b = s.coordinateToPrice?.(yBot);
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
@@ -4648,15 +3504,44 @@ export default function DashboardPage() {
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
+          // Guard against absurd ranges (e.g. sampling into oscillator zone)
+          if (pTop / Math.max(Math.abs(pBot), 1e-12) > 50 || pBot < 0 && pTop > 0) {
+            try {
+              const bars = candlesRef.current || [];
+              if (bars.length) {
+                let lo = Infinity, hi = -Infinity;
+                const n = bars.length;
+                const from = Math.max(0, n - 120);
+                for (let i = from; i < n; i++) {
+                  hi = Math.max(hi, Number(bars[i].high));
+                  lo = Math.min(lo, Number(bars[i].low));
+                }
+                if (hi > lo) {
+                  const pad = (hi - lo) * 0.1;
+                  pTop = hi + pad;
+                  pBot = lo - pad;
+                }
+              }
+            } catch {}
+          }
+          if (!(pTop > pBot)) return;
 
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+          // Cursor Y relative to MAIN pane only
+          let used2 = 0.04;
+          const gap2 = 0.012;
+          try {
+            if (dmiSeriesRef.current) used2 += 0.15 + gap2;
+            if (rsiSeriesRef.current) used2 += 0.16 + gap2;
+            if (volumeSeriesRef.current) used2 += 0.11 + gap2;
+          } catch {}
+          const mainH = Math.max(1, rect.height * (1 - Math.max(0.04, used2)));
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
           let factor = 1;
           for (let i = 0; i < steps; i++) {
             factor *= zoomIn ? 0.94 : 1.06;
           }
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
+          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 1e-8);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
@@ -4664,61 +3549,58 @@ export default function DashboardPage() {
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
-            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
-            // اگر API setVisibleRange داشت، مستقیم هم ست کن
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
         const onDblPrice = (e: MouseEvent) => {
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - e.clientX;
-          // Double-click on right price scale → reset vertical zoom
-          if (fromRight <= 100 && fromRight >= 0) {
-            priceRangeOverrideRef.current = null;
-            try {
-              const s = seriesRef.current as any;
-              const ps = s?.priceScale?.() || chart.priceScale("right");
-              ps?.setAutoScale?.(true);
-              ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
-            } catch {}
-            return;
-          }
-          // Double-click on chart body → toggle ONLY oscillator panes (chips stay)
+          if (fromRight > 100 || fromRight < 0) return;
+          e.preventDefault();
+          e.stopPropagation();
           try {
-            const next = !hideOscillatorsRef.current;
-            hideOscillatorsRef.current = next;
-            // Clear immediately so main chart is usable without waiting for React
-            if (next) {
-              const clearSer = (ser: any) => {
-                if (!ser) return;
-                try { ser.setData([]); } catch {}
-                try { ser.applyOptions({ visible: false }); } catch {}
-              };
-              clearSer(rsiSeriesRef.current);
-              clearSer(rocSeriesRef.current);
-              clearSer(atrSeriesRef.current);
-              if (dmiSeriesRef.current) {
-                clearSer(dmiSeriesRef.current.plus);
-                clearSer(dmiSeriesRef.current.minus);
-                clearSer(dmiSeriesRef.current.adx);
-              }
-              if (stochSeriesRef.current) {
-                clearSer(stochSeriesRef.current.k);
-                clearSer(stochSeriesRef.current.d);
-              }
-              if (macdSeriesRef.current) {
-                clearSer(macdSeriesRef.current.macd);
-                clearSer(macdSeriesRef.current.signal);
-                clearSer(macdSeriesRef.current.hist);
-              }
-              clearSer(harsiSeriesRef.current);
-              clearSer(volumeSeriesRef.current);
-              try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
-              try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
+            const s = seriesRef.current as any;
+            if (!s) return;
+            const bars = candlesRef.current || [];
+            if (bars.length < 2) {
+              priceRangeOverrideRef.current = null;
+              s.priceScale?.()?.applyOptions?.({ autoScale: true });
+              try { updateMargins(); } catch {}
+              return;
             }
-            setHideOscillators(next);
+            // Fit ONLY to visible candles (ignore SMA/trend/price-line extremes)
+            let from = 0;
+            let to = bars.length - 1;
+            try {
+              const lr = chart.timeScale().getVisibleLogicalRange();
+              if (lr && Number.isFinite(lr.from) && Number.isFinite(lr.to)) {
+                from = Math.max(0, Math.floor(lr.from));
+                to = Math.min(bars.length - 1, Math.ceil(lr.to));
+              }
+            } catch {}
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (let i = from; i <= to; i++) {
+              const b = bars[i];
+              if (!b) continue;
+              hi = Math.max(hi, Number(b.high));
+              lo = Math.min(lo, Number(b.low));
+            }
+            if (!(hi > lo) || !Number.isFinite(hi) || !Number.isFinite(lo)) {
+              priceRangeOverrideRef.current = null;
+              s.priceScale?.()?.applyOptions?.({ autoScale: true });
+              try { updateMargins(); } catch {}
+              return;
+            }
+            const pad = (hi - lo) * 0.08 + Math.abs(hi) * 1e-6;
+            const fit = { from: lo - pad, to: hi + pad };
+            priceRangeOverrideRef.current = fit;
+            const ps = s.priceScale?.() || chart.priceScale("right");
+            ps?.applyOptions?.({ autoScale: true });
+            try { ps?.setVisibleRange?.({ from: fit.from, to: fit.to }); } catch {}
+            try { updateMargins(); } catch {}
           } catch {}
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
@@ -5298,103 +4180,6 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Dashed vertical crosshair only over oscillator panes (avoids double line on main chart)
-        try {
-          const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
-          if (v) {
-            if (param && param.point) {
-              const x = param.point.x;
-              v.setAttribute("x1", String(x));
-              v.setAttribute("x2", String(x));
-              // keep y1/y2 as set in updateMargins (osc region only)
-            } else {
-              v.setAttribute("x1", "-10");
-              v.setAttribute("x2", "-10");
-            }
-          }
-        } catch {}
-        // TV-style pane labels: name + value at hovered bar (left of each oscillator)
-        try {
-          const host = paneLegendRef.current;
-          if (host) {
-            if (!param || param.time == null || !param.point) {
-              host.innerHTML = "";
-            } else {
-            const items: { id: string; label: string; color: string; value: string; bottom: number }[] = [];
-            const sd = param?.seriesData;
-            const fmt = (v: number) => {
-              const a = Math.abs(v);
-              if (a >= 1000) return v.toFixed(2);
-              if (a >= 1) return v.toFixed(2);
-              if (a >= 0.01) return v.toFixed(4);
-              return v.toFixed(6);
-            };
-            // Same stack order as updateMargins (bottom → up)
-            if (hideOscillatorsRef.current) { host.innerHTML = ""; return; }
-            const stack: { id: string; on: boolean; h: number; series: any; label: string; color: string; multi?: { series: any; label: string; color: string }[] }[] = [
-              { id: "dmi", on: !!dmiSeriesRef.current, h: 0.12, series: dmiSeriesRef.current?.adx, label: "DMI", color: "#3b82f6", multi: dmiSeriesRef.current ? [
-                { series: dmiSeriesRef.current.plus, label: "+DI", color: "#22c55e" },
-                { series: dmiSeriesRef.current.minus, label: "-DI", color: "#ef4444" },
-                { series: dmiSeriesRef.current.adx, label: "ADX", color: "#3b82f6" },
-              ] : undefined },
-              { id: "stoch", on: !!stochSeriesRef.current, h: 0.12, series: stochSeriesRef.current?.k, label: "Stoch", color: "#2962FF", multi: stochSeriesRef.current ? [
-                { series: stochSeriesRef.current.k, label: "K", color: "#2962FF" },
-                { series: stochSeriesRef.current.d, label: "D", color: "#FF6D00" },
-              ] : undefined },
-              { id: "macd", on: !!macdSeriesRef.current, h: 0.13, series: macdSeriesRef.current?.macd, label: "MACD", color: "#2962FF", multi: macdSeriesRef.current ? [
-                { series: macdSeriesRef.current.macd, label: "MACD", color: "#2962FF" },
-                { series: macdSeriesRef.current.signal, label: "Signal", color: "#FF6D00" },
-              ] : undefined },
-              { id: "harsi", on: !!harsiSeriesRef.current, h: 0.14, series: harsiSeriesRef.current, label: "HARSI", color: "#22c55e" },
-              { id: "rsi", on: !!rsiSeriesRef.current, h: 0.12, series: rsiSeriesRef.current, label: "RSI", color: "#c084fc" },
-              { id: "roc", on: !!rocSeriesRef.current, h: 0.11, series: rocSeriesRef.current, label: "ROC", color: "#2962FF" },
-              { id: "atr", on: !!atrSeriesRef.current, h: 0.11, series: atrSeriesRef.current, label: "ATR", color: "#B71C1C" },
-            ];
-            // Note: showROC etc may be stale in closure — use refs where possible; series presence is enough
-            // Match updateMargins: volume is in the stack height budget
-            const volOn = !!volumeSeriesRef.current;
-            const volHFrac = volOn ? 0.10 : 0;
-            const active = stack.filter((p) => p.on && p.series);
-            let totalH = active.reduce((s, p) => s + p.h, 0) + volHFrac;
-            const scale = totalH > 0.55 ? 0.55 / totalH : 1;
-            let used = volHFrac * scale; // start above volume band
-            const hostH = host.clientHeight || 400;
-            for (const p of active) {
-              const h = p.h * scale;
-              const bottomPx = used * hostH;
-              const paneH = h * hostH;
-              used += h;
-              const rows: string[] = [];
-              const sources = p.multi || [{ series: p.series, label: p.label, color: p.color }];
-              for (const src of sources) {
-                if (!src.series || !sd) continue;
-                try {
-                  const d: any = sd.get(src.series);
-                  // line/area: .value  |  candlestick (HARSI): .close
-                  let val: number | null = null;
-                  if (d && typeof d.value === "number" && !Number.isNaN(d.value)) val = d.value;
-                  else if (d && typeof d.close === "number" && !Number.isNaN(d.close)) val = d.close;
-                  if (val != null) {
-                    rows.push(`<span style="color:${src.color};font-weight:600">${src.label}</span> <span style="color:#e5e7eb">${fmt(val)}</span>`);
-                  }
-                } catch {}
-              }
-              if (!rows.length) continue;
-              items.push({
-                id: p.id,
-                label: rows.join("&nbsp;&nbsp;"),
-                color: p.color,
-                value: "",
-                bottom: bottomPx + Math.max(4, paneH * 0.2),
-              });
-            }
-            host.innerHTML = items.map((it) =>
-              `<div style="position:absolute;left:6px;bottom:${it.bottom}px;z-index:25;pointer-events:none;font-size:10px;line-height:1.35;text-shadow:0 1px 2px #000;white-space:nowrap;background:rgba(11,14,17,0.75);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.08)">${it.label}</div>`
-            ).join("");
-            }
-          }
-        } catch {}
-
         const mm = modeRef.current;
         // No horizontal price-line preview for these tools
         if (
@@ -6232,6 +5017,15 @@ export default function DashboardPage() {
           return;
         }
 
+        // When a secondary pane is active, horizontal draw/alarm go there — not main
+        if (
+          activePaneRef.current > 0 &&
+          (m === "draw" || m === "alarm" || m === "ray" || m === "alarm-ray")
+        ) {
+          setStatusMsg("Tap the selected (orange) chart to place");
+          return;
+        }
+
         // Diagonal / trend line (or alarm-diag): two clicks → segment A→B
         if (m === "diag" || m === "alarm-diag" || m === "arrow") {
           const t = resolveTime(param);
@@ -6504,53 +5298,6 @@ export default function DashboardPage() {
 
 
 
-        
-        if (m === "callout") {
-          const t = resolveTime(param);
-          if (t == null) return;
-          clickLockRef.current = true;
-          setSaving(true);
-          try {
-            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
-            let payload: any = {
-              symbol: symbolRef.current.toUpperCase(),
-              price: fp,
-              start_time: t,
-              end_time: t,
-              color: drawColorRef.current || "#0d9488",
-              width: 2,
-              note: "__callout:",
-            };
-            if (uid) payload.user_id = uid;
-            let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
-            if (error) {
-              payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:", start_time: t, end_time: t };
-              if (uid) payload.user_id = uid;
-              ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
-            }
-            if (!error && data) {
-              pushUndo();
-              setLines((prev) => [{
-                ...(data as ChartLine),
-                start_time: (data as any).start_time ?? t,
-                end_time: (data as any).end_time ?? t,
-                note: "__callout:",
-                price: fp,
-              }, ...prev]);
-              setStatusMsg("Callout placed — type text, drag the circle to move");
-            } else {
-              setStatusMsg("Callout save failed");
-            }
-          } finally {
-            setMode("none");
-            modeRef.current = "none";
-            setSaving(false);
-            setTimeout(() => { clickLockRef.current = false; }, 300);
-          }
-          return;
-        }
-
-
         // Arrow mark up / down / marker — single click (TradingView-style, stay in tool)
         if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") {
           clickLockRef.current = true;
@@ -6797,12 +5544,9 @@ export default function DashboardPage() {
             dash: drawDashRef.current,
           };
           if (m === "ray") {
-            // Always resolve time from click; encode origin in note so TF changes never lose half-line identity
+            // Always resolve time from click (works on empty/future area too)
             const t = resolveTime(param);
-            if (t != null && !Number.isNaN(t)) {
-              base.start_time = t;
-              base.note = `__ray:${t}`;
-            }
+            if (t != null && !Number.isNaN(t)) base.start_time = t;
           }
           let payload = { ...base };
           (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
@@ -7097,6 +5841,155 @@ export default function DashboardPage() {
           try {
             entry.chart.timeScale().fitContent();
           } catch {}
+          // Sync horizontal lines/alarms for this pane symbol
+          try {
+            if (entry.priceLines?.length) {
+              entry.priceLines.forEach((pl) => { try { entry!.series.removePriceLine(pl); } catch {} });
+            }
+            entry.priceLines = [];
+            const symU = cleanSym.toUpperCase();
+            const lines = (linesRef.current || []).filter(
+              (l) => chartSymbol(l.symbol) === symU && !isDiagonalLine(l) &&
+                !(l.note === "__vline__" || (typeof l.note === "string" && l.note.startsWith("__vline")))
+            );
+            const alms = (alarmsRef.current || []).filter(
+              (a) => a.is_active && !a.triggered && chartSymbol(a.symbol) === symU &&
+                a.end_price == null
+            );
+            for (const l of lines) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(l.price),
+                  color: l.color || DEFAULT_LINE_COLOR,
+                  lineWidth: Math.max(1, Number(l.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(l.dash || l.style),
+                  axisLabelVisible: true,
+                  title: userFacingNote(l.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+            for (const a of alms) {
+              try {
+                const pl = entry.series.createPriceLine({
+                  price: Number(a.price),
+                  color: a.color || DEFAULT_ALARM_COLOR,
+                  lineWidth: Math.max(1, Number(a.width) || 2) as 1 | 2 | 3 | 4,
+                  lineStyle: toLineStyle(a.dash),
+                  axisLabelVisible: true,
+                  title: userFacingNote(a.note) || "",
+                });
+                entry.priceLines.push(pl);
+              } catch {}
+            }
+          } catch {}
+          // Click on secondary pane → place draw/alarm when this pane is active (bind once)
+          try {
+            if ((entry as any)._clickBound) { /* skip */ } else {
+            (entry as any)._clickBound = true;
+            entry.chart.subscribeClick(async (param: any) => {
+              const paneId = idx + 1;
+              if (activePaneRef.current !== paneId) {
+                setActivePane(paneId);
+                return;
+              }
+              const m = modeRef.current;
+              if (m !== "draw" && m !== "alarm" && m !== "ray" && m !== "alarm-ray") return;
+              if (!param?.point || param.point.x < 0 || param.point.y < 0) return;
+              const ser = entry!.series;
+              const price = ser.coordinateToPrice(param.point.y);
+              if (price == null || Number.isNaN(Number(price))) return;
+              const fp = formatPrice(Number(price));
+              const symSave = cleanSym.toUpperCase();
+              clickLockRef.current = true;
+              setSaving(true);
+              try {
+                if (m === "alarm" || m === "alarm-ray") {
+                  const chosenColor = drawColorRef.current || DEFAULT_ALARM_COLOR;
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    condition: conditionRef.current,
+                    is_active: true,
+                    triggered: false,
+                    color: chosenColor,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
+                  if (error) {
+                    const minimal: any = {
+                      symbol: payload.symbol, price: payload.price, condition: payload.condition,
+                      is_active: true, triggered: false,
+                    };
+                    (minimal as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("alarms").insert([minimal]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setAlarms((prev) => [{ ...(data as Alarm), color: chosenColor }, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: chosenColor,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Alarm on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                  setAlarmMenuOpen(false);
+                } else {
+                  // draw / ray horizontal on secondary
+                  const payload: any = {
+                    symbol: symSave,
+                    price: fp,
+                    color: drawColorRef.current,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                    note: m === "ray" ? "__ray:" : null,
+                  };
+                  (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                  let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+                  if (error) {
+                    const fb: any = { symbol: payload.symbol, price: payload.price, color: payload.color };
+                    (fb as any).user_id = payload.user_id;
+                    ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                  }
+                  if (!error && data) {
+                    pushUndo();
+                    setLines((prev) => [data as ChartLine, ...prev]);
+                    try {
+                      const pl = ser.createPriceLine({
+                        price: fp,
+                        color: drawColorRef.current,
+                        lineWidth: Math.max(1, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                        lineStyle: toLineStyle(drawDashRef.current),
+                        axisLabelVisible: true,
+                        title: "",
+                      });
+                      entry!.priceLines = entry!.priceLines || [];
+                      entry!.priceLines.push(pl);
+                    } catch {}
+                    setStatusMsg(`Line on ${symSave} @ ${fp}`);
+                  }
+                  modeRef.current = "none";
+                  setMode("none");
+                }
+              } finally {
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 250);
+              }
+            });
+            } // end bind-once
+          } catch {}
         }
       } catch {}
     };
@@ -7269,17 +6162,12 @@ export default function DashboardPage() {
       showIndicatorMenu ||
       smaSettings ||
       pivotSettings ||
-      trendSettings || bbSettings || harsiSettings ||
+      trendSettings ||
       rsiSettings ||
       dmiSettings ||
-      tcpSettings ||
-      rocSettings ||
-      atrSettings ||
-      macdSettings ||
-      stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !alarmMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -7293,7 +6181,6 @@ export default function DashboardPage() {
       }
       if (drawToolsOpen && !el.closest?.("[data-menu]")) {
         setDrawToolsOpen(false);
-        setAlarmMenuOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -7307,11 +6194,6 @@ export default function DashboardPage() {
         setTrendSettings(false);
         setRsiSettings(false);
         setDmiSettings(false);
-        setTcpSettings(false);
-        setRocSettings(false);
-        setAtrSettings(false);
-        setMacdSettings(false);
-        setStochSettings(false);
         setHideMenuOpen(false);
         setTrashMenuOpen(false);
       }
@@ -7332,15 +6214,8 @@ export default function DashboardPage() {
     smaSettings,
     pivotSettings,
     trendSettings,
-    bbSettings,
-    harsiSettings,
     rsiSettings,
     dmiSettings,
-    tcpSettings,
-    rocSettings,
-    atrSettings,
-    macdSettings,
-    stochSettings,
     hideMenuOpen,
     trashMenuOpen,
     editingNoteId,
@@ -7348,7 +6223,6 @@ export default function DashboardPage() {
     editingNoteType,
     wlMenuOpen,
     drawToolsOpen,
-    alarmMenuOpen,
   ]);
 
   // Cancel tool / move: outside click (move only) OR right-click (any tool)
@@ -7451,15 +6325,9 @@ export default function DashboardPage() {
     showSMA, smaVisible, sma1, sma2, sma3, smaColor1, smaColor2, smaColor3,
     showRSI, rsiVisible, rsiPeriod, rsiColor,
     showDMI, dmiVisible, dmiPeriod, dmiPlusColor, dmiMinusColor, dmiAdxColor,
-    showPivot, pivotVisible, pivotTf, pivotFib, pivotShowLast, pivotShowLabels, pivotOpacity,
+    showPivot, pivotVisible, pivotTf, pivotFib,
     showTrend, trendVisible, trendPeriod, trendMax, trendUpColor, trendDownColor,
     showVol, volVisible,
-    showTCP, tcpVisible, tcpEntry, tcpSL,
-    tcpT1on, tcpT1, tcpT2on, tcpT2, tcpT3on, tcpT3, tcpT4on, tcpT4, tcpT5on, tcpT5,
-    showROC, rocVisible, rocPeriod, rocColor,
-    showATR, atrVisible, atrPeriod, atrSmooth, atrColor,
-    showMACD, macdVisible, macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
-    showStoch, stochVisible, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor,
     hideIndicators,
     rebuildIndicators,
   ]);
@@ -8129,13 +6997,6 @@ export default function DashboardPage() {
     setShowRSI(false);
     setShowDMI(false);
     setShowVol(false);
-    setShowTCP(false);
-    setShowROC(false);
-    setShowATR(false);
-    setShowMACD(false);
-    setShowStoch(false);
-    setShowBB(false);
-    setShowHARSI(false);
   };
   const clearMeasure = () => {
     measureStartRef.current = null;
@@ -8330,30 +7191,38 @@ export default function DashboardPage() {
 
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
+    const draft = (noteDraft || "").trim();
     if (editingNoteType === "line") {
-      const cur = linesRef.current?.find?.((l: any) => l.id === editingNoteId)
-        || lines.find((l) => l.id === editingNoteId);
-      let noteToSave = noteDraft;
-      if (cur?.note) {
-        const s = String(cur.note);
-        // Preserve ray / diag / callout encoding; only update user-facing text
-        if (s.startsWith("__ray:")) {
-          const head = s.split("|")[0]; // __ray:unix
-          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
-        } else if (s.startsWith("__diag:")) {
-          const head = s.split("|")[0];
-          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
-        } else if (s.startsWith("__callout:")) {
-          noteToSave = `__callout:${noteDraft.trim()}`;
-        } else if (s === "__vline__" || s.startsWith("__vline__:")) {
-          noteToSave = s; // vertical lines have no user note slot
-        }
+      const cur = linesRef.current.find((l) => l.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (
+        cur?.start_time != null &&
+        cur?.end_time == null &&
+        cur?.end_price == null &&
+        !cur?.note?.startsWith("__diag:")
+      ) {
+        noteVal = draft ? `__ray:${cur.start_time}|${draft}` : (cur.note || `__ray:${cur.start_time}`);
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
       }
-      await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
-      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
+      await supabase.from("chart_lines").update({ note: noteVal }).eq("id", editingNoteId);
+      setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteVal } : l)));
     } else {
-      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
-      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
+      const cur = alarmsRef.current.find((a) => a.id === editingNoteId);
+      let noteVal = draft;
+      if (cur?.note?.startsWith("__ray:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      } else if (cur?.note?.startsWith("__diag:")) {
+        const head = String(cur.note).split("|")[0];
+        noteVal = draft ? `${head}|${draft}` : head;
+      }
+      await supabase.from("alarms").update({ note: noteVal }).eq("id", editingNoteId);
+      setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteVal } : a)));
     }
     setEditingNoteId(null);
     setEditingNoteType(null);
@@ -8588,45 +7457,26 @@ export default function DashboardPage() {
                 }}
               >
                 {[
-                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
-                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
-                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
-                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
-                  { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
-                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
-                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
-                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
-                  { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
-                  { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
-                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD, group: "osc" },
-                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch, group: "osc" },
-                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
-                ].map((it, idx, arr) => {
-                  const prev = idx > 0 ? arr[idx - 1] : null;
-                  const showSep = prev && prev.group === "main" && it.group === "osc";
-                  return (
-                    <div key={it.key}>
-                      {showSep && (
-                        <div className="px-3 py-1.5 flex items-center gap-2 pointer-events-none">
-                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
-                          <span className="text-[9px] text-gray-500 shrink-0 tracking-wide">Oscillator</span>
-                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        data-ind-panel
-                        onClick={() => it.set((v: boolean) => !v)}
-                        className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
-                          it.on ? "text-orange-300" : "text-gray-200"
-                        }`}
-                      >
-                        <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
-                        <span>{it.label}</span>
-                      </button>
-                    </div>
-                  );
-                })}
+                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA },
+                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot },
+                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend },
+                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI },
+                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI },
+                  { key: "vol", label: "Volume", on: showVol, set: setShowVol },
+                ].map((it) => (
+                  <button
+                    key={it.key}
+                    type="button"
+                    data-ind-panel
+                    onClick={() => it.set((v: boolean) => !v)}
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      it.on ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
+                    <span>{it.label}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -9203,7 +8053,7 @@ export default function DashboardPage() {
                 title="Shapes & tools"
                 onClick={() => setDrawToolsOpen((v) => !v)}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
+                  drawToolsOpen || mode === "arrow" || mode === "path" || mode === "brush" || mode === "curve" || mode === "rect"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -9219,8 +8069,10 @@ export default function DashboardPage() {
                 <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Arrows</div>
                   {[
+                    { id: "arrow", label: "Arrow", icon: "↗" },
                     { id: "arrow-up", label: "Arrow mark up", icon: "↑" },
                     { id: "arrow-down", label: "Arrow mark down", icon: "↓" },
+                    { id: "arrow-marker", label: "Arrow marker", icon: "➤" },
                   ].map((t) => (
                     <button
                       key={t.id}
@@ -9235,7 +8087,13 @@ export default function DashboardPage() {
                         setMode(t.id as any);
                         if (t.id === "arrow-up") setDrawColor("#22c55e");
                         if (t.id === "arrow-down") setDrawColor("#ef4444");
-                        setStatusMsg(t.id === "arrow-up" ? "Arrow up: tap on chart" : "Arrow down: tap on chart");
+                        setStatusMsg(
+                          t.id === "arrow"
+                            ? "Arrow: first point, then tip"
+                            : t.id === "arrow-up" || t.id === "arrow-down"
+                            ? "Tap chart to place mark — color/size from style panel"
+                            : "Arrow marker: tap on chart"
+                        );
                       }}
                     >
                       <span className="w-4 text-center">{t.icon}</span>
@@ -9243,22 +8101,39 @@ export default function DashboardPage() {
                     </button>
                   ))}
                   <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Text</div>
-                  <button
-                    type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "callout" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setDrawToolsOpen(false);
-                      setDiagStart(null);
-                      setMovingId(null);
-                      setMode("callout" as any);
-                      setStatusMsg("Callout: tap on chart, then type");
-                    }}
-                  >
-                    <span className="w-4 text-center">💬</span>
-                    Callout
-                  </button>
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
+                  {[
+                    { id: "rect", label: "Rectangle", icon: "▭" },
+                    { id: "path", label: "Path", icon: "∿" },
+                    { id: "curve", label: "Curve", icon: "◠" },
+                    { id: "brush", label: "Brush", icon: "✎" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === t.id ? "text-orange-300" : ""}`}
+                      onClick={() => {
+                        clearPreview();
+                        setDrawToolsOpen(false);
+                        setDiagStart(null);
+                        setMovingId(null);
+                        pathPointsRef.current = [];
+                        setMode(t.id as any);
+                        setStatusMsg(
+                          t.id === "rect"
+                            ? "Rectangle: corner 1, then corner 2"
+                            : t.id === "path"
+                            ? "Path: click points, click menu again to finish"
+                            : t.id === "curve"
+                            ? "Curve: 3 points"
+                            : "Brush: drag on chart"
+                        );
+                      }}
+                    >
+                      <span className="w-4 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -9462,11 +8337,6 @@ export default function DashboardPage() {
                       setShowRSI(false);
                       setShowDMI(false);
                       setShowVol(false);
-                      setShowTCP(false);
-                      setShowROC(false);
-                      setShowATR(false);
-                      setShowMACD(false);
-                      setShowStoch(false);
                       setTrashMenuOpen(false);
                     }}
                     className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-red-400 hover:bg-red-950/50 flex items-center gap-2 border-t border-gray-700 mt-0.5 pt-2"
@@ -9515,7 +8385,10 @@ export default function DashboardPage() {
           >
             {/* Main chart */}
             <div
-              onMouseDown={() => setActivePane(0)}
+              onMouseDown={() => {
+                setActivePane(0);
+                setStatusMsg("Active chart: Main");
+              }}
               className={
                 (chartLayout === "1"
                   ? "relative min-h-0 min-w-0 h-full w-full"
@@ -9534,11 +8407,10 @@ export default function DashboardPage() {
                   ? " ring-1 ring-dashed ring-orange-400/80 rounded-xl"
                   : "")
               }
-              style={{ background: "#0b0e11" }}
             >
               <div
                 ref={chartContainerRef}
-                className="w-full h-full rounded-xl border border-gray-800 bg-[#0b0e11] overflow-hidden touch-none relative z-[10]"
+                className="w-full h-full rounded-xl border border-gray-800 bg-black overflow-hidden touch-none"
                 style={{
                   touchAction: "none",
                   WebkitUserSelect: "none",
@@ -9558,18 +8430,6 @@ export default function DashboardPage() {
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
                 style={{ zIndex: 4 }}
               />
-              <div
-                ref={paneLegendRef}
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 26 }}
-              />
-              <div
-                ref={paneSepRef}
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 22 }}
-              />
-
-
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
                   <div className="px-3 py-1.5 rounded-full bg-gray-900/90 border border-gray-600 text-xs text-gray-200">
@@ -9623,7 +8483,11 @@ export default function DashboardPage() {
               return (
                 <div
                   key={`pane-${i}`}
-                  onMouseDown={() => setActivePane(i + 1)}
+                  onMouseDown={() => {
+                    setActivePane(i + 1);
+                    const s = (paneSymbols[i] || "ETHUSDT").toUpperCase();
+                    setStatusMsg(`Active chart: ${s} — tools apply here`);
+                  }}
                   className={`relative min-h-0 min-w-0 rounded-xl border bg-black overflow-hidden ${spanClass} ${
                     activePane === i + 1
                       ? "border-orange-400 ring-1 ring-dashed ring-orange-400/90"
@@ -9784,17 +8648,9 @@ export default function DashboardPage() {
               <IndChip label="Trend" visible={trendVisible} onToggleVisible={() => setTrendVisible((v) => !v)}
                 onSettings={() => setTrendSettings((v) => !v)} onRemove={() => { setShowTrend(false); removeTrend(); }} />
             )}
-            {!hideIndicators && showBB && (
-              <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
-                onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
-            )}
             {!hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
-            )}
-            {!hideIndicators && showHARSI && (
-              <IndChip label="HARSI" visible={harsiVisible} onToggleVisible={() => setHarsiVisible((v) => !v)}
-                onSettings={() => setHarsiSettings((v) => !v)} onRemove={() => { setShowHARSI(false); removeHARSI(); }} />
             )}
             {!hideIndicators && showDMI && (
               <IndChip label="DMI" visible={dmiVisible} onToggleVisible={() => setDmiVisible((v) => !v)}
@@ -9804,88 +8660,7 @@ export default function DashboardPage() {
               <IndChip label="Vol" visible={volVisible} onToggleVisible={() => setVolVisible((v) => !v)}
                 onRemove={() => { setShowVol(false); applyVolume(); }} />
             )}
-            {!hideIndicators && showTCP && (
-              <IndChip label="TCP" visible={tcpVisible} onToggleVisible={() => setTcpVisible((v) => !v)}
-                onSettings={() => setTcpSettings((v) => !v)} onRemove={() => { setShowTCP(false); removeTCP(); }} />
-            )}
-            {!hideIndicators && showROC && (
-              <IndChip label="ROC" visible={rocVisible} onToggleVisible={() => setRocVisible((v) => !v)}
-                onSettings={() => setRocSettings((v) => !v)} onRemove={() => { setShowROC(false); removeROC(); }} />
-            )}
-            {!hideIndicators && showATR && (
-              <IndChip label="ATR" visible={atrVisible} onToggleVisible={() => setAtrVisible((v) => !v)}
-                onSettings={() => setAtrSettings((v) => !v)} onRemove={() => { setShowATR(false); removeATR(); }} />
-            )}
-            {!hideIndicators && showMACD && (
-              <IndChip label="MACD" visible={macdVisible} onToggleVisible={() => setMacdVisible((v) => !v)}
-                onSettings={() => setMacdSettings((v) => !v)} onRemove={() => { setShowMACD(false); removeMACD(); }} />
-            )}
-            {!hideIndicators && showStoch && (
-              <IndChip label="Stoch" visible={stochVisible} onToggleVisible={() => setStochVisible((v) => !v)}
-                onSettings={() => setStochSettings((v) => !v)} onRemove={() => { setShowStoch(false); removeStoch(); }} />
-            )}
           </div>
-
-          {/* TCP info table — bottom-left so it does not cover indicator chips */}
-          {!hideIndicators && showTCP && tcpVisible && (
-            <div
-              data-ind-panel
-              role="button"
-              title="Open TCP settings"
-              onClick={() => setTcpSettings(true)}
-              className="absolute bottom-14 left-2 z-20 bg-gray-950/90 border border-gray-700 rounded-lg p-2 text-[10px] text-gray-200 shadow-xl max-w-[220px] pointer-events-auto cursor-pointer hover:border-orange-500/50 hover:bg-gray-900/95 transition-colors tabular-nums"
-            >
-              {(() => {
-                const candles = candlesRef.current || [];
-                const lastClose = candles.length ? Number(candles[candles.length - 1].close) : 0;
-                const entry = Number(tcpEntry) > 0 ? Number(tcpEntry) : lastClose;
-                const sl = Number(tcpSL) > 0 ? Number(tcpSL) : 0;
-                const risk = Math.abs(entry - sl);
-                const riskAmt = Number(tcpCapital) * (Number(tcpRiskPct) / 100);
-                const lev = Math.max(0.01, Number(tcpLeverage) || 1);
-                const posSize = risk > 0 && entry > 0 ? riskAmt / ((risk / entry) * lev) : 0;
-                const isLong = entry > sl;
-                const rows: { lab: string; val: string }[] = [
-                  { lab: "Capital", val: `$${Number(tcpCapital).toFixed(2)}` },
-                  { lab: "Entry", val: String(formatPrice(entry)) },
-                  { lab: "Stop Loss", val: sl > 0 ? String(formatPrice(sl)) : "—" },
-                  { lab: "Risk $", val: `$${riskAmt.toFixed(2)}` },
-                  { lab: "Pos Size", val: posSize.toFixed(4) },
-                  { lab: "Leverage", val: String(lev) },
-                  { lab: "Side", val: isLong ? "LONG" : "SHORT" },
-                ];
-                const tgts = [
-                  [tcpT1on, tcpT1, tcpT1rr, "T1"],
-                  [tcpT2on, tcpT2, tcpT2rr, "T2"],
-                  [tcpT3on, tcpT3, tcpT3rr, "T3"],
-                  [tcpT4on, tcpT4, tcpT4rr, "T4"],
-                  [tcpT5on, tcpT5, tcpT5rr, "T5"],
-                ] as const;
-                for (const [on, price, rr, lab] of tgts) {
-                  if (!on || !(Number(price) > 0) || !(risk > 0)) continue;
-                  const reward = isLong ? Number(price) - entry : entry - Number(price);
-                  const actualRr = reward / risk;
-                  const closePct = actualRr > 0 ? (Number(rr) / actualRr) * 100 : 0;
-                  const closeVal = (closePct / 100) * posSize * lev;
-                  rows.push({
-                    lab,
-                    val: `RR ${Number(rr)} · $${closeVal.toFixed(2)} (${closePct.toFixed(1)}%)`,
-                  });
-                }
-                return (
-                  <>
-                    <div className="font-semibold text-orange-300 mb-1">TCP</div>
-                    {rows.map((r) => (
-                      <div key={r.lab} className="flex justify-between gap-2 leading-relaxed">
-                        <span className="text-gray-400">{r.lab}</span>
-                        <span className="text-right">{r.val}</span>
-                      </div>
-                    ))}
-                  </>
-                );
-              })()}
-            </div>
-          )}
 
           {/* Measure HUD — updated via DOM during drag (no React lag) */}
           <div
@@ -10200,64 +8975,40 @@ export default function DashboardPage() {
             </div>
           )}
           {pivotSettings && showPivot && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
-              <p className="font-medium mb-2">Pivot Points</p>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-[10px] text-gray-400 w-16 shrink-0">Timeframe</span>
-                <select
-                  value={pivotTf}
-                  onChange={(e) => setPivotTf(e.target.value)}
-                  className="flex-1 bg-gray-800 border border-gray-600 rounded-md px-2 py-1.5 text-xs text-gray-100"
-                >
-                  {PIVOT_TFS.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </select>
+            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
+              <p className="font-medium mb-2">Pivot TF</p>
+              <div className="flex flex-wrap gap-1 mb-2">
+                {PIVOT_TFS.map((t) => (
+                  <button key={t.value} type="button" onClick={() => setPivotTf(t.value)}
+                    className={`px-2 py-0.5 rounded text-xs ${pivotTf === t.value ? "bg-orange-500" : "bg-gray-800"}`}>
+                    {t.label}
+                  </button>
+                ))}
               </div>
-              <label className="flex items-center gap-2 text-xs mb-1.5">
-                <input type="checkbox" checked={pivotShowLast} onChange={(e) => setPivotShowLast(e.target.checked)} className="accent-orange-500" />
-                Show only last period
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} />
+                Fib levels
               </label>
-              <label className="flex items-center gap-2 text-xs mb-1.5">
-                <input type="checkbox" checked={pivotShowLabels} onChange={(e) => setPivotShowLabels(e.target.checked)} className="accent-orange-500" />
-                Show price labels
-              </label>
-              <label className="flex items-center gap-2 text-xs mb-2">
-                <input type="checkbox" checked={pivotFib} onChange={(e) => setPivotFib(e.target.checked)} className="accent-orange-500" />
-                Fibonacci levels
-              </label>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-[10px] text-gray-400 w-16 shrink-0">Opacity</span>
-                <input
-                  type="range"
-                  min={15}
-                  max={100}
-                  value={pivotOpacity}
-                  onChange={(e) => setPivotOpacity(parseInt(e.target.value, 10) || 85)}
-                  className="flex-1 accent-orange-500"
-                />
-                <span className="text-[10px] text-gray-400 w-8 text-right">{pivotOpacity}%</span>
-              </div>
               <button type="button" onClick={() => setPivotSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
             </div>
           )}
           {trendSettings && showTrend && (
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
-              <p className="font-medium mb-2">Trend Line</p>
+              <p className="font-medium mb-2">Trend Settings</p>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs w-14">Period</span>
                 <input value={trendPeriodStr} onChange={(e) => setTrendPeriodStr(e.target.value)}
                   onBlur={() => {
                     const n = parseInt(trendPeriodStr, 10);
-                    if (!Number.isNaN(n) && n >= 10 && n <= 50) setTrendPeriod(n);
+                    if (!Number.isNaN(n) && n >= 4) setTrendPeriod(n);
                     else setTrendPeriodStr(String(trendPeriod));
                   }}
                   className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
               </div>
               <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Pivots</span>
-                <input type="number" min={2} max={6} value={trendMax}
-                  onChange={(e) => setTrendMax(Math.min(6, Math.max(2, parseInt(e.target.value, 10) || 6)))}
+                <span className="text-xs w-14">Max</span>
+                <input type="number" min={1} max={5} value={trendMax}
+                  onChange={(e) => setTrendMax(Math.min(5, Math.max(1, parseInt(e.target.value, 10) || 3)))}
                   className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
               </div>
               <div className="flex items-center gap-2 mb-1">
@@ -10271,195 +9022,7 @@ export default function DashboardPage() {
               <button type="button" onClick={() => setTrendSettings(false)} className="text-xs text-gray-400 mt-1">Close</button>
             </div>
           )}
-          {tcpSettings && showTCP && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-56 text-sm max-h-[70vh] overflow-y-auto">
-              <p className="font-medium mb-2">TCP — Money Management</p>
-              {[
-                ["Capital $", tcpCapital, setTcpCapital],
-                ["Risk %", tcpRiskPct, setTcpRiskPct],
-                ["Leverage", tcpLeverage, setTcpLeverage],
-                ["Entry", tcpEntry, setTcpEntry],
-                ["Stop Loss", tcpSL, setTcpSL],
-              ].map(([lab, val, set]: any) => (
-                <div key={String(lab)} className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] w-16 text-gray-400">{lab}</span>
-                  <input type="number" step="any" value={val as number}
-                    onChange={(e) => (set as any)(parseFloat(e.target.value) || 0)}
-                    className="flex-1 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-                </div>
-              ))}
-              <p className="text-[10px] text-gray-500 mt-2 mb-1">Targets</p>
-              {[
-                [1, tcpT1on, setTcpT1on, tcpT1, setTcpT1, tcpT1rr, setTcpT1rr],
-                [2, tcpT2on, setTcpT2on, tcpT2, setTcpT2, tcpT2rr, setTcpT2rr],
-                [3, tcpT3on, setTcpT3on, tcpT3, setTcpT3, tcpT3rr, setTcpT3rr],
-                [4, tcpT4on, setTcpT4on, tcpT4, setTcpT4, tcpT4rr, setTcpT4rr],
-                [5, tcpT5on, setTcpT5on, tcpT5, setTcpT5, tcpT5rr, setTcpT5rr],
-              ].map(([n, on, setOn, price, setPrice, rr, setRr]: any) => (
-                <div key={n} className="flex items-center gap-1 mb-1">
-                  <input type="checkbox" checked={!!on} onChange={(e) => setOn(e.target.checked)} className="accent-orange-500" />
-                  <span className="text-[10px] w-5">T{n}</span>
-                  <input type="number" step="any" value={price as number}
-                    onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
-                    className="w-16 bg-gray-800 rounded px-1 py-0.5 text-[10px]" />
-                  <span className="text-[10px] text-gray-500">RR</span>
-                  <input type="number" step="any" value={rr as number}
-                    onChange={(e) => setRr(parseFloat(e.target.value) || 0)}
-                    className="w-10 bg-gray-800 rounded px-1 py-0.5 text-[10px]" />
-                </div>
-              ))}
-              <button type="button" onClick={() => {
-                const c = candlesRef.current || [];
-                if (c.length) {
-                  const last = Number(c[c.length - 1].close);
-                  if (!(tcpEntry > 0)) setTcpEntry(last);
-                  if (!(tcpSL > 0)) setTcpSL(Number((last * 0.98).toFixed(6)));
-                  if (!(tcpT1 > 0)) setTcpT1(Number((last * 1.02).toFixed(6)));
-                  if (!(tcpT2 > 0)) setTcpT2(Number((last * 1.04).toFixed(6)));
-                  if (!(tcpT3 > 0)) setTcpT3(Number((last * 1.06).toFixed(6)));
-                }
-              }} className="text-[10px] text-orange-300 mt-1">Fill from last price</button>
-              <button type="button" onClick={() => setTcpSettings(false)} className="block text-xs text-gray-400 mt-2">Close</button>
-            </div>
-          )}
-          {rocSettings && showROC && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
-              <p className="font-medium mb-2">ROC</p>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-12">Length</span>
-                <input type="number" min={1} value={rocPeriod} onChange={(e) => setRocPeriod(Math.max(1, parseInt(e.target.value, 10) || 9))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs w-12">Color</span>
-                <input type="color" value={rocColor} onChange={(e) => setRocColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <button type="button" onClick={() => setRocSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
-            </div>
-          )}
-          {atrSettings && showATR && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
-              <p className="font-medium mb-2">ATR</p>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Length</span>
-                <input type="number" min={1} value={atrPeriod} onChange={(e) => setAtrPeriod(Math.max(1, parseInt(e.target.value, 10) || 14))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Smooth</span>
-                <select value={atrSmooth} onChange={(e) => setAtrSmooth(e.target.value as any)} className="bg-gray-800 rounded px-1 py-0.5 text-xs">
-                  {["RMA", "SMA", "EMA", "WMA"].map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs w-14">Color</span>
-                <input type="color" value={atrColor} onChange={(e) => setAtrColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <button type="button" onClick={() => setAtrSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
-            </div>
-          )}
-          {macdSettings && showMACD && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-48 text-sm">
-              <p className="font-medium mb-2">MACD</p>
-              {[
-                ["Fast", macdFast, setMacdFast],
-                ["Slow", macdSlow, setMacdSlow],
-                ["Signal", macdSignal, setMacdSignal],
-              ].map(([lab, val, set]: any) => (
-                <div key={lab} className="flex items-center gap-2 mb-1">
-                  <span className="text-xs w-12">{lab}</span>
-                  <input type="number" min={1} value={val} onChange={(e) => set(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-                </div>
-              ))}
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-12">MACD</span>
-                <input type="color" value={macdColor} onChange={(e) => setMacdColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs w-12">Signal</span>
-                <input type="color" value={macdSigColor} onChange={(e) => setMacdSigColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <button type="button" onClick={() => setMacdSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
-            </div>
-          )}
-          {stochSettings && showStoch && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
-              <p className="font-medium mb-2">Stoch RSI</p>
-              {[
-                ["RSI Len", stochRsiLen, setStochRsiLen],
-                ["Stoch", stochLen, setStochLen],
-                ["K", stochK, setStochK],
-                ["D", stochD, setStochD],
-              ].map(([lab, val, set]: any) => (
-                <div key={lab} className="flex items-center gap-2 mb-1">
-                  <span className="text-xs w-14">{lab}</span>
-                  <input type="number" min={1} value={val} onChange={(e) => set(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-14 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-                </div>
-              ))}
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">K color</span>
-                <input type="color" value={stochKColor} onChange={(e) => setStochKColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs w-14">D color</span>
-                <input type="color" value={stochDColor} onChange={(e) => setStochDColor(e.target.value)} className="w-6 h-6" />
-              </div>
-              <button type="button" onClick={() => setStochSettings(false)} className="text-xs text-gray-400 mt-2">Close</button>
-            </div>
-          )}
-          
-          {bbSettings && showBB && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
-              <p className="font-medium mb-2">Bollinger Bands</p>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs w-14">Length</span>
-                <input type="number" min={1} value={bbLength} onChange={(e) => setBbLength(Math.max(1, parseInt(e.target.value, 10) || 20))}
-                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs w-14">StdDev</span>
-                <input type="number" min={0.1} step={0.1} value={bbMult} onChange={(e) => setBbMult(Math.max(0.1, parseFloat(e.target.value) || 2))}
-                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Basis</span>
-                <input type="color" value={bbBasisColor} onChange={(e) => setBbBasisColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Upper</span>
-                <input type="color" value={bbUpperColor} onChange={(e) => setBbUpperColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-14">Lower</span>
-                <input type="color" value={bbLowerColor} onChange={(e) => setBbLowerColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <button type="button" onClick={() => setBbSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
-            </div>
-          )}
-          {harsiSettings && showHARSI && (
-            <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
-              <p className="font-medium mb-2">HARSI</p>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs w-16">Length</span>
-                <input type="number" min={1} value={harsiLen} onChange={(e) => setHarsiLen(Math.max(1, parseInt(e.target.value, 10) || 14))}
-                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs w-16">Open Sm.</span>
-                <input type="number" min={1} max={100} value={harsiSmooth} onChange={(e) => setHarsiSmooth(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                  className="w-16 bg-gray-800 rounded px-1 py-0.5 text-xs" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-16">Up</span>
-                <input type="color" value={harsiUpColor} onChange={(e) => setHarsiUpColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs w-16">Down</span>
-                <input type="color" value={harsiDnColor} onChange={(e) => setHarsiDnColor(e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <button type="button" onClick={() => setHarsiSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
-            </div>
-          )}
-{rsiSettings && showRSI && (
-
+          {rsiSettings && showRSI && (
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-44 text-sm">
               <p className="font-medium mb-2">RSI</p>
               <div className="flex items-center gap-2 mb-1">
