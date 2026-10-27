@@ -2035,26 +2035,28 @@ export default function DashboardPage() {
       { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.11 },
       { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     ];
-    // Maximize mode: only the selected oscillator fills the chart
+    // Maximize mode: selected oscillator fills nearly the whole plot (time axis stays)
     let active = panes.filter((p) => p.on);
     if (maxId) {
       active = active
         .filter((p) => p.id === maxId)
-        .map((p) => ({ ...p, h: 0.92 }));
+        .map((p) => ({ ...p, h: 0.98 }));
       if (!active.length) {
-        // fallback if indicator was turned off
         maximizedOscRef.current = null;
       }
     }
     let totalH = active.reduce((s, p) => s + p.h, 0);
-    const maxTotal = maxId ? 0.92 : 0.55;
+    const maxTotal = maxId ? 0.98 : 0.55;
     const scale = totalH > maxTotal ? maxTotal / totalH : 1;
     let used = 0;
     for (const p of active) {
       const h = p.h * scale;
       try {
         chart.priceScale(p.id).applyOptions({
-          scaleMargins: { top: 1 - used - h, bottom: used },
+          // When maximized: from near top (2%) down to time axis
+          scaleMargins: maxId
+            ? { top: 0.02, bottom: 0.0 }
+            : { top: 1 - used - h, bottom: used },
           borderVisible: true,
           visible: true,
           entireTextOnly: false,
@@ -2066,12 +2068,21 @@ export default function DashboardPage() {
     }
     chart.priceScale("right").applyOptions({
       scaleMargins: maxId
-        ? { top: 0.96, bottom: 0.02 } // collapse main candles when an osc is maximized
+        ? { top: 0.99, bottom: 0.0 } // fully collapse main candles / main price labels
         : {
             top: 0.04,
             bottom: Math.max(0.08, used + 0.04),
           },
-    });
+      // Hide main price labels when maximized so they don't sit in empty strip
+      visible: !maxId,
+    } as any);
+    // Also hide main series paint when maximized
+    try {
+      if (maxId) {
+        const cs: any = (chart as any);
+        // series list not public — rely on scaleMargins collapse + osc mask covering
+      }
+    } catch {}
     // Hide price scales for inactive oscillators so their labels don't leak onto main axis
     const allOscIds = ["dmi", "stoch", "macd", "harsi", "rsi", "roc", "atr", "volume"];
     const activeIds = new Set(active.map((p) => p.id));
@@ -2128,13 +2139,21 @@ export default function DashboardPage() {
         const plotH = Math.max(1, hostH - TIME_AXIS_H);
 
         // 1) Solid backgrounds — hide candles/grid behind each oscillator pane (above time axis)
+        // When maximized, cover the entire plot so no main-chart residue shows
+        if (maxId) {
+          parts.push(
+            `<div data-osc-mask="max" style="position:absolute;left:0;right:0;top:0;height:${plotH}px;background:#0b0e11;pointer-events:none;"></div>`
+          );
+        }
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
-          const topPx = plotH * (1 - tops[i]);
-          const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
-          parts.push(
-            `<div data-osc-mask="${active[i].id}" style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
-          );
+          const topPx = maxId ? 0 : plotH * (1 - tops[i]);
+          const heightPx = maxId ? plotH : Math.max(1, plotH * (tops[i] - bottoms[i]));
+          if (!maxId) {
+            parts.push(
+              `<div data-osc-mask="${active[i].id}" style="position:absolute;left:0;right:56px;top:${topPx}px;height:${heightPx}px;background:#0b0e11;pointer-events:none;"></div>`
+            );
+          }
         }
 
         // 2) SVG oscillator lines ABOVE masks — data from candles (series.data() is private)
@@ -2246,9 +2265,14 @@ export default function DashboardPage() {
         try {
           for (let i = 0; i < active.length; i++) {
             if (!oscIds.has(active[i].id)) continue;
-            const topPx = plotH * (1 - tops[i]);
-            const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
-            paneClip[active[i].id] = { top: topPx, bot: topPx + heightPx };
+            if (maxId) {
+              // Fill entire plot area (time axis excluded via plotH)
+              paneClip[active[i].id] = { top: 0, bot: plotH };
+            } else {
+              const topPx = plotH * (1 - tops[i]);
+              const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
+              paneClip[active[i].id] = { top: topPx, bot: topPx + heightPx };
+            }
           }
           // Horizontal guide line helper (OB / mid / OS) — clipped to pane
           const guideH = (series: any, price: number, color: string, oscId?: string, dashed = true) => {
@@ -2460,7 +2484,7 @@ export default function DashboardPage() {
         );
 
         // Vertical crosshair only over oscillator stack (native LWC handles main chart)
-        const oscTopPx = plotH * (1 - used);
+        const oscTopPx = maxId ? 0 : plotH * (1 - used);
         // Per-pane CSS overflow:hidden containers — bulletproof clip on iPad/Safari
         // Each osc SVG uses pane-local coordinates (y=0 at top of pane)
         for (const [cid, box] of Object.entries(paneClip)) {
@@ -2472,9 +2496,11 @@ export default function DashboardPage() {
             `</div>`
           );
         }
-        // Horizontal dashed crosshair only over osc stack (LWC already draws the vertical — avoids double line)
+        // Crosshair over osc stack: vertical (osc region only) + horizontal
+        // Vertical is clipped to osc panes so it does NOT double with LWC on main chart
         parts.push(
           `<svg id="osc-overlay-svg" width="${hostW}" height="${plotH}" style="position:absolute;left:0;top:0;overflow:hidden;pointer-events:none;z-index:6;">` +
+          `<line id="osc-crosshair-v" x1="-10" y1="${oscTopPx}" x2="-10" y2="${plotH}" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
           `<line id="osc-crosshair-h" x1="0" y1="-10" x2="${hostW - 56}" y2="-10" stroke="rgba(255,255,255,0.55)" stroke-width="1" stroke-dasharray="4 3" />` +
           `</svg>`
         );
@@ -2503,8 +2529,8 @@ export default function DashboardPage() {
         const scaleW = 56;
         for (let i = 0; i < active.length; i++) {
           if (!oscIds.has(active[i].id)) continue;
-          const topPx = plotH * (1 - tops[i]);
-          const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
+          const topPx = maxId ? 0 : plotH * (1 - tops[i]);
+          const heightPx = maxId ? plotH : Math.max(1, plotH * (tops[i] - bottoms[i]));
           // opaque cover + interactive hit target for vertical zoom (iPad/desktop)
           const id = active[i].id;
           parts.push(
@@ -6303,17 +6329,32 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
-        // Horizontal dashed guide only inside oscillator stack (vertical = native LWC only)
+        // Osc stack crosshair: vertical + horizontal (only inside osc region — no double on main)
         try {
+          const v = document.getElementById("osc-crosshair-v") as SVGLineElement | null;
           const h = document.getElementById("osc-crosshair-h") as SVGLineElement | null;
           const host = paneSepRef.current as any;
           const oscTop = host?.__oscTopPx ?? 0;
           const plotH = host?.__plotH ?? 0;
           const hostW = host?.__hostW ?? 0;
-          if (h) {
-            if (param && param.point) {
-              const y = param.point.y;
-              if (y >= oscTop && y <= plotH - 2) {
+          if (param && param.point) {
+            const x = param.point.x;
+            const y = param.point.y;
+            const inOsc = y >= oscTop && y <= plotH - 2;
+            if (v) {
+              if (inOsc) {
+                v.setAttribute("x1", String(x));
+                v.setAttribute("x2", String(x));
+                v.setAttribute("y1", String(oscTop));
+                v.setAttribute("y2", String(plotH));
+              } else {
+                // hide our vertical on main chart (LWC already draws it there)
+                v.setAttribute("x1", "-10");
+                v.setAttribute("x2", "-10");
+              }
+            }
+            if (h) {
+              if (inOsc) {
                 h.setAttribute("y1", String(y));
                 h.setAttribute("y2", String(y));
                 h.setAttribute("x1", "0");
@@ -6322,10 +6363,10 @@ export default function DashboardPage() {
                 h.setAttribute("y1", "-10");
                 h.setAttribute("y2", "-10");
               }
-            } else {
-              h.setAttribute("y1", "-10");
-              h.setAttribute("y2", "-10");
             }
+          } else {
+            if (v) { v.setAttribute("x1", "-10"); v.setAttribute("x2", "-10"); }
+            if (h) { h.setAttribute("y1", "-10"); h.setAttribute("y2", "-10"); }
           }
         } catch {}
         // TV-style pane labels: name + value at hovered bar (left of each oscillator)
