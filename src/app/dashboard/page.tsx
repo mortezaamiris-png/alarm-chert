@@ -2128,21 +2128,31 @@ export default function DashboardPage() {
           series: any,
           rows: { time: any; value: number }[],
           color: string,
-          width = 1.5
+          width = 1.5,
+          clipTop?: number,
+          clipBot?: number
         ) => {
           if (!series || !rows.length) return "";
           try {
             const pts: string[] = [];
+            const hasClip = clipTop != null && clipBot != null && clipBot > clipTop;
             for (const r of rows) {
               const x = ts.timeToCoordinate(r.time as any);
-              const y = series.priceToCoordinate(r.value);
+              let y = series.priceToCoordinate(r.value);
               if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) continue;
-              // only draw points that fall inside the chart
               if (Number(x) < -50 || Number(x) > hostW + 50) continue;
+              if (hasClip) {
+                // Hard-clip to oscillator pane — never bleed into chart above
+                if (Number(y) < clipTop! - 1 || Number(y) > clipBot! + 1) continue;
+                y = Math.max(clipTop!, Math.min(clipBot!, Number(y)));
+              }
               pts.push(`${x},${y}`);
             }
             if (pts.length < 2) return "";
-            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" />`;
+            const clipAttr = hasClip
+              ? ` clip-path="inset(${clipTop}px 56px ${Math.max(0, hostH - (clipBot as number))}px 0)"`
+              : "";
+            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round"${clipAttr} />`;
           } catch {
             return "";
           }
@@ -2178,55 +2188,69 @@ export default function DashboardPage() {
 
         const svgBits: string[] = [];
         try {
-          // Horizontal guide line helper (OB / mid / OS) — drawn ABOVE solid masks
-          const guideH = (series: any, price: number, color: string, dashed = true) => {
+          // pane pixel bounds for hard-clip (id -> {top, bot})
+          const paneClip: Record<string, { top: number; bot: number }> = {};
+          for (let i = 0; i < active.length; i++) {
+            if (!oscIds.has(active[i].id)) continue;
+            const topPx = plotH * (1 - tops[i]);
+            const heightPx = Math.max(1, plotH * (tops[i] - bottoms[i]));
+            paneClip[active[i].id] = { top: topPx, bot: topPx + heightPx };
+          }
+          // Horizontal guide line helper (OB / mid / OS) — clipped to pane
+          const guideH = (series: any, price: number, color: string, oscId?: string, dashed = true) => {
             if (!series) return "";
             try {
-              const y = series.priceToCoordinate(price);
+              let y = series.priceToCoordinate(price);
               if (y == null || Number.isNaN(Number(y))) return "";
+              if (oscId && paneClip[oscId]) {
+                const { top, bot } = paneClip[oscId];
+                if (Number(y) < top - 1 || Number(y) > bot + 1) return "";
+                y = Math.max(top, Math.min(bot, Number(y)));
+              }
               const dash = dashed ? ' stroke-dasharray="4 3"' : "";
-              // Extend to left edge of right scale strip so numbers sit on the line end
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1"${dash} />`;
             } catch { return ""; }
           };
           if (rsiSeriesRef.current) {
-            // RSI overbought 70 / mid 50 / oversold 30
-            svgBits.push(guideH(rsiSeriesRef.current, 70, "rgba(148,163,184,0.7)"));
-            svgBits.push(guideH(rsiSeriesRef.current, 50, "rgba(148,163,184,0.35)"));
-            svgBits.push(guideH(rsiSeriesRef.current, 30, "rgba(148,163,184,0.7)"));
-            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2));
+            const c = paneClip["rsi"];
+            svgBits.push(guideH(rsiSeriesRef.current, 70, "rgba(148,163,184,0.7)", "rsi"));
+            svgBits.push(guideH(rsiSeriesRef.current, 50, "rgba(148,163,184,0.35)", "rsi"));
+            svgBits.push(guideH(rsiSeriesRef.current, 30, "rgba(148,163,184,0.7)", "rsi"));
+            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot));
           }
           if (rocSeriesRef.current) {
-            // ROC zero mid-line (+ optional weak bands)
-            svgBits.push(guideH(rocSeriesRef.current, 0, "rgba(148,163,184,0.75)"));
-            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2));
+            const cRoc = paneClip["roc"];
+            svgBits.push(guideH(rocSeriesRef.current, 0, "rgba(148,163,184,0.75)", "roc"));
+            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot));
           }
           if (atrSeriesRef.current) {
-            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2));
+            const cAtr = paneClip["atr"];
+            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot));
           }
           if (dmiSeriesRef.current) {
             const d = calcDMI(candles as any, dmiPeriod);
-            // DMI strength guides
-            svgBits.push(guideH(dmiSeriesRef.current.adx, 40, "rgba(148,163,184,0.45)"));
-            svgBits.push(guideH(dmiSeriesRef.current.adx, 20, "rgba(148,163,184,0.55)"));
-            svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25));
-            svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25));
-            svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2));
+            const cDmi = paneClip["dmi"];
+            svgBits.push(guideH(dmiSeriesRef.current.adx, 40, "rgba(148,163,184,0.45)", "dmi"));
+            svgBits.push(guideH(dmiSeriesRef.current.adx, 20, "rgba(148,163,184,0.55)", "dmi"));
+            svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot));
+            svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot));
+            svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot));
           }
           if (stochSeriesRef.current) {
             const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
-            // Stoch RSI overbought 80 / mid 50 / oversold 20
-            svgBits.push(guideH(stochSeriesRef.current.k, 80, "rgba(148,163,184,0.7)"));
-            svgBits.push(guideH(stochSeriesRef.current.k, 50, "rgba(148,163,184,0.4)"));
-            svgBits.push(guideH(stochSeriesRef.current.k, 20, "rgba(148,163,184,0.7)"));
-            svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2));
-            svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5));
+            const cSt = paneClip["stoch"];
+            svgBits.push(guideH(stochSeriesRef.current.k, 80, "rgba(148,163,184,0.7)", "stoch"));
+            svgBits.push(guideH(stochSeriesRef.current.k, 50, "rgba(148,163,184,0.4)", "stoch"));
+            svgBits.push(guideH(stochSeriesRef.current.k, 20, "rgba(148,163,184,0.7)", "stoch"));
+            svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot));
+            svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot));
           }
           if (macdSeriesRef.current) {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
+            const cMacd = paneClip["macd"];
             svgBits.push(histRects(macdSeriesRef.current.hist, m.hist as any));
-            svgBits.push(pathFrom(macdSeriesRef.current.macd, m.macdLine as any, macdColor || "#2962FF", 2));
-            svgBits.push(pathFrom(macdSeriesRef.current.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5));
+            svgBits.push(pathFrom(macdSeriesRef.current.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot));
+            svgBits.push(pathFrom(macdSeriesRef.current.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot));
           }
           if (harsiSeriesRef.current) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
@@ -2441,19 +2465,7 @@ export default function DashboardPage() {
               y0 = clientY;
               const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
               range0 = { from: prev.from, to: prev.to };
-              // Reveal native LWC series for THIS pane so zoom is live (TV-style)
-              try {
-                host.querySelectorAll(`[data-osc-mask="${oscId}"]`).forEach((n) => {
-                  (n as HTMLElement).style.opacity = "0";
-                });
-                const svg = host.querySelector("#osc-overlay-svg") as HTMLElement | null;
-                if (svg) svg.style.opacity = "0.35"; // dim overlay so LWC line is visible
-                getSer()?.applyOptions?.({ visible: true });
-                if (oscId === "stoch") {
-                  stochSeriesRef.current?.k?.applyOptions?.({ visible: true });
-                  stochSeriesRef.current?.d?.applyOptions?.({ visible: true });
-                }
-              } catch {}
+              // Keep solid masks opaque — never let series bleed into chart above
             };
             const onMove = (clientY: number) => {
               if (!dragging || !range0) return;
