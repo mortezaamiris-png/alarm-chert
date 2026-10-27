@@ -4143,9 +4143,9 @@ export default function DashboardPage() {
     removeSMA();
     if (!showSMA || !smaVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
     const c = candlesRef.current;
-    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const s1 = chartRef.current.addLineSeries({ color: smaColor1, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const s2 = chartRef.current.addLineSeries({ color: smaColor2, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const s3 = chartRef.current.addLineSeries({ color: smaColor3, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
     s1.setData(calcSMA(c, sma1) as any);
     s2.setData(calcSMA(c, sma2) as any);
     s3.setData(calcSMA(c, sma3) as any);
@@ -4529,15 +4529,15 @@ export default function DashboardPage() {
     try {
       const basis = chart.addLineSeries({
         color: bbBasisColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Basis",
+        crosshairMarkerVisible: false,
       });
       const upper = chart.addLineSeries({
         color: bbUpperColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Upper",
+        crosshairMarkerVisible: false,
       });
       const lower = chart.addLineSeries({
         color: bbLowerColor, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, title: "BB Lower",
+        crosshairMarkerVisible: false,
       });
       basis.setData(data.basis.map((d) => ({ time: d.time as any, value: d.value })));
       upper.setData(data.upper.map((d) => ({ time: d.time as any, value: d.value })));
