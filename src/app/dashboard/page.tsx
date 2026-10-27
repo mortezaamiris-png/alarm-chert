@@ -2130,29 +2130,36 @@ export default function DashboardPage() {
           color: string,
           width = 1.5,
           clipTop?: number,
-          clipBot?: number
+          clipBot?: number,
+          priceFrom?: number,
+          priceTo?: number
         ) => {
-          if (!series || !rows.length) return "";
+          if (!rows.length) return "";
           try {
             const pts: string[] = [];
-            const hasClip = clipTop != null && clipBot != null && clipBot > clipTop;
+            const hasClip = clipTop != null && clipBot != null && (clipBot as number) > (clipTop as number);
+            const hasLinear = hasClip && priceFrom != null && priceTo != null && (priceTo as number) > (priceFrom as number);
             for (const r of rows) {
               const x = ts.timeToCoordinate(r.time as any);
-              let y = series.priceToCoordinate(r.value);
-              if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) continue;
+              if (x == null || Number.isNaN(Number(x))) continue;
               if (Number(x) < -50 || Number(x) > hostW + 50) continue;
+              let y: number | null = null;
+              if (hasLinear) {
+                // Linear map value -> pane Y (stable zoom, never bleeds)
+                const rel = (Number(r.value) - (priceFrom as number)) / ((priceTo as number) - (priceFrom as number));
+                y = (clipTop as number) + (1 - rel) * ((clipBot as number) - (clipTop as number));
+              } else if (series) {
+                y = series.priceToCoordinate(r.value);
+              }
+              if (y == null || Number.isNaN(Number(y))) continue;
               if (hasClip) {
-                // Hard-clip to oscillator pane — never bleed into chart above
-                if (Number(y) < clipTop! - 1 || Number(y) > clipBot! + 1) continue;
-                y = Math.max(clipTop!, Math.min(clipBot!, Number(y)));
+                if (Number(y) < (clipTop as number) - 0.5 || Number(y) > (clipBot as number) + 0.5) continue;
+                y = Math.max(clipTop as number, Math.min(clipBot as number, Number(y)));
               }
               pts.push(`${x},${y}`);
             }
             if (pts.length < 2) return "";
-            const clipAttr = hasClip
-              ? ` clip-path="inset(${clipTop}px 56px ${Math.max(0, hostH - (clipBot as number))}px 0)"`
-              : "";
-            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round"${clipAttr} />`;
+            return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" />`;
           } catch {
             return "";
           }
@@ -2211,46 +2218,78 @@ export default function DashboardPage() {
               return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1"${dash} />`;
             } catch { return ""; }
           };
-          if (rsiSeriesRef.current) {
+          if (rsiSeriesRef.current || paneClip["rsi"]) {
             const c = paneClip["rsi"];
-            svgBits.push(guideH(rsiSeriesRef.current, 70, "rgba(148,163,184,0.7)", "rsi"));
-            svgBits.push(guideH(rsiSeriesRef.current, 50, "rgba(148,163,184,0.35)", "rsi"));
-            svgBits.push(guideH(rsiSeriesRef.current, 30, "rgba(148,163,184,0.7)", "rsi"));
-            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot));
+            const zr = oscPriceRangeRef.current["rsi"] || { from: 0, to: 100 };
+            // guide lines via linear map
+            const guideLin = (price: number, color: string) => {
+              if (!c || !(zr.to > zr.from)) return "";
+              if (price < zr.from || price > zr.to) return "";
+              const rel = (price - zr.from) / (zr.to - zr.from);
+              const y = c.top + (1 - rel) * (c.bot - c.top);
+              return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
+            };
+            svgBits.push(guideLin(70, "rgba(148,163,184,0.7)"));
+            svgBits.push(guideLin(50, "rgba(148,163,184,0.35)"));
+            svgBits.push(guideLin(30, "rgba(148,163,184,0.7)"));
+            svgBits.push(pathFrom(rsiSeriesRef.current, calcRSI(candles, rsiPeriod) as any, rsiColor || "#c084fc", 2, c?.top, c?.bot, zr.from, zr.to));
           }
-          if (rocSeriesRef.current) {
+          if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
-            svgBits.push(guideH(rocSeriesRef.current, 0, "rgba(148,163,184,0.75)", "roc"));
-            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot));
+            const zrR = oscPriceRangeRef.current["roc"] || { from: -10, to: 10 };
+            if (cRoc && zrR.to > zrR.from && 0 >= zrR.from && 0 <= zrR.to) {
+              const rel = (0 - zrR.from) / (zrR.to - zrR.from);
+              const y = cRoc.top + (1 - rel) * (cRoc.bot - cRoc.top);
+              svgBits.push(`<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.75)" stroke-width="1" stroke-dasharray="4 3" />`);
+            }
+            svgBits.push(pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
           }
-          if (atrSeriesRef.current) {
+          if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
-            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot));
+            const zrA = oscPriceRangeRef.current["atr"] || { from: 0, to: 1 };
+            svgBits.push(pathFrom(atrSeriesRef.current, calcATR(candles as any, atrPeriod, atrSmooth) as any, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
-          if (dmiSeriesRef.current) {
+          if (dmiSeriesRef.current || paneClip["dmi"]) {
             const d = calcDMI(candles as any, dmiPeriod);
             const cDmi = paneClip["dmi"];
-            svgBits.push(guideH(dmiSeriesRef.current.adx, 40, "rgba(148,163,184,0.45)", "dmi"));
-            svgBits.push(guideH(dmiSeriesRef.current.adx, 20, "rgba(148,163,184,0.55)", "dmi"));
-            svgBits.push(pathFrom(dmiSeriesRef.current.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot));
-            svgBits.push(pathFrom(dmiSeriesRef.current.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot));
-            svgBits.push(pathFrom(dmiSeriesRef.current.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot));
+            const zrD = oscPriceRangeRef.current["dmi"] || { from: 0, to: 60 };
+            const guideLinD = (price: number, color: string) => {
+              if (!cDmi || !(zrD.to > zrD.from)) return "";
+              if (price < zrD.from || price > zrD.to) return "";
+              const rel = (price - zrD.from) / (zrD.to - zrD.from);
+              const y = cDmi.top + (1 - rel) * (cDmi.bot - cDmi.top);
+              return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
+            };
+            svgBits.push(guideLinD(40, "rgba(148,163,184,0.45)"));
+            svgBits.push(guideLinD(20, "rgba(148,163,184,0.55)"));
+            svgBits.push(pathFrom(dmiSeriesRef.current?.plus, d.plusDI as any, dmiPlusColor || "#22c55e", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            svgBits.push(pathFrom(dmiSeriesRef.current?.minus, d.minusDI as any, dmiMinusColor || "#ef4444", 1.25, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
+            svgBits.push(pathFrom(dmiSeriesRef.current?.adx, d.adx as any, dmiAdxColor || "#3b82f6", 2, cDmi?.top, cDmi?.bot, zrD.from, zrD.to));
           }
-          if (stochSeriesRef.current) {
+          if (stochSeriesRef.current || paneClip["stoch"]) {
             const st = calcStochRSI(candles, stochRsiLen, stochLen, stochK, stochD);
             const cSt = paneClip["stoch"];
-            svgBits.push(guideH(stochSeriesRef.current.k, 80, "rgba(148,163,184,0.7)", "stoch"));
-            svgBits.push(guideH(stochSeriesRef.current.k, 50, "rgba(148,163,184,0.4)", "stoch"));
-            svgBits.push(guideH(stochSeriesRef.current.k, 20, "rgba(148,163,184,0.7)", "stoch"));
-            svgBits.push(pathFrom(stochSeriesRef.current.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot));
-            svgBits.push(pathFrom(stochSeriesRef.current.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot));
+            const zrS = oscPriceRangeRef.current["stoch"] || { from: 0, to: 100 };
+            const guideLinS = (price: number, color: string) => {
+              if (!cSt || !(zrS.to > zrS.from)) return "";
+              if (price < zrS.from || price > zrS.to) return "";
+              const rel = (price - zrS.from) / (zrS.to - zrS.from);
+              const y = cSt.top + (1 - rel) * (cSt.bot - cSt.top);
+              return `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" />`;
+            };
+            svgBits.push(guideLinS(80, "rgba(148,163,184,0.7)"));
+            svgBits.push(guideLinS(50, "rgba(148,163,184,0.4)"));
+            svgBits.push(guideLinS(20, "rgba(148,163,184,0.7)"));
+            svgBits.push(pathFrom(stochSeriesRef.current?.k, st.k as any, stochKColor || "#2962FF", 2, cSt?.top, cSt?.bot, zrS.from, zrS.to));
+            svgBits.push(pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
           }
-          if (macdSeriesRef.current) {
+          if (macdSeriesRef.current || paneClip["macd"]) {
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
             const cMacd = paneClip["macd"];
-            svgBits.push(histRects(macdSeriesRef.current.hist, m.hist as any));
-            svgBits.push(pathFrom(macdSeriesRef.current.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot));
-            svgBits.push(pathFrom(macdSeriesRef.current.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot));
+            const zrM = oscPriceRangeRef.current["macd"] || { from: -1, to: 1 };
+            svgBits.push(histRects(macdSeriesRef.current?.hist, m.hist as any));
+            svgBits.push(pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
+            svgBits.push(pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
           }
           if (harsiSeriesRef.current) {
             const ha = calcHARSI(candles as any, harsiLen, Math.max(1, harsiSmooth));
@@ -2467,6 +2506,7 @@ export default function DashboardPage() {
               range0 = { from: prev.from, to: prev.to };
               // Keep solid masks opaque — never let series bleed into chart above
             };
+            let lastRedraw = 0;
             const onMove = (clientY: number) => {
               if (!dragging || !range0) return;
               const dy = clientY - y0;
@@ -2484,6 +2524,14 @@ export default function DashboardPage() {
               if (!(nt > nf)) return;
               applyZoom(nf, nt);
               refreshLabels(nf, nt);
+              // Throttled full redraw so the line zooms live inside its pane
+              const now = Date.now();
+              if (now - lastRedraw > 80) {
+                lastRedraw = now;
+                oscDraggingRef.current = false;
+                try { updateMargins(); } catch {}
+                oscDraggingRef.current = true;
+              }
             };
             const onEnd = () => {
               if (!dragging) return;
