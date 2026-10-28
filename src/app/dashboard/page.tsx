@@ -1635,6 +1635,7 @@ export default function DashboardPage() {
     color: string;
     width: number;
     dash: string;
+    isFib?: boolean;
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
   const movingRayRef = useRef(false);
@@ -7751,7 +7752,7 @@ export default function DashboardPage() {
         try {
           const mNow = modeRef.current;
           const startPt = diagStartRef.current;
-          if ((mNow === "fib" || mNow === "fib-ext") && startPt && param?.point && seriesRef.current) {
+          if ((mNow === "fib" || mNow === "fib-ext") && param?.point && seriesRef.current) {
             let price2: number | null = null;
             try {
               const p = seriesRef.current.coordinateToPrice(param.point.y);
@@ -7759,24 +7760,38 @@ export default function DashboardPage() {
             } catch {}
             if (price2 != null) {
               const p2 = price2;
-              // hollow handles: A fixed, B follows cursor
+              const chartNow = chartRef.current;
+              const tCursor = (() => {
+                try {
+                  const tr = chartNow?.timeScale().coordinateToTime(param.point.x as number);
+                  return tr != null ? Number(tr) : null;
+                } catch { return null; }
+              })();
               try {
-                const chartNow = chartRef.current;
-                const tCursor = (() => {
-                  try {
-                    const tr = chartNow?.timeScale().coordinateToTime(param.point.x as number);
-                    return tr != null ? Number(tr) : null;
-                  } catch { return null; }
-                })();
                 if (chartNow && tCursor != null) {
-                  positionHandles(
-                    { time: startPt.time, price: startPt.price },
-                    { time: tCursor, price: p2 },
-                    "b"
-                  );
+                  if (startPt) {
+                    // hollow handles: A fixed, B follows cursor
+                    positionHandles(
+                      { time: startPt.time, price: startPt.price },
+                      { time: tCursor, price: p2 },
+                      "b"
+                    );
+                  } else {
+                    // Before first click: hollow point follows mouse
+                    const elA = handleAElRef.current;
+                    if (elA) {
+                      elA.style.display = "block";
+                      elA.style.left = `${param.point.x}px`;
+                      elA.style.top = `${param.point.y}px`;
+                      elA.style.borderColor = "#f97316";
+                      elA.style.width = "16px";
+                      elA.style.height = "16px";
+                    }
+                    if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                  }
                 }
               } catch {}
-              // During placement: ONLY hollow points (A/B) — no level lines until fib is committed
+              // During placement: ONLY hollow points — no level lines until committed
               if (previewFibSeriesRef.current.length && seriesRef.current) {
                 try {
                   for (const pl of previewFibSeriesRef.current) {
@@ -8237,39 +8252,27 @@ export default function DashboardPage() {
           }
 
           if (best) {
-            // Fib selected → show A/B anchor points + open settings (not generic move)
+            // Fib selected → like Move: only show 2 anchor points (no settings modal)
             if (best.kind === "line") {
               const lFib = list.find((x) => x.id === best!.id);
               const fibHit = lFib ? parseFibNote(lFib.note) : null;
               if (fibHit && lFib) {
                 setSelectedFibId(String(lFib.id));
-                try {
-                  // load settings from note
-                  const levels = DEFAULT_FIB_LEVELS.map((d) => {
-                    const i = fibHit.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
-                    if (i >= 0) {
-                      return { ...d, on: true, color: (fibHit.colors && fibHit.colors[i]) || d.color };
-                    }
-                    return { ...d, on: false };
-                  });
-                  // also enable any custom levels present in note
-                  for (let i = 0; i < fibHit.levels.length; i++) {
-                    const v = fibHit.levels[i];
-                    if (!levels.some((x) => Math.abs(x.v - v) < 1e-6)) {
-                      levels.push({ v, on: true, color: (fibHit.colors && fibHit.colors[i]) || "#f97316" });
-                    }
-                  }
-                  setFibLevels(levels);
-                  setFibReverse(!!fibHit.reverse);
-                  setFibExtend(fibHit.extend || "none");
-                  setFibLabelH(fibHit.labelH || "right");
-                  setFibLabelV(fibHit.labelV || "middle");
-                  setFibShowPrices(fibHit.showPrices !== false);
-                  setFibShowLevels(fibHit.showLevels !== false);
-                  setFibBackground(!!fibHit.background);
-                  setFibBgOpacity(fibHit.bgOpacity ?? 20);
-                  setFibSettingsTab("style");
-                } catch {}
+                setMode("move");
+                setMovingId(lFib.id);
+                setMovingType("line");
+                movingVLineRef.current = false;
+                movingRayRef.current = false;
+                moveDiagRef.current = {
+                  id: lFib.id,
+                  phase: "pick",
+                  pointA: { time: Number(fibHit.t1), price: Number(fibHit.p1) },
+                  pointB: { time: Number(fibHit.t2), price: Number(fibHit.p2) },
+                  color: lFib.color || DEFAULT_LINE_COLOR,
+                  width: lFib.width || 1,
+                  dash: "solid",
+                  isFib: true,
+                } as any;
                 try {
                   positionHandles(
                     { time: fibHit.t1, price: fibHit.p1 },
@@ -8277,8 +8280,7 @@ export default function DashboardPage() {
                     null
                   );
                 } catch {}
-                setFibSettingsOpen(true);
-                setStatusMsg("Fib selected — drag handles or edit settings");
+                setStatusMsg("Tap a circle to move fib — empty chart or ✓ Done");
                 return;
               }
             }
@@ -8475,13 +8477,63 @@ export default function DashboardPage() {
                 width: md.width,
                 dash: md.dash,
               };
+              // If this is a fib, rebuild note with new anchors
+              if ((md as any).isFib && typ === "line") {
+                const cur = (linesRef.current || []).find((x) => x.id === id);
+                const oldFib = cur ? parseFibNote(cur.note) : null;
+                if (oldFib) {
+                  const levelsArr = (oldFib.levels || []).map((v, i) => ({
+                    v,
+                    on: true,
+                    color: (oldFib.colors && oldFib.colors[i]) || "#f97316",
+                  }));
+                  const note = buildFibNote(
+                    oldFib.kind,
+                    {
+                      t1: md.pointA.time,
+                      p1: md.pointA.price,
+                      t2: md.pointB.time,
+                      p2: md.pointB.price,
+                      t3: oldFib.t3,
+                      p3: oldFib.p3,
+                    },
+                    levelsArr,
+                    {
+                      reverse: oldFib.reverse,
+                      extend: oldFib.extend,
+                      lineWidth: oldFib.lineWidth,
+                      lineStyle: oldFib.lineStyle,
+                      trend: oldFib.trend,
+                      trendColor: oldFib.trendColor,
+                      background: oldFib.background,
+                      bgColor: oldFib.bgColor,
+                      bgOpacity: oldFib.bgOpacity,
+                      labelH: oldFib.labelH,
+                      labelV: oldFib.labelV,
+                      showPrices: oldFib.showPrices,
+                      showLevels: oldFib.showLevels,
+                      visMinutes: oldFib.visMinutes,
+                      visHours: oldFib.visHours,
+                      visDays: oldFib.visDays,
+                      visWeeks: oldFib.visWeeks,
+                      visMonths: oldFib.visMonths,
+                      visMinM: oldFib.visMinM, visMaxM: oldFib.visMaxM,
+                      visMinH: oldFib.visMinH, visMaxH: oldFib.visMaxH,
+                      visMinD: oldFib.visMinD, visMaxD: oldFib.visMaxD,
+                      visMinW: oldFib.visMinW, visMaxW: oldFib.visMaxW,
+                      visMinMo: oldFib.visMinMo, visMaxMo: oldFib.visMaxMo,
+                    }
+                  );
+                  patch.note = note;
+                }
+              }
               if (typ === "line") {
                 const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
                 if (error) {
                   await supabase.from("chart_lines").update({
                     price: md.pointA.price,
                     start_time: md.pointA.time,
-                    note: `__diag:${md.pointB.time}:${md.pointB.price}`,
+                    note: patch.note || `__diag:${md.pointB.time}:${md.pointB.price}`,
                     color: md.color,
                     width: md.width,
                     dash: md.dash,
@@ -8500,6 +8552,7 @@ export default function DashboardPage() {
                           width: md.width,
                           dash: md.dash,
                           style: md.dash,
+                          note: patch.note != null ? patch.note : l.note,
                         }
                       : l
                   )
