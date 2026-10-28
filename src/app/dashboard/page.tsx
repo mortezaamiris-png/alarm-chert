@@ -4402,75 +4402,85 @@ export default function DashboardPage() {
               const col = (fib.colors && fib.colors[i]) ||
                 (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
                 color || "#787B86";
-              const titleParts: string[] = [];
-              if (showLv) titleParts.push(String(lv));
-              if (showPx) titleParts.push(String(formatPrice(price)));
+              // TV format: "1.618 (0.3357)"
+              let labelText = "";
+              if (showLv && showPx) labelText = `${lv} (${formatPrice(price)})`;
+              else if (showLv) labelText = String(lv);
+              else if (showPx) labelText = String(formatPrice(price));
               try {
                 const lh = String((fib as any).labelH || "right");
                 const labV = String((fib as any).labelV || "middle");
                 const extRight = ext === "right" || ext === "both";
                 const extLeft = ext === "left" || ext === "both";
-                // Labels stay on the drawn segment: anchors only when None; chart edge when extended
-                const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
-                const labRight = extRight ? Math.max(chartLast, tB) : tB;
-                const labelT =
-                  lh === "left" ? labLeft :
-                  lh === "center" ? Math.round((labLeft + labRight) / 2) :
-                  labRight;
-                const labelText = titleParts.join(" ");
-                // NEVER use lastValueVisible — avoids colored chips on price scale
+                // Visible edges for Left/Center marker placement
+                let visLeft = chartFirst;
+                let visRight = chartLast;
+                try {
+                  const vr = chart.timeScale().getVisibleRange();
+                  if (vr) {
+                    if (vr.from != null) visLeft = Number(vr.from);
+                    if (vr.to != null) visRight = Number(vr.to);
+                  }
+                } catch {}
+                const labLeft = extLeft ? visLeft : tA;
+                const labRight = extRight ? visRight : tB;
+                // Right + any extend → stick label to PRICE SCALE (TV: at end of line by axis)
+                // Use lastValueVisible so labels always sit on the right axis edge
+                const stickToPriceAxis = lh === "right";
                 const hs: any = chart.addLineSeries({
                   color: col,
                   lineWidth: lw,
                   lineStyle: ls,
                   priceLineVisible: false,
-                  lastValueVisible: false,
+                  lastValueVisible: stickToPriceAxis && !!labelText,
+                  title: stickToPriceAxis && labelText ? labelText : undefined,
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 } as any);
-                // Extend=None → ONLY anchors tA..tB (no points past second fib point)
                 const ptsMap = new Map<number, number>();
                 ptsMap.set(Number(tFrom), price);
                 ptsMap.set(Number(tTo), price);
                 ptsMap.set(Number(tA), price);
                 ptsMap.set(Number(tB), price);
-                // label time must be inside the drawn segment
-                const labelClamped = Math.max(
-                  Math.min(Number(labelT), Number(tTo)),
-                  Math.min(Number(tFrom), Number(tTo))
-                );
-                ptsMap.set(labelClamped, price);
                 ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
                 if (extRight || extLeft) {
-                  const steps = 12;
+                  const steps = 16;
                   for (let s = 1; s < steps; s++) {
                     const tt = Math.round(Number(tFrom) + ((Number(tTo) - Number(tFrom)) * s) / steps);
                     ptsMap.set(tt, price);
                   }
+                  ptsMap.set(Math.round(visRight), price);
+                  ptsMap.set(Math.round(visLeft), price);
+                }
+                // ensure last data point exists at far right so axis label is active
+                if (stickToPriceAxis) {
+                  ptsMap.set(Number(tTo), price);
                 }
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
-                if (titleParts.length) {
+                // Left / Center → markers on the segment (not on price axis)
+                if (labelText && !stickToPriceAxis) {
                   try {
-                    // TV style: labels at end of line, no visible dots
-                    // Middle/Top/Bottom only shifts text slightly above/below the line
-                    const pos =
-                      labV === "top" ? "aboveBar" :
-                      labV === "bottom" ? "belowBar" :
-                      "inBar";
+                    const labelT =
+                      lh === "left" ? labLeft :
+                      Math.round((labLeft + labRight) / 2);
                     const mTime = Math.max(
                       Math.min(Number(labelT), Number(tTo)),
                       Math.min(Number(tFrom), Number(tTo))
                     );
+                    const pos =
+                      labV === "top" ? "aboveBar" :
+                      labV === "bottom" ? "belowBar" :
+                      "inBar";
                     hs.setMarkers([
                       {
                         time: mTime as any,
                         position: pos as any,
                         color: col,
                         shape: "circle",
-                        size: 0, // hide the circle — text only
+                        size: 0,
                         text: " " + labelText + " ",
                       },
                     ]);
