@@ -189,8 +189,9 @@ const DEFAULT_FIB_LEVELS: { v: number; on: boolean; color: string }[] = [
 ];
 
 function fibPrice(p1: number, p2: number, level: number, reverse: boolean) {
-  const a = reverse ? p2 : p1;
-  const b = reverse ? p1 : p2;
+  // Fixed: reverse checkbox was applying opposite of expected
+  const a = reverse ? p1 : p2;
+  const b = reverse ? p2 : p1;
   return a + (b - a) * level;
 }
 
@@ -1938,6 +1939,7 @@ export default function DashboardPage() {
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
+  const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
   const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
@@ -5009,6 +5011,29 @@ export default function DashboardPage() {
                   return !!(f && (f.extend === "left" || f.extend === "both") && f.labelH === "left");
                 });
                 if (hasLeftMagnet) renderAllLinesAndAlarmsRef.current?.();
+              } catch {}
+              // Keep fib/diag move handles glued to anchors while scrolling
+              try {
+                const md = moveDiagRef.current;
+                if (md && (md.phase === "pick" || md.phase === "drag-a" || md.phase === "drag-b")) {
+                  const chart2 = chartRef.current;
+                  const ser2 = seriesRef.current;
+                  const elA = handleAElRef.current;
+                  const elB = handleBElRef.current;
+                  if (chart2 && ser2 && elA && elB) {
+                    const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
+                      let x = chart2.timeScale().timeToCoordinate(pt.time as any);
+                      const y = ser2.priceToCoordinate(pt.price);
+                      if (x == null || y == null) { el.style.display = "none"; return; }
+                      el.style.display = "block";
+                      el.style.left = `${x}px`;
+                      el.style.top = `${y}px`;
+                      el.style.borderColor = active ? "#f97316" : "#ffffff";
+                    };
+                    place(elA, md.pointA, md.phase === "drag-a");
+                    place(elB, md.pointB, md.phase === "drag-b");
+                  }
+                }
               } catch {}
             });
           } catch {}
@@ -10195,7 +10220,7 @@ export default function DashboardPage() {
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !alarmMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -10210,6 +10235,9 @@ export default function DashboardPage() {
       if (drawToolsOpen && !el.closest?.("[data-menu]")) {
         setDrawToolsOpen(false);
         setAlarmMenuOpen(false);
+      }
+      if (fibToolsOpen && !el.closest?.("[data-menu]")) {
+        setFibToolsOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -10264,6 +10292,7 @@ export default function DashboardPage() {
     editingNoteType,
     wlMenuOpen,
     drawToolsOpen,
+    fibToolsOpen,
     alarmMenuOpen,
   ]);
 
@@ -12182,15 +12211,80 @@ export default function DashboardPage() {
               </svg>
             </button>
 
+            {/* Fibonacci tools — own icon above shapes */}
+            <div className="relative" data-menu>
+              <button
+                type="button"
+                title="Fibonacci"
+                onClick={() => {
+                  setFibToolsOpen((v) => !v);
+                  setDrawToolsOpen(false);
+                }}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  fibToolsOpen || mode === "fib" || mode === "fib-ext"
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19h16" />
+                  <path d="M4 14h12" />
+                  <path d="M4 9h8" />
+                  <path d="M4 5h5" />
+                  <path d="M4 5v14" />
+                </svg>
+              </button>
+              {fibToolsOpen && (
+                <div className="absolute left-full top-0 ml-2 z-50 w-52 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Fibonacci</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib");
+                      setStatusMsg("Fib Retracement: tap point A, then B");
+                    }}
+                  >
+                    <span className="w-4 text-center">⌘</span>
+                    Fib retracement
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-ext" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib-ext");
+                      setStatusMsg("Fib Extension: tap A, then B, then C");
+                    }}
+                  >
+                    <span className="w-4 text-center">⌘+</span>
+                    Trend-based fib extension
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Separator + shapes menu (TradingView-style) */}
             <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
             <div className="relative" data-menu>
               <button
                 type="button"
                 title="Shapes & tools"
-                onClick={() => setDrawToolsOpen((v) => !v)}
+                onClick={() => {
+                  setDrawToolsOpen((v) => !v);
+                  setFibToolsOpen(false);
+                }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "fib" || mode === "fib-ext"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -12245,40 +12339,6 @@ export default function DashboardPage() {
                   >
                     <span className="w-4 text-center">💬</span>
                     Callout
-                  </button>
-                  <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Fibonacci</div>
-                  <button
-                    type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setDrawToolsOpen(false);
-                      setDiagStart(null);
-                      fibPoint3Ref.current = null;
-                      setMovingId(null);
-                      setMode("fib");
-                      setStatusMsg("Fib Retracement: tap point A, then B");
-                    }}
-                  >
-                    <span className="w-4 text-center">⌘</span>
-                    Fib retracement
-                  </button>
-                  <button
-                    type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-ext" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setDrawToolsOpen(false);
-                      setDiagStart(null);
-                      fibPoint3Ref.current = null;
-                      setMovingId(null);
-                      setMode("fib-ext");
-                      setStatusMsg("Fib Extension: tap A, then B, then C");
-                    }}
-                  >
-                    <span className="w-4 text-center">⌘+</span>
-                    Trend-based fib extension
                   </button>
                   <button
                     type="button"
