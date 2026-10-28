@@ -169,23 +169,23 @@ const MOVE_STYLE = LineStyle.Dashed;
 
 /** TradingView-style Fib levels (enabled + color) */
 const DEFAULT_FIB_LEVELS: { v: number; on: boolean; color: string }[] = [
-  { v: 0, on: true, color: "#f97316" },
-  { v: 0.236, on: true, color: "#f97316" },
-  { v: 0.382, on: true, color: "#f97316" },
-  { v: 0.5, on: true, color: "#f97316" },
-  { v: 0.618, on: true, color: "#f97316" },
-  { v: 0.786, on: true, color: "#f97316" },
-  { v: 1, on: true, color: "#f97316" },
-  { v: 1.272, on: true, color: "#ffffff" },
-  { v: 1.382, on: true, color: "#ffffff" },
-  { v: 1.5, on: true, color: "#ffffff" },
-  { v: 1.618, on: false, color: "#ffffff" },
-  { v: 1.786, on: true, color: "#ffffff" },
-  { v: 2, on: true, color: "#f97316" },
-  { v: 2.272, on: false, color: "#92400e" },
-  { v: 2.618, on: true, color: "#f97316" },
-  { v: 3.618, on: false, color: "#92400e" },
-  { v: 4.236, on: false, color: "#92400e" },
+  { v: 0, on: true, color: "#787B86" },
+  { v: 0.236, on: true, color: "#F23645" },
+  { v: 0.382, on: true, color: "#FF9800" },
+  { v: 0.5, on: true, color: "#4CAF50" },
+  { v: 0.618, on: true, color: "#089981" },
+  { v: 0.786, on: true, color: "#00BCD4" },
+  { v: 1, on: true, color: "#787B86" },
+  { v: 1.272, on: true, color: "#E91E63" },
+  { v: 1.382, on: true, color: "#E91E63" },
+  { v: 1.5, on: true, color: "#9C27B0" },
+  { v: 1.618, on: true, color: "#2962FF" },
+  { v: 1.786, on: true, color: "#2962FF" },
+  { v: 2, on: true, color: "#F23645" },
+  { v: 2.272, on: false, color: "#FF9800" },
+  { v: 2.618, on: true, color: "#F23645" },
+  { v: 3.618, on: false, color: "#9C27B0" },
+  { v: 4.236, on: false, color: "#E91E63" },
 ];
 
 function fibPrice(p1: number, p2: number, level: number, reverse: boolean) {
@@ -222,7 +222,7 @@ function parseFibNote(note: string | null | undefined): null | {
     .map(Number)
     .filter((n) => !Number.isNaN(n));
   let reverse = false;
-  let extend: "none" | "right" | "left" | "both" = "right";
+  let extend: "none" | "right" | "left" | "both" = "none";
   let lineWidth: 1 | 2 | 3 = 1;
   let lineStyle: "solid" | "dashed" | "dotted" = "solid";
   let trend = false;
@@ -1887,9 +1887,22 @@ export default function DashboardPage() {
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
   const [drawDash, setDrawDash] = useState<"solid" | "dashed">(() => loadLS("draw_dash", "solid"));
-  const [fibLevels, setFibLevels] = useState(() => loadLS("fib_levels", DEFAULT_FIB_LEVELS));
+  const [fibLevels, setFibLevels] = useState(() => {
+    const saved = loadLS("fib_levels", null as any);
+    if (!Array.isArray(saved) || !saved.length) return DEFAULT_FIB_LEVELS.map((x) => ({ ...x }));
+    // migrate old all-orange defaults → TradingView palette
+    const cols = saved.map((x: any) => String(x?.color || "").toLowerCase());
+    const allOrange = cols.length > 0 && cols.every((c: string) => c === "#f97316" || c === "#ffffff" || c === "#92400e" || !c);
+    if (allOrange) return DEFAULT_FIB_LEVELS.map((x) => ({ ...x }));
+    // merge missing levels from default
+    const byV = new Map(saved.map((x: any) => [Number(x.v), x]));
+    return DEFAULT_FIB_LEVELS.map((d0) => {
+      const s = byV.get(d0.v);
+      return s ? { v: d0.v, on: !!s.on, color: s.color || d0.color } : { ...d0 };
+    });
+  });
   const [fibReverse, setFibReverse] = useState(() => loadLS("fib_reverse", false));
-  const [fibExtend, setFibExtend] = useState<"none" | "right" | "left" | "both">(() => loadLS("fib_extend", "right"));
+  const [fibExtend, setFibExtend] = useState<"none" | "right" | "left" | "both">(() => loadLS("fib_extend", "none"));
   const [fibShowPrices, setFibShowPrices] = useState(() => loadLS("fib_show_prices", true));
   const [fibShowLevels, setFibShowLevels] = useState(() => loadLS("fib_show_levels", true));
   const [fibLineWidth, setFibLineWidth] = useState<1 | 2 | 3>(() => loadLS("fib_line_width", 1));
@@ -4179,6 +4192,22 @@ export default function DashboardPage() {
             const showLv = loadLS("fib_show_levels", true);
             const showPx = loadLS("fib_show_prices", true);
             const prices: number[] = [];
+            // Time bounds for extend modes
+            const tA = Math.min(Number(fib.t1), Number(fib.t2));
+            const tB = Math.max(Number(fib.t1), Number(fib.t2));
+            const bars = candlesRef.current || [];
+            const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
+            const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
+            // far past / far future so "extend" actually reaches edges
+            const FAR_LEFT = Math.min(chartFirst, tA) - 86400 * 365 * 5;
+            const FAR_RIGHT = Math.max(chartLast, tB) + 86400 * 365 * 5;
+            let tFrom = tA;
+            let tTo = tB;
+            const ext = fib.extend || "none";
+            if (ext === "right") { tFrom = tA; tTo = FAR_RIGHT; }
+            else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
+            else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
+            else { tFrom = tA; tTo = tB; } // none — only between anchors
             for (let i = 0; i < fib.levels.length; i++) {
               const lv = fib.levels[i];
               let price: number;
@@ -4191,20 +4220,42 @@ export default function DashboardPage() {
               prices.push(price);
               const col = (fib.colors && fib.colors[i]) ||
                 (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
-                color || "#f97316";
+                color || "#787B86";
               const titleParts: string[] = [];
               if (showLv) titleParts.push(String(lv));
               if (showPx) titleParts.push(String(formatPrice(price)));
               try {
-                const pl = series.createPriceLine({
-                  price,
+                // Horizontal segment as LineSeries → extend works; NO colored axis labels
+                const hs: any = chart.addLineSeries({
                   color: col,
                   lineWidth: lw,
                   lineStyle: ls,
-                  axisLabelVisible: true,
-                  title: titleParts.join(" "),
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
                 });
-                pls.push(pl);
+                hs.setData([
+                  { time: tFrom as any, value: price },
+                  { time: tTo as any, value: price },
+                ]);
+                // Label near anchor B (visible) — never on price axis
+                if (titleParts.length) {
+                  try {
+                    const labelT = Math.min(tB, chartLast);
+                    hs.setMarkers([
+                      {
+                        time: labelT as any,
+                        position: "inBar",
+                        color: col,
+                        shape: "circle",
+                        size: 0.1,
+                        text: titleParts.join(" "),
+                      },
+                    ]);
+                  } catch {}
+                }
+                extraSeries.push(hs);
               } catch {}
             }
             // Trend line between anchors
@@ -4248,12 +4299,9 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 } as any);
-                const bars = candlesRef.current || [];
-                const t0 = bars.length ? Number(bars[0].time) : fib.t1;
-                const t1 = bars.length ? Number(bars[bars.length - 1].time) : fib.t2;
                 band.setData([
-                  { time: t0 as any, value: sorted[sorted.length - 1] },
-                  { time: t1 as any, value: sorted[sorted.length - 1] },
+                  { time: tFrom as any, value: sorted[sorted.length - 1] },
+                  { time: tTo as any, value: sorted[sorted.length - 1] },
                 ]);
                 extraSeries.push(band);
               } catch {}
