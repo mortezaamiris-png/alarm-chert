@@ -199,8 +199,16 @@ function parseFibNote(note: string | null | undefined): null | {
   t1: number; p1: number; t2: number; p2: number;
   t3?: number; p3?: number;
   levels: number[];
+  colors: string[];
   reverse: boolean;
   extend: "none" | "right" | "left" | "both";
+  lineWidth: 1 | 2 | 3;
+  lineStyle: "solid" | "dashed" | "dotted";
+  trend: boolean;
+  trendColor: string;
+  background: boolean;
+  bgColor: string;
+  bgOpacity: number;
 } {
   if (!note || typeof note !== "string") return null;
   if (!note.startsWith("__fib:") && !note.startsWith("__fibext:")) return null;
@@ -215,23 +223,82 @@ function parseFibNote(note: string | null | undefined): null | {
     .filter((n) => !Number.isNaN(n));
   let reverse = false;
   let extend: "none" | "right" | "left" | "both" = "right";
+  let lineWidth: 1 | 2 | 3 = 1;
+  let lineStyle: "solid" | "dashed" | "dotted" = "solid";
+  let trend = false;
+  let trendColor = "#f97316";
+  let background = false;
+  let bgColor = "#2962FF";
+  let bgOpacity = 20;
+  let colors: string[] = [];
   for (let i = 2; i < parts.length; i++) {
-    if (parts[i] === "rev=1") reverse = true;
-    if (parts[i].startsWith("ext=")) {
-      const e = parts[i].slice(4);
+    const p = parts[i];
+    if (p === "rev=1") reverse = true;
+    else if (p.startsWith("ext=")) {
+      const e = p.slice(4);
       if (e === "none" || e === "right" || e === "left" || e === "both") extend = e;
+    } else if (p.startsWith("lw=")) {
+      const n = parseInt(p.slice(3), 10);
+      if (n === 1 || n === 2 || n === 3) lineWidth = n;
+    } else if (p.startsWith("ls=")) {
+      const e = p.slice(3);
+      if (e === "solid" || e === "dashed" || e === "dotted") lineStyle = e;
+    } else if (p === "trend=1") trend = true;
+    else if (p.startsWith("tc=")) trendColor = decodeURIComponent(p.slice(3)) || "#f97316";
+    else if (p === "bg=1") background = true;
+    else if (p.startsWith("bgc=")) bgColor = decodeURIComponent(p.slice(4)) || "#2962FF";
+    else if (p.startsWith("bgo=")) {
+      const n = parseInt(p.slice(4), 10);
+      if (!Number.isNaN(n)) bgOpacity = Math.max(0, Math.min(100, n));
+    } else if (p.startsWith("lc=")) {
+      colors = p.slice(3).split(",").map((c) => decodeURIComponent(c)).filter(Boolean);
     }
   }
   const out: any = {
     kind,
     t1: coords[0], p1: coords[1], t2: coords[2], p2: coords[3],
-    levels, reverse, extend,
+    levels, colors, reverse, extend, lineWidth, lineStyle,
+    trend, trendColor, background, bgColor, bgOpacity,
   };
   if (coords.length >= 6) {
     out.t3 = coords[4];
     out.p3 = coords[5];
   }
   return out;
+}
+
+function buildFibNote(
+  kind: "fib" | "fib-ext",
+  coords: { t1: number; p1: number; t2: number; p2: number; t3?: number; p3?: number },
+  levels: { v: number; on: boolean; color: string }[],
+  opts: {
+    reverse: boolean;
+    extend: string;
+    lineWidth: number;
+    lineStyle: string;
+    trend: boolean;
+    trendColor: string;
+    background: boolean;
+    bgColor: string;
+    bgOpacity: number;
+  }
+) {
+  const onLevels = levels.filter((x) => x.on);
+  const levelsOn = onLevels.map((x) => x.v).join(",");
+  const lc = onLevels.map((x) => encodeURIComponent(x.color || "#f97316")).join(",");
+  let c = `${coords.t1},${coords.p1},${coords.t2},${coords.p2}`;
+  if (kind === "fib-ext" && coords.t3 != null && coords.p3 != null) {
+    c += `,${coords.t3},${coords.p3}`;
+  }
+  const prefix = kind === "fib-ext" ? "__fibext:" : "__fib:";
+  return (
+    `${prefix}${c}|${levelsOn}` +
+    `|rev=${opts.reverse ? 1 : 0}|ext=${opts.extend}` +
+    `|lw=${opts.lineWidth}|ls=${opts.lineStyle}` +
+    `|trend=${opts.trend ? 1 : 0}|tc=${encodeURIComponent(opts.trendColor)}` +
+    `|bg=${opts.background ? 1 : 0}|bgc=${encodeURIComponent(opts.bgColor)}|bgo=${opts.bgOpacity}` +
+    `|lc=${lc}`
+  );
 }
 
 /** Color palette for floating pickers (same dark popover effect as timezone menu) */
@@ -1825,6 +1892,14 @@ export default function DashboardPage() {
   const [fibExtend, setFibExtend] = useState<"none" | "right" | "left" | "both">(() => loadLS("fib_extend", "right"));
   const [fibShowPrices, setFibShowPrices] = useState(() => loadLS("fib_show_prices", true));
   const [fibShowLevels, setFibShowLevels] = useState(() => loadLS("fib_show_levels", true));
+  const [fibLineWidth, setFibLineWidth] = useState<1 | 2 | 3>(() => loadLS("fib_line_width", 1));
+  const [fibLineStyle, setFibLineStyle] = useState<"solid" | "dashed" | "dotted">(() => loadLS("fib_line_style", "solid"));
+  const [fibTrend, setFibTrend] = useState(() => loadLS("fib_trend", false));
+  const [fibTrendColor, setFibTrendColor] = useState(() => loadLS("fib_trend_color", "#f97316"));
+  const [fibBackground, setFibBackground] = useState(() => loadLS("fib_background", false));
+  const [fibBgColor, setFibBgColor] = useState(() => loadLS("fib_bg_color", "#2962FF"));
+  const [fibBgOpacity, setFibBgOpacity] = useState(() => loadLS("fib_bg_opacity", 20));
+  const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
@@ -2053,6 +2128,48 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fib_extend", fibExtend); }, [fibExtend]);
   useEffect(() => { saveLS("fib_show_prices", fibShowPrices); }, [fibShowPrices]);
   useEffect(() => { saveLS("fib_show_levels", fibShowLevels); }, [fibShowLevels]);
+  useEffect(() => { saveLS("fib_line_width", fibLineWidth); }, [fibLineWidth]);
+  useEffect(() => { saveLS("fib_line_style", fibLineStyle); }, [fibLineStyle]);
+  useEffect(() => { saveLS("fib_trend", fibTrend); }, [fibTrend]);
+  useEffect(() => { saveLS("fib_trend_color", fibTrendColor); }, [fibTrendColor]);
+  useEffect(() => { saveLS("fib_background", fibBackground); }, [fibBackground]);
+  useEffect(() => { saveLS("fib_bg_color", fibBgColor); }, [fibBgColor]);
+  useEffect(() => { saveLS("fib_bg_opacity", fibBgOpacity); }, [fibBgOpacity]);
+
+  // Live-apply fib settings to the open drawing
+  useEffect(() => {
+    if (!selectedFibId || !fibSettingsOpen) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedFibId));
+    if (!line || typeof line.note !== "string") return;
+    const fib = parseFibNote(line.note);
+    if (!fib) return;
+    const note = buildFibNote(
+      fib.kind,
+      { t1: fib.t1, p1: fib.p1, t2: fib.t2, p2: fib.p2, t3: fib.t3, p3: fib.p3 },
+      fibLevels as any,
+      {
+        reverse: fibReverse,
+        extend: fibExtend,
+        lineWidth: fibLineWidth,
+        lineStyle: fibLineStyle,
+        trend: fibTrend,
+        trendColor: fibTrendColor,
+        background: fibBackground,
+        bgColor: fibBgColor,
+        bgOpacity: fibBgOpacity,
+      }
+    );
+    setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
+    // debounce DB write
+    const t = setTimeout(() => {
+      supabase.from("chart_lines").update({ note }).eq("id", selectedFibId).then(() => {}).catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [
+    selectedFibId, fibSettingsOpen, fibLevels, fibReverse, fibExtend,
+    fibLineWidth, fibLineStyle, fibTrend, fibTrendColor,
+    fibBackground, fibBgColor, fibBgOpacity, fibShowPrices, fibShowLevels,
+  ]);
   useEffect(() => {
     symbolRef.current = symbol;
     localStorage.setItem("chart_symbol", symbol);
@@ -3667,9 +3784,16 @@ export default function DashboardPage() {
     alarmLinesRef.current.clear();
     chartLinesRef.current.forEach((s) => {
       try {
-        if (s && (s as any).__fibPriceLines && Array.isArray((s as any).lines)) {
-          for (const pl of (s as any).lines) {
-            try { series.removePriceLine(pl); } catch {}
+        if (s && (s as any).__fibPriceLines) {
+          if (Array.isArray((s as any).lines)) {
+            for (const pl of (s as any).lines) {
+              try { series.removePriceLine(pl); } catch {}
+            }
+          }
+          if (Array.isArray((s as any).series)) {
+            for (const ser of (s as any).series) {
+              try { chart.removeSeries(ser); } catch {}
+            }
           }
         } else if (Array.isArray(s)) {
           for (const x of s) {
@@ -4041,11 +4165,18 @@ export default function DashboardPage() {
         } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
           const fib = parseFibNote(l.note);
           if (fib && series) {
-            // Price lines are cheap (no extra series) — prevents freeze
             const pls: any[] = [];
-            const showLv = true;
-            const showPx = true;
-            for (const lv of fib.levels) {
+            const extraSeries: any[] = [];
+            const lw = (fib.lineWidth || 1) as 1 | 2 | 3 | 4;
+            const ls =
+              fib.lineStyle === "dashed" ? LineStyle.Dashed :
+              fib.lineStyle === "dotted" ? LineStyle.Dotted :
+              LineStyle.Solid;
+            const showLv = loadLS("fib_show_levels", true);
+            const showPx = loadLS("fib_show_prices", true);
+            const prices: number[] = [];
+            for (let i = 0; i < fib.levels.length; i++) {
+              const lv = fib.levels[i];
               let price: number;
               if (fib.kind === "fib-ext" && fib.p3 != null) {
                 price = fib.p3 + (fib.p2 - fib.p1) * lv;
@@ -4053,8 +4184,10 @@ export default function DashboardPage() {
                 price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
               }
               if (!Number.isFinite(price)) continue;
-              const lvlMeta = DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6);
-              const col = (lvlMeta && lvlMeta.color) || color || "#f97316";
+              prices.push(price);
+              const col = (fib.colors && fib.colors[i]) ||
+                (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
+                color || "#f97316";
               const titleParts: string[] = [];
               if (showLv) titleParts.push(String(lv));
               if (showPx) titleParts.push(String(formatPrice(price)));
@@ -4062,15 +4195,66 @@ export default function DashboardPage() {
                 const pl = series.createPriceLine({
                   price,
                   color: col,
-                  lineWidth: 1,
-                  lineStyle: LineStyle.Solid,
+                  lineWidth: lw,
+                  lineStyle: ls,
                   axisLabelVisible: true,
                   title: titleParts.join(" "),
                 });
                 pls.push(pl);
               } catch {}
             }
-            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls });
+            // Trend line between anchors
+            if (fib.trend) {
+              try {
+                const tr: any = chart.addLineSeries({
+                  color: fib.trendColor || "#f97316",
+                  lineWidth: Math.max(1, lw) as 1 | 2 | 3 | 4,
+                  lineStyle: LineStyle.Dashed,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                });
+                tr.setData([
+                  { time: fib.t1 as any, value: fib.p1 },
+                  { time: fib.t2 as any, value: fib.p2 },
+                ]);
+                extraSeries.push(tr);
+              } catch {}
+            }
+            // Background bands between consecutive levels (area series pairs)
+            if (fib.background && prices.length >= 2) {
+              const sorted = [...prices].sort((a, b) => a - b);
+              const bg = fib.bgColor || "#2962FF";
+              const op = Math.max(0, Math.min(100, fib.bgOpacity ?? 20)) / 100;
+              // single translucent band from min to max using two area-ish lines via baseline
+              try {
+                const mid = (sorted[0] + sorted[sorted.length - 1]) / 2;
+                const band: any = chart.addBaselineSeries({
+                  baseValue: { type: "price", price: sorted[0] },
+                  topLineColor: "transparent",
+                  topFillColor1: hexToRgba(bg, op * 0.6),
+                  topFillColor2: hexToRgba(bg, op * 0.15),
+                  bottomLineColor: "transparent",
+                  bottomFillColor1: "transparent",
+                  bottomFillColor2: "transparent",
+                  lineWidth: 1,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                } as any);
+                const bars = candlesRef.current || [];
+                const t0 = bars.length ? Number(bars[0].time) : fib.t1;
+                const t1 = bars.length ? Number(bars[bars.length - 1].time) : fib.t2;
+                band.setData([
+                  { time: t0 as any, value: sorted[sorted.length - 1] },
+                  { time: t1 as any, value: sorted[sorted.length - 1] },
+                ]);
+                extraSeries.push(band);
+              } catch {}
+            }
+            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
           }
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
@@ -5637,9 +5821,16 @@ export default function DashboardPage() {
           alarmLinesRef.current.clear();
           chartLinesRef.current.forEach((s) => {
             try {
-              if (s && (s as any).__fibPriceLines && Array.isArray((s as any).lines)) {
-                for (const pl of (s as any).lines) {
-                  try { series.removePriceLine(pl); } catch {}
+              if (s && (s as any).__fibPriceLines) {
+                if (Array.isArray((s as any).lines)) {
+                  for (const pl of (s as any).lines) {
+                    try { series.removePriceLine(pl); } catch {}
+                  }
+                }
+                if (Array.isArray((s as any).series)) {
+                  for (const ser of (s as any).series) {
+                    try { chart.removeSeries(ser); } catch {}
+                  }
                 }
                 return;
               }
@@ -8620,11 +8811,22 @@ export default function DashboardPage() {
           clickLockRef.current = true;
           setSaving(true);
           const levelsNow = loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS;
-          const levelsOn = levelsNow.filter((x) => x.on).map((x) => x.v).join(",");
-          const revNow = !!loadLS("fib_reverse", false);
-          const extNow = (loadLS("fib_extend", "right") as string) || "right";
-          const note =
-            `__fib:${start.time},${start.price},${t},${fp}|${levelsOn}|rev=${revNow ? 1 : 0}|ext=${extNow}`;
+          const note = buildFibNote(
+            "fib",
+            { t1: start.time, p1: start.price, t2: t, p2: fp },
+            levelsNow,
+            {
+              reverse: !!loadLS("fib_reverse", false),
+              extend: loadLS("fib_extend", "right") || "right",
+              lineWidth: loadLS("fib_line_width", 1) || 1,
+              lineStyle: loadLS("fib_line_style", "solid") || "solid",
+              trend: !!loadLS("fib_trend", false),
+              trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
+              background: !!loadLS("fib_background", false),
+              bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
+              bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
+            }
+          );
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: start.price,
@@ -8711,11 +8913,22 @@ export default function DashboardPage() {
           clickLockRef.current = true;
           setSaving(true);
           const levelsNow = loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS;
-          const levelsOn = levelsNow.filter((x) => x.on).map((x) => x.v).join(",");
-          const revNow = !!loadLS("fib_reverse", false);
-          const extNow = (loadLS("fib_extend", "right") as string) || "right";
-          const note =
-            `__fibext:${start.time},${start.price},${mid.time},${mid.price},${t},${fp}|${levelsOn}|rev=${revNow ? 1 : 0}|ext=${extNow}`;
+          const note = buildFibNote(
+            "fib-ext",
+            { t1: start.time, p1: start.price, t2: mid.time, p2: mid.price, t3: t, p3: fp },
+            levelsNow,
+            {
+              reverse: !!loadLS("fib_reverse", false),
+              extend: loadLS("fib_extend", "right") || "right",
+              lineWidth: loadLS("fib_line_width", 1) || 1,
+              lineStyle: loadLS("fib_line_style", "solid") || "solid",
+              trend: !!loadLS("fib_trend", false),
+              trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
+              background: !!loadLS("fib_background", false),
+              bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
+              bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
+            }
+          );
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: start.price,
@@ -12783,130 +12996,189 @@ export default function DashboardPage() {
           {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
           {/* Fib settings modal */}
           {fibSettingsOpen && (
-            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto" onClick={() => setFibSettingsOpen(false)}>
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}>
               <div
-                className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,360px)] max-h-[80vh] overflow-y-auto p-4 text-xs text-gray-200"
+                className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,380px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-white">Fib retracement</h3>
-                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => setFibSettingsOpen(false)}>×</button>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}>×</button>
                 </div>
-                <div className="space-y-2 mb-3">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={fibReverse} onChange={(e) => setFibReverse(e.target.checked)} />
-                    <span>Reverse</span>
+
+                {/* Trend line */}
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="flex items-center gap-2 flex-1">
+                    <input type="checkbox" checked={fibTrend} onChange={(e) => setFibTrend(e.target.checked)} />
+                    <span>Trend line</span>
                   </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={fibShowPrices} onChange={(e) => setFibShowPrices(e.target.checked)} />
-                    <span>Prices</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={fibShowLevels} onChange={(e) => setFibShowLevels(e.target.checked)} />
-                    <span>Levels</span>
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-400">Extend</span>
-                    <select
-                      value={fibExtend}
-                      onChange={(e) => setFibExtend(e.target.value as any)}
-                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
-                    >
-                      <option value="none">None</option>
-                      <option value="right">Extend lines right</option>
-                      <option value="left">Extend lines left</option>
-                      <option value="both">Both</option>
-                    </select>
-                  </div>
+                  <input type="color" value={fibTrendColor} onChange={(e) => setFibTrendColor(e.target.value)}
+                    className="w-8 h-7 rounded cursor-pointer bg-transparent border border-gray-600" title="Trend color" />
+                  <span className="text-[10px] text-gray-500">- - -</span>
                 </div>
+
+                {/* Levels line style */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-gray-400 w-20">Levels line</span>
+                  <select value={fibLineWidth} onChange={(e) => setFibLineWidth(Number(e.target.value) as 1|2|3)}
+                    className="bg-gray-900 border border-gray-700 rounded px-2 py-1">
+                    <option value={1}>1px</option>
+                    <option value={2}>2px</option>
+                    <option value={3}>3px</option>
+                  </select>
+                  <select value={fibLineStyle} onChange={(e) => setFibLineStyle(e.target.value as any)}
+                    className="bg-gray-900 border border-gray-700 rounded px-2 py-1 flex-1">
+                    <option value="solid">— Line</option>
+                    <option value="dashed">- - Dashed</option>
+                    <option value="dotted">··· Dotted</option>
+                  </select>
+                </div>
+
+                {/* Extend */}
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-gray-400 w-20">Extend</span>
+                  <select value={fibExtend} onChange={(e) => setFibExtend(e.target.value as any)}
+                    className="bg-gray-900 border border-gray-700 rounded px-2 py-1 flex-1">
+                    <option value="none">None</option>
+                    <option value="right">Extend lines right</option>
+                    <option value="left">Extend lines left</option>
+                    <option value="both">Both</option>
+                  </select>
+                </div>
+
+                {/* Levels grid */}
                 <div className="text-[10px] text-gray-500 uppercase mb-1">Levels</div>
-                <div className="grid grid-cols-2 gap-1.5 mb-4">
+                <div className="grid grid-cols-2 gap-1.5 mb-3">
                   {fibLevels.map((lv: any, i: number) => (
-                    <label key={i} className="flex items-center gap-1.5 bg-gray-900/80 rounded px-2 py-1 border border-gray-800">
-                      <input
-                        type="checkbox"
-                        checked={!!lv.on}
-                        onChange={(e) => {
-                          setFibLevels((prev: any[]) => {
-                            const n = [...prev];
-                            n[i] = { ...n[i], on: e.target.checked };
-                            return n;
-                          });
-                        }}
-                      />
-                      <input
-                        type="number"
-                        step="0.001"
-                        value={lv.v}
+                    <label key={i} className={`flex items-center gap-1.5 rounded px-2 py-1 border transition-colors ${lv.on ? "bg-gray-900 border-orange-500/40" : "bg-gray-900/50 border-gray-800 opacity-60"}`}>
+                      <input type="checkbox" checked={!!lv.on}
+                        onChange={(e) => setFibLevels((prev: any[]) => { const n=[...prev]; n[i]={...n[i], on:e.target.checked}; return n; })} />
+                      <input type="number" step="0.001" value={lv.v}
                         onChange={(e) => {
                           const v = parseFloat(e.target.value);
                           if (Number.isNaN(v)) return;
-                          setFibLevels((prev: any[]) => {
-                            const n = [...prev];
-                            n[i] = { ...n[i], v };
-                            return n;
-                          });
+                          setFibLevels((prev: any[]) => { const n=[...prev]; n[i]={...n[i], v}; return n; });
                         }}
-                        className="w-14 bg-transparent border-b border-gray-700 text-[11px] tabular-nums outline-none"
-                      />
-                      <input
-                        type="color"
-                        value={lv.color || "#f97316"}
-                        onChange={(e) => {
-                          setFibLevels((prev: any[]) => {
-                            const n = [...prev];
-                            n[i] = { ...n[i], color: e.target.value };
-                            return n;
-                          });
-                        }}
-                        className="w-5 h-5 rounded cursor-pointer bg-transparent border-0 p-0"
-                      />
+                        className="w-14 bg-transparent border-b border-gray-700 text-[11px] tabular-nums outline-none" />
+                      <span className="relative w-6 h-6 rounded-md overflow-hidden border border-white/20 shrink-0 shadow-inner">
+                        <input type="color" value={lv.color || "#f97316"}
+                          onChange={(e) => setFibLevels((prev: any[]) => { const n=[...prev]; n[i]={...n[i], color:e.target.value}; return n; })}
+                          className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                      </span>
                     </label>
                   ))}
                 </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-white/5"
-                    onClick={() => {
-                      setFibLevels(DEFAULT_FIB_LEVELS);
-                      setFibReverse(false);
-                      setFibExtend("right");
-                    }}
-                  >
-                    Reset
-                  </button>
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
-                    onClick={async () => {
-                      // Apply current settings to the selected fib drawing (if any)
-                      if (selectedFibId) {
-                        const line = linesRef.current?.find((x: any) => String(x.id) === String(selectedFibId));
-                        if (line && typeof line.note === "string") {
-                          const fib = parseFibNote(line.note);
-                          if (fib) {
-                            const levelsOn = (fibLevels as any[]).filter((x) => x.on).map((x) => x.v).join(",");
-                            const prefix = fib.kind === "fib-ext" ? "__fibext:" : "__fib:";
-                            let coords = `${fib.t1},${fib.p1},${fib.t2},${fib.p2}`;
-                            if (fib.kind === "fib-ext" && fib.t3 != null && fib.p3 != null) {
-                              coords += `,${fib.t3},${fib.p3}`;
-                            }
-                            const note = `${prefix}${coords}|${levelsOn}|rev=${fibReverse ? 1 : 0}|ext=${fibExtend}`;
-                            setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
-                            try {
-                              await supabase.from("chart_lines").update({ note }).eq("id", selectedFibId);
-                            } catch {}
-                            try { renderAllLinesAndAlarms(); } catch {}
-                          }
-                        }
-                      }
-                      setSelectedFibId(null);
-                      setFibSettingsOpen(false);
-                    }}
-                  >
-                    Ok
-                  </button>
+
+                {/* Use one color */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-gray-400">Use one color</span>
+                  <span className="relative w-7 h-7 rounded-md overflow-hidden border border-white/20 shrink-0">
+                    <input type="color" defaultValue="#f97316"
+                      onChange={(e) => {
+                        const c = e.target.value;
+                        setFibLevels((prev: any[]) => prev.map((x) => ({ ...x, color: c })));
+                      }}
+                      className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0" />
+                  </span>
+                </div>
+
+                {/* Background */}
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={fibBackground} onChange={(e) => setFibBackground(e.target.checked)} />
+                    <span>Background</span>
+                  </label>
+                  <input type="color" value={fibBgColor} onChange={(e) => setFibBgColor(e.target.value)}
+                    className="w-7 h-6 rounded cursor-pointer bg-transparent border border-gray-600" />
+                  <input type="range" min={0} max={100} value={fibBgOpacity}
+                    onChange={(e) => setFibBgOpacity(parseInt(e.target.value, 10))}
+                    className="flex-1 accent-orange-500" />
+                  <span className="tabular-nums w-8 text-right text-gray-400">{fibBgOpacity}</span>
+                </div>
+
+                <div className="space-y-1.5 mb-3">
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={fibReverse} onChange={(e) => setFibReverse(e.target.checked)} /><span>Reverse</span></label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={fibShowPrices} onChange={(e) => setFibShowPrices(e.target.checked)} /><span>Prices</span></label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={fibShowLevels} onChange={(e) => setFibShowLevels(e.target.checked)} /><span>Levels</span></label>
+                </div>
+
+                {/* Footer: Template + Ok */}
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-800">
+                  <div className="relative">
+                    <button type="button"
+                      className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-white/5"
+                      onClick={() => setFibTemplateOpen((v) => !v)}
+                    >
+                      Template {fibTemplateOpen ? "▴" : "▾"}
+                    </button>
+                    {fibTemplateOpen && (
+                      <div className="absolute bottom-full left-0 mb-1 z-50 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[140px]">
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            const tpl = {
+                              levels: fibLevels, reverse: fibReverse, extend: fibExtend,
+                              lineWidth: fibLineWidth, lineStyle: fibLineStyle,
+                              trend: fibTrend, trendColor: fibTrendColor,
+                              background: fibBackground, bgColor: fibBgColor, bgOpacity: fibBgOpacity,
+                              showPrices: fibShowPrices, showLevels: fibShowLevels,
+                            };
+                            saveLS("fib_template", tpl);
+                            setFibTemplateOpen(false);
+                            setStatusMsg("Fib template saved");
+                          }}
+                        >Save as…</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            setFibLevels(DEFAULT_FIB_LEVELS);
+                            setFibReverse(false);
+                            setFibExtend("right");
+                            setFibLineWidth(1);
+                            setFibLineStyle("solid");
+                            setFibTrend(false);
+                            setFibTrendColor("#f97316");
+                            setFibBackground(false);
+                            setFibBgColor("#2962FF");
+                            setFibBgOpacity(20);
+                            setFibShowPrices(true);
+                            setFibShowLevels(true);
+                            setFibTemplateOpen(false);
+                            setStatusMsg("Fib defaults applied");
+                          }}
+                        >Apply defaults</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            const tpl = loadLS("fib_template", null);
+                            if (tpl) {
+                              if (tpl.levels) setFibLevels(tpl.levels);
+                              if (tpl.reverse != null) setFibReverse(!!tpl.reverse);
+                              if (tpl.extend) setFibExtend(tpl.extend);
+                              if (tpl.lineWidth) setFibLineWidth(tpl.lineWidth);
+                              if (tpl.lineStyle) setFibLineStyle(tpl.lineStyle);
+                              if (tpl.trend != null) setFibTrend(!!tpl.trend);
+                              if (tpl.trendColor) setFibTrendColor(tpl.trendColor);
+                              if (tpl.background != null) setFibBackground(!!tpl.background);
+                              if (tpl.bgColor) setFibBgColor(tpl.bgColor);
+                              if (tpl.bgOpacity != null) setFibBgOpacity(tpl.bgOpacity);
+                              if (tpl.showPrices != null) setFibShowPrices(!!tpl.showPrices);
+                              if (tpl.showLevels != null) setFibShowLevels(!!tpl.showLevels);
+                              setStatusMsg("Fib template loaded");
+                            } else setStatusMsg("No saved template");
+                            setFibTemplateOpen(false);
+                          }}
+                        >Load saved</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button"
+                      className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-white/5"
+                      onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}
+                    >Cancel</button>
+                    <button type="button"
+                      className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
+                      onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}
+                    >Ok</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -14091,13 +14363,24 @@ export default function DashboardPage() {
                           if (fib) {
                             const onSet = new Set(fib.levels.map((v) => Number(v)));
                             setFibLevels(
-                              DEFAULT_FIB_LEVELS.map((d) => ({
-                                ...d,
-                                on: onSet.has(d.v),
-                              }))
+                              DEFAULT_FIB_LEVELS.map((d, idx) => {
+                                const li = fib.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                                return {
+                                  ...d,
+                                  on: onSet.has(d.v),
+                                  color: (li >= 0 && fib.colors[li]) ? fib.colors[li] : d.color,
+                                };
+                              })
                             );
                             setFibReverse(!!fib.reverse);
                             setFibExtend(fib.extend || "right");
+                            setFibLineWidth(fib.lineWidth || 1);
+                            setFibLineStyle(fib.lineStyle || "solid");
+                            setFibTrend(!!fib.trend);
+                            setFibTrendColor(fib.trendColor || "#f97316");
+                            setFibBackground(!!fib.background);
+                            setFibBgColor(fib.bgColor || "#2962FF");
+                            setFibBgOpacity(fib.bgOpacity ?? 20);
                           }
                           setSelectedFibId(String(l.id));
                           setFibSettingsOpen(true);
