@@ -4380,8 +4380,9 @@ export default function DashboardPage() {
             const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
             const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
             // far past / far future so "extend" actually reaches edges
-            const FAR_LEFT = Math.min(chartFirst, tA) - 86400 * 365 * 5;
-            const FAR_RIGHT = Math.max(chartLast, tB) + 86400 * 365 * 5;
+            // Keep extend span modest so time-scale / history stay fast (not 5y)
+            const FAR_LEFT = Math.min(chartFirst, tA) - 86400 * 365;
+            const FAR_RIGHT = Math.max(chartLast, tB) + 86400 * 180;
             let tFrom = tA;
             let tTo = tB;
             const ext = fib.extend || "none";
@@ -6757,15 +6758,22 @@ export default function DashboardPage() {
           if (!s) return;
 
           // جهت: اسکرول بالا = بزرگ‌تر (zoom in) | پایین = کوچک‌تر (zoom out)
-          // نرمال‌سازی delta تا هر تیک موس یک پله ملایم باشد (نه پرش شدید)
           let delta = e.deltaY;
           if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
-          if (e.deltaMode === 1) delta *= 16; // line mode
-          if (e.deltaMode === 2) delta *= 40; // page mode — قبلاً 400 خیلی تند بود
+          if (e.deltaMode === 1) delta *= 16;
+          if (e.deltaMode === 2) delta *= 40;
           if (delta === 0) return;
-          // هر چقدر delta بزرگ باشد فقط یک پله (±1) حساب کن تا پرش نکند
-          const steps = Math.max(1, Math.min(3, Math.round(Math.abs(delta) / 100)));
+          // همیشه یک پله ملایم — جلوگیری از پرش ناگهانی کوچک شدن کندل‌ها
           const zoomIn = delta < 0;
+
+          // ارتفاع فقط پن اصلی (بدون اسیلاتورها) تا coordinateToPrice اشتباه ندهد
+          let mainH = Math.max(40, plotH);
+          if (zones.length) {
+            const topMost = Math.min(...zones.map((z) => z.top));
+            if (Number.isFinite(topMost) && topMost > 0.05 && topMost < 0.95) {
+              mainH = Math.max(40, plotH * topMost);
+            }
+          }
 
           let pTop: number | null = null;
           let pBot: number | null = null;
@@ -6776,7 +6784,7 @@ export default function DashboardPage() {
           } else {
             try {
               const t = s.coordinateToPrice?.(1);
-              const b = s.coordinateToPrice?.(Math.max(2, container.clientHeight - 1));
+              const b = s.coordinateToPrice?.(Math.max(2, Math.floor(mainH) - 1));
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
@@ -6784,14 +6792,14 @@ export default function DashboardPage() {
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
+          // اگر رنج غیرمنطقی بود (مثلاً از سری‌های فیبو/اسیلاتور) همان override قبلی را نگه دار
+          const mid = (pTop + pBot) / 2;
+          if (!(pTop - pBot > Math.abs(mid) * 1e-8 + 1e-12)) return;
 
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)));
+          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, mainH)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~6٪ در هر تیک (pinch همچنان با touch جداست)
-          let factor = 1;
-          for (let i = 0; i < steps; i++) {
-            factor *= zoomIn ? 0.94 : 1.06;
-          }
+          // پله ملایم ~5٪ در هر تیک
+          const factor = zoomIn ? 0.95 : 1.05;
           const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
           const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
           const newTop = priceAtCursor + newRange * aboveRatio;
