@@ -2282,7 +2282,8 @@ export default function DashboardPage() {
         chart.applyOptions({ handleScroll: true, handleScale: true });
       } catch {}
     };
-  }, [fibSettingsOpen]);
+    }, [fibSettingsOpen]);
+
   useEffect(() => { saveLS("fib_vis_minutes", fibVisMinutes); }, [fibVisMinutes]);
   useEffect(() => { saveLS("fib_vis_hours", fibVisHours); }, [fibVisHours]);
   useEffect(() => { saveLS("fib_vis_days", fibVisDays); }, [fibVisDays]);
@@ -3808,6 +3809,22 @@ export default function DashboardPage() {
     place(elB, pointB, active === "b");
   }, []);
 
+  // Show fib A/B anchors while a fib is selected / settings open
+  useEffect(() => {
+    if (!selectedFibId) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedFibId));
+    const fib = line ? parseFibNote(line.note) : null;
+    if (!fib) return;
+    try {
+      positionHandles(
+        { time: fib.t1, price: fib.p1 },
+        { time: fib.t2, price: fib.p2 },
+        null
+      );
+    } catch {}
+  }, [selectedFibId, fibSettingsOpen, positionHandles]);
+
+
   const clearPreview = useCallback(() => {
     if (previewLineRef.current && seriesRef.current) {
       try { seriesRef.current.removePriceLine(previewLineRef.current); } catch {}
@@ -4416,11 +4433,15 @@ export default function DashboardPage() {
                 // Magnet ONLY when both Extend and Labels agree on that side
                 const magnetRight = lh === "right" && extRight;
                 const magnetLeft = lh === "left" && extLeft;
-                // Visible left edge of chart (for left magnet stick)
+                // True left frame of plot (next to toolbar) — pixel x≈2 → time
                 let visLeft = Number(chartFirst);
                 try {
-                  const vr = (chart.timeScale() as any).getVisibleRange?.();
-                  if (vr && vr.from != null) visLeft = Number(vr.from);
+                  const tEdge = (chart.timeScale() as any).coordinateToTime?.(2);
+                  if (tEdge != null && !Number.isNaN(Number(tEdge))) visLeft = Number(tEdge);
+                  else {
+                    const vr = (chart.timeScale() as any).getVisibleRange?.();
+                    if (vr && vr.from != null) visLeft = Number(vr.from);
+                  }
                 } catch {}
                 const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
                 const labRight = extRight ? Math.max(chartLast, tB) : tB;
@@ -7980,6 +8001,17 @@ export default function DashboardPage() {
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
 
+        // Fib placement: never show full-width horizontal preview line
+        const modeNowH = modeRef.current as ToolMode;
+        if (modeNowH === "fib" || modeNowH === "fib-ext") {
+          try {
+            if (previewLineRef.current && seriesRef.current) {
+              seriesRef.current.removePriceLine(previewLineRef.current);
+              previewLineRef.current = null;
+            }
+          } catch {}
+          return;
+        }
         // Full horizontal (draw / alarm): cheap price line update only
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
@@ -8107,6 +8139,20 @@ export default function DashboardPage() {
                     consider(l.id, dy, false, true, false);
                   }
                 }
+              } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
+                // Fib: hit any level line
+                const fib = parseFibNote(l.note);
+                if (fib) {
+                  let best = 9999;
+                  for (const lv of fib.levels) {
+                    let pr: number;
+                    if (fib.kind === "fib-ext" && fib.p3 != null) pr = fib.p3 + (fib.p2 - fib.p1) * lv;
+                    else pr = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                    const y = series.priceToCoordinate(pr);
+                    if (y != null) best = Math.min(best, Math.abs(py - y));
+                  }
+                  if (best <= HIT) consider(l.id, best, false, false, false);
+                }
               } else {
                 // horizontal
                 const y = series.priceToCoordinate(Number(l.price));
@@ -8191,6 +8237,51 @@ export default function DashboardPage() {
           }
 
           if (best) {
+            // Fib selected → show A/B anchor points + open settings (not generic move)
+            if (best.kind === "line") {
+              const lFib = list.find((x) => x.id === best!.id);
+              const fibHit = lFib ? parseFibNote(lFib.note) : null;
+              if (fibHit && lFib) {
+                setSelectedFibId(String(lFib.id));
+                try {
+                  // load settings from note
+                  const levels = DEFAULT_FIB_LEVELS.map((d) => {
+                    const i = fibHit.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                    if (i >= 0) {
+                      return { ...d, on: true, color: (fibHit.colors && fibHit.colors[i]) || d.color };
+                    }
+                    return { ...d, on: false };
+                  });
+                  // also enable any custom levels present in note
+                  for (let i = 0; i < fibHit.levels.length; i++) {
+                    const v = fibHit.levels[i];
+                    if (!levels.some((x) => Math.abs(x.v - v) < 1e-6)) {
+                      levels.push({ v, on: true, color: (fibHit.colors && fibHit.colors[i]) || "#f97316" });
+                    }
+                  }
+                  setFibLevels(levels);
+                  setFibReverse(!!fibHit.reverse);
+                  setFibExtend(fibHit.extend || "none");
+                  setFibLabelH(fibHit.labelH || "right");
+                  setFibLabelV(fibHit.labelV || "middle");
+                  setFibShowPrices(fibHit.showPrices !== false);
+                  setFibShowLevels(fibHit.showLevels !== false);
+                  setFibBackground(!!fibHit.background);
+                  setFibBgOpacity(fibHit.bgOpacity ?? 20);
+                  setFibSettingsTab("style");
+                } catch {}
+                try {
+                  positionHandles(
+                    { time: fibHit.t1, price: fibHit.p1 },
+                    { time: fibHit.t2, price: fibHit.p2 },
+                    null
+                  );
+                } catch {}
+                setFibSettingsOpen(true);
+                setStatusMsg("Fib selected — drag handles or edit settings");
+                return;
+              }
+            }
             setMode("move");
             setMovingId(best.id);
             setMovingType(best.kind);
