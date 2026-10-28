@@ -1436,7 +1436,9 @@ export default function DashboardPage() {
   const previewLineRef = useRef<IPriceLine | null>(null);
   /** Temporary line series while drawing diagonal (start → cursor) */
   const previewDiagSeriesRef = useRef<any>(null);
-  const previewFibSeriesRef = useRef<any[]>([]);
+  const previewFibSeriesRef = useRef<any[]>([]); // price lines for fib preview
+  const fibPreviewRafRef = useRef<number | null>(null);
+  const fibPreviewCacheRef = useRef<{ levels: typeof DEFAULT_FIB_LEVELS; reverse: boolean } | null>(null);
   /** AbortController to remove pointer listeners on chart rebuild */
   const pointerAbortRef = useRef<AbortController | null>(null);
   /** Monotonic id so a slow TF fetch never overwrites a newer one / leaves a black gap */
@@ -3522,11 +3524,15 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
-    if (previewFibSeriesRef.current.length && chartRef.current) {
-      for (const ser of previewFibSeriesRef.current) {
-        try { chartRef.current.removeSeries(ser); } catch {}
+    if (previewFibSeriesRef.current.length && seriesRef.current) {
+      for (const pl of previewFibSeriesRef.current) {
+        try { seriesRef.current.removePriceLine(pl); } catch {}
       }
       previewFibSeriesRef.current = [];
+    }
+    if (fibPreviewRafRef.current != null) {
+      try { cancelAnimationFrame(fibPreviewRafRef.current); } catch {}
+      fibPreviewRafRef.current = null;
     }
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-vline-guide]").forEach((el) => el.remove());
@@ -3660,12 +3666,18 @@ export default function DashboardPage() {
     alarmLinesRef.current.clear();
     chartLinesRef.current.forEach((s) => {
       try {
-        if (Array.isArray(s)) {
+        if (s && (s as any).__fibPriceLines && Array.isArray((s as any).lines)) {
+          for (const pl of (s as any).lines) {
+            try { series.removePriceLine(pl); } catch {}
+          }
+        } else if (Array.isArray(s)) {
           for (const x of s) {
             try { chart.removeSeries(x); } catch {}
           }
         } else {
-          chart.removeSeries(s);
+          try { chart.removeSeries(s); } catch {
+            try { series.removePriceLine(s); } catch {}
+          }
         }
       } catch {}
     });
@@ -4027,57 +4039,37 @@ export default function DashboardPage() {
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
           const fib = parseFibNote(l.note);
-          if (fib) {
-            const bars = candlesRef.current || [];
-            const lastT = bars.length ? Number(bars[bars.length - 1].time) : fib.t2;
-            const firstT = bars.length ? Number(bars[0].time) : fib.t1;
-            let tLeft = Math.min(fib.t1, fib.t2, fib.t3 ?? fib.t2);
-            let tRight = Math.max(fib.t1, fib.t2, fib.t3 ?? fib.t2);
-            if (fib.extend === "right" || fib.extend === "both") {
-              tRight = Math.max(tRight, lastT + (lastT - firstT) * 0.05);
-            }
-            if (fib.extend === "left" || fib.extend === "both") {
-              tLeft = Math.min(tLeft, firstT);
-            }
-            // Retracement: levels between p1→p2. Extension: project from C by (B-A)*level
-            const seriesList: any[] = [];
+          if (fib && series) {
+            // Price lines are cheap (no extra series) — prevents freeze
+            const pls: any[] = [];
+            const showLv = true;
+            const showPx = true;
             for (const lv of fib.levels) {
               let price: number;
               if (fib.kind === "fib-ext" && fib.p3 != null) {
-                const trend = fib.p2 - fib.p1;
-                price = fib.p3 + trend * lv;
+                price = fib.p3 + (fib.p2 - fib.p1) * lv;
               } else {
                 price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
               }
-              const lvlMeta = (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)
-                || { color: color || "#f97316" });
-              const col = lvlMeta.color || color || "#f97316";
-              const showLv = loadLS("fib_show_levels", true);
-              const showPx = loadLS("fib_show_prices", true);
-              const labelParts: string[] = [];
-              if (showLv) labelParts.push(String(lv));
-              if (showPx) labelParts.push(String(formatPrice(price)));
-              const title = labelParts.join(" · ");
+              if (!Number.isFinite(price)) continue;
+              const lvlMeta = DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6);
+              const col = (lvlMeta && lvlMeta.color) || color || "#f97316";
+              const titleParts: string[] = [];
+              if (showLv) titleParts.push(String(lv));
+              if (showPx) titleParts.push(formatPrice(price));
               try {
-                const ls: any = chart.addLineSeries({
+                const pl = series.createPriceLine({
+                  price,
                   color: col,
                   lineWidth: 1,
                   lineStyle: LineStyle.Solid,
-                  priceLineVisible: false,
-                  lastValueVisible: true,
-                  title: title,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
+                  axisLabelVisible: true,
+                  title: titleParts.join(" "),
                 });
-                ls.setData([
-                  { time: tLeft as any, value: price },
-                  { time: tRight as any, value: price },
-                ]);
-                seriesList.push(ls);
+                pls.push(pl);
               } catch {}
             }
-            // store array under id for cleanup
-            (chartLinesRef.current as any).set(l.id, seriesList);
+            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls });
           }
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
@@ -5644,6 +5636,12 @@ export default function DashboardPage() {
           alarmLinesRef.current.clear();
           chartLinesRef.current.forEach((s) => {
             try {
+              if (s && (s as any).__fibPriceLines && Array.isArray((s as any).lines)) {
+                for (const pl of (s as any).lines) {
+                  try { series.removePriceLine(pl); } catch {}
+                }
+                return;
+              }
               const list = Array.isArray(s) ? s : [s];
               for (const item of list) {
                 if (item && typeof item === "object" && "applyOptions" in item) {
@@ -7168,74 +7166,71 @@ export default function DashboardPage() {
             }
           }
         } catch {}
-        // Fib live preview (TradingView-style): after point A, show levels to cursor
+        // Fib live preview — rAF + reuse price lines (update price only)
         try {
           const mNow = modeRef.current;
-          const start = diagStartRef.current;
-          if ((mNow === "fib" || mNow === "fib-ext") && start && param?.point && seriesRef.current && chartRef.current) {
+          const startPt = diagStartRef.current;
+          if ((mNow === "fib" || mNow === "fib-ext") && startPt && param?.point && seriesRef.current) {
             let price2: number | null = null;
-            let time2: number | null = null;
             try {
               const p = seriesRef.current.coordinateToPrice(param.point.y);
-              if (p != null && !Number.isNaN(Number(p))) price2 = Number(p);
+              if (p != null && Number.isFinite(Number(p))) price2 = Number(p);
             } catch {}
-            try {
-              const t = chartRef.current.timeScale().coordinateToTime(param.point.x);
-              if (t != null) {
-                time2 = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
-              }
-            } catch {}
-            if (price2 != null && time2 != null && !Number.isNaN(time2)) {
-              const levelsNow = (loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS).filter((x) => x.on);
-              const revNow = !!loadLS("fib_reverse", false);
-              const bars = candlesRef.current || [];
-              const lastT = bars.length ? Number(bars[bars.length - 1].time) : Math.max(start.time, time2);
-              const tLeft = Math.min(start.time, time2);
-              const tRight = Math.max(lastT, start.time, time2);
-              // Ensure we have enough series
-              const chart = chartRef.current;
-              while (previewFibSeriesRef.current.length < levelsNow.length) {
-                try {
-                  const ls = chart.addLineSeries({
-                    color: "#f97316",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Solid,
-                    priceLineVisible: false,
-                    lastValueVisible: true,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                  previewFibSeriesRef.current.push(ls);
-                } catch { break; }
-              }
-              // Extra series beyond levels → clear data
-              for (let i = 0; i < previewFibSeriesRef.current.length; i++) {
-                const ser = previewFibSeriesRef.current[i];
-                if (i >= levelsNow.length) {
-                  try { ser.setData([]); } catch {}
-                  continue;
+            if (price2 != null) {
+              const p2 = price2;
+              if (fibPreviewRafRef.current != null) return; // already scheduled
+              fibPreviewRafRef.current = requestAnimationFrame(() => {
+                fibPreviewRafRef.current = null;
+                const ser = seriesRef.current;
+                if (!ser || !diagStartRef.current) return;
+                if (!fibPreviewCacheRef.current) {
+                  fibPreviewCacheRef.current = {
+                    levels: (loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS).filter((x) => x.on),
+                    reverse: !!loadLS("fib_reverse", false),
+                  };
                 }
-                const lv = levelsNow[i];
-                const price = fibPrice(start.price, price2, lv.v, revNow);
-                try {
-                  ser.applyOptions({
-                    color: lv.color || "#f97316",
-                    title: `${lv.v} · ${formatPrice(price)}`,
-                  });
-                  ser.setData([
-                    { time: tLeft as any, value: price },
-                    { time: tRight as any, value: price },
-                  ]);
-                } catch {}
+                const { levels, reverse } = fibPreviewCacheRef.current;
+                // Ensure exact count of price lines (create only when needed)
+                while (previewFibSeriesRef.current.length < levels.length) {
+                  try {
+                    const pl = ser.createPriceLine({
+                      price: diagStartRef.current.price,
+                      color: "#f97316",
+                      lineWidth: 1,
+                      lineStyle: LineStyle.Solid,
+                      axisLabelVisible: true,
+                      title: "",
+                    });
+                    previewFibSeriesRef.current.push(pl);
+                  } catch { break; }
+                }
+                while (previewFibSeriesRef.current.length > levels.length) {
+                  const pl = previewFibSeriesRef.current.pop();
+                  try { ser.removePriceLine(pl); } catch {}
+                }
+                for (let i = 0; i < levels.length; i++) {
+                  const lv = levels[i];
+                  const price = fibPrice(diagStartRef.current.price, p2, lv.v, reverse);
+                  if (!Number.isFinite(price)) continue;
+                  try {
+                    previewFibSeriesRef.current[i].applyOptions({
+                      price,
+                      color: lv.color || "#f97316",
+                      title: String(lv.v),
+                    });
+                  } catch {}
+                }
+              });
+            }
+          } else if (mNow !== "fib" && mNow !== "fib-ext" && previewFibSeriesRef.current.length) {
+            const ser = seriesRef.current;
+            if (ser) {
+              for (const pl of previewFibSeriesRef.current) {
+                try { ser.removePriceLine(pl); } catch {}
               }
             }
-          } else if (mNow !== "fib" && mNow !== "fib-ext") {
-            // not in fib mode — ensure preview cleared
-            if (previewFibSeriesRef.current.length) {
-              for (const ser of previewFibSeriesRef.current) {
-                try { ser.setData([]); } catch {}
-              }
-            }
+            previewFibSeriesRef.current = [];
+            fibPreviewCacheRef.current = null;
           }
         } catch {}
         // Osc stack crosshair: vertical + horizontal (only inside osc region — no double on main)
@@ -8617,6 +8612,7 @@ export default function DashboardPage() {
           if (!start) {
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
+            fibPreviewCacheRef.current = null; // reload levels
             setStatusMsg("Fib: move mouse, then tap second point");
             return;
           }
@@ -8677,13 +8673,14 @@ export default function DashboardPage() {
           }
           diagStartRef.current = null;
           setDiagStart(null);
-          // clear fib preview series fully
-          if (previewFibSeriesRef.current.length && chartRef.current) {
-            for (const ser of previewFibSeriesRef.current) {
-              try { chartRef.current.removeSeries(ser); } catch {}
+          // clear fib preview price lines
+          if (previewFibSeriesRef.current.length && seriesRef.current) {
+            for (const pl of previewFibSeriesRef.current) {
+              try { seriesRef.current.removePriceLine(pl); } catch {}
             }
             previewFibSeriesRef.current = [];
           }
+          fibPreviewCacheRef.current = null;
           clearPreview();
           setMode("none");
           modeRef.current = "none";
