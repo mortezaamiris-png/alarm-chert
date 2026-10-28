@@ -274,6 +274,7 @@ function parseFibNote(note: string | null | undefined): null | {
     } else if (p === "trend=1") trend = true;
     else if (p.startsWith("tc=")) trendColor = decodeURIComponent(p.slice(3)) || "#f97316";
     else if (p === "bg=1") background = true;
+    else if (p === "bg=0") background = false;
     else if (p.startsWith("bgc=")) bgColor = decodeURIComponent(p.slice(4)) || "#2962FF";
     else if (p.startsWith("bgo=")) {
       const n = parseInt(p.slice(4), 10);
@@ -4399,20 +4400,22 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 });
-                // Labels sit on the Fib BOX (anchors tA/tB), not on extended ends
-                const lh = (fib as any).labelH || "right";
-                const labV = (fib as any).labelV || "middle";
+                // Line spans extended range; labels only on Fib BOX anchors
+                const lh = String((fib as any).labelH || "right");
+                const labV = String((fib as any).labelV || "middle");
+                // tA = left anchor, tB = right anchor (sorted)
                 const labelT =
                   lh === "left" ? tA :
                   lh === "center" ? Math.round((tA + tB) / 2) :
-                  tB;
-                // line spans extended range; always include anchors + label time for markers
+                  tB; // right
                 const ptsMap = new Map<number, number>();
-                ptsMap.set(tFrom, price);
-                ptsMap.set(tTo, price);
-                ptsMap.set(tA, price);
-                ptsMap.set(tB, price);
-                ptsMap.set(labelT, price);
+                ptsMap.set(Number(tFrom), price);
+                ptsMap.set(Number(tTo), price);
+                ptsMap.set(Number(tA), price);
+                ptsMap.set(Number(tB), price);
+                ptsMap.set(Number(labelT), price);
+                // mid sample helps line render when heavily extended
+                ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
@@ -4425,12 +4428,12 @@ export default function DashboardPage() {
                       "inBar";
                     hs.setMarkers([
                       {
-                        time: labelT as any,
+                        time: Number(labelT) as any,
                         position: pos as any,
                         color: col,
                         shape: "circle",
                         size: 0.01,
-                        text: titleParts.join("  "),
+                        text: " " + titleParts.join("  ") + " ",
                       },
                     ]);
                   } catch {}
@@ -4476,8 +4479,6 @@ export default function DashboardPage() {
                 priced.push({ price, color: col });
               }
               priced.sort((a, b) => a.price - b.price);
-              // denser time samples so fill is continuous across zoom
-              const midT = Math.round((tFrom + tTo) / 2);
               for (let i = 0; i < priced.length - 1; i++) {
                 const lo = priced[i].price;
                 const hi = priced[i + 1].price;
@@ -4500,10 +4501,14 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   } as any);
+                  // fill only inside Fib box (anchors), not extended rays
+                  const bFrom = Math.min(tA, tB);
+                  const bTo = Math.max(tA, tB);
+                  const bMid = Math.round((bFrom + bTo) / 2);
                   band.setData([
-                    { time: tFrom as any, value: hi },
-                    { time: midT as any, value: hi },
-                    { time: tTo as any, value: hi },
+                    { time: bFrom as any, value: hi },
+                    { time: bMid as any, value: hi },
+                    { time: bTo as any, value: hi },
                   ]);
                   extraSeries.push(band);
                 } catch (e) {
@@ -4520,8 +4525,8 @@ export default function DashboardPage() {
                       autoscaleInfoProvider: () => null as any,
                     } as any);
                     fb.setData([
-                      { time: tFrom as any, value: hi },
-                      { time: tTo as any, value: hi },
+                      { time: Math.min(tA, tB) as any, value: hi },
+                      { time: Math.max(tA, tB) as any, value: hi },
                     ]);
                     extraSeries.push(fb);
                   } catch {}
@@ -14786,7 +14791,7 @@ export default function DashboardPage() {
                             setFibLineStyle(fib.lineStyle || "solid");
                             setFibTrend(!!fib.trend);
                             setFibTrendColor(fib.trendColor || "#f97316");
-                            setFibBackground(fib.background !== false);
+                            setFibBackground(!!fib.background);
                             setFibBgColor(fib.bgColor || "#2962FF");
                             setFibBgOpacity(fib.bgOpacity ?? 20);
                             setFibLabelH((fib as any).labelH || "right");
