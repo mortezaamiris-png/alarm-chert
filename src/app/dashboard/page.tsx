@@ -4400,22 +4400,33 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 });
-                // Line spans extended range; labels only on Fib BOX anchors
+                // Labels follow Extend: Right → near last candle (where lines go), not stuck on anchor
                 const lh = String((fib as any).labelH || "right");
                 const labV = String((fib as any).labelV || "middle");
-                // tA = left anchor, tB = right anchor (sorted)
+                const extRight = ext === "right" || ext === "both";
+                const extLeft = ext === "left" || ext === "both";
+                // Use chart edges when extended so labels sit on the visible line ends
+                const labLeft = extLeft ? chartFirst : tA;
+                const labRight = extRight ? chartLast : tB;
                 const labelT =
-                  lh === "left" ? tA :
-                  lh === "center" ? Math.round((tA + tB) / 2) :
-                  tB; // right
+                  lh === "left" ? labLeft :
+                  lh === "center" ? Math.round((labLeft + labRight) / 2) :
+                  labRight;
                 const ptsMap = new Map<number, number>();
                 ptsMap.set(Number(tFrom), price);
                 ptsMap.set(Number(tTo), price);
                 ptsMap.set(Number(tA), price);
                 ptsMap.set(Number(tB), price);
                 ptsMap.set(Number(labelT), price);
-                // mid sample helps line render when heavily extended
                 ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
+                // denser points along visible span so marker time always exists
+                if (extRight || extLeft) {
+                  const steps = 8;
+                  for (let s = 1; s < steps; s++) {
+                    const tt = Math.round(labLeft + ((labRight - labLeft) * s) / steps);
+                    ptsMap.set(tt, price);
+                  }
+                }
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
@@ -4501,14 +4512,18 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   } as any);
-                  // fill only inside Fib box (anchors), not extended rays
-                  const bFrom = Math.min(tA, tB);
-                  const bTo = Math.max(tA, tB);
+                  // background follows same span as level lines (respects Extend)
+                  const bFrom = tFrom;
+                  const bTo = tTo;
                   const bMid = Math.round((bFrom + bTo) / 2);
+                  // clamp far extends to chart range so fill stays visible
+                  const cFrom = Math.max(bFrom, chartFirst - 86400 * 7);
+                  const cTo = Math.min(bTo, chartLast + 86400 * 7);
+                  const cMid = Math.round((cFrom + cTo) / 2);
                   band.setData([
-                    { time: bFrom as any, value: hi },
-                    { time: bMid as any, value: hi },
-                    { time: bTo as any, value: hi },
+                    { time: cFrom as any, value: hi },
+                    { time: cMid as any, value: hi },
+                    { time: cTo as any, value: hi },
                   ]);
                   extraSeries.push(band);
                 } catch (e) {
@@ -4525,8 +4540,8 @@ export default function DashboardPage() {
                       autoscaleInfoProvider: () => null as any,
                     } as any);
                     fb.setData([
-                      { time: Math.min(tA, tB) as any, value: hi },
-                      { time: Math.max(tA, tB) as any, value: hi },
+                      { time: Math.max(tFrom, chartFirst - 86400 * 7) as any, value: hi },
+                      { time: Math.min(tTo, chartLast + 86400 * 7) as any, value: hi },
                     ]);
                     extraSeries.push(fb);
                   } catch {}
