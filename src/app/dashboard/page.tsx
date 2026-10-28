@@ -1627,12 +1627,14 @@ export default function DashboardPage() {
   /** Hollow circle handle DOM nodes (move mode) */
   const handleAElRef = useRef<HTMLDivElement | null>(null);
   const handleBElRef = useRef<HTMLDivElement | null>(null);
+  const handleCElRef = useRef<HTMLDivElement | null>(null);
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
-    phase: "pick" | "drag-a" | "drag-b";
+    phase: "pick" | "drag-a" | "drag-b" | "drag-c";
     pointA: { time: number; price: number };
     pointB: { time: number; price: number };
+    pointC?: { time: number; price: number };
     color: string;
     width: number;
     dash: string;
@@ -3762,6 +3764,7 @@ export default function DashboardPage() {
     try {
       if (handleAElRef.current) handleAElRef.current.style.display = "none";
       if (handleBElRef.current) handleBElRef.current.style.display = "none";
+      if (handleCElRef.current) handleCElRef.current.style.display = "none";
     } catch {}
   }, []);
 
@@ -3769,12 +3772,14 @@ export default function DashboardPage() {
   const positionHandles = useCallback((
     pointA: { time: number; price: number },
     pointB: { time: number; price: number },
-    active?: "a" | "b" | null
+    active?: "a" | "b" | "c" | null,
+    pointC?: { time: number; price: number } | null
   ) => {
     const chart = chartRef.current;
     const series = seriesRef.current;
     const elA = handleAElRef.current;
     const elB = handleBElRef.current;
+    const elC = handleCElRef.current;
     if (!chart || !series || !elA || !elB) return;
     const candles = candlesRef.current;
     const barSec = intervalToSeconds(String(intervalRef.current));
@@ -3810,6 +3815,10 @@ export default function DashboardPage() {
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
+    if (elC) {
+      if (pointC) place(elC, pointC, active === "c");
+      else elC.style.display = "none";
+    }
   }, []);
 
   // Show fib A/B anchors while a fib is selected / settings open
@@ -4983,11 +4992,12 @@ export default function DashboardPage() {
       try {
         const md = moveDiagRef.current;
         if (!md) return;
-        if (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b") return;
+        if (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c") return;
         const chart2 = chartRef.current;
         const ser2 = seriesRef.current;
         const elA = handleAElRef.current;
         const elB = handleBElRef.current;
+        const elC = handleCElRef.current;
         if (!chart2 || !ser2 || !elA || !elB) return;
         const candles = candlesRef.current;
         const barSec = intervalToSeconds(String(intervalRef.current));
@@ -5021,6 +5031,10 @@ export default function DashboardPage() {
         };
         place(elA, md.pointA, md.phase === "drag-a");
         place(elB, md.pointB, md.phase === "drag-b");
+        if (elC) {
+          if (md.pointC) place(elC, md.pointC, md.phase === "drag-c");
+          else elC.style.display = "none";
+        }
       } catch {}
     };
     const scheduleOverlaySync = () => {
@@ -7841,7 +7855,15 @@ export default function DashboardPage() {
               })();
               try {
                 if (chartNow && tCursor != null) {
-                  if (startPt) {
+                  if (startPt && fibPoint3Ref.current) {
+                    // fib-ext: A+B fixed, C follows cursor
+                    positionHandles(
+                      { time: startPt.time, price: startPt.price },
+                      { time: fibPoint3Ref.current.time, price: fibPoint3Ref.current.price },
+                      "c",
+                      { time: tCursor, price: p2 }
+                    );
+                  } else if (startPt) {
                     // hollow handles: A fixed, B follows cursor
                     positionHandles(
                       { time: startPt.time, price: startPt.price },
@@ -7860,6 +7882,7 @@ export default function DashboardPage() {
                       elA.style.height = "16px";
                     }
                     if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                    if (handleCElRef.current) handleCElRef.current.style.display = "none";
                   }
                 }
               } catch {}
@@ -8335,24 +8358,27 @@ export default function DashboardPage() {
                 setMovingType("line");
                 movingVLineRef.current = false;
                 movingRayRef.current = false;
+                const hasC = fibHit.kind === "fib-ext" && fibHit.t3 != null && fibHit.p3 != null;
                 moveDiagRef.current = {
                   id: lFib.id,
                   phase: "pick",
                   pointA: { time: Number(fibHit.t1), price: Number(fibHit.p1) },
                   pointB: { time: Number(fibHit.t2), price: Number(fibHit.p2) },
+                  pointC: hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : undefined,
                   color: lFib.color || DEFAULT_LINE_COLOR,
                   width: lFib.width || 1,
                   dash: "solid",
                   isFib: true,
-                } as any;
+                };
                 try {
                   positionHandles(
                     { time: fibHit.t1, price: fibHit.p1 },
                     { time: fibHit.t2, price: fibHit.p2 },
-                    null
+                    null,
+                    hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : null
                   );
                 } catch {}
-                setStatusMsg("Tap a circle to move fib — empty chart or ✓ Done");
+                setStatusMsg(hasC ? "Tap a circle (A/B/C) to move fib — ✓ Done" : "Tap a circle to move fib — ✓ Done");
                 return;
               }
             }
@@ -8453,7 +8479,7 @@ export default function DashboardPage() {
                 ].sort((x, y) => Number(x.time) - Number(y.time));
                 previewDiagSeriesRef.current.setData(pts);
                 try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
-                positionHandles(md.pointA, md.pointB, null);
+                positionHandles(md.pointA, md.pointB, null, md.pointC || null);
               } catch {}
             };
 
@@ -8480,14 +8506,15 @@ export default function DashboardPage() {
                 const yA = series.priceToCoordinate(md.pointA.price);
                 const xB = timeToX(md.pointB.time);
                 const yB = series.priceToCoordinate(md.pointB.price);
+                const xC = md.pointC ? timeToX(md.pointC.time) : null;
+                const yC = md.pointC ? series.priceToCoordinate(md.pointC.price) : null;
                 const px = param.point.x;
                 const py = param.point.y;
                 const distA = (xA != null && yA != null) ? Math.hypot(px - xA, py - yA) : 1e9;
                 const distB = (xB != null && yB != null) ? Math.hypot(px - xB, py - yB) : 1e9;
-                // Smaller hit radius so empty-chart confirm is easy on desktop; still ok for finger
+                const distC = (xC != null && yC != null) ? Math.hypot(px - xC, py - yC) : 1e9;
                 const HIT = 36;
-                // Tap away from both handles → final confirm / exit edit
-                if (distA > HIT && distB > HIT) {
+                if (distA > HIT && distB > HIT && distC > HIT) {
                   moveDiagRef.current = null;
                   setMovingId(null);
                   setMovingType(null);
@@ -8497,7 +8524,11 @@ export default function DashboardPage() {
                   setStatusMsg("✓ Confirmed");
                   return;
                 }
-                if (distA <= distB) {
+                const best = Math.min(distA, distB, distC);
+                if (best === distC && md.pointC) {
+                  md.phase = "drag-c";
+                  setStatusMsg("Move point C — tap new position");
+                } else if (distA <= distB) {
                   md.phase = "drag-a";
                   setStatusMsg("Move start point — tap new position");
                 } else {
@@ -8527,6 +8558,8 @@ export default function DashboardPage() {
             }
             if (md.phase === "drag-a") {
               md.pointA = { time: t, price: fp };
+            } else if (md.phase === "drag-c" && md.pointC) {
+              md.pointC = { time: t, price: fp };
             } else {
               md.pointB = { time: t, price: fp };
             }
@@ -8566,8 +8599,8 @@ export default function DashboardPage() {
                       p1: md.pointA.price,
                       t2: md.pointB.time,
                       p2: md.pointB.price,
-                      t3: oldFib.t3,
-                      p3: oldFib.p3,
+                      t3: md.pointC ? md.pointC.time : oldFib.t3,
+                      p3: md.pointC ? md.pointC.price : oldFib.p3,
                     },
                     levelsArr,
                     {
@@ -12273,12 +12306,12 @@ export default function DashboardPage() {
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 19h16" />
-                  <path d="M4 14h12" />
-                  <path d="M4 9h8" />
-                  <path d="M4 5h5" />
-                  <path d="M4 5v14" />
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 19h14" />
+                  <path d="M5 15h11" />
+                  <path d="M5 11h8" />
+                  <path d="M5 7h5" />
+                  <path d="M6 19L16 7" strokeDasharray="2 2" />
                 </svg>
               </button>
               {fibToolsOpen && (
@@ -12297,7 +12330,10 @@ export default function DashboardPage() {
                       setStatusMsg("Fib Retracement: tap point A, then B");
                     }}
                   >
-                    <span className="w-4 text-center">⌘</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
+                      <path d="M5 19h14" /><path d="M5 15h11" /><path d="M5 11h8" /><path d="M5 7h5" />
+                      <path d="M6 19L16 7" strokeDasharray="2 2" />
+                    </svg>
                     Fib retracement
                   </button>
                   <button
@@ -12313,7 +12349,10 @@ export default function DashboardPage() {
                       setStatusMsg("Fib Extension: tap A, then B, then C");
                     }}
                   >
-                    <span className="w-4 text-center">⌘+</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
+                      <path d="M4 18h16" /><path d="M4 14h12" /><path d="M4 10h9" /><path d="M4 6h6" />
+                      <path d="M5 18L12 10L19 6" />
+                    </svg>
                     Trend-based fib extension
                   </button>
                 </div>
@@ -12715,6 +12754,11 @@ export default function DashboardPage() {
               />
               <div
                 ref={handleBElRef}
+                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+              />
+              <div
+                ref={handleCElRef}
                 className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
                 style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
               />
@@ -15306,6 +15350,34 @@ export default function DashboardPage() {
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        const fibHit = parseFibNote(l.note);
+                        if (fibHit) {
+                          setSelectedFibId(String(l.id));
+                          movingVLineRef.current = false;
+                          movingRayRef.current = false;
+                          const hasC = fibHit.kind === "fib-ext" && fibHit.t3 != null && fibHit.p3 != null;
+                          moveDiagRef.current = {
+                            id: l.id,
+                            phase: "pick",
+                            pointA: { time: Number(fibHit.t1), price: Number(fibHit.p1) },
+                            pointB: { time: Number(fibHit.t2), price: Number(fibHit.p2) },
+                            pointC: hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : undefined,
+                            color: l.color || DEFAULT_LINE_COLOR,
+                            width: l.width || 1,
+                            dash: "solid",
+                            isFib: true,
+                          };
+                          try {
+                            positionHandles(
+                              { time: fibHit.t1, price: fibHit.p1 },
+                              { time: fibHit.t2, price: fibHit.p2 },
+                              null,
+                              hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : null
+                            );
+                          } catch {}
+                          setStatusMsg(hasC ? "Tap a circle (A/B/C) to move fib — ✓ Done" : "Tap a circle to move fib — ✓ Done");
+                          return;
+                        }
                         const isArrowL =
                           typeof l.note === "string" &&
                           (l.note === "__arrow_up__" ||
