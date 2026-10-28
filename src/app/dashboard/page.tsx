@@ -1638,6 +1638,15 @@ export default function DashboardPage() {
   const modeRef = useRef(mode);
   const conditionRef = useRef(condition);
   const movingIdRef = useRef(movingId);
+  /** Live drag of horizontal line/alarm (grab & move) */
+  const lineDragRef = useRef<{
+    id: string;
+    kind: "line" | "alarm";
+    startY: number;
+    startPrice: number;
+    active: boolean;
+  } | null>(null);
+
   const movingTypeRef = useRef(movingType);
   const drawColorRef = useRef(drawColor);
   const drawWidthRef = useRef(drawWidth);
@@ -2703,7 +2712,7 @@ export default function DashboardPage() {
             const btnTop = topPx + 4;
             const handleRight = scaleW + 8;
             const barRight = scaleW + 32;
-            const btnStyle = "width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#d1d5db;-webkit-tap-highlight-color:transparent;";
+            const btnStyle = "width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;cursor:pointer;padding:0;color:#e5e7eb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;";
             const svgUp = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>`;
             const svgDown = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
             const svgTrash = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
@@ -2714,11 +2723,11 @@ export default function DashboardPage() {
             const svgHandle = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>`;
             // Always-visible handle (⋮)
             parts.push(
-              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:20px;height:22px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.7);border:1px solid rgba(255,255,255,0.12);border-radius:4px;cursor:pointer;pointer-events:auto;z-index:13;padding:0;color:#9ca3af;-webkit-tap-highlight-color:transparent;">${svgHandle}</button>`
+              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;pointer-events:auto;z-index:30;padding:0;color:#e5e7eb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">${svgHandle}</button>`
             );
             // Toolbar — hidden by default
             parts.push(
-              `<div data-osc-toolbar="${id}" style="position:absolute;right:${barRight}px;top:${btnTop}px;display:none;flex-direction:row;gap:1px;align-items:center;background:rgba(11,14,17,0.92);border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 3px;z-index:14;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,0.45);">` +
+              `<div data-osc-toolbar="${id}" style="position:absolute;right:${barRight}px;top:${btnTop}px;display:none;flex-direction:row;gap:1px;align-items:center;background:rgba(11,14,17,0.92);border:1px solid rgba(255,255,255,0.18);border-radius:6px;padding:3px 4px;z-index:31;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,0.45);touch-action:manipulation;">` +
               `<button data-osc-act="up" data-osc-id="${id}" title="Move up" style="${btnStyle}">${svgUp}</button>` +
               `<button data-osc-act="down" data-osc-id="${id}" title="Move down" style="${btnStyle}">${svgDown}</button>` +
               `<button data-osc-act="trash" data-osc-id="${id}" title="Remove" style="${btnStyle}">${svgTrash}</button>` +
@@ -2744,28 +2753,35 @@ export default function DashboardPage() {
             const el = btn as HTMLElement;
             const id = el.getAttribute("data-osc-handle") || "";
             if (!id) return;
-            // Only click — pointerup+click on desktop was open-then-immediately-close
             const toggle = (ev: Event) => {
-              ev.preventDefault();
-              ev.stopPropagation();
+              try { ev.preventDefault(); } catch {}
+              try { ev.stopPropagation(); } catch {}
+              try { (ev as any).stopImmediatePropagation?.(); } catch {}
               const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
               if (!tb) return;
               const open = tb.style.display === "flex";
               closeAllToolbars();
               if (!open) {
                 tb.style.display = "flex";
-                // keep open across the following bubble events
-                (tb as any).__keepOpenUntil = Date.now() + 300;
+                // iPad: keep open longer so the same touch / delayed click does not close it
+                (tb as any).__keepOpenUntil = Date.now() + 800;
               }
             };
-            el.addEventListener("click", toggle);
-            el.addEventListener("pointerdown", (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
+            // pointerup works reliably on iPad; click for desktop
+            el.addEventListener("pointerup", toggle);
+            el.addEventListener("click", (ev) => {
+              // If we just toggled via pointerup, ignore synthetic click
+              const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
+              if (tb && Date.now() < ((tb as any).__keepOpenUntil || 0)) {
+                try { ev.preventDefault(); } catch {}
+                try { ev.stopPropagation(); } catch {}
+                return;
+              }
+              toggle(ev);
             });
-            el.addEventListener("pointerup", (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
+            el.addEventListener("pointerdown", (ev) => {
+              try { ev.preventDefault(); } catch {}
+              try { ev.stopPropagation(); } catch {}
             });
           });
           host.querySelectorAll("[data-osc-act]").forEach((btn) => {
@@ -2800,11 +2816,15 @@ export default function DashboardPage() {
                 } catch {}
               } catch {}
             };
-            // single handler — avoid double-fire on desktop
-            el.addEventListener("click", onAct);
+            el.addEventListener("pointerup", onAct);
+            el.addEventListener("click", (ev) => {
+              // suppress duplicate after pointerup
+              try { ev.preventDefault(); } catch {}
+              try { ev.stopPropagation(); } catch {}
+            });
             el.addEventListener("pointerdown", (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
+              try { ev.preventDefault(); } catch {}
+              try { ev.stopPropagation(); } catch {}
             });
           });
           // Tap outside toolbars / handles closes them
@@ -6416,7 +6436,12 @@ export default function DashboardPage() {
         const isMeasure =
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
         // measureEnd is state — use measureStartRef only for live drag
-        if (!isDiagDraw && !isDiagMove && !isRayPreview && !(m0 === "measure" && measureStartRef.current)) return;
+        const isHMove =
+          m0 === "move" &&
+          !!movingIdRef.current &&
+          !moveDiagRef.current &&
+          !movingVLineRef.current;
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !(m0 === "measure" && measureStartRef.current) && !isHMove) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -6444,6 +6469,36 @@ export default function DashboardPage() {
           if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
           const price = series.coordinateToPrice(y);
           if (price == null || Number.isNaN(price)) return;
+          // Live drag horizontal line / alarm (grab & move)
+          try {
+            if (
+              modeRef.current === "move" &&
+              movingIdRef.current &&
+              !moveDiagRef.current &&
+              !movingVLineRef.current
+            ) {
+              const fpLive = formatPrice(price);
+              if (!previewLineRef.current) {
+                previewLineRef.current = series.createPriceLine({
+                  price: fpLive,
+                  color: "#f97316",
+                  lineWidth: 1,
+                  lineStyle: LineStyle.Dashed,
+                  axisLabelVisible: true,
+                  title: "",
+                });
+              } else {
+                previewLineRef.current.applyOptions({ price: fpLive });
+              }
+              lineDragRef.current = {
+                id: movingIdRef.current,
+                kind: (movingTypeRef.current as any) || "line",
+                startY: cy,
+                startPrice: fpLive,
+                active: true,
+              };
+            }
+          } catch {}
           let tCursor: number | null = null;
           try {
             const logical = chart.timeScale().coordinateToLogical(x);
@@ -6586,6 +6641,50 @@ export default function DashboardPage() {
         });
       };
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
+      const onPointerUpLineDrag = async (e: PointerEvent) => {
+        const d = lineDragRef.current;
+        if (!d || !d.active) return;
+        if (modeRef.current !== "move" || !movingIdRef.current) {
+          lineDragRef.current = null;
+          return;
+        }
+        // Commit at current pointer price (same as second-click move)
+        try {
+          const rect = container.getBoundingClientRect();
+          const y = e.clientY - rect.top;
+          const price = series.coordinateToPrice(y);
+          if (price == null || Number.isNaN(price)) return;
+          const fp = formatPrice(price);
+          const id = movingIdRef.current;
+          const typ = movingTypeRef.current;
+          clickLockRef.current = true;
+          if (typ === "line" && !movingRayRef.current && !movingVLineRef.current) {
+            try {
+              await supabase.from("chart_lines").update({ price: fp }).eq("id", id);
+            } catch {}
+            setLines((prev) => prev.map((l) => (l.id === id ? { ...l, price: fp } : l)));
+            setStatusMsg("Line moved");
+          } else if (typ === "alarm" && !movingRayRef.current) {
+            try {
+              await supabase.from("alarms").update({ price: fp }).eq("id", id);
+            } catch {}
+            setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, price: fp } : a)));
+            setStatusMsg("Alarm moved");
+          }
+          moveDiagRef.current = null;
+          setMovingId(null);
+          setMovingType(null);
+          setMode("none");
+          clearPreview();
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+        } catch {
+          setStatusMsg("Move failed");
+        }
+        lineDragRef.current = null;
+      };
+      container.addEventListener("pointerup", onPointerUpLineDrag, { signal: pointerAbortRef.current.signal });
+      container.addEventListener("pointercancel", onPointerUpLineDrag as any, { signal: pointerAbortRef.current.signal });
+
 
       chart.subscribeCrosshairMove((param) => {
         // TV-style OHLC + volume under symbol
@@ -7101,7 +7200,7 @@ export default function DashboardPage() {
                 setStatusMsg("Click chart to move ray");
               } else {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move line");
+                setStatusMsg("Drag to move line — release to place");
               }
             } else {
               // alarm
@@ -7122,7 +7221,7 @@ export default function DashboardPage() {
                 setStatusMsg("Click chart to move alarm ray");
               } else {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move alarm");
+                setStatusMsg("Drag to move alarm — release to place");
               }
             }
             return;
@@ -8544,6 +8643,81 @@ export default function DashboardPage() {
 
   // همیشه آخرین loadCandles را در ref نگه دار تا useEffect با عوض شدن identity دوباره لود نکند
   loadCandlesRef.current = loadCandles;
+  // Lightweight chart-type switch (no network, no full chart destroy)
+  try {
+    (window as any).__applyChartType = () => {
+      try {
+        const chart = chartRef.current;
+        const candles = candlesRef.current;
+        if (!chart || !candles?.length) {
+          void loadCandlesRef.current?.();
+          return;
+        }
+        const ctype = chartTypeRef.current || "candles";
+        const last = candles[candles.length - 1];
+        const { precision, minMove } = getPrecision(Number(last?.close) || 1);
+        const withFuture = appendFutureWhitespace(candles, String(intervalRef.current));
+        let savedRange: any = null;
+        try { savedRange = (chart.timeScale() as any).getVisibleLogicalRange?.(); } catch {}
+        try {
+          if (seriesRef.current) chart.removeSeries(seriesRef.current as any);
+        } catch {}
+        seriesRef.current = null;
+        let series: any = null;
+        if (ctype === "line") {
+          series = chart.addLineSeries({
+            color: "#3b82f6", lineWidth: 2,
+            priceFormat: { type: "price", precision, minMove },
+            lastValueVisible: false, priceLineVisible: false,
+          });
+          series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+        } else if (ctype === "area") {
+          series = chart.addAreaSeries({
+            lineColor: "#3b82f6", topColor: "rgba(59,130,246,0.35)", bottomColor: "rgba(59,130,246,0.02)",
+            lineWidth: 2,
+            priceFormat: { type: "price", precision, minMove },
+            lastValueVisible: false, priceLineVisible: false,
+          });
+          series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+        } else {
+          const hollow = ctype === "hollow";
+          const dataSrc = ctype === "heikin" ? toHeikinAshi(candles) : candles;
+          const data = appendFutureWhitespace(dataSrc, String(intervalRef.current));
+          series = chart.addCandlestickSeries({
+            upColor: hollow ? "transparent" : "#089981",
+            downColor: hollow ? "transparent" : "#f23645",
+            borderUpColor: "#089981",
+            borderDownColor: "#f23645",
+            wickUpColor: "#089981",
+            wickDownColor: "#f23645",
+            priceFormat: { type: "price", precision, minMove },
+            lastValueVisible: false, priceLineVisible: false,
+          });
+          series.setData(data as any);
+        }
+        seriesRef.current = series;
+        try {
+          series.applyOptions({
+            autoscaleInfoProvider: (original: any) => {
+              const ov = priceRangeOverrideRef.current;
+              if (ov && ov.to > ov.from) return { priceRange: { minValue: ov.from, maxValue: ov.to } };
+              try { return typeof original === "function" ? original() : original; } catch { return null; }
+            },
+          } as any);
+        } catch {}
+        try {
+          if (savedRange) (chart.timeScale() as any).setVisibleLogicalRange?.(savedRange);
+        } catch {}
+        try { renderAllLinesAndAlarmsRef?.current?.(); } catch {}
+        try { applyVolume(); } catch {}
+        try { updateMargins(); } catch {}
+      } catch (e) {
+        console.warn("applyChartType", e);
+        void loadCandlesRef.current?.();
+      }
+    };
+  } catch {}
+
 
   useEffect(() => {
     let cancelled = false;
@@ -10004,6 +10178,17 @@ export default function DashboardPage() {
             <button
               type="button"
               title="Chart type"
+              onPointerDown={(e) => {
+                // Faster open on touch/iPad — don't wait for click delay
+                if (e.pointerType === "touch") {
+                  e.preventDefault();
+                  setShowChartTypeMenu((v) => !v);
+                  setShowIndicatorMenu(false);
+                  setTfMenuOpen(false);
+                  setTzMenuOpen(false);
+                  setOpenMenu(null);
+                }
+              }}
               onClick={() => {
                 setShowChartTypeMenu((v) => !v);
                 setShowIndicatorMenu(false);
@@ -10045,8 +10230,10 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => {
                       setChartType(k);
+                      chartTypeRef.current = k;
                       setShowChartTypeMenu(false);
-                      setTimeout(() => loadCandlesRef.current?.(), 0);
+                      // Rebuild series only — never full loadCandles (was freezing / lagging)
+                      try { (window as any).__applyChartType?.(); } catch {}
                     }}
                     className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
                       chartType === k ? "text-orange-300" : "text-gray-200"
