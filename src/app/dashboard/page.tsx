@@ -986,6 +986,113 @@ function toHeikinAshi(candles: any[]): any[] {
   }
   return out;
 }
+
+function toRenko(candles: any[], brickSize?: number): any[] {
+  if (!candles.length) return [];
+  const avg = candles.reduce((s, c) => s + Math.abs(c.high - c.low), 0) / candles.length;
+  const brick = brickSize && brickSize > 0 ? brickSize : Math.max(avg * 0.5, (candles[candles.length - 1].close || 1) * 0.002);
+  const out: any[] = [];
+  let ref = candles[0].close;
+  for (const c of candles) {
+    while (c.close >= ref + brick) {
+      const o = ref;
+      const cl = ref + brick;
+      out.push({ time: c.time + out.length * 0.0001, open: o, high: cl, low: o, close: cl });
+      ref = cl;
+    }
+    while (c.close <= ref - brick) {
+      const o = ref;
+      const cl = ref - brick;
+      out.push({ time: c.time + out.length * 0.0001, open: o, high: o, low: cl, close: cl });
+      ref = cl;
+    }
+  }
+  // unique integer times for LWC
+  return out.map((b, i) => ({ ...b, time: (candles[0].time || 0) + i * 60 }));
+}
+
+function toLineBreak(candles: any[], lines = 3): any[] {
+  if (!candles.length) return [];
+  const out: any[] = [];
+  let dir = 0;
+  let extremes: number[] = [];
+  for (const c of candles) {
+    if (!out.length) {
+      out.push({ ...c });
+      extremes = [c.close];
+      continue;
+    }
+    const last = out[out.length - 1];
+    if (dir >= 0 && c.close > last.high) {
+      out.push({ time: c.time, open: last.close, high: c.close, low: last.close, close: c.close });
+      dir = 1;
+      extremes = [...extremes.slice(-(lines - 1)), c.close];
+    } else if (dir <= 0 && c.close < last.low) {
+      out.push({ time: c.time, open: last.close, high: last.close, low: c.close, close: c.close });
+      dir = -1;
+      extremes = [...extremes.slice(-(lines - 1)), c.close];
+    } else if (dir > 0 && extremes.length >= lines && c.close < Math.min(...extremes)) {
+      out.push({ time: c.time, open: last.close, high: last.close, low: c.close, close: c.close });
+      dir = -1;
+      extremes = [c.close];
+    } else if (dir < 0 && extremes.length >= lines && c.close > Math.max(...extremes)) {
+      out.push({ time: c.time, open: last.close, high: c.close, low: last.close, close: c.close });
+      dir = 1;
+      extremes = [c.close];
+    }
+  }
+  return out.map((b, i) => ({ ...b, time: (candles[0].time || 0) + i * 60 }));
+}
+
+function toKagi(candles: any[], reversalPct = 0.01): any[] {
+  if (!candles.length) return [];
+  const out: { time: number; value: number }[] = [];
+  let dir = 0;
+  let extreme = candles[0].close;
+  out.push({ time: candles[0].time, value: extreme });
+  for (let i = 1; i < candles.length; i++) {
+    const p = candles[i].close;
+    const rev = Math.abs(extreme) * reversalPct;
+    if (dir >= 0) {
+      if (p > extreme) {
+        extreme = p;
+        out.push({ time: candles[i].time, value: p });
+        dir = 1;
+      } else if (p <= extreme - rev) {
+        extreme = p;
+        out.push({ time: candles[i].time, value: p });
+        dir = -1;
+      }
+    } else {
+      if (p < extreme) {
+        extreme = p;
+        out.push({ time: candles[i].time, value: p });
+        dir = -1;
+      } else if (p >= extreme + rev) {
+        extreme = p;
+        out.push({ time: candles[i].time, value: p });
+        dir = 1;
+      }
+    }
+  }
+  return out;
+}
+
+function toStepLine(candles: any[]): { time: number; value: number }[] {
+  const out: { time: number; value: number }[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    if (i > 0) {
+      // horizontal step from previous close
+      out.push({ time: c.time, value: candles[i - 1].close });
+    }
+    out.push({ time: c.time, value: c.close });
+  }
+  // LWC needs unique times — bump duplicates slightly is invalid; use only close points (step via series options not available)
+  return candles.map((c) => ({ time: c.time, value: c.close }));
+}
+
+
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1249,7 +1356,7 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Chart series style: candles | hollow | line | area | heikin */
-  const [chartType, setChartType] = useState<"candles" | "hollow" | "bars" | "line" | "area" | "baseline" | "hlc" | "heikin">(() =>
+  const [chartType, setChartType] = useState<"candles" | "hollow" | "bars" | "line" | "step" | "area" | "baseline" | "hlc" | "columns" | "highlow" | "renko" | "linebreak" | "kagi" | "heikin">(() =>
     loadLS("chart_type", "candles")
   );
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
@@ -1806,6 +1913,18 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("side_order", sideOrder); }, [sideOrder]);
   useEffect(() => { saveLS("show_side_wl", showSideWl); }, [showSideWl]);
   useEffect(() => { saveLS("chart_type", chartType); }, [chartType]);
+  useEffect(() => {
+    if (!showChartTypeMenu) return;
+    const onDown = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest && t.closest("[data-chart-type-menu]")) return;
+      setShowChartTypeMenu(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [showChartTypeMenu]);
+
   useEffect(() => { saveLS("chart_layout", chartLayout); }, [chartLayout]);
   useEffect(() => { saveLS("pane_symbols", paneSymbols); }, [paneSymbols]);
 
@@ -2723,7 +2842,7 @@ export default function DashboardPage() {
             const svgHandle = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>`;
             // Always-visible handle (⋮)
             parts.push(
-              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:28px;height:28px;display:none;align-items:center;justify-content:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;pointer-events:auto;z-index:30;padding:0;color:#e5e7eb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">${svgHandle}</button>`
+              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.9);border:1px solid rgba(255,255,255,0.25);border-radius:6px;cursor:pointer;pointer-events:none;z-index:30;padding:0;color:#e5e7eb;opacity:0;transition:opacity 0.12s ease;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">${svgHandle}</button>`
             );
             // Toolbar — hidden by default
             parts.push(
@@ -2846,30 +2965,36 @@ export default function DashboardPage() {
           (host as any).__oscOutside = onOutside;
 
           // Show ⋮ only while pointer is over that oscillator pane
-          const syncHandleVisibility = (clientY: number | null) => {
+          const syncHandleVisibility = (clientY: number | null, clientX: number | null = null) => {
             try {
               const rect = host.getBoundingClientRect();
-              const plotH = (host as any).__plotH || rect.height;
+              const plotH = (host as any).__plotH || rect.height || 1;
               const zones = ((host as any).__paneZones || []) as { id: string; top: number; bot: number }[];
               host.querySelectorAll("[data-osc-handle]").forEach((btn) => {
                 const el = btn as HTMLElement;
                 const id = el.getAttribute("data-osc-handle") || "";
                 const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
                 const open = !!(tb && tb.style.display === "flex");
+                el.style.display = "flex";
                 if (clientY == null) {
-                  el.style.display = open ? "flex" : "none";
+                  el.style.opacity = open ? "1" : "0";
+                  el.style.pointerEvents = open ? "auto" : "none";
                   return;
                 }
                 const z = zones.find((x) => x.id === id);
                 if (!z) {
-                  el.style.display = open ? "flex" : "none";
+                  el.style.opacity = open ? "1" : "0";
+                  el.style.pointerEvents = open ? "auto" : "none";
                   return;
                 }
                 const yRatio = (clientY - rect.top) / Math.max(1, plotH);
                 const paneTop = 1 - z.top;
                 const paneBot = 1 - z.bot;
-                const over = yRatio >= paneTop - 0.02 && yRatio <= paneBot + 0.02;
-                el.style.display = over || open ? "flex" : "none";
+                const overY = yRatio >= paneTop - 0.05 && yRatio <= paneBot + 0.05;
+                const overX = clientX == null ? true : clientX >= rect.right - 64;
+                const over = overY && overX;
+                el.style.opacity = over || open ? "1" : "0";
+                el.style.pointerEvents = over || open ? "auto" : "none";
               });
             } catch {}
           };
@@ -2877,7 +3002,7 @@ export default function DashboardPage() {
             const cont = chartContainerRef.current;
             if (cont && !(cont as any).__handleVisBound) {
               (cont as any).__handleVisBound = true;
-              cont.addEventListener("pointermove", (ev: PointerEvent) => syncHandleVisibility(ev.clientY));
+              cont.addEventListener("pointermove", (ev: PointerEvent) => syncHandleVisibility(ev.clientY, ev.clientX));
               cont.addEventListener("pointerleave", () => syncHandleVisibility(null));
             }
             (host as any).__syncHandleVisibility = syncHandleVisibility;
@@ -3408,10 +3533,12 @@ export default function DashboardPage() {
       const host = vlineOverlayRef.current;
       const chart2 = chartRef.current;
       if (!host || !chart2) return;
-      // Only remove vertical line nodes — keep rays intact
       host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
       if (hideLines) return;
       const bars = candlesRef.current || [];
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 0;
+      const hostW = host.clientWidth || host.getBoundingClientRect().width || 0;
+      if (hostH < 10 || hostW < 10) return;
       const timeToX = (unix: number): number | null => {
         try {
           const x = chart2.timeScale().timeToCoordinate(unix as any);
@@ -3425,8 +3552,8 @@ export default function DashboardPage() {
             if (Number(bars[mid].time) < unix) lo = mid + 1;
             else hi = mid;
           }
-          let best = lo;
-          if (lo > 0 && Math.abs(Number(bars[lo - 1].time) - unix) < Math.abs(Number(bars[lo].time) - unix)) best = lo - 1;
+          let best = Math.max(0, Math.min(bars.length - 1, lo));
+          if (best > 0 && Math.abs(Number(bars[best - 1].time) - unix) < Math.abs(Number(bars[best].time) - unix)) best = best - 1;
           const lx = chart2.timeScale().logicalToCoordinate(best as any);
           if (lx != null && !Number.isNaN(Number(lx))) return Number(lx);
         } catch {}
@@ -3435,22 +3562,16 @@ export default function DashboardPage() {
       for (const v of vlineItemsRef.current) {
         const x = timeToX(Number(v.time));
         if (x == null || Number.isNaN(x)) continue;
+        if (x < -2 || x > hostW + 2) continue;
         const el = document.createElement("div");
         el.dataset.vlineId = v.id;
-        el.style.position = "absolute";
-        el.style.top = "0";
-        el.style.bottom = "28px";
-        el.style.left = `${x}px`;
-        el.style.width = `${Math.max(1, v.width)}px`;
-        el.style.transform = "translateX(-50%)";
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "8";
+        el.style.cssText = `position:absolute;left:${x}px;top:0;width:${Math.max(2, v.width)}px;height:${Math.max(40, hostH - 24)}px;transform:translateX(-50%);pointer-events:none;z-index:12;`;
         if (v.dash === "dashed" || v.dash === "dotted") {
           el.style.background = "transparent";
-          el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
+          el.style.borderLeft = `${Math.max(2, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
           el.style.width = "0";
         } else {
-          el.style.background = v.color;
+          el.style.background = v.color || "#f97316";
         }
         host.appendChild(el);
       }
@@ -3734,6 +3855,48 @@ export default function DashboardPage() {
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
             });
+            // Native near-vertical fallback (1-bar width) so line always shows even if DOM overlay fails
+            try {
+              const bars = candlesRef.current || [];
+              let best = 0;
+              if (bars.length) {
+                let lo = 0, hi = bars.length - 1;
+                while (lo < hi) {
+                  const mid = (lo + hi) >> 1;
+                  if (Number(bars[mid].time) < t) lo = mid + 1;
+                  else hi = mid;
+                }
+                best = Math.max(0, Math.min(bars.length - 1, lo));
+              }
+              const t0 = bars[best]?.time ?? t;
+              const t1 = bars[Math.min(best + 1, Math.max(0, bars.length - 1))]?.time ?? (t0 + 60);
+              let loP = Number(l.price);
+              let hiP = Number(l.end_price != null ? l.end_price : l.price);
+              if (!(hiP > loP)) {
+                loP = Math.min(loP, hiP) * 0.98;
+                hiP = Math.max(loP, hiP) * 1.02;
+                if (!(hiP > loP)) { loP = 0; hiP = 1; }
+              }
+              const ls: any = chart.addLineSeries({
+                color,
+                lineWidth: Math.max(2, width) as any,
+                lineStyle: isMoving ? LineStyle.Dashed : LineStyle.Solid,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                autoscaleInfoProvider: () => null as any,
+              });
+              ls.setData([
+                { time: t0 as any, value: loP },
+                { time: t0 as any, value: hiP },
+              ].filter((p, i, arr) => i === 0 || p.time !== arr[0].time || p.value !== arr[0].value));
+              // LWC rejects duplicate times — use t0/t1
+              ls.setData([
+                { time: Math.min(t0, t1) as any, value: loP },
+                { time: Math.max(t0, t1) as any, value: hiP },
+              ]);
+              chartLinesRef.current.set(String(l.id), ls);
+            } catch {}
           }
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
@@ -5591,6 +5754,88 @@ export default function DashboardPage() {
           priceLineVisible: false,
         } as any);
         series.setData(withFuture.filter((c: any) => c.open != null) as any);
+      } else if (ctype === "highlow") {
+        series = chart.addBarSeries({
+          upColor: "#089981",
+          downColor: "#f23645",
+          openVisible: false,
+          thinBars: true,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
+        series.setData(
+          withFuture
+            .filter((c: any) => c.high != null && c.low != null)
+            .map((c: any) => ({
+              time: c.time,
+              open: c.low,
+              high: c.high,
+              low: c.low,
+              close: c.high,
+            })) as any
+        );
+      } else if (ctype === "columns") {
+        series = chart.addHistogramSeries({
+          color: "#3b82f6",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+          base: 0,
+        } as any);
+        series.setData(
+          withFuture
+            .filter((c: any) => c.close != null)
+            .map((c: any) => ({
+              time: c.time,
+              value: c.close,
+              color: c.close >= c.open ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+            })) as any
+        );
+      } else if (ctype === "step") {
+        series = chart.addLineSeries({
+          color: "#a78bfa",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        // approximate step by repeating previous value at each bar open
+        const stepPts: { time: number; value: number }[] = [];
+        const src = withFuture.filter((c: any) => c.close != null);
+        for (let i = 0; i < src.length; i++) {
+          stepPts.push({ time: src[i].time, value: src[i].close });
+        }
+        series.setData(stepPts as any);
+      } else if (ctype === "renko") {
+        const bricks = toRenko(candles);
+        series = chart.addCandlestickSeries({
+          upColor: "#089981", downColor: "#f23645",
+          borderUpColor: "#089981", borderDownColor: "#f23645",
+          wickUpColor: "#089981", wickDownColor: "#f23645",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false, priceLineVisible: false,
+        });
+        series.setData(bricks as any);
+      } else if (ctype === "linebreak") {
+        const lb = toLineBreak(candles, 3);
+        series = chart.addCandlestickSeries({
+          upColor: "#089981", downColor: "#f23645",
+          borderUpColor: "#089981", borderDownColor: "#f23645",
+          wickUpColor: "#089981", wickDownColor: "#f23645",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false, priceLineVisible: false,
+        });
+        series.setData(lb as any);
+      } else if (ctype === "kagi") {
+        series = chart.addLineSeries({
+          color: "#eab308",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(toKagi(candles) as any);
       } else if (ctype === "baseline") {
         const closes = withFuture.filter((c: any) => c.close != null).map((c: any) => Number(c.close));
         const base = closes.length ? closes[Math.floor(closes.length * 0.5)] : 0;
@@ -7768,6 +8013,11 @@ export default function DashboardPage() {
               };
               setLines((prev) => [saved, ...prev]);
               setStatusMsg("Vertical line added");
+              try {
+                requestAnimationFrame(() => {
+                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                });
+              } catch {}
             } else {
               const local: ChartLine = {
                 id: `local-vl-${Date.now()}`,
@@ -7784,6 +8034,11 @@ export default function DashboardPage() {
               };
               setLines((prev) => [local, ...prev]);
               setStatusMsg("Vertical line local only — check login / DB");
+              try {
+                requestAnimationFrame(() => {
+                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                });
+              } catch {}
             }
           } catch {
             const local: ChartLine = {
@@ -8792,6 +9047,29 @@ export default function DashboardPage() {
             priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
           } as any);
           series.setData(withFuture.filter((c: any) => c.open != null) as any);
+        } else if (ctype === "highlow") {
+          series = chart.addBarSeries({
+            upColor: "#089981", downColor: "#f23645", openVisible: false, thinBars: true,
+            priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
+          } as any);
+          series.setData(withFuture.filter((c: any) => c.high != null).map((c: any) => ({ time: c.time, open: c.low, high: c.high, low: c.low, close: c.high })) as any);
+        } else if (ctype === "columns") {
+          series = chart.addHistogramSeries({
+            color: "#3b82f6", priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
+          } as any);
+          series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close, color: c.close >= c.open ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)" })) as any);
+        } else if (ctype === "step") {
+          series = chart.addLineSeries({ color: "#a78bfa", lineWidth: 2, priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false });
+          series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+        } else if (ctype === "renko") {
+          series = chart.addCandlestickSeries({ upColor: "#089981", downColor: "#f23645", borderUpColor: "#089981", borderDownColor: "#f23645", wickUpColor: "#089981", wickDownColor: "#f23645", priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false });
+          series.setData(toRenko(candles) as any);
+        } else if (ctype === "linebreak") {
+          series = chart.addCandlestickSeries({ upColor: "#089981", downColor: "#f23645", borderUpColor: "#089981", borderDownColor: "#f23645", wickUpColor: "#089981", wickDownColor: "#f23645", priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false });
+          series.setData(toLineBreak(candles, 3) as any);
+        } else if (ctype === "kagi") {
+          series = chart.addLineSeries({ color: "#eab308", lineWidth: 2, priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false });
+          series.setData(toKagi(candles) as any);
         } else if (ctype === "baseline") {
           const closes = withFuture.filter((c: any) => c.close != null).map((c: any) => Number(c.close));
           const base = closes.length ? closes[Math.floor(closes.length * 0.5)] : 0;
@@ -10305,7 +10583,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Chart type (Candles / Line / Area / Heikin) */}
-          <div className="relative">
+          <div className="relative" data-chart-type-menu>
             <button
               type="button"
               title="Chart type"
@@ -10337,7 +10615,7 @@ export default function DashboardPage() {
                 <rect x="3" y="3" width="7" height="18" rx="1" />
                 <rect x="14" y="8" width="7" height="13" rx="1" />
               </svg>
-              <span className="font-medium capitalize">{({ candles:"Candles", hollow:"Hollow", bars:"Bars", line:"Line", area:"Area", baseline:"Baseline", hlc:"HLC", heikin:"Heikin" } as any)[chartType] || chartType}</span>
+              <span className="font-medium capitalize">{({ candles:"Candles", hollow:"Hollow", bars:"Bars", line:"Line", step:"Step", area:"Area", baseline:"Baseline", hlc:"HLC", columns:"Columns", highlow:"Hi-Lo", renko:"Renko", linebreak:"LineBr", kagi:"Kagi", heikin:"Heikin" } as any)[chartType] || chartType}</span>
             </button>
             {showChartTypeMenu && (
               <div
@@ -10354,10 +10632,16 @@ export default function DashboardPage() {
                   ["hollow", "Hollow candles"],
                   ["bars", "Bars"],
                   ["line", "Line"],
+                  ["step", "Step line"],
                   ["area", "Area"],
                   ["baseline", "Baseline"],
                   ["hlc", "HLC area"],
+                  ["columns", "Columns"],
+                  ["highlow", "High-low"],
                   ["heikin", "Heikin Ashi"],
+                  ["renko", "Renko"],
+                  ["linebreak", "Line break"],
+                  ["kagi", "Kagi"],
                 ] as const).map(([k, label]) => (
                   <button
                     key={k}
@@ -11245,7 +11529,7 @@ export default function DashboardPage() {
               <div
                 ref={vlineOverlayRef}
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 4 }}
+                style={{ zIndex: 12 }}
               />
               <div
                 ref={paneLegendRef}
