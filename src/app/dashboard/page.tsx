@@ -4056,7 +4056,7 @@ export default function DashboardPage() {
               const col = (lvlMeta && lvlMeta.color) || color || "#f97316";
               const titleParts: string[] = [];
               if (showLv) titleParts.push(String(lv));
-              if (showPx) titleParts.push(formatPrice(price));
+              if (showPx) titleParts.push(String(formatPrice(price)));
               try {
                 const pl = series.createPriceLine({
                   price,
