@@ -1207,7 +1207,7 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 800;
+const FUTURE_BARS = 900;
 /** How many future bars are visible on first load (rest remains scrollable) */
 const FUTURE_VISIBLE = 55;
 
@@ -3802,13 +3802,11 @@ export default function DashboardPage() {
     const place = (el: HTMLDivElement, pt: { time: number; price: number }, isActive: boolean) => {
       const x = timeToX(pt.time);
       const y = series.priceToCoordinate(pt.price);
-      if (x == null || y == null) {
-        el.style.display = "none";
-        return;
-      }
+      // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
+      if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
       el.style.display = "block";
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
+      el.style.left = `${Number(x)}px`;
+      el.style.top = `${Number(y)}px`;
       el.style.borderColor = isActive ? "#f97316" : "#ffffff";
       el.style.width = isActive ? "18px" : "14px";
       el.style.height = isActive ? "18px" : "14px";
@@ -4408,17 +4406,10 @@ export default function DashboardPage() {
             const bars = candlesRef.current || [];
             const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
             const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
-            // Cover visible range + empty future (rightOffset) so Extend Right reaches chart edge
-            let visFrom = chartFirst;
-            let visTo = chartLast;
-            try {
-              const vr = chart.timeScale().getVisibleRange?.();
-              if (vr?.from != null) visFrom = Number(vr.from);
-              if (vr?.to != null) visTo = Number(vr.to);
-            } catch {}
-            const FAR_LEFT = Math.min(chartFirst, tA, visFrom) - 86400 * 400;
-            // 3y past visible right so empty future area is fully covered
-            const FAR_RIGHT = Math.max(chartLast, tB, visTo) + 86400 * 365 * 3;
+            // Match chart future whitespace (FUTURE_BARS) so Extend Right reaches the edge
+            const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+            const FAR_LEFT = Math.min(chartFirst, tA) - barSec * Math.min(FUTURE_BARS, 900);
+            const FAR_RIGHT = Math.max(chartLast, tB) + barSec * (FUTURE_BARS + 20);
             let tFrom = tA;
             let tTo = tB;
             const ext = fib.extend || "none";
@@ -5102,13 +5093,11 @@ export default function DashboardPage() {
         const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
           const x = timeToX(pt.time);
           const y = ser2.priceToCoordinate(pt.price);
-          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
-            el.style.display = "none";
-            return;
-          }
+          // Keep last position if temporarily unresolvable — avoids jump
+          if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
           el.style.display = "block";
-          el.style.left = `${x}px`;
-          el.style.top = `${y}px`;
+          el.style.left = `${Number(x)}px`;
+          el.style.top = `${Number(y)}px`;
           el.style.borderColor = active ? "#f97316" : "#ffffff";
           el.style.width = active ? "18px" : "14px";
           el.style.height = active ? "18px" : "14px";
@@ -5184,23 +5173,6 @@ export default function DashboardPage() {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
           syncMoveHandlesNow();
           scheduleOverlaySync();
-          // Re-draw extended fibs (throttled) so lines/background reach visible right edge
-          try {
-            const now = Date.now();
-            if (!(window as any).__fibExtLast || now - (window as any).__fibExtLast > 280) {
-              (window as any).__fibExtLast = now;
-              if ((window as any).__fibExtRaf) cancelAnimationFrame((window as any).__fibExtRaf);
-              (window as any).__fibExtRaf = requestAnimationFrame(() => {
-                try {
-                  const hasExt = (linesRef.current || []).some((l: any) => {
-                    const f = parseFibNote(l?.note);
-                    return !!(f && f.extend && f.extend !== "none");
-                  });
-                  if (hasExt) renderAllLinesAndAlarmsRef.current?.();
-                } catch {}
-              });
-            }
-          } catch {}
           // keep osc masks/SVG aligned while panning (rAF throttle)
           try {
             if ((window as any).__oscMaskRaf) cancelAnimationFrame((window as any).__oscMaskRaf);
@@ -7496,6 +7468,23 @@ export default function DashboardPage() {
           } catch {}
           // user-interaction bookkeeping only for real user pans
           if (!range || programmaticRangeRef.current) return;
+          // Hard stop: cannot scroll past FUTURE_BARS empty future bars
+          try {
+            const barsN = candlesRef.current.length;
+            if (barsN >= 2) {
+              const maxTo = barsN - 1 + FUTURE_BARS;
+              if (Number(range.to) > maxTo + 0.5) {
+                const over = Number(range.to) - maxTo;
+                programmaticRangeRef.current = true;
+                chart.timeScale().setVisibleLogicalRange({
+                  from: Number(range.from) - over,
+                  to: maxTo,
+                });
+                requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+                return;
+              }
+            }
+          } catch {}
           userInteractingRef.current = true;
           const bars = candlesRef.current.length;
           let pinned = false;
