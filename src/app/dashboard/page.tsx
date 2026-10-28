@@ -1207,7 +1207,7 @@ function intervalToSeconds(iv: string): number {
 
 /** Empty bars after last candle so time axis continues into the future (TradingView-style).
  *  Large buffer so user can scroll/draw far past the last price bar. */
-const FUTURE_BARS = 800;
+const FUTURE_BARS = 900;
 /** How many future bars are visible on first load (rest remains scrollable) */
 const FUTURE_VISIBLE = 55;
 
@@ -3821,20 +3821,16 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Show fib A/B anchors while a fib is selected / settings open
+  // Handles only while actively moving a drawing — never leave orphan circles on chart
   useEffect(() => {
-    if (!selectedFibId) return;
-    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedFibId));
-    const fib = line ? parseFibNote(line.note) : null;
-    if (!fib) return;
-    try {
-      positionHandles(
-        { time: fib.t1, price: fib.p1 },
-        { time: fib.t2, price: fib.p2 },
-        null
-      );
-    } catch {}
-  }, [selectedFibId, fibSettingsOpen, positionHandles]);
+    if (mode !== "move") {
+      try {
+        if (handleAElRef.current) handleAElRef.current.style.display = "none";
+        if (handleBElRef.current) handleBElRef.current.style.display = "none";
+        if (handleCElRef.current) handleCElRef.current.style.display = "none";
+      } catch {}
+    }
+  }, [mode, selectedFibId, fibSettingsOpen]);
 
 
   const clearPreview = useCallback(() => {
@@ -4406,19 +4402,12 @@ export default function DashboardPage() {
             const tA = Math.min(Number(fib.t1), Number(fib.t2));
             const tB = Math.max(Number(fib.t1), Number(fib.t2));
             const bars = candlesRef.current || [];
-            const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
-            const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
-            // Cover visible range + empty future (rightOffset) so Extend Right reaches chart edge
-            let visFrom = chartFirst;
-            let visTo = chartLast;
-            try {
-              const vr = chart.timeScale().getVisibleRange?.();
-              if (vr?.from != null) visFrom = Number(vr.from);
-              if (vr?.to != null) visTo = Number(vr.to);
-            } catch {}
-            const FAR_LEFT = Math.min(chartFirst, tA, visFrom) - 86400 * 400;
-            // 3y past visible right so empty future area is fully covered
-            const FAR_RIGHT = Math.max(chartLast, tB, visTo) + 86400 * 365 * 3;
+            // IMPORTANT: never push times beyond real data + FUTURE_BARS helper —
+            // that used to expand the time scale by years and freeze the chart.
+            const chartFirst = bars.length ? Number(bars[0].time) : tA;
+            const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB;
+            const FAR_LEFT = chartFirst;
+            const FAR_RIGHT = chartLast;
             let tFrom = tA;
             let tTo = tB;
             const ext = fib.extend || "none";
@@ -4426,6 +4415,8 @@ export default function DashboardPage() {
             else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
             else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
             else { tFrom = tA; tTo = tB; } // none — only between anchors
+            // When extend right/both: use price lines (full canvas width, no time expansion)
+            const usePriceLines = ext === "right" || ext === "both";
             for (let i = 0; i < fib.levels.length; i++) {
               const lv = fib.levels[i];
               let price: number;
@@ -4439,97 +4430,62 @@ export default function DashboardPage() {
               const col = (fib.colors && fib.colors[i]) ||
                 (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
                 color || "#787B86";
-              // Label text TV style: "1.618 (0.07919)"
               let labelText = "";
               if (showLv && showPx) labelText = `${lv} (${formatPrice(price)})`;
               else if (showLv) labelText = String(lv);
               else if (showPx) labelText = String(formatPrice(price));
               try {
-                const lh = String((fib as any).labelH || "right");
-                const labV = String((fib as any).labelV || "middle");
-                const extRight = ext === "right" || ext === "both";
-                const extLeft = ext === "left" || ext === "both";
-                // Magnet ONLY when both Extend and Labels agree on that side
-                const magnetRight = lh === "right" && extRight;
-                const magnetLeft = lh === "left" && extLeft;
-                // True left frame of plot (next to toolbar) — pixel x≈2 → time
-                let visLeft = Number(chartFirst);
-                try {
-                  const tEdge = (chart.timeScale() as any).coordinateToTime?.(2);
-                  if (tEdge != null && !Number.isNaN(Number(tEdge))) visLeft = Number(tEdge);
-                  else {
-                    const vr = (chart.timeScale() as any).getVisibleRange?.();
-                    if (vr && vr.from != null) visLeft = Number(vr.from);
+                if (usePriceLines) {
+                  // Full-width to price axis — does NOT expand time scale
+                  const pl = series.createPriceLine({
+                    price,
+                    color: col,
+                    lineWidth: lw,
+                    lineStyle: ls,
+                    axisLabelVisible: true,
+                    title: labelText || "",
+                  });
+                  pls.push(pl);
+                } else {
+                  // Segment only between tFrom..tTo (anchors / left extend within chart data)
+                  const hs: any = chart.addLineSeries({
+                    color: col,
+                    lineWidth: lw,
+                    lineStyle: ls,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    title: undefined,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  } as any);
+                  const t0 = Math.min(Number(tFrom), Number(tTo));
+                  const t1 = Math.max(Number(tFrom), Number(tTo));
+                  // Clamp strictly inside chart data so scale never grows
+                  const c0 = Math.max(chartFirst, t0);
+                  const c1 = Math.min(chartLast, t1);
+                  if (c1 > c0) {
+                    hs.setData([
+                      { time: c0 as any, value: price },
+                      { time: c1 as any, value: price },
+                    ]);
+                  } else {
+                    hs.setData([
+                      { time: tA as any, value: price },
+                      { time: tB as any, value: price },
+                    ]);
                   }
-                } catch {}
-                const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
-                const labRight = extRight ? Math.max(chartLast, tB) : tB;
-                const labelT =
-                  lh === "left" ? (magnetLeft ? visLeft : labLeft) :
-                  lh === "center" ? Math.round((labLeft + labRight) / 2) :
-                  labRight;
-                const hs: any = chart.addLineSeries({
-                  color: col,
-                  lineWidth: lw,
-                  lineStyle: ls,
-                  priceLineVisible: false,
-                  // No colored axis chips — TV-style plain labels via DOM overlay
-                  lastValueVisible: false,
-                  title: undefined,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-                // Extend=None → only between anchors; extend uses tFrom/tTo (FAR_*)
-                const ptsMap = new Map<number, number>();
-                ptsMap.set(Number(tFrom), price);
-                ptsMap.set(Number(tTo), price);
-                ptsMap.set(Number(tA), price);
-                ptsMap.set(Number(tB), price);
-                ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
-                if (extRight || extLeft) {
-                  // denser points so long extend-right reaches far future without gaps
-                  const steps = 48;
-                  for (let s = 1; s < steps; s++) {
-                    const tt = Math.round(Number(tFrom) + ((Number(tTo) - Number(tFrom)) * s) / steps);
-                    ptsMap.set(tt, price);
-                  }
-                }
-                if (magnetLeft) {
-                  ptsMap.set(Number(visLeft), price);
-                }
-                const pts = Array.from(ptsMap.entries())
-                  .map(([time, value]) => ({ time: time as any, value }))
-                  .sort((a, b) => Number(a.time) - Number(b.time));
-                hs.setData(pts);
-                // Store for DOM labels (TV style: no colored box)
-                if (labelText) {
-                  try {
-                    let mTime: number;
-                    if (magnetLeft) mTime = Number(visLeft);
-                    else if (magnetRight) {
-                      // stick near right edge of plot (price axis side)
-                      try {
-                        const w = (chart.timeScale() as any).width?.() ?? 0;
-                        const tEdge = (chart.timeScale() as any).coordinateToTime?.(Math.max(0, w - 8));
-                        mTime = tEdge != null ? Number(tEdge) : Number(labRight);
-                      } catch { mTime = Number(labRight); }
-                    } else {
-                      mTime = Math.max(
-                        Math.min(Number(labelT), Number(tTo)),
-                        Math.min(Number(tFrom), Number(tTo))
-                      );
-                    }
+                  if (labelText) {
                     (hs as any).__fibLabel = {
                       text: labelText,
                       price,
-                      time: mTime,
+                      time: c1 > c0 ? c1 : tB,
                       color: col,
-                      labV,
-                      magnetRight,
+                      labV: String((fib as any).labelV || "middle"),
+                      magnetRight: false,
                     };
-                  } catch {}
+                  }
+                  extraSeries.push(hs);
                 }
-                extraSeries.push(hs);
               } catch {}
             }
             // Trend / dashed path between anchors
@@ -4622,14 +4578,18 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   } as any);
-                  // background follows level lines; when extended, fill to same edge as lines
-                  let cFrom = tFrom;
-                  let cTo = tTo;
-                  if (ext === "none") {
-                    cFrom = tA;
-                    cTo = tB;
-                  }
+                  // Clamp to chart data range only — never expand time scale
+                  let cFrom = ext === "none" ? tA : Math.min(tFrom, chartFirst);
+                  let cTo = ext === "none" ? tB : Math.max(tTo, chartLast);
+                  cFrom = Math.max(chartFirst, Math.min(cFrom, chartLast));
+                  cTo = Math.max(chartFirst, Math.min(cTo, chartLast));
+                  if (cTo <= cFrom) { cFrom = Math.min(tA, tB); cTo = Math.max(tA, tB); }
                   if (cTo <= cFrom) cTo = cFrom + 60;
+                  // For extend right/both, fill full width of known data
+                  if (usePriceLines) {
+                    cFrom = chartFirst;
+                    cTo = chartLast;
+                  }
                   const cMid = Math.round((cFrom + cTo) / 2);
                   band.setData([
                     { time: cFrom as any, value: hi },
@@ -5184,19 +5144,19 @@ export default function DashboardPage() {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
           syncMoveHandlesNow();
           scheduleOverlaySync();
-          // Re-draw extended fibs (throttled) so lines/background reach visible right edge
+          // Price-line extend-right needs no redraw on pan. Only left-magnet labels may.
           try {
             const now = Date.now();
-            if (!(window as any).__fibExtLast || now - (window as any).__fibExtLast > 280) {
+            if (!(window as any).__fibExtLast || now - (window as any).__fibExtLast > 400) {
               (window as any).__fibExtLast = now;
               if ((window as any).__fibExtRaf) cancelAnimationFrame((window as any).__fibExtRaf);
               (window as any).__fibExtRaf = requestAnimationFrame(() => {
                 try {
-                  const hasExt = (linesRef.current || []).some((l: any) => {
+                  const needs = (linesRef.current || []).some((l: any) => {
                     const f = parseFibNote(l?.note);
-                    return !!(f && f.extend && f.extend !== "none");
+                    return !!(f && (f.extend === "left" || f.extend === "both") && f.labelH === "left");
                   });
-                  if (hasExt) renderAllLinesAndAlarmsRef.current?.();
+                  if (needs) renderAllLinesAndAlarmsRef.current?.();
                 } catch {}
               });
             }
@@ -13511,6 +13471,11 @@ export default function DashboardPage() {
                       setMovingId(null);
                       setMovingType(null);
                       setMode("none");
+                      try {
+                        if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                        if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                        if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                      } catch {}
                       clearPreview();
                       try {
                         chartRef.current?.applyOptions({
