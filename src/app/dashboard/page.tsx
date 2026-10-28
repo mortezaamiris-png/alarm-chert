@@ -218,6 +218,11 @@ function parseFibNote(note: string | null | undefined): null | {
   visDays: boolean;
   visWeeks: boolean;
   visMonths: boolean;
+  visMinM: number; visMaxM: number;
+  visMinH: number; visMaxH: number;
+  visMinD: number; visMaxD: number;
+  visMinW: number; visMaxW: number;
+  visMinMo: number; visMaxMo: number;
 } {
   if (!note || typeof note !== "string") return null;
   if (!note.startsWith("__fib:") && !note.startsWith("__fibext:")) return null;
@@ -249,6 +254,11 @@ function parseFibNote(note: string | null | undefined): null | {
   let visDays = true;
   let visWeeks = true;
   let visMonths = true;
+  let visMinM = 1, visMaxM = 59;
+  let visMinH = 1, visMaxH = 24;
+  let visMinD = 1, visMaxD = 366;
+  let visMinW = 1, visMaxW = 52;
+  let visMinMo = 1, visMaxMo = 12;
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p === "rev=1") reverse = true;
@@ -281,12 +291,39 @@ function parseFibNote(note: string | null | undefined): null | {
     else if (p === "sl=0") showLevels = false;
     else if (p === "sl=1") showLevels = true;
     else if (p.startsWith("vis=")) {
-      const flags = p.slice(4).split(",");
-      visMinutes = flags.includes("m");
-      visHours = flags.includes("h");
-      visDays = flags.includes("d");
-      visWeeks = flags.includes("w");
-      visMonths = flags.includes("M");
+      // m:1-59,h:1-24,d:1-366,w:1-52,M:1-12  (presence of key = enabled)
+      const parts = p.slice(4).split(",").filter(Boolean);
+      visMinutes = false; visHours = false; visDays = false; visWeeks = false; visMonths = false;
+      for (const part of parts) {
+        const [key, range] = part.split(":");
+        let lo: number | null = null, hi: number | null = null;
+        if (range) {
+          const [a, b] = range.split("-").map((x) => parseInt(x, 10));
+          if (!Number.isNaN(a)) lo = a;
+          if (!Number.isNaN(b)) hi = b;
+        }
+        if (key === "m") {
+          visMinutes = true;
+          if (lo != null) visMinM = lo;
+          if (hi != null) visMaxM = hi;
+        } else if (key === "h") {
+          visHours = true;
+          if (lo != null) visMinH = lo;
+          if (hi != null) visMaxH = hi;
+        } else if (key === "d") {
+          visDays = true;
+          if (lo != null) visMinD = lo;
+          if (hi != null) visMaxD = hi;
+        } else if (key === "w") {
+          visWeeks = true;
+          if (lo != null) visMinW = lo;
+          if (hi != null) visMaxW = hi;
+        } else if (key === "M") {
+          visMonths = true;
+          if (lo != null) visMinMo = lo;
+          if (hi != null) visMaxMo = hi;
+        }
+      }
     }
   }
   const out: any = {
@@ -296,6 +333,7 @@ function parseFibNote(note: string | null | undefined): null | {
     trend, trendColor, background, bgColor, bgOpacity,
     labelH, labelV, showPrices, showLevels,
     visMinutes, visHours, visDays, visWeeks, visMonths,
+    visMinM, visMaxM, visMinH, visMaxH, visMinD, visMaxD, visMinW, visMaxW, visMinMo, visMaxMo,
   };
   if (coords.length >= 6) {
     out.t3 = coords[4];
@@ -327,6 +365,11 @@ function buildFibNote(
     visDays?: boolean;
     visWeeks?: boolean;
     visMonths?: boolean;
+    visMinM?: number; visMaxM?: number;
+    visMinH?: number; visMaxH?: number;
+    visMinD?: number; visMaxD?: number;
+    visMinW?: number; visMaxW?: number;
+    visMinMo?: number; visMaxMo?: number;
   }
 ) {
   const onLevels = levels.filter((x) => x.on);
@@ -338,11 +381,11 @@ function buildFibNote(
   }
   const prefix = kind === "fib-ext" ? "__fibext:" : "__fib:";
   const visParts: string[] = [];
-  if (opts.visMinutes !== false) visParts.push("m");
-  if (opts.visHours !== false) visParts.push("h");
-  if (opts.visDays !== false) visParts.push("d");
-  if (opts.visWeeks !== false) visParts.push("w");
-  if (opts.visMonths !== false) visParts.push("M");
+  if (opts.visMinutes !== false) visParts.push(`m:${opts.visMinM ?? 1}-${opts.visMaxM ?? 59}`);
+  if (opts.visHours !== false) visParts.push(`h:${opts.visMinH ?? 1}-${opts.visMaxH ?? 24}`);
+  if (opts.visDays !== false) visParts.push(`d:${opts.visMinD ?? 1}-${opts.visMaxD ?? 366}`);
+  if (opts.visWeeks !== false) visParts.push(`w:${opts.visMinW ?? 1}-${opts.visMaxW ?? 52}`);
+  if (opts.visMonths !== false) visParts.push(`M:${opts.visMinMo ?? 1}-${opts.visMaxMo ?? 12}`);
   return (
     `${prefix}${c}|${levelsOn}` +
     `|rev=${opts.reverse ? 1 : 0}|ext=${opts.extend}` +
@@ -1974,6 +2017,16 @@ export default function DashboardPage() {
   const [fibVisDays, setFibVisDays] = useState(() => loadLS("fib_vis_days", true));
   const [fibVisWeeks, setFibVisWeeks] = useState(() => loadLS("fib_vis_weeks", true));
   const [fibVisMonths, setFibVisMonths] = useState(() => loadLS("fib_vis_months", true));
+  const [fibVisMinM, setFibVisMinM] = useState(() => loadLS("fib_vis_min_m", 1));
+  const [fibVisMaxM, setFibVisMaxM] = useState(() => loadLS("fib_vis_max_m", 59));
+  const [fibVisMinH, setFibVisMinH] = useState(() => loadLS("fib_vis_min_h", 1));
+  const [fibVisMaxH, setFibVisMaxH] = useState(() => loadLS("fib_vis_max_h", 24));
+  const [fibVisMinD, setFibVisMinD] = useState(() => loadLS("fib_vis_min_d", 1));
+  const [fibVisMaxD, setFibVisMaxD] = useState(() => loadLS("fib_vis_max_d", 366));
+  const [fibVisMinW, setFibVisMinW] = useState(() => loadLS("fib_vis_min_w", 1));
+  const [fibVisMaxW, setFibVisMaxW] = useState(() => loadLS("fib_vis_max_w", 52));
+  const [fibVisMinMo, setFibVisMinMo] = useState(() => loadLS("fib_vis_min_mo", 1));
+  const [fibVisMaxMo, setFibVisMaxMo] = useState(() => loadLS("fib_vis_max_mo", 12));
   const [fibSettingsTab, setFibSettingsTab] = useState<"style" | "visibility">("style");
   const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
@@ -2249,6 +2302,11 @@ export default function DashboardPage() {
         visDays: fibVisDays,
         visWeeks: fibVisWeeks,
         visMonths: fibVisMonths,
+        visMinM: fibVisMinM, visMaxM: fibVisMaxM,
+        visMinH: fibVisMinH, visMaxH: fibVisMaxH,
+        visMinD: fibVisMinD, visMaxD: fibVisMaxD,
+        visMinW: fibVisMinW, visMaxW: fibVisMaxW,
+        visMinMo: fibVisMinMo, visMaxMo: fibVisMaxMo,
       }
     );
     setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
@@ -2267,6 +2325,8 @@ export default function DashboardPage() {
     fibBackground, fibBgColor, fibBgOpacity, fibShowPrices, fibShowLevels,
     fibLabelH, fibLabelV,
     fibVisMinutes, fibVisHours, fibVisDays, fibVisWeeks, fibVisMonths,
+    fibVisMinM, fibVisMaxM, fibVisMinH, fibVisMaxH, fibVisMinD, fibVisMaxD,
+    fibVisMinW, fibVisMaxW, fibVisMinMo, fibVisMaxMo,
   ]);
   useEffect(() => {
     symbolRef.current = symbol;
@@ -4263,19 +4323,26 @@ export default function DashboardPage() {
         } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
           const fib = parseFibNote(l.note);
           if (fib && series) {
-            // Visibility by timeframe category (TradingView-style)
+            // Visibility by timeframe + range (TradingView-style)
             const ivNow = String(intervalRef.current || "60");
-            const ivCat =
-              ivNow === "D" || ivNow === "1D" ? "d" :
-              ivNow === "W" || ivNow === "1W" ? "w" :
-              ivNow === "M" || ivNow === "1M" ? "M" :
-              (Number(ivNow) >= 60 ? "h" : "m");
-            const visOk =
-              (ivCat === "m" && fib.visMinutes !== false) ||
-              (ivCat === "h" && fib.visHours !== false) ||
-              (ivCat === "d" && fib.visDays !== false) ||
-              (ivCat === "w" && fib.visWeeks !== false) ||
-              (ivCat === "M" && fib.visMonths !== false);
+            let visOk = false;
+            if (ivNow === "D" || ivNow === "1D") {
+              visOk = fib.visDays !== false && 1 >= (fib.visMinD ?? 1) && 1 <= (fib.visMaxD ?? 366);
+            } else if (ivNow === "W" || ivNow === "1W") {
+              visOk = fib.visWeeks !== false && 1 >= (fib.visMinW ?? 1) && 1 <= (fib.visMaxW ?? 52);
+            } else if (ivNow === "M" || ivNow === "1M") {
+              visOk = fib.visMonths !== false && 1 >= (fib.visMinMo ?? 1) && 1 <= (fib.visMaxMo ?? 12);
+            } else {
+              const n = Number(ivNow);
+              if (!Number.isNaN(n) && n >= 60) {
+                const hours = n / 60;
+                visOk = fib.visHours !== false && hours >= (fib.visMinH ?? 1) && hours <= (fib.visMaxH ?? 24);
+              } else if (!Number.isNaN(n) && n > 0) {
+                visOk = fib.visMinutes !== false && n >= (fib.visMinM ?? 1) && n <= (fib.visMaxM ?? 59);
+              } else {
+                visOk = true;
+              }
+            }
             if (!visOk) {
               // hidden on this TF — skip drawing
             } else {
@@ -4332,21 +4399,23 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 });
-                // Label position needs a data point at that time (LWC markers only on existing points)
+                // Labels sit on the Fib BOX (anchors tA/tB), not on extended ends
                 const lh = (fib as any).labelH || "right";
                 const labV = (fib as any).labelV || "middle";
-                let labelT = tB;
-                if (lh === "left") labelT = tFrom;
-                else if (lh === "center") labelT = Math.round((tFrom + tTo) / 2);
-                else labelT = tTo;
-                const pts: { time: any; value: number }[] = [
-                  { time: tFrom as any, value: price },
-                  { time: tTo as any, value: price },
-                ];
-                if (labelT !== tFrom && labelT !== tTo && labelT > tFrom && labelT < tTo) {
-                  pts.push({ time: labelT as any, value: price });
-                  pts.sort((a, b) => Number(a.time) - Number(b.time));
-                }
+                const labelT =
+                  lh === "left" ? tA :
+                  lh === "center" ? Math.round((tA + tB) / 2) :
+                  tB;
+                // line spans extended range; always include anchors + label time for markers
+                const ptsMap = new Map<number, number>();
+                ptsMap.set(tFrom, price);
+                ptsMap.set(tTo, price);
+                ptsMap.set(tA, price);
+                ptsMap.set(tB, price);
+                ptsMap.set(labelT, price);
+                const pts = Array.from(ptsMap.entries())
+                  .map(([time, value]) => ({ time: time as any, value }))
+                  .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
                 if (titleParts.length) {
                   try {
@@ -4356,12 +4425,12 @@ export default function DashboardPage() {
                       "inBar";
                     hs.setMarkers([
                       {
-                        time: (lh === "left" ? tFrom : lh === "center" ? labelT : tTo) as any,
+                        time: labelT as any,
                         position: pos as any,
                         color: col,
                         shape: "circle",
-                        size: 0.1,
-                        text: titleParts.join(" "),
+                        size: 0.01,
+                        text: titleParts.join("  "),
                       },
                     ]);
                   } catch {}
@@ -9040,6 +9109,16 @@ export default function DashboardPage() {
               visDays: !!loadLS("fib_vis_days", true),
               visWeeks: !!loadLS("fib_vis_weeks", true),
               visMonths: !!loadLS("fib_vis_months", true),
+              visMinM: loadLS("fib_vis_min_m", 1) || 1,
+              visMaxM: loadLS("fib_vis_max_m", 59) || 59,
+              visMinH: loadLS("fib_vis_min_h", 1) || 1,
+              visMaxH: loadLS("fib_vis_max_h", 24) || 24,
+              visMinD: loadLS("fib_vis_min_d", 1) || 1,
+              visMaxD: loadLS("fib_vis_max_d", 366) || 366,
+              visMinW: loadLS("fib_vis_min_w", 1) || 1,
+              visMaxW: loadLS("fib_vis_max_w", 52) || 52,
+              visMinMo: loadLS("fib_vis_min_mo", 1) || 1,
+              visMaxMo: loadLS("fib_vis_max_mo", 12) || 12,
             }
           );
           const base: any = {
@@ -9151,6 +9230,16 @@ export default function DashboardPage() {
               visDays: !!loadLS("fib_vis_days", true),
               visWeeks: !!loadLS("fib_vis_weeks", true),
               visMonths: !!loadLS("fib_vis_months", true),
+              visMinM: loadLS("fib_vis_min_m", 1) || 1,
+              visMaxM: loadLS("fib_vis_max_m", 59) || 59,
+              visMinH: loadLS("fib_vis_min_h", 1) || 1,
+              visMaxH: loadLS("fib_vis_max_h", 24) || 24,
+              visMinD: loadLS("fib_vis_min_d", 1) || 1,
+              visMaxD: loadLS("fib_vis_max_d", 366) || 366,
+              visMinW: loadLS("fib_vis_min_w", 1) || 1,
+              visMaxW: loadLS("fib_vis_max_w", 52) || 52,
+              visMinMo: loadLS("fib_vis_min_mo", 1) || 1,
+              visMaxMo: loadLS("fib_vis_max_mo", 12) || 12,
             }
           );
           const base: any = {
@@ -13354,32 +13443,50 @@ export default function DashboardPage() {
                 </>)}
 
                 {fibSettingsTab === "visibility" && (
-                  <div className="space-y-2 mb-3">
-                    <div className="text-[10px] text-gray-500 uppercase mb-1">Show on timeframes</div>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" checked={fibVisMinutes} onChange={(e) => setFibVisMinutes(e.target.checked)} />
-                      <span>Minutes</span>
-                      <span className="text-gray-500 text-[10px]">(1m · 5m · 15m …)</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" checked={fibVisHours} onChange={(e) => setFibVisHours(e.target.checked)} />
-                      <span>Hours</span>
-                      <span className="text-gray-500 text-[10px]">(1h · 2h · 4h …)</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" checked={fibVisDays} onChange={(e) => setFibVisDays(e.target.checked)} />
-                      <span>Days</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" checked={fibVisWeeks} onChange={(e) => setFibVisWeeks(e.target.checked)} />
-                      <span>Weeks</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" checked={fibVisMonths} onChange={(e) => setFibVisMonths(e.target.checked)} />
-                      <span>Months</span>
-                    </label>
+                  <div className="space-y-2.5 mb-3 text-[12px]">
+                    {([
+                      ["Minutes", fibVisMinutes, setFibVisMinutes, fibVisMinM, setFibVisMinM, fibVisMaxM, setFibVisMaxM, 1, 59],
+                      ["Hours", fibVisHours, setFibVisHours, fibVisMinH, setFibVisMinH, fibVisMaxH, setFibVisMaxH, 1, 24],
+                      ["Days", fibVisDays, setFibVisDays, fibVisMinD, setFibVisMinD, fibVisMaxD, setFibVisMaxD, 1, 366],
+                      ["Weeks", fibVisWeeks, setFibVisWeeks, fibVisMinW, setFibVisMinW, fibVisMaxW, setFibVisMaxW, 1, 52],
+                      ["Months", fibVisMonths, setFibVisMonths, fibVisMinMo, setFibVisMinMo, fibVisMaxMo, setFibVisMaxMo, 1, 12],
+                    ] as const).map(([label, on, setOn, minV, setMin, maxV, setMax, lo, hi]) => (
+                      <div key={label as string} className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 w-[72px] shrink-0">
+                          <input type="checkbox" checked={!!on} onChange={(e) => (setOn as any)(e.target.checked)} />
+                          <span className={on ? "text-gray-200" : "text-gray-500"}>{label}</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={lo as number}
+                          max={hi as number}
+                          disabled={!on}
+                          value={minV as number}
+                          onChange={(e) => (setMin as any)(Math.max(lo as number, Math.min(hi as number, parseInt(e.target.value, 10) || (lo as number))))}
+                          className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-center disabled:opacity-40"
+                        />
+                        <input
+                          type="range"
+                          min={lo as number}
+                          max={hi as number}
+                          disabled={!on}
+                          value={maxV as number}
+                          onChange={(e) => (setMax as any)(parseInt(e.target.value, 10))}
+                          className="flex-1 accent-orange-500 disabled:opacity-40"
+                        />
+                        <input
+                          type="number"
+                          min={lo as number}
+                          max={hi as number}
+                          disabled={!on}
+                          value={maxV as number}
+                          onChange={(e) => (setMax as any)(Math.max(lo as number, Math.min(hi as number, parseInt(e.target.value, 10) || (hi as number))))}
+                          className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-center disabled:opacity-40"
+                        />
+                      </div>
+                    ))}
                     <p className="text-[10px] text-gray-500 pt-1">
-                      Uncheck a group to hide this Fib on those chart timeframes.
+                      Uncheck a row or narrow the range to hide this Fib on those timeframes.
                     </p>
                   </div>
                 )}
@@ -14691,6 +14798,16 @@ export default function DashboardPage() {
                             setFibVisDays(fib.visDays !== false);
                             setFibVisWeeks(fib.visWeeks !== false);
                             setFibVisMonths(fib.visMonths !== false);
+                            setFibVisMinM(fib.visMinM ?? 1);
+                            setFibVisMaxM(fib.visMaxM ?? 59);
+                            setFibVisMinH(fib.visMinH ?? 1);
+                            setFibVisMaxH(fib.visMaxH ?? 24);
+                            setFibVisMinD(fib.visMinD ?? 1);
+                            setFibVisMaxD(fib.visMaxD ?? 366);
+                            setFibVisMinW(fib.visMinW ?? 1);
+                            setFibVisMaxW(fib.visMaxW ?? 52);
+                            setFibVisMinMo(fib.visMinMo ?? 1);
+                            setFibVisMaxMo(fib.visMaxMo ?? 12);
                             setFibSettingsTab("style");
                           }
                           setSelectedFibId(String(l.id));
