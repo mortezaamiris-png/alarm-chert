@@ -209,6 +209,8 @@ function parseFibNote(note: string | null | undefined): null | {
   background: boolean;
   bgColor: string;
   bgOpacity: number;
+  labelH: "left" | "center" | "right";
+  labelV: "top" | "middle" | "bottom";
 } {
   if (!note || typeof note !== "string") return null;
   if (!note.startsWith("__fib:") && !note.startsWith("__fibext:")) return null;
@@ -227,10 +229,12 @@ function parseFibNote(note: string | null | undefined): null | {
   let lineStyle: "solid" | "dashed" | "dotted" = "solid";
   let trend = false;
   let trendColor = "#f97316";
-  let background = false;
+  let background = true;
   let bgColor = "#2962FF";
   let bgOpacity = 20;
   let colors: string[] = [];
+  let labelH: "left" | "center" | "right" = "right";
+  let labelV: "top" | "middle" | "bottom" = "middle";
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p === "rev=1") reverse = true;
@@ -252,6 +256,12 @@ function parseFibNote(note: string | null | undefined): null | {
       if (!Number.isNaN(n)) bgOpacity = Math.max(0, Math.min(100, n));
     } else if (p.startsWith("lc=")) {
       colors = p.slice(3).split(",").map((c) => decodeURIComponent(c)).filter(Boolean);
+    } else if (p.startsWith("lh=")) {
+      const e = p.slice(3);
+      if (e === "left" || e === "center" || e === "right") labelH = e;
+    } else if (p.startsWith("lv=")) {
+      const e = p.slice(3);
+      if (e === "top" || e === "middle" || e === "bottom") labelV = e;
     }
   }
   const out: any = {
@@ -259,6 +269,7 @@ function parseFibNote(note: string | null | undefined): null | {
     t1: coords[0], p1: coords[1], t2: coords[2], p2: coords[3],
     levels, colors, reverse, extend, lineWidth, lineStyle,
     trend, trendColor, background, bgColor, bgOpacity,
+    labelH, labelV,
   };
   if (coords.length >= 6) {
     out.t3 = coords[4];
@@ -281,6 +292,8 @@ function buildFibNote(
     background: boolean;
     bgColor: string;
     bgOpacity: number;
+    labelH?: string;
+    labelV?: string;
   }
 ) {
   const onLevels = levels.filter((x) => x.on);
@@ -297,7 +310,8 @@ function buildFibNote(
     `|lw=${opts.lineWidth}|ls=${opts.lineStyle}` +
     `|trend=${opts.trend ? 1 : 0}|tc=${encodeURIComponent(opts.trendColor)}` +
     `|bg=${opts.background ? 1 : 0}|bgc=${encodeURIComponent(opts.bgColor)}|bgo=${opts.bgOpacity}` +
-    `|lc=${lc}`
+    `|lc=${lc}` +
+    `|lh=${opts.labelH || "right"}|lv=${opts.labelV || "middle"}`
   );
 }
 
@@ -1909,9 +1923,11 @@ export default function DashboardPage() {
   const [fibLineStyle, setFibLineStyle] = useState<"solid" | "dashed" | "dotted">(() => loadLS("fib_line_style", "solid"));
   const [fibTrend, setFibTrend] = useState(() => loadLS("fib_trend", false));
   const [fibTrendColor, setFibTrendColor] = useState(() => loadLS("fib_trend_color", "#f97316"));
-  const [fibBackground, setFibBackground] = useState(() => loadLS("fib_background", false));
+  const [fibBackground, setFibBackground] = useState(() => loadLS("fib_background", true));
   const [fibBgColor, setFibBgColor] = useState(() => loadLS("fib_bg_color", "#2962FF"));
   const [fibBgOpacity, setFibBgOpacity] = useState(() => loadLS("fib_bg_opacity", 20));
+  const [fibLabelH, setFibLabelH] = useState<"left" | "center" | "right">(() => loadLS("fib_label_h", "right"));
+  const [fibLabelV, setFibLabelV] = useState<"top" | "middle" | "bottom">(() => loadLS("fib_label_v", "middle"));
   const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
@@ -2148,6 +2164,8 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fib_background", fibBackground); }, [fibBackground]);
   useEffect(() => { saveLS("fib_bg_color", fibBgColor); }, [fibBgColor]);
   useEffect(() => { saveLS("fib_bg_opacity", fibBgOpacity); }, [fibBgOpacity]);
+  useEffect(() => { saveLS("fib_label_h", fibLabelH); }, [fibLabelH]);
+  useEffect(() => { saveLS("fib_label_v", fibLabelV); }, [fibLabelV]);
 
   // Live-apply fib settings to the open drawing
   useEffect(() => {
@@ -2170,6 +2188,8 @@ export default function DashboardPage() {
         background: fibBackground,
         bgColor: fibBgColor,
         bgOpacity: fibBgOpacity,
+        labelH: fibLabelH,
+        labelV: fibLabelV,
       }
     );
     setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
@@ -2186,6 +2206,7 @@ export default function DashboardPage() {
     selectedFibId, fibSettingsOpen, fibLevels, fibReverse, fibExtend,
     fibLineWidth, fibLineStyle, fibTrend, fibTrendColor,
     fibBackground, fibBgColor, fibBgOpacity, fibShowPrices, fibShowLevels,
+    fibLabelH, fibLabelV,
   ]);
   useEffect(() => {
     symbolRef.current = symbol;
@@ -4239,14 +4260,23 @@ export default function DashboardPage() {
                   { time: tFrom as any, value: price },
                   { time: tTo as any, value: price },
                 ]);
-                // Label near anchor B (visible) — never on price axis
+                // Label position: Labels Left/Center/Right + Top/Middle/Bottom (TradingView-style)
                 if (titleParts.length) {
                   try {
-                    const labelT = Math.min(tB, chartLast);
+                    const lh = (fib as any).labelH || "right";
+                    const lv = (fib as any).labelV || "middle";
+                    let labelT = tB;
+                    if (lh === "left") labelT = tA;
+                    else if (lh === "center") labelT = (tA + tB) / 2;
+                    else labelT = Math.min(tB, chartLast);
+                    const pos =
+                      lv === "top" ? "aboveBar" :
+                      lv === "bottom" ? "belowBar" :
+                      "inBar";
                     hs.setMarkers([
                       {
                         time: labelT as any,
-                        position: "inBar",
+                        position: pos as any,
                         color: col,
                         shape: "circle",
                         size: 0.1,
@@ -4277,34 +4307,54 @@ export default function DashboardPage() {
                 extraSeries.push(tr);
               } catch {}
             }
-            // Background bands between consecutive levels (area series pairs)
+            // Background: colored band BETWEEN each consecutive level (TradingView style)
             if (fib.background && prices.length >= 2) {
-              const sorted = [...prices].sort((a, b) => a - b);
-              const bg = fib.bgColor || "#2962FF";
               const op = Math.max(0, Math.min(100, fib.bgOpacity ?? 20)) / 100;
-              // single translucent band from min to max using two area-ish lines via baseline
-              try {
-                const mid = (sorted[0] + sorted[sorted.length - 1]) / 2;
-                const band: any = chart.addBaselineSeries({
-                  baseValue: { type: "price", price: sorted[0] },
-                  topLineColor: "transparent",
-                  topFillColor1: hexToRgba(bg, op * 0.6),
-                  topFillColor2: hexToRgba(bg, op * 0.15),
-                  bottomLineColor: "transparent",
-                  bottomFillColor1: "transparent",
-                  bottomFillColor2: "transparent",
-                  lineWidth: 1,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-                band.setData([
-                  { time: tFrom as any, value: sorted[sorted.length - 1] },
-                  { time: tTo as any, value: sorted[sorted.length - 1] },
-                ]);
-                extraSeries.push(band);
-              } catch {}
+              // Pair each price with its level color
+              const priced: { price: number; color: string }[] = [];
+              for (let i = 0; i < fib.levels.length; i++) {
+                const lv = fib.levels[i];
+                let price: number;
+                if (fib.kind === "fib-ext" && fib.p3 != null) {
+                  price = fib.p3 + (fib.p2 - fib.p1) * lv;
+                } else {
+                  price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                }
+                if (!Number.isFinite(price)) continue;
+                const col = (fib.colors && fib.colors[i]) ||
+                  (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
+                  "#787B86";
+                priced.push({ price, color: col });
+              }
+              priced.sort((a, b) => a.price - b.price);
+              for (let i = 0; i < priced.length - 1; i++) {
+                const lo = priced[i].price;
+                const hi = priced[i + 1].price;
+                if (!(hi > lo)) continue;
+                // Tint band with the upper level's color (TV-like)
+                const bandCol = priced[i + 1].color || fib.bgColor || "#2962FF";
+                try {
+                  const band: any = chart.addBaselineSeries({
+                    baseValue: { type: "price", price: lo },
+                    topLineColor: "transparent",
+                    topFillColor1: hexToRgba(bandCol, op * 0.55),
+                    topFillColor2: hexToRgba(bandCol, op * 0.35),
+                    bottomLineColor: "transparent",
+                    bottomFillColor1: "transparent",
+                    bottomFillColor2: "transparent",
+                    lineWidth: 1,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  } as any);
+                  band.setData([
+                    { time: tFrom as any, value: hi },
+                    { time: tTo as any, value: hi },
+                  ]);
+                  extraSeries.push(band);
+                } catch {}
+              }
             }
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
           }
@@ -8869,14 +8919,16 @@ export default function DashboardPage() {
             levelsNow,
             {
               reverse: !!loadLS("fib_reverse", false),
-              extend: loadLS("fib_extend", "right") || "right",
+              extend: loadLS("fib_extend", "none") || "none",
               lineWidth: loadLS("fib_line_width", 1) || 1,
               lineStyle: loadLS("fib_line_style", "solid") || "solid",
               trend: !!loadLS("fib_trend", false),
               trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
-              background: !!loadLS("fib_background", false),
+              background: loadLS("fib_background", true) !== false,
               bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
+              labelH: loadLS("fib_label_h", "right") || "right",
+              labelV: loadLS("fib_label_v", "middle") || "middle",
             }
           );
           const base: any = {
@@ -8971,14 +9023,16 @@ export default function DashboardPage() {
             levelsNow,
             {
               reverse: !!loadLS("fib_reverse", false),
-              extend: loadLS("fib_extend", "right") || "right",
+              extend: loadLS("fib_extend", "none") || "none",
               lineWidth: loadLS("fib_line_width", 1) || 1,
               lineStyle: loadLS("fib_line_style", "solid") || "solid",
               trend: !!loadLS("fib_trend", false),
               trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
-              background: !!loadLS("fib_background", false),
+              background: loadLS("fib_background", true) !== false,
               bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
+              labelH: loadLS("fib_label_h", "right") || "right",
+              labelV: loadLS("fib_label_v", "middle") || "middle",
             }
           );
           const base: any = {
@@ -13152,6 +13206,22 @@ export default function DashboardPage() {
                   <label className="flex items-center gap-2"><input type="checkbox" checked={fibReverse} onChange={(e) => setFibReverse(e.target.checked)} /><span>Reverse</span></label>
                   <label className="flex items-center gap-2"><input type="checkbox" checked={fibShowPrices} onChange={(e) => setFibShowPrices(e.target.checked)} /><span>Prices</span></label>
                   <label className="flex items-center gap-2"><input type="checkbox" checked={fibShowLevels} onChange={(e) => setFibShowLevels(e.target.checked)} /><span>Levels</span></label>
+                  {/* Labels position — TradingView style */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <span className="text-gray-400 w-14">Labels</span>
+                    <select value={fibLabelH} onChange={(e) => setFibLabelH(e.target.value as any)}
+                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 flex-1">
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                    <select value={fibLabelV} onChange={(e) => setFibLabelV(e.target.value as any)}
+                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 flex-1">
+                      <option value="top">Top</option>
+                      <option value="middle">Middle</option>
+                      <option value="bottom">Bottom</option>
+                    </select>
+                  </div>
                 </div>
 
                 {/* Footer: Template + Ok */}
@@ -13173,6 +13243,7 @@ export default function DashboardPage() {
                               trend: fibTrend, trendColor: fibTrendColor,
                               background: fibBackground, bgColor: fibBgColor, bgOpacity: fibBgOpacity,
                               showPrices: fibShowPrices, showLevels: fibShowLevels,
+                              labelH: fibLabelH, labelV: fibLabelV,
                             };
                             saveLS("fib_template", tpl);
                             setFibTemplateOpen(false);
@@ -13181,16 +13252,18 @@ export default function DashboardPage() {
                         >Save as…</button>
                         <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
                           onClick={() => {
-                            setFibLevels(DEFAULT_FIB_LEVELS);
+                            setFibLevels(DEFAULT_FIB_LEVELS.map((x) => ({ ...x })));
                             setFibReverse(false);
-                            setFibExtend("right");
+                            setFibExtend("none");
                             setFibLineWidth(1);
                             setFibLineStyle("solid");
                             setFibTrend(false);
                             setFibTrendColor("#f97316");
-                            setFibBackground(false);
+                            setFibBackground(true);
                             setFibBgColor("#2962FF");
                             setFibBgOpacity(20);
+                            setFibLabelH("right");
+                            setFibLabelV("middle");
                             setFibShowPrices(true);
                             setFibShowLevels(true);
                             setFibTemplateOpen(false);
@@ -13212,6 +13285,8 @@ export default function DashboardPage() {
                               if (tpl.bgColor) setFibBgColor(tpl.bgColor);
                               if (tpl.bgOpacity != null) setFibBgOpacity(tpl.bgOpacity);
                               if (tpl.showPrices != null) setFibShowPrices(!!tpl.showPrices);
+                              if (tpl.labelH === "left" || tpl.labelH === "center" || tpl.labelH === "right") setFibLabelH(tpl.labelH);
+                              if (tpl.labelV === "top" || tpl.labelV === "middle" || tpl.labelV === "bottom") setFibLabelV(tpl.labelV);
                               if (tpl.showLevels != null) setFibShowLevels(!!tpl.showLevels);
                               setStatusMsg("Fib template loaded");
                             } else setStatusMsg("No saved template");
@@ -14425,14 +14500,16 @@ export default function DashboardPage() {
                               })
                             );
                             setFibReverse(!!fib.reverse);
-                            setFibExtend(fib.extend || "right");
+                            setFibExtend(fib.extend || "none");
                             setFibLineWidth(fib.lineWidth || 1);
                             setFibLineStyle(fib.lineStyle || "solid");
                             setFibTrend(!!fib.trend);
                             setFibTrendColor(fib.trendColor || "#f97316");
-                            setFibBackground(!!fib.background);
+                            setFibBackground(fib.background !== false);
                             setFibBgColor(fib.bgColor || "#2962FF");
                             setFibBgOpacity(fib.bgOpacity ?? 20);
+                            setFibLabelH((fib as any).labelH || "right");
+                            setFibLabelV((fib as any).labelV || "middle");
                           }
                           setSelectedFibId(String(l.id));
                           setFibSettingsOpen(true);
