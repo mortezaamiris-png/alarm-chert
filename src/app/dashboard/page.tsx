@@ -6474,54 +6474,40 @@ export default function DashboardPage() {
           applyLastPriceLabel();
           setStatusMsg("");
 
-          // Background: add older history (does not block UI; skip if user already switched away)
+          // Background: progressive older history up to ~5500 bars (appears page-by-page)
           void (async () => {
             try {
               const myGen = gen;
+              const TARGET = 5500;
+              const PAGE = 1000;
+              const MAX_PAGES = 6;
               let all = candles.slice();
-              for (let p = 0; p < 12; p++) {
-                if (myGen !== loadGenRef.current) return;
-                const oldest = all[0]?.time;
-                if (!oldest) break;
-                const olderRaw = await fetchRows(1000, oldest - 1);
-                if (myGen !== loadGenRef.current) return;
-                if (!Array.isArray(olderRaw) || !olderRaw.length) break;
-                const mapped = olderRaw
-                  .map((r: any) => {
-                    const time = Math.floor(
-                      Number(r.time || r[0] || r.openTime || r.t) /
-                        (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
-                    );
-                    return {
-                      time,
-                      open: parseFloat(r.open ?? r[1]),
-                      high: parseFloat(r.high ?? r[2]),
-                      low: parseFloat(r.low ?? r[3]),
-                      close: parseFloat(r.close ?? r[4]),
-                      volume: parseFloat(r.volume ?? r[5] ?? 0),
-                    };
-                  })
-                  .filter((c: any) => c.time && !Number.isNaN(c.close));
-                const seen = new Set(all.map((c) => c.time));
-                const extra = mapped.filter((c: any) => !seen.has(c.time));
-                if (extra.length < 10) break;
-                all = [...extra, ...all].sort((a, b) => a.time - b.time);
-              }
-              if (myGen !== loadGenRef.current) return;
-              if (all.length <= candles.length) return;
-              // تاریخچه بیشتر به چپ اضافه می‌شود — رنج را بر اساس زمان نگه دار نه logical
-              candlesRef.current = all;
-              if (seriesRef.current && chartRef.current) {
+              const mapRow = (r: any) => {
+                const time = Math.floor(
+                  Number(r.time || r[0] || r.openTime || r.t) /
+                    (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+                );
+                return {
+                  time,
+                  open: parseFloat(r.open ?? r[1]),
+                  high: parseFloat(r.high ?? r[2]),
+                  low: parseFloat(r.low ?? r[3]),
+                  close: parseFloat(r.close ?? r[4]),
+                  volume: parseFloat(r.volume ?? r[5] ?? 0),
+                };
+              };
+              const applyAll = (data: any[]) => {
+                if (!seriesRef.current || !chartRef.current) return;
                 let savedTime: any = null;
                 try {
                   savedTime = (chartRef.current.timeScale() as any).getVisibleRange?.();
                 } catch {}
-                seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
-                try { syncFutureAxis(all, fetchIv); } catch {}
-                // اگر تازه TF/کوین عوض شده، رنج ذخیره‌شده را برنگردان — بمان روی آخرین کندل
+                candlesRef.current = data;
+                seriesRef.current.setData(appendFutureWhitespace(data, fetchIv) as any);
+                try { syncFutureAxis(data, fetchIv); } catch {}
                 const keepLatest =
                   pinnedToRightRef.current ||
-                  Date.now() < (alarmCooldownUntilRef.current || 0) + 2000;
+                  Date.now() < (alarmDataUntilRef.current || 0) + 2000;
                 if (
                   !keepLatest &&
                   savedTime &&
@@ -6537,27 +6523,23 @@ export default function DashboardPage() {
                   } catch {
                     programmaticRangeRef.current = false;
                   }
-                } else if (keepLatest && chartRef.current && seriesRef.current) {
-                  try {
-                    const n = all.length;
-                    if (n >= 2) {
-                      programmaticRangeRef.current = true;
-                      const past = Math.min(500, n);
-                      chartRef.current.timeScale().setVisibleLogicalRange({
-                        from: Math.max(0, n - past),
-                        to: n - 1 + FUTURE_VISIBLE,
-                      });
-                      seriesRef.current.priceScale().applyOptions({ autoScale: true });
-                      requestAnimationFrame(() => {
-                        programmaticRangeRef.current = false;
-                      });
-                    }
-                  } catch {
-                    programmaticRangeRef.current = false;
-                  }
                 }
+              };
+              for (let p = 0; p < MAX_PAGES && all.length < TARGET; p++) {
+                if (myGen !== loadGenRef.current) return;
+                const oldest = all[0]?.time;
+                if (!oldest) break;
+                const olderRaw = await fetchRows(PAGE, oldest - 1);
+                if (myGen !== loadGenRef.current) return;
+                if (!Array.isArray(olderRaw) || !olderRaw.length) break;
+                const mapped = olderRaw.map(mapRow).filter((c: any) => c.time && !Number.isNaN(c.close));
+                const seen = new Set(all.map((c) => c.time));
+                const extra = mapped.filter((c: any) => !seen.has(c.time));
+                if (extra.length < 10) break;
+                all = [...extra, ...all].sort((a, b) => a.time - b.time);
+                applyAll(all);
               }
-              // after all history pages loaded
+              if (myGen !== loadGenRef.current) return;
               try { rebuildIndicators(); } catch {}
               try { renderAllLinesAndAlarms(); } catch {}
             } catch {}
@@ -6622,7 +6604,8 @@ export default function DashboardPage() {
           // فضای خالی آینده خیلی بیشتر (مثل TradingView)
           rightOffset: 12,
           barSpacing: 2.5,
-          minBarSpacing: 1.5,
+          // ~0.4px/bar → ~5000 bars on 2000px desktop, ~1200 on phone
+          minBarSpacing: 0.4,
           fixLeftEdge: false,
           fixRightEdge: false,
           lockVisibleTimeRangeOnResize: false,
@@ -10136,6 +10119,65 @@ export default function DashboardPage() {
       // Native axis label for last price + bar time (does not float on scroll)
       applyLastPriceLabel();
       setStatusMsg("");
+
+      // Full path: same progressive history load (first paint stays fast with 1000 bars)
+      void (async () => {
+        try {
+          const myGen = gen;
+          const TARGET = 5500;
+          const PAGE = 1000;
+          const MAX_PAGES = 6;
+          let all = (candlesRef.current || []).slice();
+          if (all.length < 2) return;
+          const mapRow = (r: any) => {
+            const time = Math.floor(
+              Number(r.time || r[0] || r.openTime || r.t) /
+                (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+            );
+            return {
+              time,
+              open: parseFloat(r.open ?? r[1]),
+              high: parseFloat(r.high ?? r[2]),
+              low: parseFloat(r.low ?? r[3]),
+              close: parseFloat(r.close ?? r[4]),
+              volume: parseFloat(r.volume ?? r[5] ?? 0),
+            };
+          };
+          for (let p = 0; p < MAX_PAGES && all.length < TARGET; p++) {
+            if (myGen !== loadGenRef.current) return;
+            const oldest = all[0]?.time;
+            if (!oldest) break;
+            const olderRaw = await fetchRows(PAGE, oldest - 1);
+            if (myGen !== loadGenRef.current) return;
+            if (!Array.isArray(olderRaw) || !olderRaw.length) break;
+            const mapped = olderRaw.map(mapRow).filter((c: any) => c.time && !Number.isNaN(c.close));
+            const seen = new Set(all.map((c: any) => c.time));
+            const extra = mapped.filter((c: any) => !seen.has(c.time));
+            if (extra.length < 10) break;
+            all = [...extra, ...all].sort((a: any, b: any) => a.time - b.time);
+            if (!seriesRef.current || !chartRef.current) continue;
+            let savedTime: any = null;
+            try {
+              savedTime = (chartRef.current.timeScale() as any).getVisibleRange?.();
+            } catch {}
+            candlesRef.current = all;
+            seriesRef.current.setData(appendFutureWhitespace(all, fetchIv) as any);
+            try { syncFutureAxis(all, fetchIv); } catch {}
+            if (savedTime && savedTime.from != null && savedTime.to != null && !pinnedToRightRef.current) {
+              try {
+                programmaticRangeRef.current = true;
+                (chartRef.current.timeScale() as any).setVisibleRange(savedTime);
+                requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+              } catch {
+                programmaticRangeRef.current = false;
+              }
+            }
+          }
+          if (myGen !== loadGenRef.current) return;
+          try { rebuildIndicators(); } catch {}
+          try { renderAllLinesAndAlarms(); } catch {}
+        } catch {}
+      })();
     } catch (e: any) {
       if (gen === loadGenRef.current) setStatusMsg(e?.message || "Load error");
     }
