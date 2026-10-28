@@ -986,6 +986,241 @@ function toHeikinAshi(candles: any[]): any[] {
   }
   return out;
 }
+
+/** HLC Area data: typical price as area points (H+L+C)/3 */
+function toHlcArea(candles: any[]): { time: any; value: number }[] {
+  return candles
+    .filter((c) => c && c.time != null && c.close != null)
+    .map((c) => {
+      const h = Number(c.high ?? c.close);
+      const l = Number(c.low ?? c.close);
+      const cl = Number(c.close);
+      return { time: c.time, value: (h + l + cl) / 3 };
+    });
+}
+
+/** Renko bricks from OHLC (brick size = ATR-like from avg range, min 0.1% of price) */
+function toRenko(candles: any[]): any[] {
+  if (candles.length < 2) return [];
+  let sumRange = 0;
+  const n = Math.min(candles.length, 50);
+  for (let i = candles.length - n; i < candles.length; i++) {
+    sumRange += Math.abs(Number(candles[i].high) - Number(candles[i].low));
+  }
+  let brick = sumRange / n;
+  const lastPx = Number(candles[candles.length - 1].close) || 1;
+  brick = Math.max(brick, lastPx * 0.001);
+  const out: any[] = [];
+  let price = Number(candles[0].close);
+  let tIdx = 0;
+  for (const c of candles) {
+    const close = Number(c.close);
+    while (close >= price + brick) {
+      const open = price;
+      price = price + brick;
+      out.push({
+        time: c.time,
+        open,
+        high: price,
+        low: open,
+        close: price,
+        _renko: true,
+        _up: true,
+      });
+      tIdx++;
+    }
+    while (close <= price - brick) {
+      const open = price;
+      price = price - brick;
+      out.push({
+        time: c.time,
+        open,
+        high: open,
+        low: price,
+        close: price,
+        _renko: true,
+        _up: false,
+      });
+      tIdx++;
+    }
+  }
+  // LWC needs unique times — assign sequential offsets when same time repeats
+  if (!out.length) return [];
+  const barSec = Math.max(1, Number(candles[1]?.time) - Number(candles[0]?.time) || 60);
+  let lastT = Number(out[0].time) - barSec;
+  return out.map((b) => {
+    let t = Number(b.time);
+    if (t <= lastT) t = lastT + barSec;
+    lastT = t;
+    return { time: t, open: b.open, high: b.high, low: b.low, close: b.close };
+  });
+}
+
+/** Three Line Break chart */
+function toLineBreak(candles: any[], lines = 3): any[] {
+  if (!candles.length) return [];
+  const out: any[] = [];
+  const closes = candles.map((c) => Number(c.close));
+  // start with first bar as a line
+  let direction: 1 | -1 = 1;
+  let lineHigh = closes[0];
+  let lineLow = closes[0];
+  const recent: { high: number; low: number }[] = [{ high: closes[0], low: closes[0] }];
+  out.push({
+    time: candles[0].time,
+    open: closes[0],
+    high: closes[0],
+    low: closes[0],
+    close: closes[0],
+  });
+  for (let i = 1; i < candles.length; i++) {
+    const px = closes[i];
+    const last = recent[recent.length - 1];
+    if (direction === 1) {
+      if (px > last.high) {
+        // continue up
+        const open = last.high;
+        const close = px;
+        out.push({ time: candles[i].time, open, high: close, low: open, close });
+        recent.push({ high: close, low: open });
+        if (recent.length > lines) recent.shift();
+        lineHigh = close;
+      } else {
+        // check reversal vs lowest of last N lines
+        const rev = Math.min(...recent.map((r) => r.low));
+        if (px < rev) {
+          direction = -1;
+          const open = last.low;
+          const close = px;
+          out.push({ time: candles[i].time, open, high: open, low: close, close });
+          recent.length = 0;
+          recent.push({ high: open, low: close });
+        }
+      }
+    } else {
+      if (px < last.low) {
+        const open = last.low;
+        const close = px;
+        out.push({ time: candles[i].time, open, high: open, low: close, close });
+        recent.push({ high: open, low: close });
+        if (recent.length > lines) recent.shift();
+      } else {
+        const rev = Math.max(...recent.map((r) => r.high));
+        if (px > rev) {
+          direction = 1;
+          const open = last.high;
+          const close = px;
+          out.push({ time: candles[i].time, open, high: close, low: open, close });
+          recent.length = 0;
+          recent.push({ high: close, low: open });
+        }
+      }
+    }
+  }
+  // unique times
+  if (out.length < 2) return out;
+  const barSec = Math.max(1, Number(candles[1]?.time) - Number(candles[0]?.time) || 60);
+  let lastT = Number(out[0].time) - barSec;
+  return out.map((b) => {
+    let t = Number(b.time);
+    if (t <= lastT) t = lastT + barSec;
+    lastT = t;
+    return { time: t, open: b.open, high: b.high, low: b.low, close: b.close };
+  });
+}
+
+/** Kagi chart as OHLC segments (yin/yang lines) */
+function toKagi(candles: any[]): any[] {
+  if (candles.length < 2) return [];
+  let sumRange = 0;
+  const n = Math.min(candles.length, 50);
+  for (let i = candles.length - n; i < candles.length; i++) {
+    sumRange += Math.abs(Number(candles[i].high) - Number(candles[i].low));
+  }
+  let rev = sumRange / n;
+  const lastPx = Number(candles[candles.length - 1].close) || 1;
+  rev = Math.max(rev, lastPx * 0.002);
+  const out: any[] = [];
+  let direction: 1 | -1 = 1;
+  let extreme = Number(candles[0].close);
+  let lineStart = extreme;
+  out.push({
+    time: candles[0].time,
+    open: extreme,
+    high: extreme,
+    low: extreme,
+    close: extreme,
+  });
+  for (let i = 1; i < candles.length; i++) {
+    const px = Number(candles[i].close);
+    if (direction === 1) {
+      if (px >= extreme) {
+        extreme = px;
+        out.push({
+          time: candles[i].time,
+          open: lineStart,
+          high: extreme,
+          low: Math.min(lineStart, extreme),
+          close: extreme,
+        });
+        lineStart = extreme;
+      } else if (px <= extreme - rev) {
+        direction = -1;
+        lineStart = extreme;
+        extreme = px;
+        out.push({
+          time: candles[i].time,
+          open: lineStart,
+          high: lineStart,
+          low: extreme,
+          close: extreme,
+        });
+        lineStart = extreme;
+      }
+    } else {
+      if (px <= extreme) {
+        extreme = px;
+        out.push({
+          time: candles[i].time,
+          open: lineStart,
+          high: Math.max(lineStart, extreme),
+          low: extreme,
+          close: extreme,
+        });
+        lineStart = extreme;
+      } else if (px >= extreme + rev) {
+        direction = 1;
+        lineStart = extreme;
+        extreme = px;
+        out.push({
+          time: candles[i].time,
+          open: lineStart,
+          high: extreme,
+          low: lineStart,
+          close: extreme,
+        });
+        lineStart = extreme;
+      }
+    }
+  }
+  if (out.length < 2) return out;
+  const barSec = Math.max(1, Number(candles[1]?.time) - Number(candles[0]?.time) || 60);
+  let lastT = Number(out[0].time) - barSec;
+  return out.map((b) => {
+    let t = Number(b.time);
+    if (t <= lastT) t = lastT + barSec;
+    lastT = t;
+    return { time: t, open: b.open, high: b.high, low: b.low, close: b.close };
+  });
+}
+
+function transformCandlesForType(ctype: string, candles: any[]): any[] {
+  if (ctype === "heikin") return toHeikinAshi(candles);
+  if (ctype === "renko") return toRenko(candles);
+  if (ctype === "linebreak") return toLineBreak(candles, 3);
+  if (ctype === "kagi") return toKagi(candles);
+  return candles;
+}
 function appendFutureWhitespace(candles: any[], interval: string, count = FUTURE_BARS): any[] {
   if (!candles.length) return candles;
   const barSec = intervalToSeconds(String(interval));
@@ -1250,7 +1485,8 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Chart series style */
   const [chartType, setChartType] = useState<
-    "candles" | "hollow" | "bars" | "line" | "step" | "area" | "baseline" | "columns" | "highlow" | "heikin"
+    | "candles" | "hollow" | "bars" | "line" | "step" | "area" | "baseline"
+    | "columns" | "highlow" | "hlcarea" | "heikin" | "renko" | "linebreak" | "kagi"
   >(() => loadLS("chart_type", "candles"));
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   /** Multi-pane layout like TradingView */
@@ -5495,7 +5731,7 @@ export default function DashboardPage() {
         });
       } catch {}
       const ctype = chartTypeRef.current || chartType;
-      const dataSrc = ctype === "heikin" ? toHeikinAshi(candles) : candles;
+      const dataSrc = transformCandlesForType(ctype, candles);
       const withFuture = appendFutureWhitespace(dataSrc, String(intervalRef.current));
       const closePts = () =>
         withFuture
@@ -5574,6 +5810,50 @@ export default function DashboardPage() {
               open: c.open,
               high: c.high,
               low: c.low,
+              close: c.close,
+            })) as any
+        );
+      } else if (ctype === "hlcarea") {
+        series = chart.addAreaSeries({
+          lineColor: "#60a5fa",
+          topColor: "rgba(96,165,250,0.35)",
+          bottomColor: "rgba(96,165,250,0.02)",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(
+          withFuture
+            .filter((c: any) => c.close != null || c.value != null)
+            .map((c: any) => {
+              if (c.value != null && c.open == null) return { time: c.time, value: c.value };
+              const h = Number(c.high ?? c.close);
+              const l = Number(c.low ?? c.close);
+              const cl = Number(c.close ?? c.value);
+              return { time: c.time, value: (h + l + cl) / 3 };
+            }) as any
+        );
+      } else if (ctype === "renko" || ctype === "linebreak" || ctype === "kagi") {
+        series = chart.addCandlestickSeries({
+          upColor: "#089981",
+          downColor: "#f23645",
+          borderUpColor: "#089981",
+          borderDownColor: "#f23645",
+          wickUpColor: "#089981",
+          wickDownColor: "#f23645",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(
+          withFuture
+            .filter((c: any) => c.open != null && c.close != null)
+            .map((c: any) => ({
+              time: c.time,
+              open: c.open,
+              high: c.high ?? Math.max(c.open, c.close),
+              low: c.low ?? Math.min(c.open, c.close),
               close: c.close,
             })) as any
         );
@@ -9152,7 +9432,12 @@ export default function DashboardPage() {
 
       const mapBarForSeries = (bar: any) => {
         const ct = chartTypeRef.current;
-        if (ct === "line" || ct === "step" || ct === "area" || ct === "baseline") {
+        if (ct === "line" || ct === "step" || ct === "area" || ct === "baseline" || ct === "hlcarea") {
+          if (ct === "hlcarea") {
+            const h = Number(bar.high ?? bar.close);
+            const l = Number(bar.low ?? bar.close);
+            return { time: bar.time, value: (h + l + Number(bar.close)) / 3 };
+          }
           return { time: bar.time, value: bar.close };
         }
         if (ct === "columns") {
@@ -9162,17 +9447,33 @@ export default function DashboardPage() {
             color: bar.close >= (bar.open ?? bar.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
           };
         }
+        // renko/linebreak/kagi need full rebuild (not single-bar update)
+        if (ct === "renko" || ct === "linebreak" || ct === "kagi" || ct === "heikin") {
+          return bar; // update may fail → setSeriesFull fallback
+        }
         return bar;
       };
       const setSeriesFull = (bars: any[]) => {
         const ct = chartTypeRef.current;
-        const src = ct === "heikin" ? toHeikinAshi(bars) : bars;
+        const src = transformCandlesForType(ct || "candles", bars);
         const withF = appendFutureWhitespace(src, String(intervalRef.current));
         if (ct === "line" || ct === "step" || ct === "area" || ct === "baseline") {
           series.setData(
             withF
               .filter((c: any) => c.close != null || c.value != null)
               .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+          );
+        } else if (ct === "hlcarea") {
+          series.setData(
+            withF
+              .filter((c: any) => c.close != null || c.value != null)
+              .map((c: any) => {
+                if (c.value != null && c.open == null) return { time: c.time, value: c.value };
+                const h = Number(c.high ?? c.close);
+                const l = Number(c.low ?? c.close);
+                const cl = Number(c.close ?? c.value);
+                return { time: c.time, value: (h + l + cl) / 3 };
+              }) as any
           );
         } else if (ct === "columns") {
           series.setData(
@@ -9190,6 +9491,18 @@ export default function DashboardPage() {
               .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
               .map((c: any) => ({
                 time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+              })) as any
+          );
+        } else if (ct === "renko" || ct === "linebreak" || ct === "kagi") {
+          series.setData(
+            withF
+              .filter((c: any) => c.open != null && c.close != null)
+              .map((c: any) => ({
+                time: c.time,
+                open: c.open,
+                high: c.high ?? Math.max(c.open, c.close),
+                low: c.low ?? Math.min(c.open, c.close),
+                close: c.close,
               })) as any
           );
         } else {
@@ -10126,7 +10439,8 @@ export default function DashboardPage() {
               </svg>
               <span className="font-medium capitalize">{({
                 candles: "Candles", hollow: "Hollow", bars: "Bars", line: "Line", step: "Step",
-                area: "Area", baseline: "Baseline", columns: "Columns", highlow: "High-low", heikin: "Heikin",
+                area: "Area", baseline: "Baseline", hlcarea: "HLC area", columns: "Columns",
+                highlow: "High-low", heikin: "Heikin", renko: "Renko", linebreak: "Line break", kagi: "Kagi",
               } as Record<string, string>)[chartType] || chartType}</span>
             </button>
             {showChartTypeMenu && (
@@ -10147,9 +10461,13 @@ export default function DashboardPage() {
                   ["step", "Step line"],
                   ["area", "Area"],
                   ["baseline", "Baseline"],
+                  ["hlcarea", "HLC area"],
                   ["columns", "Columns"],
                   ["highlow", "High-low"],
                   ["heikin", "Heikin Ashi"],
+                  ["renko", "Renko"],
+                  ["linebreak", "Line break"],
+                  ["kagi", "Kagi"],
                 ] as const).map(([k, label]) => (
                   <button
                     key={k}
