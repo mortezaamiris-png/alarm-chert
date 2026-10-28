@@ -1248,10 +1248,10 @@ export default function DashboardPage() {
   const [condition, setCondition] = useState<"above" | "below" | "cross">("cross");
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
-  /** Chart series style: candles | hollow | line | area | heikin */
-  const [chartType, setChartType] = useState<"candles" | "hollow" | "line" | "area" | "heikin">(() =>
-    loadLS("chart_type", "candles")
-  );
+  /** Chart series style */
+  const [chartType, setChartType] = useState<
+    "candles" | "hollow" | "bars" | "line" | "step" | "area" | "baseline" | "columns" | "highlow" | "heikin"
+  >(() => loadLS("chart_type", "candles"));
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   /** Multi-pane layout like TradingView */
   type ChartLayoutId =
@@ -3353,17 +3353,38 @@ export default function DashboardPage() {
       // Only remove vertical line nodes — keep rays intact
       host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
       if (hideLines) return;
-      for (const v of vlineItemsRef.current) {
-        let x: number | null = null;
+      const bars = candlesRef.current || [];
+      const resolveX = (t: number): number | null => {
         try {
-          x = chart2.timeScale().timeToCoordinate(v.time as any);
-        } catch { x = null; }
-        if (x == null || Number.isNaN(x)) continue;
+          let x = chart2.timeScale().timeToCoordinate(t as any);
+          if (x != null && !Number.isNaN(Number(x))) return Number(x);
+        } catch {}
+        // Nearest bar time fallback (LWC is strict about exact timestamps)
+        if (bars.length) {
+          let lo = 0, hi = bars.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (Number(bars[mid].time) < t) lo = mid + 1;
+            else hi = mid;
+          }
+          const candidates = [lo, Math.max(0, lo - 1), Math.min(bars.length - 1, lo + 1)];
+          for (const i of candidates) {
+            try {
+              const x2 = chart2.timeScale().timeToCoordinate(bars[i].time as any);
+              if (x2 != null && !Number.isNaN(Number(x2))) return Number(x2);
+            } catch {}
+          }
+        }
+        return null;
+      };
+      for (const v of vlineItemsRef.current) {
+        const x = resolveX(Number(v.time));
+        if (x == null) continue;
         const el = document.createElement("div");
         el.dataset.vlineId = v.id;
         el.style.position = "absolute";
         el.style.top = "0";
-        el.style.bottom = "0";
+        el.style.bottom = "22px"; // leave time-axis strip free
         el.style.left = `${x}px`;
         el.style.width = `${Math.max(1, v.width)}px`;
         el.style.transform = "translateX(-50%)";
@@ -3644,7 +3665,13 @@ export default function DashboardPage() {
           }
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
-          const t = Number(l.start_time);
+          let t = Number(l.start_time);
+          if (!(t > 0) && typeof l.note === "string" && l.note.startsWith("__vline__:")) {
+            const n = Number(l.note.replace("__vline__:", ""));
+            if (!Number.isNaN(n) && n > 0) t = n;
+          }
+          // last resort: use end_time if start missing
+          if (!(t > 0) && l.end_time != null) t = Number(l.end_time);
           if (!Number.isNaN(t) && t > 0) {
             vlineItemsRef.current.push({
               id: String(l.id),
@@ -5470,20 +5497,21 @@ export default function DashboardPage() {
       const ctype = chartTypeRef.current || chartType;
       const dataSrc = ctype === "heikin" ? toHeikinAshi(candles) : candles;
       const withFuture = appendFutureWhitespace(dataSrc, String(intervalRef.current));
+      const closePts = () =>
+        withFuture
+          .filter((c: any) => c.open != null || c.close != null || c.value != null)
+          .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any;
       let series: any;
-      if (ctype === "line") {
+      if (ctype === "line" || ctype === "step") {
         series = chart.addLineSeries({
           color: "#3b82f6",
           lineWidth: 2,
+          lineType: ctype === "step" ? 1 : 0, // 1 = stepline
           priceFormat: { type: "price", precision, minMove },
           lastValueVisible: false,
           priceLineVisible: false,
-        });
-        series.setData(
-          withFuture
-            .filter((c: any) => c.open != null || c.close != null || c.value != null)
-            .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
-        );
+        } as any);
+        series.setData(closePts());
       } else if (ctype === "area") {
         series = chart.addAreaSeries({
           lineColor: "#3b82f6",
@@ -5494,10 +5522,60 @@ export default function DashboardPage() {
           lastValueVisible: false,
           priceLineVisible: false,
         });
+        series.setData(closePts());
+      } else if (ctype === "baseline") {
+        const closes = candles.map((c: any) => c.close).filter((v: any) => v != null);
+        const base = closes.length ? closes.reduce((a: number, b: number) => a + b, 0) / closes.length : 0;
+        series = chart.addBaselineSeries({
+          baseValue: { type: "price", price: base },
+          topLineColor: "#089981",
+          topFillColor1: "rgba(8,153,129,0.35)",
+          topFillColor2: "rgba(8,153,129,0.02)",
+          bottomLineColor: "#f23645",
+          bottomFillColor1: "rgba(242,54,69,0.02)",
+          bottomFillColor2: "rgba(242,54,69,0.35)",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
+        series.setData(closePts());
+      } else if (ctype === "columns") {
+        series = chart.addHistogramSeries({
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
         series.setData(
           withFuture
-            .filter((c: any) => c.open != null || c.close != null || c.value != null)
-            .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+            .filter((c: any) => c.close != null)
+            .map((c: any) => ({
+              time: c.time,
+              value: c.close,
+              color: c.close >= (c.open ?? c.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+            })) as any
+        );
+      } else if (ctype === "bars" || ctype === "highlow") {
+        // OHLC bars (high-low is same bar series with thinner look via thinBars)
+        series = chart.addBarSeries({
+          upColor: "#089981",
+          downColor: "#f23645",
+          thinBars: ctype === "highlow",
+          openVisible: ctype === "bars",
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
+        series.setData(
+          withFuture
+            .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
+            .map((c: any) => ({
+              time: c.time,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+            })) as any
         );
       } else {
         // candles | hollow | heikin
@@ -9074,8 +9152,15 @@ export default function DashboardPage() {
 
       const mapBarForSeries = (bar: any) => {
         const ct = chartTypeRef.current;
-        if (ct === "line" || ct === "area") {
+        if (ct === "line" || ct === "step" || ct === "area" || ct === "baseline") {
           return { time: bar.time, value: bar.close };
+        }
+        if (ct === "columns") {
+          return {
+            time: bar.time,
+            value: bar.close,
+            color: bar.close >= (bar.open ?? bar.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+          };
         }
         return bar;
       };
@@ -9083,11 +9168,29 @@ export default function DashboardPage() {
         const ct = chartTypeRef.current;
         const src = ct === "heikin" ? toHeikinAshi(bars) : bars;
         const withF = appendFutureWhitespace(src, String(intervalRef.current));
-        if (ct === "line" || ct === "area") {
+        if (ct === "line" || ct === "step" || ct === "area" || ct === "baseline") {
           series.setData(
             withF
               .filter((c: any) => c.close != null || c.value != null)
               .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+          );
+        } else if (ct === "columns") {
+          series.setData(
+            withF
+              .filter((c: any) => c.close != null)
+              .map((c: any) => ({
+                time: c.time,
+                value: c.close,
+                color: c.close >= (c.open ?? c.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+              })) as any
+          );
+        } else if (ct === "bars" || ct === "highlow") {
+          series.setData(
+            withF
+              .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
+              .map((c: any) => ({
+                time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+              })) as any
           );
         } else {
           series.setData(withF as any);
@@ -10021,7 +10124,10 @@ export default function DashboardPage() {
                 <rect x="3" y="3" width="7" height="18" rx="1" />
                 <rect x="14" y="8" width="7" height="13" rx="1" />
               </svg>
-              <span className="font-medium capitalize">{chartType === "heikin" ? "Heikin" : chartType}</span>
+              <span className="font-medium capitalize">{({
+                candles: "Candles", hollow: "Hollow", bars: "Bars", line: "Line", step: "Step",
+                area: "Area", baseline: "Baseline", columns: "Columns", highlow: "High-low", heikin: "Heikin",
+              } as Record<string, string>)[chartType] || chartType}</span>
             </button>
             {showChartTypeMenu && (
               <div
@@ -10036,8 +10142,13 @@ export default function DashboardPage() {
                 {([
                   ["candles", "Candles"],
                   ["hollow", "Hollow candles"],
+                  ["bars", "Bars"],
                   ["line", "Line"],
+                  ["step", "Step line"],
                   ["area", "Area"],
+                  ["baseline", "Baseline"],
+                  ["columns", "Columns"],
+                  ["highlow", "High-low"],
                   ["heikin", "Heikin Ashi"],
                 ] as const).map(([k, label]) => (
                   <button
@@ -10924,7 +11035,7 @@ export default function DashboardPage() {
               <div
                 ref={vlineOverlayRef}
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl"
-                style={{ zIndex: 4 }}
+                style={{ zIndex: 25 }}
               />
               <div
                 ref={paneLegendRef}
@@ -11135,7 +11246,7 @@ export default function DashboardPage() {
                 pinnedToRightRef.current = true;
                 setShowGoLive(false);
               }}
-              className="absolute bottom-10 right-16 z-40 flex items-center justify-center w-10 h-10 rounded-full bg-gray-900 border-2 border-orange-500 text-orange-400 shadow-xl hover:bg-orange-600 hover:text-white hover:border-orange-400 active:scale-95 transition touch-manipulation"
+              className="absolute bottom-1 right-14 z-40 flex items-center justify-center w-8 h-8 rounded-full bg-gray-900 border-2 border-orange-500 text-orange-400 shadow-xl hover:bg-orange-600 hover:text-white hover:border-orange-400 active:scale-95 transition touch-manipulation"
               style={{ marginBottom: 0 }}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
