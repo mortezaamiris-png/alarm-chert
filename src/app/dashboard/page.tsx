@@ -2162,7 +2162,11 @@ export default function DashboardPage() {
     setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
     // debounce DB write
     const t = setTimeout(() => {
-      supabase.from("chart_lines").update({ note }).eq("id", selectedFibId).then(() => {}).catch(() => {});
+      void (async () => {
+        try {
+          await supabase.from("chart_lines").update({ note }).eq("id", selectedFibId);
+        } catch {}
+      })();
     }, 400);
     return () => clearTimeout(t);
   }, [
