@@ -4454,12 +4454,11 @@ export default function DashboardPage() {
                 hs.setData(pts);
                 if (titleParts.length) {
                   try {
-                    // TV style: labels at end of line, no visible dots
-                    // Middle/Top/Bottom only shifts text slightly above/below the line
                     const pos =
                       labV === "top" ? "aboveBar" :
                       labV === "bottom" ? "belowBar" :
                       "inBar";
+                    // marker time must exist in series data
                     const mTime = Math.max(
                       Math.min(Number(labelT), Number(tTo)),
                       Math.min(Number(tFrom), Number(tTo))
@@ -4470,7 +4469,7 @@ export default function DashboardPage() {
                         position: pos as any,
                         color: col,
                         shape: "circle",
-                        size: 0, // hide the circle — text only
+                        size: 0.01,
                         text: " " + labelText + " ",
                       },
                     ]);
@@ -7698,23 +7697,6 @@ export default function DashboardPage() {
             } catch {}
             if (price2 != null) {
               const p2 = price2;
-              // hollow handles: A fixed, B follows cursor
-              try {
-                const chartNow = chartRef.current;
-                const tCursor = (() => {
-                  try {
-                    const tr = chartNow?.timeScale().coordinateToTime(param.point.x as number);
-                    return tr != null ? Number(tr) : null;
-                  } catch { return null; }
-                })();
-                if (chartNow && tCursor != null) {
-                  positionHandles(
-                    { time: startPt.time, price: startPt.price },
-                    { time: tCursor, price: p2 },
-                    "b"
-                  );
-                }
-              } catch {}
               if (fibPreviewRafRef.current != null) return; // already scheduled
               fibPreviewRafRef.current = requestAnimationFrame(() => {
                 fibPreviewRafRef.current = null;
@@ -9150,24 +9132,7 @@ export default function DashboardPage() {
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
             fibPreviewCacheRef.current = null; // reload levels
-            // hollow point so user sees where first anchor is
-            try {
-              const elA = handleAElRef.current;
-              if (elA) {
-                const x = chart.timeScale().timeToCoordinate(t as any);
-                const y = series.priceToCoordinate(fp);
-                if (x != null && y != null) {
-                  elA.style.display = "block";
-                  elA.style.left = `${x}px`;
-                  elA.style.top = `${y}px`;
-                  elA.style.borderColor = "#f97316";
-                  elA.style.width = "16px";
-                  elA.style.height = "16px";
-                }
-              }
-              if (handleBElRef.current) handleBElRef.current.style.display = "none";
-            } catch {}
-            setStatusMsg("Fib: move, then tap second point");
+            setStatusMsg("Fib: move mouse, then tap second point");
             return;
           }
           clickLockRef.current = true;
@@ -9257,7 +9222,7 @@ export default function DashboardPage() {
           }
           diagStartRef.current = null;
           setDiagStart(null);
-          // clear fib preview price lines + hollow handles
+          // clear fib preview price lines
           if (previewFibSeriesRef.current.length && seriesRef.current) {
             for (const pl of previewFibSeriesRef.current) {
               try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -9265,10 +9230,6 @@ export default function DashboardPage() {
             previewFibSeriesRef.current = [];
           }
           fibPreviewCacheRef.current = null;
-          try {
-            if (handleAElRef.current) handleAElRef.current.style.display = "none";
-            if (handleBElRef.current) handleBElRef.current.style.display = "none";
-          } catch {}
           clearPreview();
           setMode("none");
           modeRef.current = "none";
@@ -9287,34 +9248,11 @@ export default function DashboardPage() {
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
             fibPoint3Ref.current = null;
-            try {
-              const elA = handleAElRef.current;
-              if (elA) {
-                const x = chart.timeScale().timeToCoordinate(t as any);
-                const y = series.priceToCoordinate(fp);
-                if (x != null && y != null) {
-                  elA.style.display = "block";
-                  elA.style.left = `${x}px`;
-                  elA.style.top = `${y}px`;
-                  elA.style.borderColor = "#f97316";
-                  elA.style.width = "16px";
-                  elA.style.height = "16px";
-                }
-              }
-              if (handleBElRef.current) handleBElRef.current.style.display = "none";
-            } catch {}
             setStatusMsg("Fib Ext: tap point B (trend end)");
             return;
           }
           if (!mid) {
             fibPoint3Ref.current = { time: t, price: fp };
-            try {
-              positionHandles(
-                { time: start.time, price: start.price },
-                { time: t, price: fp },
-                "b"
-              );
-            } catch {}
             setStatusMsg("Fib Ext: tap point C (extension anchor)");
             return;
           }
