@@ -6317,13 +6317,8 @@ export default function DashboardPage() {
                     programmaticRangeRef.current = false;
                   }
                 }
-                // throttle heavy rebuild while paging history
-                if (p % 3 === 2) {
-                  try { rebuildIndicators(); } catch {}
-                  try { renderAllLinesAndAlarms(); } catch {}
-                }
               }
-              // final sync after history pages
+              // after all history pages loaded
               try { rebuildIndicators(); } catch {}
               try { renderAllLinesAndAlarms(); } catch {}
             } catch {}
