@@ -4979,6 +4979,50 @@ export default function DashboardPage() {
     paintRays();
     paintCallouts();
     // Sync overlay on horizontal scroll AND vertical price pan
+    const syncMoveHandlesNow = () => {
+      try {
+        const md = moveDiagRef.current;
+        if (!md) return;
+        if (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b") return;
+        const chart2 = chartRef.current;
+        const ser2 = seriesRef.current;
+        const elA = handleAElRef.current;
+        const elB = handleBElRef.current;
+        if (!chart2 || !ser2 || !elA || !elB) return;
+        const candles = candlesRef.current;
+        const barSec = intervalToSeconds(String(intervalRef.current));
+        const timeToX = (t: number): number | null => {
+          let x = chart2.timeScale().timeToCoordinate(t as any);
+          if (x != null && !Number.isNaN(x)) return x;
+          if (candles.length >= 2 && barSec > 0) {
+            const last = candles[candles.length - 1];
+            const prev = candles[candles.length - 2];
+            const lastX = chart2.timeScale().timeToCoordinate(last.time as any);
+            const prevX = chart2.timeScale().timeToCoordinate(prev.time as any);
+            if (lastX != null && prevX != null) {
+              return lastX + ((t - last.time) / barSec) * (lastX - prevX);
+            }
+          }
+          return null;
+        };
+        const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
+          const x = timeToX(pt.time);
+          const y = ser2.priceToCoordinate(pt.price);
+          if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+            el.style.display = "none";
+            return;
+          }
+          el.style.display = "block";
+          el.style.left = `${x}px`;
+          el.style.top = `${y}px`;
+          el.style.borderColor = active ? "#f97316" : "#ffffff";
+          el.style.width = active ? "18px" : "14px";
+          el.style.height = active ? "18px" : "14px";
+        };
+        place(elA, md.pointA, md.phase === "drag-a");
+        place(elB, md.pointB, md.phase === "drag-b");
+      } catch {}
+    };
     const scheduleOverlaySync = () => {
       requestAnimationFrame(() => {
         try {
@@ -4989,10 +5033,13 @@ export default function DashboardPage() {
             paintRays();
           } catch {}
         }
+        // Fib/diag handles must track chart on every pan frame
+        syncMoveHandlesNow();
       });
     };
     try {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+          syncMoveHandlesNow();
           scheduleOverlaySync();
           // keep osc masks/SVG aligned while panning (rAF throttle)
           try {
@@ -12660,7 +12707,17 @@ export default function DashboardPage() {
                 className="absolute inset-0 overflow-hidden rounded-xl"
                 style={{ zIndex: 22, pointerEvents: "none" }}
               />
-
+              {/* Hollow circle handles — same coordinate space as chart */}
+              <div
+                ref={handleAElRef}
+                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+              />
+              <div
+                ref={handleBElRef}
+                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+              />
 
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -12814,17 +12871,6 @@ export default function DashboardPage() {
             })}
           </div>
 
-          {/* Hollow circle handles for diagonal Move — overlay on chart */}
-          <div
-            ref={handleAElRef}
-            className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none z-20"
-            style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }}
-          />
-          <div
-            ref={handleBElRef}
-            className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none z-20"
-            style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }}
-          />
 
           {/* Go to live — only when scrolled into history (TradingView-style) */}
           {showGoLive && (
