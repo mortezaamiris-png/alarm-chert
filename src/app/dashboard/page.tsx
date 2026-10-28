@@ -5029,13 +5029,13 @@ export default function DashboardPage() {
               const meta = (hs as any)?.__fibLabel;
               if (!meta || !meta.text) continue;
               try {
-                let x = chart2.timeScale().timeToCoordinate(meta.time as any);
-                const y = ser2.priceToCoordinate(meta.price);
+                let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
+                const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
                 if (x == null || y == null) continue;
                 // magnetRight: pin near right edge of plot
                 if (meta.magnetRight) {
                   try {
-                    const w = (chart2.timeScale() as any).width?.() ?? 0;
+                    const w = Number((chart2.timeScale() as any).width?.() ?? 0);
                     if (w > 20) x = w - 6;
                   } catch {}
                 }
@@ -5138,12 +5138,12 @@ export default function DashboardPage() {
                 const meta = (hs as any)?.__fibLabel;
                 if (!meta || !meta.text) continue;
                 try {
-                  let x = chart2.timeScale().timeToCoordinate(meta.time as any);
-                  const y = ser2.priceToCoordinate(meta.price);
+                  let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
+                  const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
                   if (x == null || y == null) continue;
                   if (meta.magnetRight) {
                     try {
-                      const w = (chart2.timeScale() as any).width?.() ?? 0;
+                      const w = Number((chart2.timeScale() as any).width?.() ?? 0);
                       if (w > 20) x = w - 6;
                     } catch {}
                   }
