@@ -2267,6 +2267,22 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fib_bg_opacity", fibBgOpacity); }, [fibBgOpacity]);
   useEffect(() => { saveLS("fib_label_h", fibLabelH); }, [fibLabelH]);
   useEffect(() => { saveLS("fib_label_v", fibLabelV); }, [fibLabelV]);
+  // Prevent chart pan/zoom while Fib settings modal is open (iPad slider fix)
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      chart.applyOptions({
+        handleScroll: !fibSettingsOpen,
+        handleScale: !fibSettingsOpen,
+      });
+    } catch {}
+    return () => {
+      try {
+        chart.applyOptions({ handleScroll: true, handleScale: true });
+      } catch {}
+    };
+  }, [fibSettingsOpen]);
   useEffect(() => { saveLS("fib_vis_minutes", fibVisMinutes); }, [fibVisMinutes]);
   useEffect(() => { saveLS("fib_vis_hours", fibVisHours); }, [fibVisHours]);
   useEffect(() => { saveLS("fib_vis_days", fibVisDays); }, [fibVisDays]);
@@ -4401,15 +4417,13 @@ export default function DashboardPage() {
                   lh === "center" ? Math.round((labLeft + labRight) / 2) :
                   labRight;
                 const labelText = titleParts.join(" ");
-                // Right → stick label to price scale (TradingView style)
-                const stickRight = lh === "right";
+                // NEVER use lastValueVisible — avoids colored chips on price scale
                 const hs: any = chart.addLineSeries({
                   color: col,
                   lineWidth: lw,
                   lineStyle: ls,
                   priceLineVisible: false,
-                  lastValueVisible: stickRight && !!labelText,
-                  title: stickRight && labelText ? labelText : undefined,
+                  lastValueVisible: false,
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 } as any);
@@ -4421,20 +4435,19 @@ export default function DashboardPage() {
                 ptsMap.set(Number(labelT), price);
                 ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
                 if (extRight || extLeft) {
-                  const steps = 8;
+                  const steps = 12;
                   for (let s = 1; s < steps; s++) {
                     const tt = Math.round(labLeft + ((labRight - labLeft) * s) / steps);
                     ptsMap.set(tt, price);
                   }
                 }
-                // ensure a point at chartLast so lastValue label is current
-                if (stickRight) ptsMap.set(Number(chartLast), price);
+                // point near last candle so Right labels sit just left of price scale
+                ptsMap.set(Number(chartLast), price);
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
-                // Left / Center → markers on the line; Right uses price-scale label above
-                if (titleParts.length && !stickRight) {
+                if (titleParts.length) {
                   try {
                     const pos =
                       labV === "top" ? "aboveBar" :
@@ -4515,13 +4528,19 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   } as any);
-                  // background follows same span as level lines (respects Extend)
-                  const bFrom = tFrom;
-                  const bTo = tTo;
-                  const bMid = Math.round((bFrom + bTo) / 2);
-                  // clamp far extends to chart range so fill stays visible
-                  const cFrom = Math.max(bFrom, chartFirst - 86400 * 7);
-                  const cTo = Math.min(bTo, chartLast + 86400 * 7);
+                  // background follows level lines; when extended, fill across visible chart
+                  let cFrom = tFrom;
+                  let cTo = tTo;
+                  if (ext === "right" || ext === "both") cTo = Math.max(cTo, chartLast);
+                  if (ext === "left" || ext === "both") cFrom = Math.min(cFrom, chartFirst);
+                  if (ext === "none") {
+                    cFrom = tA;
+                    cTo = tB;
+                  }
+                  // keep within a reasonable window around data
+                  cFrom = Math.max(cFrom, chartFirst - 86400);
+                  cTo = Math.min(cTo, chartLast + 86400 * 30);
+                  if (cTo <= cFrom) cTo = cFrom + 60;
                   const cMid = Math.round((cFrom + cTo) / 2);
                   band.setData([
                     { time: cFrom as any, value: hi },
@@ -13440,10 +13459,14 @@ export default function DashboardPage() {
                     className="w-7 h-6 rounded cursor-pointer bg-transparent border border-gray-600" />
                   <input type="range" min={0} max={100} value={fibBgOpacity}
                     onChange={(e) => setFibBgOpacity(parseInt(e.target.value, 10))}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className="flex-1 accent-orange-500 touch-none" />
+                    onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                    onPointerMove={(e) => { e.stopPropagation(); }}
+                    onTouchStart={(e) => { e.stopPropagation(); }}
+                    onTouchMove={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                    onMouseDown={(e) => { e.stopPropagation(); }}
+                    className="flex-1 accent-orange-500"
+                    style={{ touchAction: "none" }}
+                  />
                   <span className="tabular-nums w-8 text-right text-gray-400">{fibBgOpacity}</span>
                 </div>
 
