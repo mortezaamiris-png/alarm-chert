@@ -86,6 +86,8 @@ type ToolMode =
   | "curve"
   | "rect"
   | "callout"
+  | "fib"
+  | "fib-ext"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -156,6 +158,73 @@ const DEFAULT_ALARM_COLOR = "#3b82f6";
 const DEFAULT_LINE_COLOR = "#f97316";
 const LINE_WIDTHS = [1, 2, 3] as const;
 const MOVE_STYLE = LineStyle.Dashed;
+
+/** TradingView-style Fib levels (enabled + color) */
+const DEFAULT_FIB_LEVELS: { v: number; on: boolean; color: string }[] = [
+  { v: 0, on: true, color: "#f97316" },
+  { v: 0.236, on: true, color: "#f97316" },
+  { v: 0.382, on: true, color: "#f97316" },
+  { v: 0.5, on: true, color: "#f97316" },
+  { v: 0.618, on: true, color: "#f97316" },
+  { v: 0.786, on: true, color: "#f97316" },
+  { v: 1, on: true, color: "#f97316" },
+  { v: 1.272, on: true, color: "#ffffff" },
+  { v: 1.382, on: true, color: "#ffffff" },
+  { v: 1.5, on: true, color: "#ffffff" },
+  { v: 1.618, on: false, color: "#ffffff" },
+  { v: 1.786, on: true, color: "#ffffff" },
+  { v: 2, on: true, color: "#f97316" },
+  { v: 2.272, on: false, color: "#92400e" },
+  { v: 2.618, on: true, color: "#f97316" },
+  { v: 3.618, on: false, color: "#92400e" },
+  { v: 4.236, on: false, color: "#92400e" },
+];
+
+function fibPrice(p1: number, p2: number, level: number, reverse: boolean) {
+  const a = reverse ? p2 : p1;
+  const b = reverse ? p1 : p2;
+  return a + (b - a) * level;
+}
+
+function parseFibNote(note: string | null | undefined): null | {
+  kind: "fib" | "fib-ext";
+  t1: number; p1: number; t2: number; p2: number;
+  t3?: number; p3?: number;
+  levels: number[];
+  reverse: boolean;
+  extend: "none" | "right" | "left" | "both";
+} {
+  if (!note || typeof note !== "string") return null;
+  if (!note.startsWith("__fib:") && !note.startsWith("__fibext:")) return null;
+  const kind = note.startsWith("__fibext:") ? "fib-ext" : "fib";
+  const body = note.replace(/^__fib(ext)?:/, "");
+  const parts = body.split("|");
+  const coords = parts[0].split(",").map(Number);
+  if (coords.length < 4 || coords.some((n) => Number.isNaN(n))) return null;
+  const levels = (parts[1] || "0,0.236,0.382,0.5,0.618,0.786,1")
+    .split(",")
+    .map(Number)
+    .filter((n) => !Number.isNaN(n));
+  let reverse = false;
+  let extend: "none" | "right" | "left" | "both" = "right";
+  for (let i = 2; i < parts.length; i++) {
+    if (parts[i] === "rev=1") reverse = true;
+    if (parts[i].startsWith("ext=")) {
+      const e = parts[i].slice(4);
+      if (e === "none" || e === "right" || e === "left" || e === "both") extend = e;
+    }
+  }
+  const out: any = {
+    kind,
+    t1: coords[0], p1: coords[1], t2: coords[2], p2: coords[3],
+    levels, reverse, extend,
+  };
+  if (coords.length >= 6) {
+    out.t3 = coords[4];
+    out.p3 = coords[5];
+  }
+  return out;
+}
 
 /** Color palette for floating pickers (same dark popover effect as timezone menu) */
 const PRESET_COLORS = [
@@ -1740,6 +1809,13 @@ export default function DashboardPage() {
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
   const [drawDash, setDrawDash] = useState<"solid" | "dashed">(() => loadLS("draw_dash", "solid"));
+  const [fibLevels, setFibLevels] = useState(() => loadLS("fib_levels", DEFAULT_FIB_LEVELS));
+  const [fibReverse, setFibReverse] = useState(() => loadLS("fib_reverse", false));
+  const [fibExtend, setFibExtend] = useState<"none" | "right" | "left" | "both">(() => loadLS("fib_extend", "right"));
+  const [fibShowPrices, setFibShowPrices] = useState(() => loadLS("fib_show_prices", true));
+  const [fibShowLevels, setFibShowLevels] = useState(() => loadLS("fib_show_levels", true));
+  const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
+  const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
   const [smaVisible, setSmaVisible] = useState(() => loadLS("vis_sma", true));
@@ -1951,11 +2027,20 @@ export default function DashboardPage() {
   useEffect(() => { movingTypeRef.current = movingType; }, [movingType]);
   useEffect(() => { diagStartRef.current = diagStart; }, [diagStart]);
   useEffect(() => {
-    if (mode !== "diag") setDiagStart(null);
+    if (mode !== "diag" && mode !== "fib" && mode !== "fib-ext" && mode !== "rect" && mode !== "alarm-diag" && mode !== "arrow") {
+      setDiagStart(null);
+      diagStartRef.current = null;
+    }
+    if (mode !== "fib-ext") fibPoint3Ref.current = null;
   }, [mode]);
   useEffect(() => { drawColorRef.current = drawColor; saveLS("draw_color", drawColor); }, [drawColor]);
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
+  useEffect(() => { saveLS("fib_levels", fibLevels); }, [fibLevels]);
+  useEffect(() => { saveLS("fib_reverse", fibReverse); }, [fibReverse]);
+  useEffect(() => { saveLS("fib_extend", fibExtend); }, [fibExtend]);
+  useEffect(() => { saveLS("fib_show_prices", fibShowPrices); }, [fibShowPrices]);
+  useEffect(() => { saveLS("fib_show_levels", fibShowLevels); }, [fibShowLevels]);
   useEffect(() => {
     symbolRef.current = symbol;
     localStorage.setItem("chart_symbol", symbol);
@@ -3559,7 +3644,15 @@ export default function DashboardPage() {
     });
     alarmLinesRef.current.clear();
     chartLinesRef.current.forEach((s) => {
-      try { chart.removeSeries(s); } catch {}
+      try {
+        if (Array.isArray(s)) {
+          for (const x of s) {
+            try { chart.removeSeries(x); } catch {}
+          }
+        } else {
+          chart.removeSeries(s);
+        }
+      } catch {}
     });
     chartLinesRef.current.clear();
 
@@ -3867,7 +3960,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__fib:") || s.startsWith("__fibext:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -3994,6 +4087,77 @@ export default function DashboardPage() {
               ]);
               chartLinesRef.current.set(l.id, ls);
             }
+          }
+        } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
+          const fib = parseFibNote(l.note);
+          if (fib) {
+            const bars = candlesRef.current || [];
+            const lastT = bars.length ? Number(bars[bars.length - 1].time) : fib.t2;
+            const firstT = bars.length ? Number(bars[0].time) : fib.t1;
+            let tLeft = Math.min(fib.t1, fib.t2, fib.t3 ?? fib.t2);
+            let tRight = Math.max(fib.t1, fib.t2, fib.t3 ?? fib.t2);
+            if (fib.extend === "right" || fib.extend === "both") {
+              tRight = Math.max(tRight, lastT + (lastT - firstT) * 0.05);
+            }
+            if (fib.extend === "left" || fib.extend === "both") {
+              tLeft = Math.min(tLeft, firstT);
+            }
+            // Retracement: levels between p1→p2. Extension: project from C by (B-A)*level
+            const seriesList: any[] = [];
+            for (const lv of fib.levels) {
+              let price: number;
+              if (fib.kind === "fib-ext" && fib.p3 != null) {
+                const trend = fib.p2 - fib.p1;
+                price = fib.p3 + trend * lv;
+              } else {
+                price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+              }
+              const lvlMeta = (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)
+                || { color: color || "#f97316" });
+              const col = lvlMeta.color || color || "#f97316";
+              const showLv = loadLS("fib_show_levels", true);
+              const showPx = loadLS("fib_show_prices", true);
+              const labelParts: string[] = [];
+              if (showLv) labelParts.push(String(lv));
+              if (showPx) labelParts.push(String(formatPrice(price)));
+              const title = labelParts.join(" · ");
+              try {
+                const ls: any = chart.addLineSeries({
+                  color: col,
+                  lineWidth: 1,
+                  lineStyle: LineStyle.Solid,
+                  priceLineVisible: false,
+                  lastValueVisible: true,
+                  title: title,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                });
+                ls.setData([
+                  { time: tLeft as any, value: price },
+                  { time: tRight as any, value: price },
+                ]);
+                seriesList.push(ls);
+              } catch {}
+            }
+            // trend line (dashed) between the two fib anchors
+            try {
+              const trendLs: any = chart.addLineSeries({
+                color: color || "#f97316",
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                autoscaleInfoProvider: () => null as any,
+              });
+              trendLs.setData([
+                { time: fib.t1 as any, value: fib.p1 },
+                { time: fib.t2 as any, value: fib.p2 },
+              ]);
+              seriesList.push(trendLs);
+            } catch {}
+            // store array under id for cleanup
+            (chartLinesRef.current as any).set(l.id, seriesList);
           }
         } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
           const t = Number(l.start_time || 0);
@@ -5482,12 +5646,15 @@ export default function DashboardPage() {
           alarmLinesRef.current.clear();
           chartLinesRef.current.forEach((s) => {
             try {
-              if (s && typeof s === "object" && "applyOptions" in s) {
-                try { chart.removeSeries(s); } catch {
-                  try { series.removePriceLine(s); } catch {}
+              const list = Array.isArray(s) ? s : [s];
+              for (const item of list) {
+                if (item && typeof item === "object" && "applyOptions" in item) {
+                  try { chart.removeSeries(item); } catch {
+                    try { series.removePriceLine(item); } catch {}
+                  }
+                } else {
+                  try { series.removePriceLine(item); } catch {}
                 }
-              } else {
-                try { series.removePriceLine(s); } catch {}
               }
             } catch {}
           });
@@ -8374,6 +8541,166 @@ export default function DashboardPage() {
           return;
         }
 
+        // Fib Retracement: 2 points
+        if (m === "fib") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const start = diagStartRef.current;
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            setStatusMsg("Fib: tap second point");
+            return;
+          }
+          clickLockRef.current = true;
+          setSaving(true);
+          const levelsNow = loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS;
+          const levelsOn = levelsNow.filter((x) => x.on).map((x) => x.v).join(",");
+          const revNow = !!loadLS("fib_reverse", false);
+          const extNow = (loadLS("fib_extend", "right") as string) || "right";
+          const note =
+            `__fib:${start.time},${start.price},${t},${fp}|${levelsOn}|rev=${revNow ? 1 : 0}|ext=${extNow}`;
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: start.price,
+            end_price: fp,
+            start_time: start.time,
+            end_time: t,
+            color: drawColorRef.current || DEFAULT_LINE_COLOR,
+            width: drawWidthRef.current || 1,
+            dash: "solid",
+            note,
+          };
+          try {
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb = {
+                symbol: base.symbol,
+                price: base.price,
+                color: base.color,
+                start_time: base.start_time,
+                note,
+              };
+              (fb as any).user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Fib retracement saved");
+            } else {
+              const local: ChartLine = {
+                id: `local-fib-${Date.now()}`,
+                symbol: symbolRef.current.toUpperCase(),
+                price: start.price,
+                end_price: fp,
+                start_time: start.time,
+                end_time: t,
+                color: base.color,
+                width: base.width,
+                note,
+              };
+              setLines((prev) => [local, ...prev]);
+              setStatusMsg("Fib local only");
+            }
+          } catch {
+            setStatusMsg("Fib save failed");
+          }
+          diagStartRef.current = null;
+          setDiagStart(null);
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Trend-based Fib Extension: 3 points (A→B trend, C anchor)
+        if (m === "fib-ext") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const start = diagStartRef.current;
+          const mid = fibPoint3Ref.current;
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            fibPoint3Ref.current = null;
+            setStatusMsg("Fib Ext: tap point B (trend end)");
+            return;
+          }
+          if (!mid) {
+            fibPoint3Ref.current = { time: t, price: fp };
+            setStatusMsg("Fib Ext: tap point C (extension anchor)");
+            return;
+          }
+          clickLockRef.current = true;
+          setSaving(true);
+          const levelsNow = loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS;
+          const levelsOn = levelsNow.filter((x) => x.on).map((x) => x.v).join(",");
+          const revNow = !!loadLS("fib_reverse", false);
+          const extNow = (loadLS("fib_extend", "right") as string) || "right";
+          const note =
+            `__fibext:${start.time},${start.price},${mid.time},${mid.price},${t},${fp}|${levelsOn}|rev=${revNow ? 1 : 0}|ext=${extNow}`;
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: start.price,
+            end_price: fp,
+            start_time: start.time,
+            end_time: t,
+            color: drawColorRef.current || DEFAULT_LINE_COLOR,
+            width: drawWidthRef.current || 1,
+            dash: "solid",
+            note,
+          };
+          try {
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb = {
+                symbol: base.symbol,
+                price: base.price,
+                color: base.color,
+                start_time: base.start_time,
+                note,
+              };
+              (fb as any).user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Fib extension saved");
+            } else {
+              const local: ChartLine = {
+                id: `local-fibext-${Date.now()}`,
+                symbol: symbolRef.current.toUpperCase(),
+                price: start.price,
+                end_price: fp,
+                start_time: start.time,
+                end_time: t,
+                color: base.color,
+                width: base.width,
+                note,
+              };
+              setLines((prev) => [local, ...prev]);
+              setStatusMsg("Fib Ext local only");
+            }
+          } catch {
+            setStatusMsg("Fib Ext save failed");
+          }
+          diagStartRef.current = null;
+          setDiagStart(null);
+          fibPoint3Ref.current = null;
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
         // Path: multi-point polyline (double-click finishes)
         if (m === "path") {
           const t = resolveTime(param);
@@ -11000,7 +11327,7 @@ export default function DashboardPage() {
                 title="Shapes & tools"
                 onClick={() => setDrawToolsOpen((v) => !v)}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "fib" || mode === "fib-ext"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -11055,6 +11382,51 @@ export default function DashboardPage() {
                   >
                     <span className="w-4 text-center">💬</span>
                     Callout
+                  </button>
+                  <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Fibonacci</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib");
+                      setStatusMsg("Fib Retracement: tap point A, then B");
+                    }}
+                  >
+                    <span className="w-4 text-center">⌘</span>
+                    Fib retracement
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-ext" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib-ext");
+                      setStatusMsg("Fib Extension: tap A, then B, then C");
+                    }}
+                  >
+                    <span className="w-4 text-center">⌘+</span>
+                    Trend-based fib extension
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 text-gray-400"
+                    onClick={() => {
+                      setDrawToolsOpen(false);
+                      setFibSettingsOpen(true);
+                    }}
+                  >
+                    <span className="w-4 text-center">⚙</span>
+                    Fib settings…
                   </button>
                 </div>
               )}
@@ -11725,11 +12097,13 @@ export default function DashboardPage() {
             mode === "path" ||
             mode === "brush" ||
             mode === "curve" ||
+            mode === "fib" ||
+            mode === "fib-ext" ||
             mode === "alarm" ||
             mode === "alarm-ray" ||
             mode === "alarm-diag" ||
             mode === "move") && (
-            <div data-move-bar className="absolute bottom-10 left-3 z-20 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2">
+            <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {mode === "path" && (
                 <button
                   type="button"
@@ -12334,6 +12708,113 @@ export default function DashboardPage() {
           )}
 
           {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
+          {/* Fib settings modal */}
+          {fibSettingsOpen && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto" onClick={() => setFibSettingsOpen(false)}>
+              <div
+                className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,360px)] max-h-[80vh] overflow-y-auto p-4 text-xs text-gray-200"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white">Fib retracement</h3>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => setFibSettingsOpen(false)}>×</button>
+                </div>
+                <div className="space-y-2 mb-3">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={fibReverse} onChange={(e) => setFibReverse(e.target.checked)} />
+                    <span>Reverse</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={fibShowPrices} onChange={(e) => setFibShowPrices(e.target.checked)} />
+                    <span>Prices</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={fibShowLevels} onChange={(e) => setFibShowLevels(e.target.checked)} />
+                    <span>Levels</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-400">Extend</span>
+                    <select
+                      value={fibExtend}
+                      onChange={(e) => setFibExtend(e.target.value as any)}
+                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs"
+                    >
+                      <option value="none">None</option>
+                      <option value="right">Extend lines right</option>
+                      <option value="left">Extend lines left</option>
+                      <option value="both">Both</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-500 uppercase mb-1">Levels</div>
+                <div className="grid grid-cols-2 gap-1.5 mb-4">
+                  {fibLevels.map((lv: any, i: number) => (
+                    <label key={i} className="flex items-center gap-1.5 bg-gray-900/80 rounded px-2 py-1 border border-gray-800">
+                      <input
+                        type="checkbox"
+                        checked={!!lv.on}
+                        onChange={(e) => {
+                          setFibLevels((prev: any[]) => {
+                            const n = [...prev];
+                            n[i] = { ...n[i], on: e.target.checked };
+                            return n;
+                          });
+                        }}
+                      />
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={lv.v}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (Number.isNaN(v)) return;
+                          setFibLevels((prev: any[]) => {
+                            const n = [...prev];
+                            n[i] = { ...n[i], v };
+                            return n;
+                          });
+                        }}
+                        className="w-14 bg-transparent border-b border-gray-700 text-[11px] tabular-nums outline-none"
+                      />
+                      <input
+                        type="color"
+                        value={lv.color || "#f97316"}
+                        onChange={(e) => {
+                          setFibLevels((prev: any[]) => {
+                            const n = [...prev];
+                            n[i] = { ...n[i], color: e.target.value };
+                            return n;
+                          });
+                        }}
+                        className="w-5 h-5 rounded cursor-pointer bg-transparent border-0 p-0"
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-white/5"
+                    onClick={() => {
+                      setFibLevels(DEFAULT_FIB_LEVELS);
+                      setFibReverse(false);
+                      setFibExtend("right");
+                    }}
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
+                    onClick={() => setFibSettingsOpen(false)}
+                  >
+                    Ok
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="absolute bottom-1 right-1 z-20" ref={tzMenuRef}>
             <button
               type="button"
@@ -13451,13 +13932,20 @@ export default function DashboardPage() {
               >
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
-                    {l.note === "__vline__"
+                    {typeof l.note === "string" && l.note.startsWith("__fibext:")
+                      ? "Fib Ext"
+                      : typeof l.note === "string" && l.note.startsWith("__fib:")
+                      ? "Fib"
+                      : l.note === "__vline__"
                       ? "Vertical"
                       : isDiagonalLine(l)
                       ? `↗ ${formatPrice(l.price)}→${formatPrice(Number(l.end_price))}`
                       : formatPrice(l.price)}
                     {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
                     {l.note === "__vline__" ? <span className="text-[10px] text-orange-400/80 ml-1">V</span> : null}
+                    {typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
+                      <span className="text-[10px] text-orange-400/80 ml-1">Fib</span>
+                    ) : null}
                   </span>
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === l.id && editingNoteType === "line" ? (
