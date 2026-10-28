@@ -1826,6 +1826,7 @@ export default function DashboardPage() {
   const [fibShowPrices, setFibShowPrices] = useState(() => loadLS("fib_show_prices", true));
   const [fibShowLevels, setFibShowLevels] = useState(() => loadLS("fib_show_levels", true));
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
+  const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
@@ -12878,7 +12879,31 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
-                    onClick={() => setFibSettingsOpen(false)}
+                    onClick={async () => {
+                      // Apply current settings to the selected fib drawing (if any)
+                      if (selectedFibId) {
+                        const line = linesRef.current?.find((x: any) => String(x.id) === String(selectedFibId));
+                        if (line && typeof line.note === "string") {
+                          const fib = parseFibNote(line.note);
+                          if (fib) {
+                            const levelsOn = (fibLevels as any[]).filter((x) => x.on).map((x) => x.v).join(",");
+                            const prefix = fib.kind === "fib-ext" ? "__fibext:" : "__fib:";
+                            let coords = `${fib.t1},${fib.p1},${fib.t2},${fib.p2}`;
+                            if (fib.kind === "fib-ext" && fib.t3 != null && fib.p3 != null) {
+                              coords += `,${fib.t3},${fib.p3}`;
+                            }
+                            const note = `${prefix}${coords}|${levelsOn}|rev=${fibReverse ? 1 : 0}|ext=${fibExtend}`;
+                            setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
+                            try {
+                              await supabase.from("chart_lines").update({ note }).eq("id", selectedFibId);
+                            } catch {}
+                            try { renderAllLinesAndAlarms(); } catch {}
+                          }
+                        }
+                      }
+                      setSelectedFibId(null);
+                      setFibSettingsOpen(false);
+                    }}
                   >
                     Ok
                   </button>
@@ -14015,9 +14040,7 @@ export default function DashboardPage() {
                       : formatPrice(l.price)}
                     {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
                     {l.note === "__vline__" ? <span className="text-[10px] text-orange-400/80 ml-1">V</span> : null}
-                    {typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
-                      <span className="text-[10px] text-orange-400/80 ml-1">Fib</span>
-                    ) : null}
+
                   </span>
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === l.id && editingNoteType === "line" ? (
@@ -14045,13 +14068,49 @@ export default function DashboardPage() {
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {l.note && l.note !== "__vline__" && !String(l.note).startsWith("__diag:") && !String(l.note).startsWith("__ray:") && userFacingNote(l.note)
+                        {l.note &&
+                        l.note !== "__vline__" &&
+                        !String(l.note).startsWith("__diag:") &&
+                        !String(l.note).startsWith("__ray:") &&
+                        !String(l.note).startsWith("__fib:") &&
+                        !String(l.note).startsWith("__fibext:") &&
+                        userFacingNote(l.note)
                           ? userFacingNote(l.note)
                           : "Note"}
                       </button>
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
+                    {typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
+                      <button
+                        type="button"
+                        title="Fib settings"
+                        onClick={() => {
+                          // Load levels from this fib note into settings panel
+                          const fib = parseFibNote(l.note);
+                          if (fib) {
+                            const onSet = new Set(fib.levels.map((v) => Number(v)));
+                            setFibLevels(
+                              DEFAULT_FIB_LEVELS.map((d) => ({
+                                ...d,
+                                on: onSet.has(d.v),
+                              }))
+                            );
+                            setFibReverse(!!fib.reverse);
+                            setFibExtend(fib.extend || "right");
+                          }
+                          setSelectedFibId(String(l.id));
+                          setFibSettingsOpen(true);
+                        }}
+                        className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <>
                     {/* Color — palette popup (desktop) + native picker */}
                     <div className="relative" data-menu>
                       <button
@@ -14148,6 +14207,8 @@ export default function DashboardPage() {
                       )}
                     </div>
                     <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
