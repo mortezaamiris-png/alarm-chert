@@ -4408,10 +4408,17 @@ export default function DashboardPage() {
             const bars = candlesRef.current || [];
             const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
             const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
-            // far past / far future so "extend" actually reaches edges
-            // Keep extend span modest so time-scale / history stay fast (not 5y)
-            const FAR_LEFT = Math.min(chartFirst, tA) - 86400 * 365;
-            const FAR_RIGHT = Math.max(chartLast, tB) + 86400 * 180;
+            // Cover visible range + empty future (rightOffset) so Extend Right reaches chart edge
+            let visFrom = chartFirst;
+            let visTo = chartLast;
+            try {
+              const vr = chart.timeScale().getVisibleRange?.();
+              if (vr?.from != null) visFrom = Number(vr.from);
+              if (vr?.to != null) visTo = Number(vr.to);
+            } catch {}
+            const FAR_LEFT = Math.min(chartFirst, tA, visFrom) - 86400 * 400;
+            // 3y past visible right so empty future area is fully covered
+            const FAR_RIGHT = Math.max(chartLast, tB, visTo) + 86400 * 365 * 3;
             let tFrom = tA;
             let tTo = tB;
             const ext = fib.extend || "none";
@@ -4480,7 +4487,8 @@ export default function DashboardPage() {
                 ptsMap.set(Number(tB), price);
                 ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
                 if (extRight || extLeft) {
-                  const steps = 12;
+                  // denser points so long extend-right reaches far future without gaps
+                  const steps = 48;
                   for (let s = 1; s < steps; s++) {
                     const tt = Math.round(Number(tFrom) + ((Number(tTo) - Number(tFrom)) * s) / steps);
                     ptsMap.set(tt, price);
@@ -4614,18 +4622,13 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   } as any);
-                  // background follows level lines; when extended, fill across visible chart
+                  // background follows level lines; when extended, fill to same edge as lines
                   let cFrom = tFrom;
                   let cTo = tTo;
-                  if (ext === "right" || ext === "both") cTo = Math.max(cTo, chartLast);
-                  if (ext === "left" || ext === "both") cFrom = Math.min(cFrom, chartFirst);
                   if (ext === "none") {
                     cFrom = tA;
                     cTo = tB;
                   }
-                  // keep within a reasonable window around data
-                  cFrom = Math.max(cFrom, chartFirst - 86400);
-                  cTo = Math.min(cTo, chartLast + 86400 * 30);
                   if (cTo <= cFrom) cTo = cFrom + 60;
                   const cMid = Math.round((cFrom + cTo) / 2);
                   band.setData([
@@ -5064,8 +5067,16 @@ export default function DashboardPage() {
     const syncMoveHandlesNow = () => {
       try {
         const md = moveDiagRef.current;
-        if (!md) return;
-        if (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c") return;
+        const elA0 = handleAElRef.current;
+        const elB0 = handleBElRef.current;
+        const elC0 = handleCElRef.current;
+        // No active move → never leave ghost circles on chart
+        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c")) {
+          if (elA0) elA0.style.display = "none";
+          if (elB0) elB0.style.display = "none";
+          if (elC0) elC0.style.display = "none";
+          return;
+        }
         const chart2 = chartRef.current;
         const ser2 = seriesRef.current;
         const elA = handleAElRef.current;
@@ -5173,6 +5184,23 @@ export default function DashboardPage() {
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
           syncMoveHandlesNow();
           scheduleOverlaySync();
+          // Re-draw extended fibs (throttled) so lines/background reach visible right edge
+          try {
+            const now = Date.now();
+            if (!(window as any).__fibExtLast || now - (window as any).__fibExtLast > 280) {
+              (window as any).__fibExtLast = now;
+              if ((window as any).__fibExtRaf) cancelAnimationFrame((window as any).__fibExtRaf);
+              (window as any).__fibExtRaf = requestAnimationFrame(() => {
+                try {
+                  const hasExt = (linesRef.current || []).some((l: any) => {
+                    const f = parseFibNote(l?.note);
+                    return !!(f && f.extend && f.extend !== "none");
+                  });
+                  if (hasExt) renderAllLinesAndAlarmsRef.current?.();
+                } catch {}
+              });
+            }
+          } catch {}
           // keep osc masks/SVG aligned while panning (rAF throttle)
           try {
             if ((window as any).__oscMaskRaf) cancelAnimationFrame((window as any).__oscMaskRaf);
