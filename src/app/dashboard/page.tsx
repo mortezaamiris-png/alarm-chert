@@ -4390,28 +4390,29 @@ export default function DashboardPage() {
               if (showLv) titleParts.push(String(lv));
               if (showPx) titleParts.push(String(formatPrice(price)));
               try {
-                // Horizontal segment as LineSeries → extend works; NO colored axis labels
-                const hs: any = chart.addLineSeries({
-                  color: col,
-                  lineWidth: lw,
-                  lineStyle: ls,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                });
-                // Labels follow Extend: Right → near last candle (where lines go), not stuck on anchor
                 const lh = String((fib as any).labelH || "right");
                 const labV = String((fib as any).labelV || "middle");
                 const extRight = ext === "right" || ext === "both";
                 const extLeft = ext === "left" || ext === "both";
-                // Use chart edges when extended so labels sit on the visible line ends
                 const labLeft = extLeft ? chartFirst : tA;
                 const labRight = extRight ? chartLast : tB;
                 const labelT =
                   lh === "left" ? labLeft :
                   lh === "center" ? Math.round((labLeft + labRight) / 2) :
                   labRight;
+                const labelText = titleParts.join(" ");
+                // Right → stick label to price scale (TradingView style)
+                const stickRight = lh === "right";
+                const hs: any = chart.addLineSeries({
+                  color: col,
+                  lineWidth: lw,
+                  lineStyle: ls,
+                  priceLineVisible: false,
+                  lastValueVisible: stickRight && !!labelText,
+                  title: stickRight && labelText ? labelText : undefined,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                } as any);
                 const ptsMap = new Map<number, number>();
                 ptsMap.set(Number(tFrom), price);
                 ptsMap.set(Number(tTo), price);
@@ -4419,7 +4420,6 @@ export default function DashboardPage() {
                 ptsMap.set(Number(tB), price);
                 ptsMap.set(Number(labelT), price);
                 ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
-                // denser points along visible span so marker time always exists
                 if (extRight || extLeft) {
                   const steps = 8;
                   for (let s = 1; s < steps; s++) {
@@ -4427,11 +4427,14 @@ export default function DashboardPage() {
                     ptsMap.set(tt, price);
                   }
                 }
+                // ensure a point at chartLast so lastValue label is current
+                if (stickRight) ptsMap.set(Number(chartLast), price);
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
-                if (titleParts.length) {
+                // Left / Center → markers on the line; Right uses price-scale label above
+                if (titleParts.length && !stickRight) {
                   try {
                     const pos =
                       labV === "top" ? "aboveBar" :
@@ -4444,7 +4447,7 @@ export default function DashboardPage() {
                         color: col,
                         shape: "circle",
                         size: 0.01,
-                        text: " " + titleParts.join("  ") + " ",
+                        text: " " + labelText + " ",
                       },
                     ]);
                   } catch {}
@@ -13333,6 +13336,9 @@ export default function DashboardPage() {
               <div
                 className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,380px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
                 onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-white">Fib retracement</h3>
@@ -13434,7 +13440,10 @@ export default function DashboardPage() {
                     className="w-7 h-6 rounded cursor-pointer bg-transparent border border-gray-600" />
                   <input type="range" min={0} max={100} value={fibBgOpacity}
                     onChange={(e) => setFibBgOpacity(parseInt(e.target.value, 10))}
-                    className="flex-1 accent-orange-500" />
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="flex-1 accent-orange-500 touch-none" />
                   <span className="tabular-nums w-8 text-right text-gray-400">{fibBgOpacity}</span>
                 </div>
 
