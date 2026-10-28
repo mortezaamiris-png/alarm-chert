@@ -4412,12 +4412,19 @@ export default function DashboardPage() {
                 const labV = String((fib as any).labelV || "middle");
                 const extRight = ext === "right" || ext === "both";
                 const extLeft = ext === "left" || ext === "both";
-                // ONLY when Extend=right/both AND Labels=Right → magnet to price axis (TV)
+                // Magnet ONLY when both Extend and Labels agree on that side
                 const magnetRight = lh === "right" && extRight;
+                const magnetLeft = lh === "left" && extLeft;
+                // Visible left edge of chart (for left magnet stick)
+                let visLeft = Number(chartFirst);
+                try {
+                  const vr = (chart.timeScale() as any).getVisibleRange?.();
+                  if (vr && vr.from != null) visLeft = Number(vr.from);
+                } catch {}
                 const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
                 const labRight = extRight ? Math.max(chartLast, tB) : tB;
                 const labelT =
-                  lh === "left" ? labLeft :
+                  lh === "left" ? (magnetLeft ? visLeft : labLeft) :
                   lh === "center" ? Math.round((labLeft + labRight) / 2) :
                   labRight;
                 const hs: any = chart.addLineSeries({
@@ -4425,7 +4432,7 @@ export default function DashboardPage() {
                   lineWidth: lw,
                   lineStyle: ls,
                   priceLineVisible: false,
-                  // stick to price scale ONLY for magnetRight case
+                  // stick to price scale ONLY for magnetRight
                   lastValueVisible: magnetRight && !!labelText,
                   title: magnetRight && labelText ? labelText : undefined,
                   crosshairMarkerVisible: false,
@@ -4445,21 +4452,32 @@ export default function DashboardPage() {
                     ptsMap.set(tt, price);
                   }
                 }
+                // Ensure left magnet has a data point at visible left edge
+                if (magnetLeft) {
+                  ptsMap.set(Number(visLeft), price);
+                }
                 const pts = Array.from(ptsMap.entries())
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
-                // Markers only when NOT magneted to price axis (Left / Center / None+Right)
+                // Markers: Left magnet / Center / non-magnet Right
+                // (Right magnet uses lastValueVisible on price axis — no marker)
                 if (labelText && !magnetRight) {
                   try {
                     const pos =
                       labV === "top" ? "aboveBar" :
                       labV === "bottom" ? "belowBar" :
                       "inBar";
-                    const mTime = Math.max(
-                      Math.min(Number(labelT), Number(tTo)),
-                      Math.min(Number(tFrom), Number(tTo))
-                    );
+                    let mTime: number;
+                    if (magnetLeft) {
+                      // stick to left edge of visible chart (tools bar side)
+                      mTime = Number(visLeft);
+                    } else {
+                      mTime = Math.max(
+                        Math.min(Number(labelT), Number(tTo)),
+                        Math.min(Number(tFrom), Number(tTo))
+                      );
+                    }
                     hs.setMarkers([
                       {
                         time: mTime as any,
