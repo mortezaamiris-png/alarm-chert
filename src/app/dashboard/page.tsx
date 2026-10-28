@@ -13151,8 +13151,8 @@ export default function DashboardPage() {
                         >Apply defaults</button>
                         <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
                           onClick={() => {
-                            const tpl = loadLS("fib_template", null);
-                            if (tpl) {
+                            const tpl = loadLS("fib_template", null) as any;
+                            if (tpl && typeof tpl === "object") {
                               if (tpl.levels) setFibLevels(tpl.levels);
                               if (tpl.reverse != null) setFibReverse(!!tpl.reverse);
                               if (tpl.extend) setFibExtend(tpl.extend);
