@@ -6507,7 +6507,7 @@ export default function DashboardPage() {
                 try { syncFutureAxis(data, fetchIv); } catch {}
                 const keepLatest =
                   pinnedToRightRef.current ||
-                  Date.now() < (alarmDataUntilRef.current || 0) + 2000;
+                  Date.now() < (alarmCooldownUntilRef.current || 0) + 2000;
                 if (
                   !keepLatest &&
                   savedTime &&
