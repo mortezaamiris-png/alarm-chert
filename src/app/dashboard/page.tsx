@@ -4977,6 +4977,19 @@ export default function DashboardPage() {
               try { updateMargins(); } catch {}
             });
           } catch {}
+          // Left-magnet fib: labels stay glued to left frame of chart while panning
+          try {
+            if ((window as any).__fibLeftMagnetRaf) cancelAnimationFrame((window as any).__fibLeftMagnetRaf);
+            (window as any).__fibLeftMagnetRaf = requestAnimationFrame(() => {
+              try {
+                const hasLeftMagnet = (linesRef.current || []).some((l: any) => {
+                  const f = parseFibNote(l?.note);
+                  return !!(f && (f.extend === "left" || f.extend === "both") && f.labelH === "left");
+                });
+                if (hasLeftMagnet) renderAllLinesAndAlarmsRef.current?.();
+              } catch {}
+            });
+          } catch {}
         });
     } catch {}
     // Vertical pan/zoom does not fire timeScale events — listen on container
@@ -7742,49 +7755,15 @@ export default function DashboardPage() {
                   );
                 }
               } catch {}
-              if (fibPreviewRafRef.current != null) return; // already scheduled
-              fibPreviewRafRef.current = requestAnimationFrame(() => {
-                fibPreviewRafRef.current = null;
-                const ser = seriesRef.current;
-                if (!ser || !diagStartRef.current) return;
-                if (!fibPreviewCacheRef.current) {
-                  fibPreviewCacheRef.current = {
-                    levels: (loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS).filter((x) => x.on),
-                    reverse: !!loadLS("fib_reverse", false),
-                  };
-                }
-                const { levels, reverse } = fibPreviewCacheRef.current;
-                // Ensure exact count of price lines (create only when needed)
-                while (previewFibSeriesRef.current.length < levels.length) {
-                  try {
-                    const pl = ser.createPriceLine({
-                      price: diagStartRef.current.price,
-                      color: "#f97316",
-                      lineWidth: 1,
-                      lineStyle: LineStyle.Solid,
-                      axisLabelVisible: true,
-                      title: "",
-                    });
-                    previewFibSeriesRef.current.push(pl);
-                  } catch { break; }
-                }
-                while (previewFibSeriesRef.current.length > levels.length) {
-                  const pl = previewFibSeriesRef.current.pop();
-                  try { ser.removePriceLine(pl); } catch {}
-                }
-                for (let i = 0; i < levels.length; i++) {
-                  const lv = levels[i];
-                  const price = fibPrice(diagStartRef.current.price, p2, lv.v, reverse);
-                  if (!Number.isFinite(price)) continue;
-                  try {
-                    previewFibSeriesRef.current[i].applyOptions({
-                      price,
-                      color: lv.color || "#f97316",
-                      title: String(lv.v),
-                    });
-                  } catch {}
-                }
-              });
+              // During placement: ONLY hollow points (A/B) — no level lines until fib is committed
+              if (previewFibSeriesRef.current.length && seriesRef.current) {
+                try {
+                  for (const pl of previewFibSeriesRef.current) {
+                    try { seriesRef.current.removePriceLine(pl); } catch {}
+                  }
+                } catch {}
+                previewFibSeriesRef.current = [];
+              }
             }
           } else if (mNow !== "fib" && mNow !== "fib-ext" && previewFibSeriesRef.current.length) {
             const ser = seriesRef.current;
