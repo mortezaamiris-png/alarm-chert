@@ -4466,9 +4466,9 @@ export default function DashboardPage() {
                   lineWidth: lw,
                   lineStyle: ls,
                   priceLineVisible: false,
-                  // stick to price scale ONLY for magnetRight
-                  lastValueVisible: magnetRight && !!labelText,
-                  title: magnetRight && labelText ? labelText : undefined,
+                  // No colored axis chips — TV-style plain labels via DOM overlay
+                  lastValueVisible: false,
+                  title: undefined,
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 } as any);
@@ -4486,7 +4486,6 @@ export default function DashboardPage() {
                     ptsMap.set(tt, price);
                   }
                 }
-                // Ensure left magnet has a data point at visible left edge
                 if (magnetLeft) {
                   ptsMap.set(Number(visLeft), price);
                 }
@@ -4494,42 +4493,42 @@ export default function DashboardPage() {
                   .map(([time, value]) => ({ time: time as any, value }))
                   .sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
-                // Markers: Left magnet / Center / non-magnet Right
-                // (Right magnet uses lastValueVisible on price axis — no marker)
-                if (labelText && !magnetRight) {
+                // Store for DOM labels (TV style: no colored box)
+                if (labelText) {
                   try {
-                    const pos =
-                      labV === "top" ? "aboveBar" :
-                      labV === "bottom" ? "belowBar" :
-                      "inBar";
                     let mTime: number;
-                    if (magnetLeft) {
-                      // stick to left edge of visible chart (tools bar side)
-                      mTime = Number(visLeft);
+                    if (magnetLeft) mTime = Number(visLeft);
+                    else if (magnetRight) {
+                      // stick near right edge of plot (price axis side)
+                      try {
+                        const w = (chart.timeScale() as any).width?.() ?? 0;
+                        const tEdge = (chart.timeScale() as any).coordinateToTime?.(Math.max(0, w - 8));
+                        mTime = tEdge != null ? Number(tEdge) : Number(labRight);
+                      } catch { mTime = Number(labRight); }
                     } else {
                       mTime = Math.max(
                         Math.min(Number(labelT), Number(tTo)),
                         Math.min(Number(tFrom), Number(tTo))
                       );
                     }
-                    hs.setMarkers([
-                      {
-                        time: mTime as any,
-                        position: pos as any,
-                        color: col,
-                        shape: "circle",
-                        size: 0,
-                        text: " " + labelText + " ",
-                      },
-                    ]);
+                    (hs as any).__fibLabel = {
+                      text: labelText,
+                      price,
+                      time: mTime,
+                      color: col,
+                      labV,
+                      magnetRight,
+                    };
                   } catch {}
                 }
                 extraSeries.push(hs);
               } catch {}
             }
-            // Trend line between anchors
-            if (fib.trend) {
-              try {
+            // Trend / dashed path between anchors
+            // Fib: A→B when trend on; Fib-ext: always A→B→C (dashed)
+            try {
+              const needTrend = fib.kind === "fib-ext" || fib.trend;
+              if (needTrend) {
                 const tr: any = chart.addLineSeries({
                   color: fib.trendColor || "#f97316",
                   lineWidth: Math.max(1, lw) as 1 | 2 | 3 | 4,
@@ -4539,13 +4538,41 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 });
-                tr.setData([
-                  { time: fib.t1 as any, value: fib.p1 },
-                  { time: fib.t2 as any, value: fib.p2 },
-                ]);
-                extraSeries.push(tr);
-              } catch {}
-            }
+                if (fib.kind === "fib-ext" && fib.t3 != null && fib.p3 != null) {
+                  // two segments so B→C dashed is visible
+                  const densAB = denseDiagPoints(
+                    Number(fib.t1), Number(fib.t2), Number(fib.p1), Number(fib.p2),
+                    intervalToSeconds(String(intervalRef.current))
+                  );
+                  const densBC = denseDiagPoints(
+                    Number(fib.t2), Number(fib.t3), Number(fib.p2), Number(fib.p3),
+                    intervalToSeconds(String(intervalRef.current))
+                  );
+                  // gap at B so LWC doesn't connect with solid; use two series
+                  tr.setData(densAB);
+                  extraSeries.push(tr);
+                  const tr2: any = chart.addLineSeries({
+                    color: fib.trendColor || "#f97316",
+                    lineWidth: Math.max(1, lw) as 1 | 2 | 3 | 4,
+                    lineStyle: LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                  tr2.setData(densBC);
+                  extraSeries.push(tr2);
+                } else {
+                  tr.setData(
+                    denseDiagPoints(
+                      Number(fib.t1), Number(fib.t2), Number(fib.p1), Number(fib.p2),
+                      intervalToSeconds(String(intervalRef.current))
+                    )
+                  );
+                  extraSeries.push(tr);
+                }
+              }
+            } catch {}
             // Background: colored band BETWEEN each consecutive level (TradingView style)
             if (fib.background && prices.length >= 2) {
               const op = Math.max(0.08, Math.min(100, fib.bgOpacity ?? 20) / 100);
@@ -4987,6 +5014,52 @@ export default function DashboardPage() {
     paintVLines();
     paintRays();
     paintCallouts();
+    // TV-style fib labels (no colored LWC chips)
+    try {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser2 = seriesRef.current;
+      if (host && chart2 && ser2) {
+        host.querySelectorAll("[data-fib-label]").forEach((el) => el.remove());
+        if (!hideLines) {
+          chartLinesRef.current.forEach((entry: any) => {
+            const seriesList = entry?.series;
+            if (!Array.isArray(seriesList)) return;
+            for (const hs of seriesList) {
+              const meta = (hs as any)?.__fibLabel;
+              if (!meta || !meta.text) continue;
+              try {
+                let x = chart2.timeScale().timeToCoordinate(meta.time as any);
+                const y = ser2.priceToCoordinate(meta.price);
+                if (x == null || y == null) continue;
+                // magnetRight: pin near right edge of plot
+                if (meta.magnetRight) {
+                  try {
+                    const w = (chart2.timeScale() as any).width?.() ?? 0;
+                    if (w > 20) x = w - 6;
+                  } catch {}
+                }
+                const el = document.createElement("div");
+                el.dataset.fibLabel = "1";
+                el.textContent = meta.text;
+                el.style.cssText =
+                  "position:absolute;pointer-events:none;z-index:18;" +
+                  "font-size:11px;line-height:1.2;font-family:ui-sans-serif,system-ui,sans-serif;" +
+                  "padding:1px 4px;border-radius:2px;" +
+                  "background:rgba(15,18,24,0.82);color:" + (meta.color || "#d1d5db") + ";" +
+                  "white-space:nowrap;transform:translate(-100%,-50%);" +
+                  "border-left:2px solid " + (meta.color || "#787B86") + ";";
+                if (meta.labV === "top") el.style.transform = "translate(-100%,-110%)";
+                else if (meta.labV === "bottom") el.style.transform = "translate(-100%,10%)";
+                el.style.left = `${Number(x)}px`;
+                el.style.top = `${Number(y)}px`;
+                host.appendChild(el);
+              } catch {}
+            }
+          });
+        }
+      }
+    } catch {}
     // Sync overlay on horizontal scroll AND vertical price pan
     const syncMoveHandlesNow = () => {
       try {
@@ -5049,6 +5122,51 @@ export default function DashboardPage() {
         }
         // Fib/diag handles must track chart on every pan frame
         syncMoveHandlesNow();
+        // Reposition fib DOM labels while panning
+        try {
+          const host = vlineOverlayRef.current;
+          const chart2 = chartRef.current;
+          const ser2 = seriesRef.current;
+          if (host && chart2 && ser2) {
+            const nodes = host.querySelectorAll("[data-fib-label]");
+            // rebuild from series meta (cheap)
+            nodes.forEach((el) => el.remove());
+            chartLinesRef.current.forEach((entry: any) => {
+              const seriesList = entry?.series;
+              if (!Array.isArray(seriesList)) return;
+              for (const hs of seriesList) {
+                const meta = (hs as any)?.__fibLabel;
+                if (!meta || !meta.text) continue;
+                try {
+                  let x = chart2.timeScale().timeToCoordinate(meta.time as any);
+                  const y = ser2.priceToCoordinate(meta.price);
+                  if (x == null || y == null) continue;
+                  if (meta.magnetRight) {
+                    try {
+                      const w = (chart2.timeScale() as any).width?.() ?? 0;
+                      if (w > 20) x = w - 6;
+                    } catch {}
+                  }
+                  const el = document.createElement("div");
+                  el.dataset.fibLabel = "1";
+                  el.textContent = meta.text;
+                  el.style.cssText =
+                    "position:absolute;pointer-events:none;z-index:18;" +
+                    "font-size:11px;line-height:1.2;font-family:ui-sans-serif,system-ui,sans-serif;" +
+                    "padding:1px 4px;border-radius:2px;" +
+                    "background:rgba(15,18,24,0.82);color:" + (meta.color || "#d1d5db") + ";" +
+                    "white-space:nowrap;transform:translate(-100%,-50%);" +
+                    "border-left:2px solid " + (meta.color || "#787B86") + ";";
+                  if (meta.labV === "top") el.style.transform = "translate(-100%,-110%)";
+                  else if (meta.labV === "bottom") el.style.transform = "translate(-100%,10%)";
+                  el.style.left = `${Number(x)}px`;
+                  el.style.top = `${Number(y)}px`;
+                  host.appendChild(el);
+                } catch {}
+              }
+            });
+          }
+        } catch {}
       });
     };
     try {
