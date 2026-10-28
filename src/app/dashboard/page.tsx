@@ -1249,7 +1249,7 @@ export default function DashboardPage() {
   const [saving, setSaving] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Chart series style: candles | hollow | line | area | heikin */
-  const [chartType, setChartType] = useState<"candles" | "hollow" | "line" | "area" | "heikin">(() =>
+  const [chartType, setChartType] = useState<"candles" | "hollow" | "bars" | "line" | "area" | "baseline" | "hlc" | "heikin">(() =>
     loadLS("chart_type", "candles")
   );
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
@@ -2723,7 +2723,7 @@ export default function DashboardPage() {
             const svgHandle = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>`;
             // Always-visible handle (⋮)
             parts.push(
-              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;pointer-events:auto;z-index:30;padding:0;color:#e5e7eb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">${svgHandle}</button>`
+              `<button data-osc-handle="${id}" title="Pane tools" style="position:absolute;right:${handleRight}px;top:${btnTop}px;width:28px;height:28px;display:none;align-items:center;justify-content:center;background:rgba(11,14,17,0.85);border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;pointer-events:auto;z-index:30;padding:0;color:#e5e7eb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">${svgHandle}</button>`
             );
             // Toolbar — hidden by default
             parts.push(
@@ -2844,6 +2844,44 @@ export default function DashboardPage() {
           // document-level so it works even when host has pointer-events quirks on desktop
           document.addEventListener("pointerdown", onOutside, true);
           (host as any).__oscOutside = onOutside;
+
+          // Show ⋮ only while pointer is over that oscillator pane
+          const syncHandleVisibility = (clientY: number | null) => {
+            try {
+              const rect = host.getBoundingClientRect();
+              const plotH = (host as any).__plotH || rect.height;
+              const zones = ((host as any).__paneZones || []) as { id: string; top: number; bot: number }[];
+              host.querySelectorAll("[data-osc-handle]").forEach((btn) => {
+                const el = btn as HTMLElement;
+                const id = el.getAttribute("data-osc-handle") || "";
+                const tb = host.querySelector(`[data-osc-toolbar="${id}"]`) as HTMLElement | null;
+                const open = !!(tb && tb.style.display === "flex");
+                if (clientY == null) {
+                  el.style.display = open ? "flex" : "none";
+                  return;
+                }
+                const z = zones.find((x) => x.id === id);
+                if (!z) {
+                  el.style.display = open ? "flex" : "none";
+                  return;
+                }
+                const yRatio = (clientY - rect.top) / Math.max(1, plotH);
+                const paneTop = 1 - z.top;
+                const paneBot = 1 - z.bot;
+                const over = yRatio >= paneTop - 0.02 && yRatio <= paneBot + 0.02;
+                el.style.display = over || open ? "flex" : "none";
+              });
+            } catch {}
+          };
+          try {
+            const cont = chartContainerRef.current;
+            if (cont && !(cont as any).__handleVisBound) {
+              (cont as any).__handleVisBound = true;
+              cont.addEventListener("pointermove", (ev: PointerEvent) => syncHandleVisibility(ev.clientY));
+              cont.addEventListener("pointerleave", () => syncHandleVisibility(null));
+            }
+            (host as any).__syncHandleVisibility = syncHandleVisibility;
+          } catch {}
         } catch {}
 
         // Bind vertical zoom on oscillator scale strips (iPad + desktop)
@@ -3373,22 +3411,40 @@ export default function DashboardPage() {
       // Only remove vertical line nodes — keep rays intact
       host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
       if (hideLines) return;
-      for (const v of vlineItemsRef.current) {
-        let x: number | null = null;
+      const bars = candlesRef.current || [];
+      const timeToX = (unix: number): number | null => {
         try {
-          x = chart2.timeScale().timeToCoordinate(v.time as any);
-        } catch { x = null; }
+          const x = chart2.timeScale().timeToCoordinate(unix as any);
+          if (x != null && !Number.isNaN(Number(x))) return Number(x);
+        } catch {}
+        try {
+          if (!bars.length) return null;
+          let lo = 0, hi = bars.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (Number(bars[mid].time) < unix) lo = mid + 1;
+            else hi = mid;
+          }
+          let best = lo;
+          if (lo > 0 && Math.abs(Number(bars[lo - 1].time) - unix) < Math.abs(Number(bars[lo].time) - unix)) best = lo - 1;
+          const lx = chart2.timeScale().logicalToCoordinate(best as any);
+          if (lx != null && !Number.isNaN(Number(lx))) return Number(lx);
+        } catch {}
+        return null;
+      };
+      for (const v of vlineItemsRef.current) {
+        const x = timeToX(Number(v.time));
         if (x == null || Number.isNaN(x)) continue;
         const el = document.createElement("div");
         el.dataset.vlineId = v.id;
         el.style.position = "absolute";
         el.style.top = "0";
-        el.style.bottom = "0";
+        el.style.bottom = "28px";
         el.style.left = `${x}px`;
         el.style.width = `${Math.max(1, v.width)}px`;
         el.style.transform = "translateX(-50%)";
         el.style.pointerEvents = "none";
-        el.style.zIndex = "5";
+        el.style.zIndex = "8";
         if (v.dash === "dashed" || v.dash === "dotted") {
           el.style.background = "transparent";
           el.style.borderLeft = `${Math.max(1, v.width)}px ${v.dash === "dotted" ? "dotted" : "dashed"} ${v.color}`;
@@ -3664,7 +3720,12 @@ export default function DashboardPage() {
           }
         } else if (isVLine) {
           // True vertical via DOM overlay (LWC line series always has time slope)
-          const t = Number(l.start_time);
+          let t = Number(l.start_time);
+          if (!(t > 0) && typeof l.note === "string" && l.note.startsWith("__vline__:")) {
+            const n = Number(String(l.note).replace("__vline__:", "").split("|")[0]);
+            if (n > 0) t = n;
+          }
+          if (!(t > 0) && l.end_time != null) t = Number(l.end_time);
           if (!Number.isNaN(t) && t > 0) {
             vlineItemsRef.current.push({
               id: String(l.id),
@@ -5518,6 +5579,52 @@ export default function DashboardPage() {
           withFuture
             .filter((c: any) => c.open != null || c.close != null || c.value != null)
             .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+        );
+      } else if (ctype === "bars") {
+        series = chart.addBarSeries({
+          upColor: "#089981",
+          downColor: "#f23645",
+          openVisible: true,
+          thinBars: false,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
+        series.setData(withFuture.filter((c: any) => c.open != null) as any);
+      } else if (ctype === "baseline") {
+        const closes = withFuture.filter((c: any) => c.close != null).map((c: any) => Number(c.close));
+        const base = closes.length ? closes[Math.floor(closes.length * 0.5)] : 0;
+        series = chart.addBaselineSeries({
+          baseValue: { type: "price", price: base },
+          topLineColor: "#089981",
+          topFillColor1: "rgba(8,153,129,0.28)",
+          topFillColor2: "rgba(8,153,129,0.05)",
+          bottomLineColor: "#f23645",
+          bottomFillColor1: "rgba(242,54,69,0.05)",
+          bottomFillColor2: "rgba(242,54,69,0.28)",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        } as any);
+        series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+      } else if (ctype === "hlc") {
+        series = chart.addAreaSeries({
+          lineColor: "#f59e0b",
+          topColor: "rgba(245,158,11,0.28)",
+          bottomColor: "rgba(245,158,11,0.02)",
+          lineWidth: 2,
+          priceFormat: { type: "price", precision, minMove },
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData(
+          withFuture
+            .filter((c: any) => c.close != null && c.high != null && c.low != null)
+            .map((c: any) => ({
+              time: c.time,
+              value: (Number(c.high) + Number(c.low) + Number(c.close)) / 3,
+            })) as any
         );
       } else {
         // candles | hollow | heikin
@@ -8679,6 +8786,30 @@ export default function DashboardPage() {
             lastValueVisible: false, priceLineVisible: false,
           });
           series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+        } else if (ctype === "bars") {
+          series = chart.addBarSeries({
+            upColor: "#089981", downColor: "#f23645", openVisible: true, thinBars: false,
+            priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
+          } as any);
+          series.setData(withFuture.filter((c: any) => c.open != null) as any);
+        } else if (ctype === "baseline") {
+          const closes = withFuture.filter((c: any) => c.close != null).map((c: any) => Number(c.close));
+          const base = closes.length ? closes[Math.floor(closes.length * 0.5)] : 0;
+          series = chart.addBaselineSeries({
+            baseValue: { type: "price", price: base },
+            topLineColor: "#089981", topFillColor1: "rgba(8,153,129,0.28)", topFillColor2: "rgba(8,153,129,0.05)",
+            bottomLineColor: "#f23645", bottomFillColor1: "rgba(242,54,69,0.05)", bottomFillColor2: "rgba(242,54,69,0.28)",
+            lineWidth: 2, priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
+          } as any);
+          series.setData(withFuture.filter((c: any) => c.close != null).map((c: any) => ({ time: c.time, value: c.close })) as any);
+        } else if (ctype === "hlc") {
+          series = chart.addAreaSeries({
+            lineColor: "#f59e0b", topColor: "rgba(245,158,11,0.28)", bottomColor: "rgba(245,158,11,0.02)",
+            lineWidth: 2, priceFormat: { type: "price", precision, minMove }, lastValueVisible: false, priceLineVisible: false,
+          });
+          series.setData(withFuture.filter((c: any) => c.close != null && c.high != null).map((c: any) => ({
+            time: c.time, value: (Number(c.high) + Number(c.low) + Number(c.close)) / 3,
+          })) as any);
         } else {
           const hollow = ctype === "hollow";
           const dataSrc = ctype === "heikin" ? toHeikinAshi(candles) : candles;
@@ -10206,7 +10337,7 @@ export default function DashboardPage() {
                 <rect x="3" y="3" width="7" height="18" rx="1" />
                 <rect x="14" y="8" width="7" height="13" rx="1" />
               </svg>
-              <span className="font-medium capitalize">{chartType === "heikin" ? "Heikin" : chartType}</span>
+              <span className="font-medium capitalize">{({ candles:"Candles", hollow:"Hollow", bars:"Bars", line:"Line", area:"Area", baseline:"Baseline", hlc:"HLC", heikin:"Heikin" } as any)[chartType] || chartType}</span>
             </button>
             {showChartTypeMenu && (
               <div
@@ -10221,8 +10352,11 @@ export default function DashboardPage() {
                 {([
                   ["candles", "Candles"],
                   ["hollow", "Hollow candles"],
+                  ["bars", "Bars"],
                   ["line", "Line"],
                   ["area", "Area"],
+                  ["baseline", "Baseline"],
+                  ["hlc", "HLC area"],
                   ["heikin", "Heikin Ashi"],
                 ] as const).map(([k, label]) => (
                   <button
