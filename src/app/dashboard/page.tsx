@@ -6317,9 +6317,15 @@ export default function DashboardPage() {
                     programmaticRangeRef.current = false;
                   }
                 }
-                try { rebuildIndicators(); } catch {}
-                try { renderAllLinesAndAlarms(); } catch {}
+                // throttle heavy rebuild while paging history
+                if (p % 3 === 2) {
+                  try { rebuildIndicators(); } catch {}
+                  try { renderAllLinesAndAlarms(); } catch {}
+                }
               }
+              // final sync after history pages
+              try { rebuildIndicators(); } catch {}
+              try { renderAllLinesAndAlarms(); } catch {}
             } catch {}
           })();
 
@@ -6798,20 +6804,24 @@ export default function DashboardPage() {
 
           const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, mainH)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~5٪ در هر تیک
-          const factor = zoomIn ? 0.95 : 1.05;
-          const newRange = Math.max((pTop - pBot) * factor, Math.abs(priceAtCursor) * 0.00005 + 0.5);
-          const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
+          // پله ملایم ~8٪ — بدون کف مطلق 0.5 (برای کوین‌های ارزان فاجعه بود)
+          const factor = zoomIn ? 0.92 : 1.08;
+          let newRange = (pTop - pBot) * factor;
+          // حداقل رنج نسبی به قیمت (نه عدد ثابت 0.5)
+          const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
+          const minRange = absP * 1e-6;
+          const maxRange = absP * 80; // جلوگیری از زوم‌اوت بی‌نهایت
+          if (newRange < minRange) newRange = minRange;
+          if (newRange > maxRange) newRange = maxRange;
+          const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
-          if (!(newTop > newBot)) return;
+          if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
-            // autoScale را روشن نگه دار تا autoscaleInfoProvider بازهٔ دستی را اعمال کند
             ps?.setAutoScale?.(true);
             ps?.applyOptions?.({ autoScale: true });
-            // اگر API setVisibleRange داشت، مستقیم هم ست کن
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
           } catch {}
         };
