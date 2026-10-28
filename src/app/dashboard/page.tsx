@@ -211,6 +211,13 @@ function parseFibNote(note: string | null | undefined): null | {
   bgOpacity: number;
   labelH: "left" | "center" | "right";
   labelV: "top" | "middle" | "bottom";
+  showPrices: boolean;
+  showLevels: boolean;
+  visMinutes: boolean;
+  visHours: boolean;
+  visDays: boolean;
+  visWeeks: boolean;
+  visMonths: boolean;
 } {
   if (!note || typeof note !== "string") return null;
   if (!note.startsWith("__fib:") && !note.startsWith("__fibext:")) return null;
@@ -235,6 +242,13 @@ function parseFibNote(note: string | null | undefined): null | {
   let colors: string[] = [];
   let labelH: "left" | "center" | "right" = "right";
   let labelV: "top" | "middle" | "bottom" = "middle";
+  let showPrices = true;
+  let showLevels = true;
+  let visMinutes = true;
+  let visHours = true;
+  let visDays = true;
+  let visWeeks = true;
+  let visMonths = true;
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p === "rev=1") reverse = true;
@@ -262,6 +276,17 @@ function parseFibNote(note: string | null | undefined): null | {
     } else if (p.startsWith("lv=")) {
       const e = p.slice(3);
       if (e === "top" || e === "middle" || e === "bottom") labelV = e;
+    } else if (p === "sp=0") showPrices = false;
+    else if (p === "sp=1") showPrices = true;
+    else if (p === "sl=0") showLevels = false;
+    else if (p === "sl=1") showLevels = true;
+    else if (p.startsWith("vis=")) {
+      const flags = p.slice(4).split(",");
+      visMinutes = flags.includes("m");
+      visHours = flags.includes("h");
+      visDays = flags.includes("d");
+      visWeeks = flags.includes("w");
+      visMonths = flags.includes("M");
     }
   }
   const out: any = {
@@ -269,7 +294,8 @@ function parseFibNote(note: string | null | undefined): null | {
     t1: coords[0], p1: coords[1], t2: coords[2], p2: coords[3],
     levels, colors, reverse, extend, lineWidth, lineStyle,
     trend, trendColor, background, bgColor, bgOpacity,
-    labelH, labelV,
+    labelH, labelV, showPrices, showLevels,
+    visMinutes, visHours, visDays, visWeeks, visMonths,
   };
   if (coords.length >= 6) {
     out.t3 = coords[4];
@@ -294,6 +320,13 @@ function buildFibNote(
     bgOpacity: number;
     labelH?: string;
     labelV?: string;
+    showPrices?: boolean;
+    showLevels?: boolean;
+    visMinutes?: boolean;
+    visHours?: boolean;
+    visDays?: boolean;
+    visWeeks?: boolean;
+    visMonths?: boolean;
   }
 ) {
   const onLevels = levels.filter((x) => x.on);
@@ -304,6 +337,12 @@ function buildFibNote(
     c += `,${coords.t3},${coords.p3}`;
   }
   const prefix = kind === "fib-ext" ? "__fibext:" : "__fib:";
+  const visParts: string[] = [];
+  if (opts.visMinutes !== false) visParts.push("m");
+  if (opts.visHours !== false) visParts.push("h");
+  if (opts.visDays !== false) visParts.push("d");
+  if (opts.visWeeks !== false) visParts.push("w");
+  if (opts.visMonths !== false) visParts.push("M");
   return (
     `${prefix}${c}|${levelsOn}` +
     `|rev=${opts.reverse ? 1 : 0}|ext=${opts.extend}` +
@@ -311,7 +350,9 @@ function buildFibNote(
     `|trend=${opts.trend ? 1 : 0}|tc=${encodeURIComponent(opts.trendColor)}` +
     `|bg=${opts.background ? 1 : 0}|bgc=${encodeURIComponent(opts.bgColor)}|bgo=${opts.bgOpacity}` +
     `|lc=${lc}` +
-    `|lh=${opts.labelH || "right"}|lv=${opts.labelV || "middle"}`
+    `|lh=${opts.labelH || "right"}|lv=${opts.labelV || "middle"}` +
+    `|sp=${opts.showPrices !== false ? 1 : 0}|sl=${opts.showLevels !== false ? 1 : 0}` +
+    `|vis=${visParts.join(",")}`
   );
 }
 
@@ -1928,6 +1969,12 @@ export default function DashboardPage() {
   const [fibBgOpacity, setFibBgOpacity] = useState(() => loadLS("fib_bg_opacity", 20));
   const [fibLabelH, setFibLabelH] = useState<"left" | "center" | "right">(() => loadLS("fib_label_h", "right"));
   const [fibLabelV, setFibLabelV] = useState<"top" | "middle" | "bottom">(() => loadLS("fib_label_v", "middle"));
+  const [fibVisMinutes, setFibVisMinutes] = useState(() => loadLS("fib_vis_minutes", true));
+  const [fibVisHours, setFibVisHours] = useState(() => loadLS("fib_vis_hours", true));
+  const [fibVisDays, setFibVisDays] = useState(() => loadLS("fib_vis_days", true));
+  const [fibVisWeeks, setFibVisWeeks] = useState(() => loadLS("fib_vis_weeks", true));
+  const [fibVisMonths, setFibVisMonths] = useState(() => loadLS("fib_vis_months", true));
+  const [fibSettingsTab, setFibSettingsTab] = useState<"style" | "visibility">("style");
   const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
@@ -2166,6 +2213,11 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fib_bg_opacity", fibBgOpacity); }, [fibBgOpacity]);
   useEffect(() => { saveLS("fib_label_h", fibLabelH); }, [fibLabelH]);
   useEffect(() => { saveLS("fib_label_v", fibLabelV); }, [fibLabelV]);
+  useEffect(() => { saveLS("fib_vis_minutes", fibVisMinutes); }, [fibVisMinutes]);
+  useEffect(() => { saveLS("fib_vis_hours", fibVisHours); }, [fibVisHours]);
+  useEffect(() => { saveLS("fib_vis_days", fibVisDays); }, [fibVisDays]);
+  useEffect(() => { saveLS("fib_vis_weeks", fibVisWeeks); }, [fibVisWeeks]);
+  useEffect(() => { saveLS("fib_vis_months", fibVisMonths); }, [fibVisMonths]);
 
   // Live-apply fib settings to the open drawing
   useEffect(() => {
@@ -2190,6 +2242,13 @@ export default function DashboardPage() {
         bgOpacity: fibBgOpacity,
         labelH: fibLabelH,
         labelV: fibLabelV,
+        showPrices: fibShowPrices,
+        showLevels: fibShowLevels,
+        visMinutes: fibVisMinutes,
+        visHours: fibVisHours,
+        visDays: fibVisDays,
+        visWeeks: fibVisWeeks,
+        visMonths: fibVisMonths,
       }
     );
     setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFibId) ? { ...x, note } : x)));
@@ -2207,6 +2266,7 @@ export default function DashboardPage() {
     fibLineWidth, fibLineStyle, fibTrend, fibTrendColor,
     fibBackground, fibBgColor, fibBgOpacity, fibShowPrices, fibShowLevels,
     fibLabelH, fibLabelV,
+    fibVisMinutes, fibVisHours, fibVisDays, fibVisWeeks, fibVisMonths,
   ]);
   useEffect(() => {
     symbolRef.current = symbol;
@@ -4203,6 +4263,22 @@ export default function DashboardPage() {
         } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
           const fib = parseFibNote(l.note);
           if (fib && series) {
+            // Visibility by timeframe category (TradingView-style)
+            const ivNow = String(intervalRef.current || "60");
+            const ivCat =
+              ivNow === "D" || ivNow === "1D" ? "d" :
+              ivNow === "W" || ivNow === "1W" ? "w" :
+              ivNow === "M" || ivNow === "1M" ? "M" :
+              (Number(ivNow) >= 60 ? "h" : "m");
+            const visOk =
+              (ivCat === "m" && fib.visMinutes !== false) ||
+              (ivCat === "h" && fib.visHours !== false) ||
+              (ivCat === "d" && fib.visDays !== false) ||
+              (ivCat === "w" && fib.visWeeks !== false) ||
+              (ivCat === "M" && fib.visMonths !== false);
+            if (!visOk) {
+              // hidden on this TF — skip drawing
+            } else {
             const pls: any[] = [];
             const extraSeries: any[] = [];
             const lw = (fib.lineWidth || 1) as 1 | 2 | 3 | 4;
@@ -4210,8 +4286,8 @@ export default function DashboardPage() {
               fib.lineStyle === "dashed" ? LineStyle.Dashed :
               fib.lineStyle === "dotted" ? LineStyle.Dotted :
               LineStyle.Solid;
-            const showLv = loadLS("fib_show_levels", true);
-            const showPx = loadLS("fib_show_prices", true);
+            const showLv = fib.showLevels !== false;
+            const showPx = fib.showPrices !== false;
             const prices: number[] = [];
             // Time bounds for extend modes
             const tA = Math.min(Number(fib.t1), Number(fib.t2));
@@ -4256,26 +4332,31 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 });
-                hs.setData([
+                // Label position needs a data point at that time (LWC markers only on existing points)
+                const lh = (fib as any).labelH || "right";
+                const labV = (fib as any).labelV || "middle";
+                let labelT = tB;
+                if (lh === "left") labelT = tFrom;
+                else if (lh === "center") labelT = Math.round((tFrom + tTo) / 2);
+                else labelT = tTo;
+                const pts: { time: any; value: number }[] = [
                   { time: tFrom as any, value: price },
                   { time: tTo as any, value: price },
-                ]);
-                // Label position: Labels Left/Center/Right + Top/Middle/Bottom (TradingView-style)
+                ];
+                if (labelT !== tFrom && labelT !== tTo && labelT > tFrom && labelT < tTo) {
+                  pts.push({ time: labelT as any, value: price });
+                  pts.sort((a, b) => Number(a.time) - Number(b.time));
+                }
+                hs.setData(pts);
                 if (titleParts.length) {
                   try {
-                    const lh = (fib as any).labelH || "right";
-                    const lv = (fib as any).labelV || "middle";
-                    let labelT = tB;
-                    if (lh === "left") labelT = tA;
-                    else if (lh === "center") labelT = (tA + tB) / 2;
-                    else labelT = Math.min(tB, chartLast);
                     const pos =
-                      lv === "top" ? "aboveBar" :
-                      lv === "bottom" ? "belowBar" :
+                      labV === "top" ? "aboveBar" :
+                      labV === "bottom" ? "belowBar" :
                       "inBar";
                     hs.setMarkers([
                       {
-                        time: labelT as any,
+                        time: (lh === "left" ? tFrom : lh === "center" ? labelT : tTo) as any,
                         position: pos as any,
                         color: col,
                         shape: "circle",
@@ -4309,36 +4390,38 @@ export default function DashboardPage() {
             }
             // Background: colored band BETWEEN each consecutive level (TradingView style)
             if (fib.background && prices.length >= 2) {
-              const op = Math.max(0, Math.min(100, fib.bgOpacity ?? 20)) / 100;
-              // Pair each price with its level color
+              const op = Math.max(0.08, Math.min(100, fib.bgOpacity ?? 20) / 100);
               const priced: { price: number; color: string }[] = [];
               for (let i = 0; i < fib.levels.length; i++) {
-                const lv = fib.levels[i];
+                const lvN = fib.levels[i];
                 let price: number;
                 if (fib.kind === "fib-ext" && fib.p3 != null) {
-                  price = fib.p3 + (fib.p2 - fib.p1) * lv;
+                  price = fib.p3 + (fib.p2 - fib.p1) * lvN;
                 } else {
-                  price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                  price = fibPrice(fib.p1, fib.p2, lvN, fib.reverse);
                 }
                 if (!Number.isFinite(price)) continue;
                 const col = (fib.colors && fib.colors[i]) ||
-                  (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
+                  (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lvN) < 1e-6)?.color) ||
                   "#787B86";
                 priced.push({ price, color: col });
               }
               priced.sort((a, b) => a.price - b.price);
+              // denser time samples so fill is continuous across zoom
+              const midT = Math.round((tFrom + tTo) / 2);
               for (let i = 0; i < priced.length - 1; i++) {
                 const lo = priced[i].price;
                 const hi = priced[i + 1].price;
                 if (!(hi > lo)) continue;
-                // Tint band with the upper level's color (TV-like)
                 const bandCol = priced[i + 1].color || fib.bgColor || "#2962FF";
+                const fillA = hexToRgba(bandCol, Math.min(0.55, op * 0.9));
+                const fillB = hexToRgba(bandCol, Math.min(0.4, op * 0.6));
                 try {
                   const band: any = chart.addBaselineSeries({
                     baseValue: { type: "price", price: lo },
                     topLineColor: "transparent",
-                    topFillColor1: hexToRgba(bandCol, op * 0.55),
-                    topFillColor2: hexToRgba(bandCol, op * 0.35),
+                    topFillColor1: fillA,
+                    topFillColor2: fillB,
                     bottomLineColor: "transparent",
                     bottomFillColor1: "transparent",
                     bottomFillColor2: "transparent",
@@ -4350,13 +4433,34 @@ export default function DashboardPage() {
                   } as any);
                   band.setData([
                     { time: tFrom as any, value: hi },
+                    { time: midT as any, value: hi },
                     { time: tTo as any, value: hi },
                   ]);
                   extraSeries.push(band);
-                } catch {}
+                } catch (e) {
+                  // fallback: thick transparent-ish line (if baseline unavailable)
+                  try {
+                    const fb: any = chart.addAreaSeries({
+                      lineColor: "transparent",
+                      topColor: fillA,
+                      bottomColor: fillB,
+                      lineWidth: 1,
+                      priceLineVisible: false,
+                      lastValueVisible: false,
+                      crosshairMarkerVisible: false,
+                      autoscaleInfoProvider: () => null as any,
+                    } as any);
+                    fb.setData([
+                      { time: tFrom as any, value: hi },
+                      { time: tTo as any, value: hi },
+                    ]);
+                    extraSeries.push(fb);
+                  } catch {}
+                }
               }
             }
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
+            } // end visOk
           }
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
@@ -8929,6 +9033,13 @@ export default function DashboardPage() {
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
               labelH: loadLS("fib_label_h", "right") || "right",
               labelV: loadLS("fib_label_v", "middle") || "middle",
+              showPrices: !!loadLS("fib_show_prices", true),
+              showLevels: !!loadLS("fib_show_levels", true),
+              visMinutes: !!loadLS("fib_vis_minutes", true),
+              visHours: !!loadLS("fib_vis_hours", true),
+              visDays: !!loadLS("fib_vis_days", true),
+              visWeeks: !!loadLS("fib_vis_weeks", true),
+              visMonths: !!loadLS("fib_vis_months", true),
             }
           );
           const base: any = {
@@ -9033,6 +9144,13 @@ export default function DashboardPage() {
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
               labelH: loadLS("fib_label_h", "right") || "right",
               labelV: loadLS("fib_label_v", "middle") || "middle",
+              showPrices: !!loadLS("fib_show_prices", true),
+              showLevels: !!loadLS("fib_show_levels", true),
+              visMinutes: !!loadLS("fib_vis_minutes", true),
+              visHours: !!loadLS("fib_vis_hours", true),
+              visDays: !!loadLS("fib_vis_days", true),
+              visWeeks: !!loadLS("fib_vis_weeks", true),
+              visMonths: !!loadLS("fib_vis_months", true),
             }
           );
           const base: any = {
@@ -13107,11 +13225,20 @@ export default function DashboardPage() {
                 className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,380px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-white">Fib retracement</h3>
-                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}>×</button>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); setFibSettingsTab("style"); }}>×</button>
+                </div>
+                <div className="flex gap-3 mb-3 border-b border-gray-800 text-[12px]">
+                  <button type="button"
+                    className={`pb-1.5 px-1 ${fibSettingsTab === "style" ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                    onClick={() => setFibSettingsTab("style")}>Style</button>
+                  <button type="button"
+                    className={`pb-1.5 px-1 ${fibSettingsTab === "visibility" ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                    onClick={() => setFibSettingsTab("visibility")}>Visibility</button>
                 </div>
 
+                {fibSettingsTab === "style" && (<>
                 {/* Trend line */}
                 <div className="flex items-center gap-2 mb-2">
                   <label className="flex items-center gap-2 flex-1">
@@ -13224,6 +13351,39 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
+                </>)}
+
+                {fibSettingsTab === "visibility" && (
+                  <div className="space-y-2 mb-3">
+                    <div className="text-[10px] text-gray-500 uppercase mb-1">Show on timeframes</div>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={fibVisMinutes} onChange={(e) => setFibVisMinutes(e.target.checked)} />
+                      <span>Minutes</span>
+                      <span className="text-gray-500 text-[10px]">(1m · 5m · 15m …)</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={fibVisHours} onChange={(e) => setFibVisHours(e.target.checked)} />
+                      <span>Hours</span>
+                      <span className="text-gray-500 text-[10px]">(1h · 2h · 4h …)</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={fibVisDays} onChange={(e) => setFibVisDays(e.target.checked)} />
+                      <span>Days</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={fibVisWeeks} onChange={(e) => setFibVisWeeks(e.target.checked)} />
+                      <span>Weeks</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={fibVisMonths} onChange={(e) => setFibVisMonths(e.target.checked)} />
+                      <span>Months</span>
+                    </label>
+                    <p className="text-[10px] text-gray-500 pt-1">
+                      Uncheck a group to hide this Fib on those chart timeframes.
+                    </p>
+                  </div>
+                )}
+
                 {/* Footer: Template + Ok */}
                 <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-800">
                   <div className="relative">
@@ -13244,6 +13404,8 @@ export default function DashboardPage() {
                               background: fibBackground, bgColor: fibBgColor, bgOpacity: fibBgOpacity,
                               showPrices: fibShowPrices, showLevels: fibShowLevels,
                               labelH: fibLabelH, labelV: fibLabelV,
+                              visMinutes: fibVisMinutes, visHours: fibVisHours, visDays: fibVisDays,
+                              visWeeks: fibVisWeeks, visMonths: fibVisMonths,
                             };
                             saveLS("fib_template", tpl);
                             setFibTemplateOpen(false);
@@ -13264,6 +13426,13 @@ export default function DashboardPage() {
                             setFibBgOpacity(20);
                             setFibLabelH("right");
                             setFibLabelV("middle");
+                            setFibShowPrices(true);
+                            setFibShowLevels(true);
+                            setFibVisMinutes(true);
+                            setFibVisHours(true);
+                            setFibVisDays(true);
+                            setFibVisWeeks(true);
+                            setFibVisMonths(true);
                             setFibShowPrices(true);
                             setFibShowLevels(true);
                             setFibTemplateOpen(false);
@@ -13287,6 +13456,11 @@ export default function DashboardPage() {
                               if (tpl.showPrices != null) setFibShowPrices(!!tpl.showPrices);
                               if (tpl.labelH === "left" || tpl.labelH === "center" || tpl.labelH === "right") setFibLabelH(tpl.labelH);
                               if (tpl.labelV === "top" || tpl.labelV === "middle" || tpl.labelV === "bottom") setFibLabelV(tpl.labelV);
+                              if (tpl.visMinutes != null) setFibVisMinutes(!!tpl.visMinutes);
+                              if (tpl.visHours != null) setFibVisHours(!!tpl.visHours);
+                              if (tpl.visDays != null) setFibVisDays(!!tpl.visDays);
+                              if (tpl.visWeeks != null) setFibVisWeeks(!!tpl.visWeeks);
+                              if (tpl.visMonths != null) setFibVisMonths(!!tpl.visMonths);
                               if (tpl.showLevels != null) setFibShowLevels(!!tpl.showLevels);
                               setStatusMsg("Fib template loaded");
                             } else setStatusMsg("No saved template");
@@ -14510,6 +14684,14 @@ export default function DashboardPage() {
                             setFibBgOpacity(fib.bgOpacity ?? 20);
                             setFibLabelH((fib as any).labelH || "right");
                             setFibLabelV((fib as any).labelV || "middle");
+                            setFibShowPrices(fib.showPrices !== false);
+                            setFibShowLevels(fib.showLevels !== false);
+                            setFibVisMinutes(fib.visMinutes !== false);
+                            setFibVisHours(fib.visHours !== false);
+                            setFibVisDays(fib.visDays !== false);
+                            setFibVisWeeks(fib.visWeeks !== false);
+                            setFibVisMonths(fib.visMonths !== false);
+                            setFibSettingsTab("style");
                           }
                           setSelectedFibId(String(l.id));
                           setFibSettingsOpen(true);
