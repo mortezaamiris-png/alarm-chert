@@ -2083,28 +2083,24 @@ export default function DashboardPage() {
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   }, [selectedPosId]);
 
-  // Deselect / select positions via chart click (does not block wheel/scroll)
+  // Empty chart click → hide labels+handles; body/handle click selects (handled on elements)
   useEffect(() => {
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as HTMLElement | null;
       if (!t) return;
-      // Clicking handle/body/toolbar → select (already handled on element); do not deselect
-      const posEl = t.closest?.("[data-pos-handle],[data-pos-body],[data-pos-toolbar]") as HTMLElement | null;
-      if (posEl) {
-        const id = posEl.dataset.posLineId || posEl.dataset.posId;
-        if (id) setSelectedPosId(String(id));
-        return;
-      }
-      // Click on chart empty area → hide labels
+      if (t.closest?.("[data-pos-handle],[data-pos-body],[data-pos-toolbar]")) return;
+      if (t.closest?.("button,input,a,label,[role='dialog']")) return;
       const chartEl = chartContainerRef.current;
-      if (chartEl && chartEl.contains(t)) {
-        // Only deselect if not on interactive UI
-        if (!t.closest?.("button,input,a,[data-pos-toolbar]")) {
+      // Only deselect when clicking the chart canvas area (not side panels)
+      if (chartEl && (t === chartEl || chartEl.contains(t))) {
+        // Ignore clicks on HTML overlays that aren't pos (e.g. osc labels)
+        const tag = t.tagName;
+        if (tag === "CANVAS" || t.classList?.contains?.("tv-lightweight-charts") || t === chartEl) {
+          (window as any).__selectedPosId = null;
           setSelectedPosId((cur) => (cur ? null : cur));
         }
       }
     };
-    // bubble phase so chart/LWC receives events first; we don't capture
     document.addEventListener("pointerdown", onDown, false);
     return () => document.removeEventListener("pointerdown", onDown, false);
   }, []);
@@ -4951,30 +4947,41 @@ export default function DashboardPage() {
                       body.dataset.posId = String(l.id);
                       body.dataset.posBody = "1";
                       body.dataset.posLineId = String(l.id);
-                      body.style.cssText = `position:absolute;left:${Number(xL) - 2}px;top:${yTop - 2}px;width:${Math.max(12, Number(xR) - Number(xL) + 4)}px;height:${Math.max(12, yBot - yTop + 4)}px;cursor:pointer;z-index:19;pointer-events:auto;touch-action:none;background:transparent;`;
+                      body.style.cssText = `position:absolute;left:${Number(xL) - 4}px;top:${yTop - 4}px;width:${Math.max(16, Number(xR) - Number(xL) + 8)}px;height:${Math.max(16, yBot - yTop + 8)}px;cursor:pointer;z-index:19;pointer-events:auto;touch-action:none;background:transparent;`;
                       body.addEventListener("pointerdown", (ev) => {
                         try {
+                          ev.preventDefault();
                           ev.stopPropagation();
-                          (window as any).__setSelectedPosId?.(String(l.id));
+                          // Set immediately so next paint shows labels/handles
+                          (window as any).__selectedPosId = String(l.id);
                           setSelectedPosId(String(l.id));
+                          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                         } catch {}
                       });
                       host.appendChild(body);
-                      // 4 handles — ROUND like TradingView
-                      const handles: { role: string; x: number; y: number; cursor: string }[] = [
-                        { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
-                        { role: "entryL", x: Number(xL), y: Number(yE), cursor: "move" },
-                        { role: "stop", x: Number(xL), y: Number(yS), cursor: "ns-resize" },
-                        { role: "entryR", x: Number(xR), y: Number(yE), cursor: "ew-resize" },
-                      ];
-                      for (const h of handles) {
-                        const el = document.createElement("div");
-                        el.dataset.posId = String(l.id);
-                        el.dataset.posHandle = h.role;
-                        el.dataset.posLineId = String(l.id);
-                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:11px;height:11px;margin-left:-5.5px;margin-top:-5.5px;background:#0b0e11;border:2px solid #60a5fa;border-radius:50%;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
-                        el.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
-                        host.appendChild(el);
+                      // 4 handles — only when selected (hidden with labels on empty click)
+                      if (isSel) {
+                        const handles: { role: string; x: number; y: number; cursor: string }[] = [
+                          { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
+                          { role: "entryL", x: Number(xL), y: Number(yE), cursor: "move" },
+                          { role: "stop", x: Number(xL), y: Number(yS), cursor: "ns-resize" },
+                          { role: "entryR", x: Number(xR), y: Number(yE), cursor: "ew-resize" },
+                        ];
+                        for (const h of handles) {
+                          const el = document.createElement("div");
+                          el.dataset.posId = String(l.id);
+                          el.dataset.posHandle = h.role;
+                          el.dataset.posLineId = String(l.id);
+                          el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:11px;height:11px;margin-left:-5.5px;margin-top:-5.5px;background:#0b0e11;border:2px solid #60a5fa;border-radius:50%;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
+                          el.addEventListener("pointerdown", (ev) => {
+                            try {
+                              ev.stopPropagation();
+                              (window as any).__selectedPosId = String(l.id);
+                              (window as any).__setSelectedPosId?.(String(l.id));
+                            } catch {}
+                          });
+                          host.appendChild(el);
+                        }
                       }
                     }
                   }
@@ -7426,7 +7433,7 @@ export default function DashboardPage() {
           const inPane = zones.find((z) => yRatio >= z.top - 0.015 && yRatio <= 1 - z.bot + 0.015);
 
           // Scroll on RIGHT scale strip of an oscillator pane → zoom that pane's Y range (TV-style)
-          if (inPane && inPane.id !== "volume" && fromRight <= 90 && fromRight >= 0) {
+          if (inPane && inPane.id !== "volume" && fromRight <= 120 && fromRight >= 0) {
             e.preventDefault();
             e.stopPropagation();
             let delta = e.deltaY;
@@ -7515,7 +7522,7 @@ export default function DashboardPage() {
           }
 
           // فقط نوار قیمت سمت راست (~90px) برای چارت اصلی
-          if (fromRight > 90 || fromRight < 0) return;
+          if (fromRight > 120 || fromRight < 0) return;
           e.preventDefault();
           e.stopPropagation();
           const s = seriesRef.current as any;
@@ -8961,10 +8968,12 @@ export default function DashboardPage() {
                 }
               }
               if (hitId) {
+                (window as any).__selectedPosId = hitId;
                 setSelectedPosId(hitId);
-              } else if (modeRef.current === "none" || modeRef.current === "long-pos" || modeRef.current === "short-pos") {
-                // empty click while not drawing → hide labels
-                // (keep selection if actively in another draw mode)
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+              } else if (modeRef.current === "none") {
+                (window as any).__selectedPosId = null;
+                setSelectedPosId(null);
               }
             }
           } catch {}
