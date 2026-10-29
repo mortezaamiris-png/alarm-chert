@@ -2077,6 +2077,7 @@ export default function DashboardPage() {
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
+  const [posToolbarPos, setPosToolbarPos] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
