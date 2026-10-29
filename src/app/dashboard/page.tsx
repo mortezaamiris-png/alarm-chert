@@ -1970,7 +1970,15 @@ export default function DashboardPage() {
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
   const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
-  const posHandleDragRef = useRef<null | { id: string; role: string; note: string; startY: number; startX: number }>(null);
+  const posHandleDragRef = useRef<null | {
+    id: string;
+    role: string; // target | stop | entryL | entryR | body
+    note: string;
+    startY: number;
+    startX: number;
+    // snapshot at drag start
+    tL: number; tR: number; pEntry: number; pStop: number; pTarget: number;
+  }>(null);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -4841,19 +4849,30 @@ export default function DashboardPage() {
                         isLong ? "rgba(16,185,129,0.85)" : "rgba(239,68,68,0.85)",
                         "#fff"
                       );
+                      // Invisible body hit-area to drag entire position
+                      const yTop = Math.min(Number(yT), Number(yS), Number(yE));
+                      const yBot = Math.max(Number(yT), Number(yS), Number(yE));
+                      const body = document.createElement("div");
+                      body.dataset.posId = String(l.id);
+                      body.dataset.posBody = "1";
+                      body.dataset.posLineId = String(l.id);
+                      body.style.cssText = `position:absolute;left:${Number(xL)}px;top:${yTop}px;width:${Math.max(8, Number(xR) - Number(xL))}px;height:${Math.max(8, yBot - yTop)}px;cursor:move;z-index:18;pointer-events:auto;touch-action:none;background:transparent;`;
+                      host.appendChild(body);
                       // 4 handles: target-left, entry-left, stop-left, entry-right
-                      const handles: { role: string; x: number; y: number }[] = [
-                        { role: "target", x: Number(xL), y: Number(yT) },
-                        { role: "entryL", x: Number(xL), y: Number(yE) },
-                        { role: "stop", x: Number(xL), y: Number(yS) },
-                        { role: "entryR", x: Number(xR), y: Number(yE) },
+                      const handles: { role: string; x: number; y: number; cursor: string }[] = [
+                        { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
+                        { role: "entryL", x: Number(xL), y: Number(yE), cursor: "move" },
+                        { role: "stop", x: Number(xL), y: Number(yS), cursor: "ns-resize" },
+                        { role: "entryR", x: Number(xR), y: Number(yE), cursor: "ew-resize" },
                       ];
                       for (const h of handles) {
                         const el = document.createElement("div");
                         el.dataset.posId = String(l.id);
                         el.dataset.posHandle = h.role;
                         el.dataset.posLineId = String(l.id);
-                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:11px;height:11px;margin-left:-5.5px;margin-top:-5.5px;background:#0b0e11;border:2px solid #60a5fa;border-radius:2px;cursor:nwse-resize;z-index:28;pointer-events:auto;touch-action:none;`;
+                        el.dataset.posT = h.role === "entryR" ? String(tR) : String(tL);
+                        el.dataset.posP = h.role === "target" ? String(pTarget) : h.role === "stop" ? String(pStop) : String(pEntry);
+                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;background:#0b0e11;border:2px solid #60a5fa;border-radius:2px;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
                         host.appendChild(el);
                       }
                     }
@@ -6374,15 +6393,71 @@ export default function DashboardPage() {
     }
   }, [hideOscillators]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drag 4 handles on Long/Short position (target / stop / entryL / entryR)
+  // Drag handles + whole body for Long/Short position
   useEffect(() => {
+    const parsePos = (note: string) => {
+      const isLong = note.startsWith("__long:");
+      const body = note.replace(/^__(?:long|short):/, "");
+      const nums = body.split("|")[0].split(",").map(Number);
+      if (nums.length < 6 || nums.some((n) => !Number.isFinite(n))) return null;
+      return {
+        isLong,
+        kind: (isLong ? "long" : "short") as "long" | "short",
+        tL: Math.min(nums[0], nums[2]),
+        tR: Math.max(nums[0], nums[2]),
+        pEntry: nums[1],
+        pStop: nums[3],
+        pTarget: nums[5],
+      };
+    };
+    const timeFromClientX = (clientX: number): number | null => {
+      const chart = chartRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !rect) return null;
+      const x = clientX - rect.left;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      const candles = candlesRef.current;
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      if (logical == null || !candles.length) return null;
+      const lastIdx = candles.length - 1;
+      if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
+      if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
+      return Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+    };
+    const priceFromClientY = (clientY: number): number | null => {
+      const series = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!series || !rect) return null;
+      const y = clientY - rect.top;
+      const pr = series.coordinateToPrice(y);
+      return pr != null && Number.isFinite(pr) ? Number(pr) : null;
+    };
+    const applyNote = (id: string, kind: string, tL: number, tR: number, pEntry: number, pStop: number, pTarget: number) => {
+      const newNote = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+      setLines((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
+            : x
+        )
+      );
+      return newNote;
+    };
+
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as HTMLElement | null;
-      if (!t || !t.dataset?.posHandle || !t.dataset?.posLineId) return;
-      const id = t.dataset.posLineId;
-      const role = t.dataset.posHandle;
+      if (!t) return;
+      const handle = t.closest?.("[data-pos-handle]") as HTMLElement | null;
+      const body = t.closest?.("[data-pos-body]") as HTMLElement | null;
+      const el = handle || body;
+      if (!el) return;
+      const id = el.dataset.posLineId || el.dataset.posId;
+      if (!id) return;
+      const role = handle ? (handle.dataset.posHandle || "entryL") : "body";
       const line = (linesRef.current || []).find((x) => x.id === id);
-      if (!line || !line.note) return;
+      if (!line?.note) return;
+      const parsed = parsePos(String(line.note));
+      if (!parsed) return;
       ev.preventDefault();
       ev.stopPropagation();
       posHandleDragRef.current = {
@@ -6391,68 +6466,80 @@ export default function DashboardPage() {
         note: String(line.note),
         startY: ev.clientY,
         startX: ev.clientX,
+        tL: parsed.tL,
+        tR: parsed.tR,
+        pEntry: parsed.pEntry,
+        pStop: parsed.pStop,
+        pTarget: parsed.pTarget,
       };
-      try { (t as HTMLElement).setPointerCapture?.(ev.pointerId); } catch {}
+      try { el.setPointerCapture?.(ev.pointerId); } catch {}
     };
+
     const onMove = (ev: PointerEvent) => {
       const drag = posHandleDragRef.current;
       if (!drag) return;
-      const chart = chartRef.current;
-      const series = seriesRef.current;
-      if (!chart || !series) return;
-      const note = drag.note;
-      const isLong = note.startsWith("__long:");
-      const body = note.replace(/^__(?:long|short):/, "");
-      const parts = body.split("|");
-      const nums = parts[0].split(",").map(Number);
-      if (nums.length < 6) return;
-      let tL = Math.min(nums[0], nums[2]);
-      let tR = Math.max(nums[0], nums[2]);
-      let pEntry = nums[1];
-      let pStop = nums[3];
-      let pTarget = nums[5];
-      const rect = chartContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      if (drag.role === "entryR" || drag.role === "entryL") {
-        // entryL moves entry price; entryR moves right time (width)
-        if (drag.role === "entryR") {
-          const x = ev.clientX - rect.left;
-          const logical = chart.timeScale().coordinateToLogical(x);
-          const candles = candlesRef.current;
-          const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
-          if (logical != null && candles.length) {
-            const lastIdx = candles.length - 1;
-            let tNew: number;
-            if (logical > lastIdx) tNew = candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
-            else if (logical < 0) tNew = candles[0].time + Math.round(logical) * barSec;
-            else tNew = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
-            if (tNew > tL + barSec) tR = tNew;
-          }
-        } else {
-          const y = ev.clientY - rect.top;
-          const pr = series.coordinateToPrice(y);
-          if (pr != null && Number.isFinite(pr)) pEntry = Number(pr);
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      let { tL, tR, pEntry, pStop, pTarget } = drag;
+      const kind = drag.note.startsWith("__long:") ? "long" : "short";
+
+      if (drag.role === "body") {
+        // move entire box: delta time + delta price from start
+        const tNow = timeFromClientX(ev.clientX);
+        const t0 = timeFromClientX(drag.startX);
+        const pNow = priceFromClientY(ev.clientY);
+        const p0 = priceFromClientY(drag.startY);
+        if (tNow != null && t0 != null) {
+          const dt = tNow - t0;
+          tL = drag.tL + dt;
+          tR = drag.tR + dt;
         }
+        if (pNow != null && p0 != null) {
+          const dp = pNow - p0;
+          pEntry = drag.pEntry + dp;
+          pStop = drag.pStop + dp;
+          pTarget = drag.pTarget + dp;
+        }
+      } else if (drag.role === "entryR") {
+        const tNew = timeFromClientX(ev.clientX);
+        if (tNew != null && tNew > tL + barSec) tR = tNew;
+        // vertical also adjusts entry
+        const pr = priceFromClientY(ev.clientY);
+        if (pr != null) pEntry = pr;
+      } else if (drag.role === "entryL") {
+        // BOTH horizontal (left edge) and vertical (entry price)
+        const tNew = timeFromClientX(ev.clientX);
+        if (tNew != null && tNew < tR - barSec) tL = tNew;
+        const pr = priceFromClientY(ev.clientY);
+        if (pr != null) pEntry = pr;
       } else if (drag.role === "stop") {
-        const y = ev.clientY - rect.top;
-        const pr = series.coordinateToPrice(y);
-        if (pr != null && Number.isFinite(pr)) pStop = Number(pr);
+        const pr = priceFromClientY(ev.clientY);
+        if (pr != null) pStop = pr;
+        // slight horizontal → left edge
+        const tNew = timeFromClientX(ev.clientX);
+        if (tNew != null && tNew < tR - barSec) {
+          const dx = Math.abs(ev.clientX - drag.startX);
+          const dy = Math.abs(ev.clientY - drag.startY);
+          if (dx > dy * 0.6) tL = tNew; // prefer H when mostly horizontal
+        }
       } else if (drag.role === "target") {
-        const y = ev.clientY - rect.top;
-        const pr = series.coordinateToPrice(y);
-        if (pr != null && Number.isFinite(pr)) pTarget = Number(pr);
+        const pr = priceFromClientY(ev.clientY);
+        if (pr != null) pTarget = pr;
+        const tNew = timeFromClientX(ev.clientX);
+        if (tNew != null && tNew < tR - barSec) {
+          const dx = Math.abs(ev.clientX - drag.startX);
+          const dy = Math.abs(ev.clientY - drag.startY);
+          if (dx > dy * 0.6) tL = tNew;
+        }
       }
-      const kind = isLong ? "long" : "short";
-      const newNote = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+
+      const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget);
       drag.note = newNote;
-      setLines((prev) =>
-        prev.map((x) =>
-          x.id === drag.id
-            ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
-            : x
-        )
-      );
+      // keep snapshot roles relative for body uses start*; for handles live values
+      if (drag.role !== "body") {
+        drag.tL = tL; drag.tR = tR; drag.pEntry = pEntry; drag.pStop = pStop; drag.pTarget = pTarget;
+      }
     };
+
     const onUp = async () => {
       const drag = posHandleDragRef.current;
       if (!drag) return;
@@ -6461,11 +6548,18 @@ export default function DashboardPage() {
       const note = line?.note || drag.note;
       try {
         if (drag.id && !String(drag.id).startsWith("local-")) {
-          await supabase.from("chart_lines").update({ note }).eq("id", drag.id);
+          await supabase.from("chart_lines").update({
+            note,
+            price: line?.price,
+            end_price: line?.end_price,
+            start_time: line?.start_time,
+            end_time: line?.end_time,
+          } as any).eq("id", drag.id);
         }
       } catch {}
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     };
+
     document.addEventListener("pointerdown", onDown, true);
     document.addEventListener("pointermove", onMove, true);
     document.addEventListener("pointerup", onUp, true);
@@ -6475,9 +6569,6 @@ export default function DashboardPage() {
       document.removeEventListener("pointerup", onUp, true);
     };
   }, []);
-
-
-
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
     try {
@@ -7755,6 +7846,55 @@ export default function DashboardPage() {
                   child.style.left = `${x0}px`;
                   child.style.top = `${y}px`;
                   child.style.width = `${Math.max(4, hostW - x0)}px`;
+                } else if ((child.dataset.posHandle || child.dataset.posBody || (child.dataset.posId && !child.dataset.posHandle)) && ser) {
+                  // Keep Long/Short position handles + labels glued while panning
+                  const pid = child.dataset.posLineId || child.dataset.posId;
+                  const line = (linesRef.current || []).find((x) => x.id === pid);
+                  const note = line?.note ? String(line.note) : "";
+                  if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
+                  const nums = note.replace(/^__(?:long|short):/, "").split("|")[0].split(",").map(Number);
+                  if (nums.length < 6) continue;
+                  const tL = Math.min(nums[0], nums[2]);
+                  const tR = Math.max(nums[0], nums[2]);
+                  const pEntry = nums[1], pStop = nums[3], pTarget = nums[5];
+                  let xL: number | null = null, xR: number | null = null;
+                  let yE: number | null = null, yS: number | null = null, yT: number | null = null;
+                  try { xL = chart2.timeScale().timeToCoordinate(tL as any); } catch {}
+                  try { xR = chart2.timeScale().timeToCoordinate(tR as any); } catch {}
+                  try { yE = ser.priceToCoordinate(pEntry); } catch {}
+                  try { yS = ser.priceToCoordinate(pStop); } catch {}
+                  try { yT = ser.priceToCoordinate(pTarget); } catch {}
+                  if (xL == null || xR == null || yE == null || yS == null || yT == null) {
+                    child.style.visibility = "hidden";
+                    continue;
+                  }
+                  child.style.visibility = "visible";
+                  const role = child.dataset.posHandle;
+                  if (role === "target") {
+                    child.style.left = `${xL}px`; child.style.top = `${yT}px`;
+                  } else if (role === "stop") {
+                    child.style.left = `${xL}px`; child.style.top = `${yS}px`;
+                  } else if (role === "entryL") {
+                    child.style.left = `${xL}px`; child.style.top = `${yE}px`;
+                  } else if (role === "entryR") {
+                    child.style.left = `${xR}px`; child.style.top = `${yE}px`;
+                  } else if (child.dataset.posBody) {
+                    const yTop = Math.min(yT, yS, yE);
+                    const yBot = Math.max(yT, yS, yE);
+                    child.style.left = `${xL}px`;
+                    child.style.top = `${yTop}px`;
+                    child.style.width = `${Math.max(8, xR - xL)}px`;
+                    child.style.height = `${Math.max(8, yBot - yTop)}px`;
+                  } else {
+                    // labels — center on midX at corresponding price band
+                    const midX = (xL + xR) / 2;
+                    const txt = child.textContent || "";
+                    let yy = yE;
+                    if (txt.startsWith("Stop")) yy = yS;
+                    else if (txt.startsWith("Target")) yy = yT;
+                    child.style.left = `${midX}px`;
+                    child.style.top = `${yy}px`;
+                  }
                 }
               }
             }
@@ -16376,3 +16516,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+ر
