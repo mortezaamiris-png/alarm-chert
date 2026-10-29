@@ -9667,24 +9667,26 @@ export default function DashboardPage() {
         // Long / Short position: 3 taps — Entry → Stop → Target
         if (m === "long-pos" || m === "short-pos") {
           const t = resolveTime(param);
-          const kind = m === "long-pos" ? "long" : "short";
+          const pNow = Number(fp);
+          if (!Number.isFinite(pNow)) return;
+          const kind: "long" | "short" = m === "long-pos" ? "long" : "short";
           const draft = posDraftRef.current;
           if (!draft || draft.kind !== kind) {
-            posDraftRef.current = { kind, t0: t, pEntry: fp };
+            posDraftRef.current = { kind, t0: Number(t), pEntry: pNow };
             setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap STOP price`);
             return;
           }
           if (draft.pStop == null || draft.t1 == null) {
-            posDraftRef.current = { ...draft, t1: t, pStop: fp };
+            posDraftRef.current = { ...draft, t1: Number(t), pStop: pNow };
             setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap TARGET price`);
             return;
           }
           // third click — save
           clickLockRef.current = true;
           setSaving(true);
-          const pStop = draft.pStop;
-          const pEntry = draft.pEntry;
-          const pTarget = fp;
+          const pStop = Number(draft.pStop);
+          const pEntry = Number(draft.pEntry);
+          const pTarget = pNow;
           const t0 = draft.t0;
           const t1 = draft.t1;
           const note = `__${kind}:${t0},${pEntry},${t1},${pStop},${t},${pTarget}`;
