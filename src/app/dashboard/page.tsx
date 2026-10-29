@@ -2719,14 +2719,16 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!chart) return;
     const maxId = maximizedOscRef.current;
+    // ref is set synchronously on double-click; state lags one frame — use both
+    const oscHidden = !!(hideOscillators || hideOscillatorsRef.current);
     const panesMap: Record<string, { id: string; on: boolean; h: number }> = {
-      dmi: { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      stoch: { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.20 },
-      harsi: { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
-      rsi: { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.18 },
-      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.18 },
+      dmi: { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !oscHidden), h: 0.12 },
+      stoch: { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !oscHidden), h: 0.12 },
+      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !oscHidden), h: 0.20 },
+      harsi: { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !oscHidden), h: 0.14 },
+      rsi: { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !oscHidden), h: 0.12 },
+      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !oscHidden), h: 0.18 },
+      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !oscHidden), h: 0.18 },
       volume: { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     };
     // Order panes by oscOrder (unknown ids appended)
@@ -2784,14 +2786,17 @@ export default function DashboardPage() {
       } catch {}
       used += h;
     }
+    // When oscillators hidden: main chart fills almost the whole height (only volume strip remains)
+    const mainBottom = oscHidden
+      ? (showVol && volVisible ? Math.max(0.10, used + 0.02) : 0.06)
+      : Math.max(0.08, used + 0.04);
     chart.priceScale("right").applyOptions({
       scaleMargins: maxId
-        ? { top: 0.99, bottom: 0.0 } // fully collapse main candles / main price labels
+        ? { top: 0.99, bottom: 0.0 }
         : {
             top: 0.04,
-            bottom: Math.max(0.08, used + 0.04),
+            bottom: mainBottom,
           },
-      // Hide main price labels when maximized so they don't sit in empty strip
       visible: !maxId,
     } as any);
     // Also hide main series paint when maximized
@@ -6180,12 +6185,20 @@ export default function DashboardPage() {
       try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
       try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
       try { updateMargins(); } catch {}
+      try {
+        requestAnimationFrame(() => {
+          try { updateMargins(); } catch {}
+          requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+        });
+      } catch {}
     } else {
       try {
         applyRSI(); applyDMI(); applyROC(); applyATR();
         applyMACD(); applyStoch(); applyHARSI();
-        // volume left as-is
         updateMargins();
+        requestAnimationFrame(() => {
+          try { updateMargins(); } catch {}
+        });
       } catch {}
     }
   }, [hideOscillators]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -7080,7 +7093,22 @@ export default function DashboardPage() {
               clearSer(harsiSeriesRef.current);
               try { if (paneLegendRef.current) paneLegendRef.current.innerHTML = ""; } catch {}
               try { if (paneSepRef.current) paneSepRef.current.innerHTML = ""; } catch {}
+              // Collapse empty gap immediately (ref already true; state lags)
               try { updateMargins(); } catch {}
+              try {
+                requestAnimationFrame(() => {
+                  try { updateMargins(); } catch {}
+                  requestAnimationFrame(() => { try { updateMargins(); } catch {} });
+                });
+              } catch {}
+            } else {
+              // Showing again — expand panes right away
+              try { updateMargins(); } catch {}
+              try {
+                requestAnimationFrame(() => {
+                  try { updateMargins(); } catch {}
+                });
+              } catch {}
             }
             setHideOscillators(next);
             setStatusMsg(next ? "Oscillators hidden — double-click to show" : "Oscillators shown");
