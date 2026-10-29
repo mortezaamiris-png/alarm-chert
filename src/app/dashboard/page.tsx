@@ -7610,23 +7610,23 @@ export default function DashboardPage() {
             return;
           }
 
-          // فقط نوار قیمت سمت راست (~90px) برای چارت اصلی
-          if (fromRight > 120 || fromRight < 0) return;
-          e.preventDefault();
-          e.stopPropagation();
+          // نوار قیمت سمت راست چارت اصلی — زوم عمودی
+          // فقط وقتی واقعاً روی نوار قیمت هستیم (نه وسط چارت)
+          if (fromRight > 80 || fromRight < 0) return;
+          // اگر روی پن اسیلاتور بودیم بالاتر handle شده؛ اینجا فقط main
+          if (inPane && inPane.id !== "volume") return;
+
           const s = seriesRef.current as any;
           if (!s) return;
 
-          // جهت: اسکرول بالا = بزرگ‌تر (zoom in) | پایین = کوچک‌تر (zoom out)
           let delta = e.deltaY;
           if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
           if (e.deltaMode === 1) delta *= 16;
           if (e.deltaMode === 2) delta *= 40;
           if (delta === 0) return;
-          // همیشه یک پله ملایم — جلوگیری از پرش ناگهانی کوچک شدن کندل‌ها
           const zoomIn = delta < 0;
 
-          // ارتفاع فقط پن اصلی (بدون اسیلاتورها) تا coordinateToPrice اشتباه ندهد
+          // ارتفاع پن اصلی
           let mainH = Math.max(40, plotH);
           if (zones.length) {
             const topMost = Math.min(...zones.map((z) => z.top));
@@ -7635,50 +7635,92 @@ export default function DashboardPage() {
             }
           }
 
+          // منبع رنج: 1) override قبلی  2) getVisibleRange  3) coordinateToPrice
           let pTop: number | null = null;
           let pBot: number | null = null;
           const ov0 = priceRangeOverrideRef.current;
-          if (ov0 && ov0.to > ov0.from) {
+          if (ov0 && ov0.to > ov0.from && Number.isFinite(ov0.from) && Number.isFinite(ov0.to)) {
             pBot = ov0.from;
             pTop = ov0.to;
-          } else {
+          }
+          if (pTop == null || pBot == null || !(pTop > pBot)) {
+            try {
+              const ps0 = s.priceScale?.() || chart.priceScale("right");
+              const vr = ps0?.getVisibleRange?.();
+              if (vr && Number.isFinite(vr.from) && Number.isFinite(vr.to) && vr.to > vr.from) {
+                pBot = Number(vr.from);
+                pTop = Number(vr.to);
+              }
+            } catch {}
+          }
+          if (pTop == null || pBot == null || !(pTop > pBot)) {
             try {
               const t = s.coordinateToPrice?.(1);
               const b = s.coordinateToPrice?.(Math.max(2, Math.floor(mainH) - 1));
-              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b)) {
+              if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Number(t) !== Number(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
               }
             } catch {}
           }
+          // fallback: از آخرین کندل‌ها
+          if (pTop == null || pBot == null || !(pTop > pBot)) {
+            try {
+              const bars = candlesRef.current || [];
+              if (bars.length) {
+                let hi = -Infinity, lo = Infinity;
+                const slice = bars.slice(Math.max(0, bars.length - 120));
+                for (const c of slice) {
+                  const h = Number((c as any).high ?? (c as any).close);
+                  const l = Number((c as any).low ?? (c as any).close);
+                  if (Number.isFinite(h)) hi = Math.max(hi, h);
+                  if (Number.isFinite(l)) lo = Math.min(lo, l);
+                }
+                if (hi > lo) { pTop = hi; pBot = lo; }
+              }
+            } catch {}
+          }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
-          // اگر رنج غیرمنطقی بود (مثلاً از سری‌های فیبو/اسیلاتور) همان override قبلی را نگه دار
+
           const mid = (pTop + pBot) / 2;
-          if (!(pTop - pBot > Math.abs(mid) * 1e-8 + 1e-12)) return;
+          if (!(pTop - pBot > Math.abs(mid) * 1e-10 + 1e-14)) return;
 
           const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, mainH)));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // پله ملایم ~8٪ — بدون کف مطلق 0.5 (برای کوین‌های ارزان فاجعه بود)
-          const factor = zoomIn ? 0.92 : 1.08;
+          const factor = zoomIn ? 0.9 : 1.12;
           let newRange = (pTop - pBot) * factor;
-          // حداقل رنج نسبی به قیمت (نه عدد ثابت 0.5)
           const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
-          const minRange = absP * 1e-6;
-          const maxRange = absP * 80; // جلوگیری از زوم‌اوت بی‌نهایت
+          const minRange = absP * 1e-5;
+          const maxRange = absP * 100;
           if (newRange < minRange) newRange = minRange;
           if (newRange > maxRange) newRange = maxRange;
           const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
+
+          // فقط بعد از محاسبه موفق، اسکرول پیش‌فرض را بگیر
+          e.preventDefault();
+          e.stopPropagation();
+
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
-          try { requestAnimationFrame(() => (window as any).__syncPosOverlays?.()); } catch {}
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
-            ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true });
+            // autoScale + provider تا رنج جدید اعمال شود
+            try { ps?.applyOptions?.({ autoScale: true }); } catch {}
             try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
+            // اجبار به اعمال autoscaleInfoProvider
+            try {
+              s.applyOptions({
+                autoscaleInfoProvider: () => ({
+                  priceRange: { minValue: newBot, maxValue: newTop },
+                }),
+              } as any);
+            } catch {}
+            // trigger redraw
+            try { chart.timeScale().applyOptions({}); } catch {}
           } catch {}
+          try { requestAnimationFrame(() => (window as any).__syncPosOverlays?.()); } catch {}
         };
         const toggleOscillatorsHide = () => {
           try {
