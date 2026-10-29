@@ -2077,6 +2077,62 @@ export default function DashboardPage() {
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
+  useEffect(() => {
+    (window as any).__selectedPosId = selectedPosId;
+    (window as any).__setSelectedPosId = (id: string | null) => setSelectedPosId(id);
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+  }, [selectedPosId]);
+
+  // Deselect / select positions via chart click (does not block wheel/scroll)
+  useEffect(() => {
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      // Clicking handle/body/toolbar → select (already handled on element); do not deselect
+      const posEl = t.closest?.("[data-pos-handle],[data-pos-body],[data-pos-toolbar]") as HTMLElement | null;
+      if (posEl) {
+        const id = posEl.dataset.posLineId || posEl.dataset.posId;
+        if (id) setSelectedPosId(String(id));
+        return;
+      }
+      // Click on chart empty area → hide labels
+      const chartEl = chartContainerRef.current;
+      if (chartEl && chartEl.contains(t)) {
+        // Only deselect if not on interactive UI
+        if (!t.closest?.("button,input,a,[data-pos-toolbar]")) {
+          setSelectedPosId((cur) => (cur ? null : cur));
+        }
+      }
+    };
+    // bubble phase so chart/LWC receives events first; we don't capture
+    document.addEventListener("pointerdown", onDown, false);
+    return () => document.removeEventListener("pointerdown", onDown, false);
+  }, []);
+
+  // After price-scale wheel/drag, sync overlay Y without blocking native scroll
+  useEffect(() => {
+    const el = chartContainerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const kick = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        try { (window as any).__syncPosOverlays?.(); } catch {}
+        // one extra frame after LWC applies scale
+        requestAnimationFrame(() => {
+          try { (window as any).__syncPosOverlays?.(); } catch {}
+        });
+      });
+    };
+    el.addEventListener("wheel", kick, { passive: true }); // NO capture — don't steal scroll
+    return () => {
+      el.removeEventListener("wheel", kick);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
@@ -4844,22 +4900,24 @@ export default function DashboardPage() {
                       // y smaller = higher on screen. Top side of box → label ABOVE; bottom side → label BELOW
                       const stopIsTop = Number(yS) < Number(yE);
                       const targetIsTop = Number(yT) < Number(yE);
+                      const isSel = String((window as any).__selectedPosId || "") === String(l.id);
                       const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
+                        // Labels only when position is selected
+                        if (!isSel) return;
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
                         d.dataset.posLabel = kind;
                         d.dataset.posLineId = String(l.id);
+                        d.dataset.posPlace = place;
                         let ty = "translate(-50%, -50%)";
                         if (place === "above") ty = "translate(-50%, calc(-100% - 6px))";
                         if (place === "below") ty = "translate(-50%, 6px)";
-                        // Labels fixed on lines — not free-draggable (middle must stay on entry)
-                        const canDrag = false;
                         d.style.cssText = [
                           `position:absolute;left:${midX}px;top:${baseY}px;transform:${ty};`,
                           `background:${bg};color:#fff;font-size:11px;font-weight:500;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
-                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;`,
+                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;pointer-events:none;`,
                           `line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
-                          kind === "entry" ? "border:1.5px solid #ffffff;pointer-events:none;" : "border:none;pointer-events:none;",
+                          kind === "entry" ? "border:1.5px solid #ffffff;" : "border:none;",
                         ].join("");
                         d.innerHTML = html;
                         host.appendChild(d);
@@ -4893,22 +4951,15 @@ export default function DashboardPage() {
                       body.dataset.posId = String(l.id);
                       body.dataset.posBody = "1";
                       body.dataset.posLineId = String(l.id);
-                      body.style.cssText = `position:absolute;left:${Number(xL)}px;top:${yTop}px;width:${Math.max(8, Number(xR) - Number(xL))}px;height:${Math.max(8, yBot - yTop)}px;cursor:move;z-index:18;pointer-events:auto;touch-action:none;background:transparent;`;
-                      body.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
+                      body.style.cssText = `position:absolute;left:${Number(xL) - 2}px;top:${yTop - 2}px;width:${Math.max(12, Number(xR) - Number(xL) + 4)}px;height:${Math.max(12, yBot - yTop + 4)}px;cursor:pointer;z-index:19;pointer-events:auto;touch-action:none;background:transparent;`;
+                      body.addEventListener("pointerdown", (ev) => {
+                        try {
+                          ev.stopPropagation();
+                          (window as any).__setSelectedPosId?.(String(l.id));
+                          setSelectedPosId(String(l.id));
+                        } catch {}
+                      });
                       host.appendChild(body);
-                      // Selection dashed outline when this position is selected
-                      try {
-                        const selId = (window as any).__selectedPosId || null;
-                        if (selId && String(selId) === String(l.id)) {
-                          const yTop = Math.min(Number(yT), Number(yS), Number(yE));
-                          const yBot = Math.max(Number(yT), Number(yS), Number(yE));
-                          const outline = document.createElement("div");
-                          outline.dataset.posId = String(l.id);
-                          outline.dataset.posOutline = "1";
-                          outline.style.cssText = `position:absolute;left:${Number(xL) - 4}px;top:${yTop - 4}px;width:${Math.max(8, Number(xR) - Number(xL) + 8)}px;height:${Math.max(8, yBot - yTop + 8)}px;border:1.5px dashed rgba(96,165,250,0.9);border-radius:4px;pointer-events:none;z-index:17;box-sizing:border-box;`;
-                          host.appendChild(outline);
-                        }
-                      } catch {}
                       // 4 handles — ROUND like TradingView
                       const handles: { role: string; x: number; y: number; cursor: string }[] = [
                         { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
@@ -7525,6 +7576,7 @@ export default function DashboardPage() {
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
+          try { requestAnimationFrame(() => (window as any).__syncPosOverlays?.()); } catch {}
           try {
             const ps = s.priceScale?.() || chart.priceScale("right");
             ps?.setAutoScale?.(true);
@@ -7911,7 +7963,64 @@ export default function DashboardPage() {
 
       // User-driven range changes only (ignore our own programmatic sets)
       try {
+        const syncPosOverlaysNow = () => {
+          try {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser = seriesRef.current;
+            if (!host || !chart2 || !ser) return;
+            for (const child of Array.from(host.children) as HTMLElement[]) {
+              if (!(child.dataset.posHandle || child.dataset.posBody || child.dataset.posOutline || child.dataset.posLabel || (child.dataset.posId && !child.dataset.vlineId && !child.dataset.rayId && !child.dataset.arrowDir))) continue;
+              const pid = child.dataset.posLineId || child.dataset.posId;
+              if (!pid) continue;
+              const line = (linesRef.current || []).find((x) => String(x.id) === String(pid));
+              const note = line?.note ? String(line.note) : "";
+              if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
+              const nums = note.replace(/^__(?:long|short):/, "").split("|")[0].split(",").map(Number);
+              if (nums.length < 6) continue;
+              const tL = Math.min(nums[0], nums[2]);
+              const tR = Math.max(nums[0], nums[2]);
+              const pEntry = nums[1], pStop = nums[3], pTarget = nums[5];
+              let xL: number | null = null, xR: number | null = null;
+              let yE: number | null = null, yS: number | null = null, yT: number | null = null;
+              try { xL = chart2.timeScale().timeToCoordinate(tL as any); } catch {}
+              try { xR = chart2.timeScale().timeToCoordinate(tR as any); } catch {}
+              try { yE = ser.priceToCoordinate(pEntry); } catch {}
+              try { yS = ser.priceToCoordinate(pStop); } catch {}
+              try { yT = ser.priceToCoordinate(pTarget); } catch {}
+              if (xL == null || xR == null || yE == null || yS == null || yT == null) {
+                child.style.visibility = "hidden";
+                continue;
+              }
+              child.style.visibility = "visible";
+              const role = child.dataset.posHandle;
+              if (role === "target") { child.style.left = `${xL}px`; child.style.top = `${yT}px`; }
+              else if (role === "stop") { child.style.left = `${xL}px`; child.style.top = `${yS}px`; }
+              else if (role === "entryL") { child.style.left = `${xL}px`; child.style.top = `${yE}px`; }
+              else if (role === "entryR") { child.style.left = `${xR}px`; child.style.top = `${yE}px`; }
+              else if (child.dataset.posBody || child.dataset.posOutline) {
+                const yTop = Math.min(yT, yS, yE);
+                const yBot = Math.max(yT, yS, yE);
+                const pad = child.dataset.posOutline ? 4 : 0;
+                child.style.left = `${xL - pad}px`;
+                child.style.top = `${yTop - pad}px`;
+                child.style.width = `${Math.max(8, xR - xL + pad * 2)}px`;
+                child.style.height = `${Math.max(8, yBot - yTop + pad * 2)}px`;
+              } else if (child.dataset.posLabel) {
+                const midX = (xL + xR) / 2;
+                const kind = child.dataset.posLabel;
+                let yy = yE;
+                if (kind === "stop") yy = yS;
+                else if (kind === "target") yy = yT;
+                child.style.left = `${midX}px`;
+                child.style.top = `${yy}px`;
+              }
+            }
+          } catch {}
+        };
+        (window as any).__syncPosOverlays = syncPosOverlaysNow;
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+          try { syncPosOverlaysNow(); } catch {}
           // Reposition overlays always (including programmatic) — no flicker
           try {
             const host = vlineOverlayRef.current;
@@ -8449,6 +8558,7 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
+
         // TV-style OHLC + volume under symbol
         try {
           const el = ohlcBarRef.current;
@@ -8827,6 +8937,39 @@ export default function DashboardPage() {
           const md0 = moveDiagRef.current;
           if (!(modeRef.current === "move" && md0 && md0.phase === "pick")) return;
         }
+
+        // Click on Long/Short shape → show labels; click empty → hide
+        if (param.point && seriesRef.current && chartRef.current) {
+          try {
+            const t = chartRef.current.timeScale().coordinateToTime(param.point.x);
+            const p = seriesRef.current.coordinateToPrice(param.point.y);
+            if (t != null && p != null) {
+              const tu = Number(t);
+              const pr = Number(p);
+              let hitId: string | null = null;
+              for (const ln of linesRef.current || []) {
+                const note = ln.note ? String(ln.note) : "";
+                if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
+                const nums = note.replace(/^__(?:long|short):/, "").split("|")[0].split(",").map(Number);
+                if (nums.length < 6) continue;
+                const tL = Math.min(nums[0], nums[2]), tR = Math.max(nums[0], nums[2]);
+                const prices = [nums[1], nums[3], nums[5]];
+                const pLo = Math.min(...prices), pHi = Math.max(...prices);
+                if (tu >= tL && tu <= tR && pr >= pLo && pr <= pHi) {
+                  hitId = String(ln.id);
+                  break;
+                }
+              }
+              if (hitId) {
+                setSelectedPosId(hitId);
+              } else if (modeRef.current === "none" || modeRef.current === "long-pos" || modeRef.current === "short-pos") {
+                // empty click while not drawing → hide labels
+                // (keep selection if actively in another draw mode)
+              }
+            }
+          } catch {}
+        }
+
         if (!param.point || param.point.x < 0 || param.point.y < 0) return;
         const m = modeRef.current;
         // Vertical line only needs time (x) — do not require a valid price
@@ -16226,6 +16369,15 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => {
+                        if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
+                          setSelectedPosId(String(l.id));
+                          setMode("none");
+                          setMovingId(null);
+                          setMovingType(null);
+                          try { moveDiagRef.current = null; } catch {}
+                          setStatusMsg("Position selected — drag blue handles");
+                          return;
+                        }
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
