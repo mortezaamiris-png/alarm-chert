@@ -2083,26 +2083,77 @@ export default function DashboardPage() {
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   }, [selectedPosId]);
 
-  // Empty chart click → hide labels+handles; body/handle click selects (handled on elements)
+  // Click chart: if on position shape → select (show labels+handles); else deselect
   useEffect(() => {
-    const onDown = (ev: PointerEvent) => {
+    const hitPosAt = (clientX: number, clientY: number): string | null => {
+      try {
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        const host = chartContainerRef.current;
+        if (!chart || !ser || !host) return null;
+        const rect = host.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        // ignore clicks on far-right price axis (~100px) and bottom time axis
+        if (x > rect.width - 100) return null;
+        if (y > rect.height - 28) return null;
+        for (const ln of linesRef.current || []) {
+          const note = ln.note ? String(ln.note) : "";
+          if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
+          const nums = note.replace(/^__(?:long|short):/, "").split("|")[0].split(",").map(Number);
+          if (nums.length < 6 || nums.some((n) => Number.isNaN(n))) continue;
+          const tL = Math.min(nums[0], nums[2]);
+          const tR = Math.max(nums[0], nums[2]);
+          const pEntry = nums[1], pStop = nums[3], pTarget = nums[5];
+          let xL: number | null = null, xR: number | null = null;
+          let yE: number | null = null, yS: number | null = null, yT: number | null = null;
+          try { xL = chart.timeScale().timeToCoordinate(tL as any); } catch {}
+          try { xR = chart.timeScale().timeToCoordinate(tR as any); } catch {}
+          try { yE = ser.priceToCoordinate(pEntry); } catch {}
+          try { yS = ser.priceToCoordinate(pStop); } catch {}
+          try { yT = ser.priceToCoordinate(pTarget); } catch {}
+          if (xL == null || xR == null || yE == null || yS == null || yT == null) continue;
+          const left = Math.min(xL, xR) - 8;
+          const right = Math.max(xL, xR) + 8;
+          const top = Math.min(yT, yS, yE) - 8;
+          const bot = Math.max(yT, yS, yE) + 8;
+          if (x >= left && x <= right && y >= top && y <= bot) return String(ln.id);
+        }
+      } catch {}
+      return null;
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      // ignore UI chrome
       const t = ev.target as HTMLElement | null;
       if (!t) return;
-      if (t.closest?.("[data-pos-handle],[data-pos-body],[data-pos-toolbar]")) return;
-      if (t.closest?.("button,input,a,label,[role='dialog']")) return;
+      if (t.closest?.("button,input,a,label,[data-pos-toolbar],[role='dialog']")) return;
+      if (t.closest?.("[data-pos-handle]")) return; // handle drag already selected
       const chartEl = chartContainerRef.current;
-      // Only deselect when clicking the chart canvas area (not side panels)
-      if (chartEl && (t === chartEl || chartEl.contains(t))) {
-        // Ignore clicks on HTML overlays that aren't pos (e.g. osc labels)
-        const tag = t.tagName;
-        if (tag === "CANVAS" || t.classList?.contains?.("tv-lightweight-charts") || t === chartEl) {
+      if (!chartEl) return;
+      // only when click is over the chart area
+      const rect = chartEl.getBoundingClientRect();
+      if (ev.clientX < rect.left || ev.clientX > rect.right || ev.clientY < rect.top || ev.clientY > rect.bottom) return;
+      // skip price scale strip
+      if (ev.clientX > rect.right - 100) return;
+
+      const hit = hitPosAt(ev.clientX, ev.clientY);
+      if (hit) {
+        (window as any).__selectedPosId = hit;
+        setSelectedPosId(hit);
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      } else {
+        // empty chart click → hide
+        if ((window as any).__selectedPosId) {
           (window as any).__selectedPosId = null;
-          setSelectedPosId((cur) => (cur ? null : cur));
+          setSelectedPosId(null);
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
         }
       }
     };
-    document.addEventListener("pointerdown", onDown, false);
-    return () => document.removeEventListener("pointerdown", onDown, false);
+
+    document.addEventListener("pointerup", onUp, false);
+    return () => document.removeEventListener("pointerup", onUp, false);
   }, []);
 
   // After price-scale wheel/drag, sync overlay Y without blocking native scroll
@@ -4947,12 +4998,11 @@ export default function DashboardPage() {
                       body.dataset.posId = String(l.id);
                       body.dataset.posBody = "1";
                       body.dataset.posLineId = String(l.id);
-                      body.style.cssText = `position:absolute;left:${Number(xL) - 4}px;top:${yTop - 4}px;width:${Math.max(16, Number(xR) - Number(xL) + 8)}px;height:${Math.max(16, yBot - yTop + 8)}px;cursor:pointer;z-index:19;pointer-events:auto;touch-action:none;background:transparent;`;
-                      body.addEventListener("pointerdown", (ev) => {
+                      body.style.cssText = `position:absolute;left:${Number(xL) - 6}px;top:${yTop - 6}px;width:${Math.max(20, Number(xR) - Number(xL) + 12)}px;height:${Math.max(20, yBot - yTop + 12)}px;cursor:pointer;z-index:27;pointer-events:auto;touch-action:none;background:rgba(0,0,0,0.001);`;
+                      body.addEventListener("pointerup", (ev) => {
                         try {
                           ev.preventDefault();
                           ev.stopPropagation();
-                          // Set immediately so next paint shows labels/handles
                           (window as any).__selectedPosId = String(l.id);
                           setSelectedPosId(String(l.id));
                           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
