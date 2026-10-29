@@ -10477,11 +10477,13 @@ export default function DashboardPage() {
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !showChartTypeMenu && !showLayoutMenu) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
       if (tfMenuOpen && tfMenuRef.current && !tfMenuRef.current.contains(t)) setTfMenuOpen(false);
+      if (showChartTypeMenu && !el.closest?.("[data-menu=\"chart-type\"]")) setShowChartTypeMenu(false);
+      if (showLayoutMenu && !el.closest?.("[data-menu=\"layout\"]")) setShowLayoutMenu(false);
       if (tzMenuOpen && tzMenuRef.current && !tzMenuRef.current.contains(t)) setTzMenuOpen(false);
       if (openMenu) {
         if (!el.closest?.("[data-menu]")) setOpenMenu(null);
@@ -10551,7 +10553,20 @@ export default function DashboardPage() {
     drawToolsOpen,
     fibToolsOpen,
     alarmMenuOpen,
+    showChartTypeMenu,
+    showLayoutMenu,
   ]);
+
+  // Right-click anywhere closes chart-type / layout menus
+  useEffect(() => {
+    if (!showChartTypeMenu && !showLayoutMenu) return;
+    const onCtx = () => {
+      setShowChartTypeMenu(false);
+      setShowLayoutMenu(false);
+    };
+    document.addEventListener("contextmenu", onCtx, true);
+    return () => document.removeEventListener("contextmenu", onCtx, true);
+  }, [showChartTypeMenu, showLayoutMenu]);
 
   // Cancel tool / move: outside click (move only) OR right-click (any tool)
   useEffect(() => {
@@ -11892,7 +11907,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Chart type (Candles / Line / Area / Heikin) */}
-          <div className="relative">
+          <div className="relative" data-menu="chart-type">
             <button
               type="button"
               title="Chart type"
@@ -11902,6 +11917,7 @@ export default function DashboardPage() {
                 setTfMenuOpen(false);
                 setTzMenuOpen(false);
                 setOpenMenu(null);
+                setShowLayoutMenu(false);
               }}
               className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
                 showChartTypeMenu
@@ -12005,7 +12021,7 @@ export default function DashboardPage() {
 
           {/* Layout + Camera — far right of header (near coin list) */}
           <div className="flex items-center gap-0.5 ml-auto">
-            <div className="relative" data-menu>
+            <div className="relative" data-menu="layout">
               <button
                 type="button"
                 title="Chart layout"
