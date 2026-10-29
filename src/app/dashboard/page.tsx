@@ -3033,13 +3033,16 @@ export default function DashboardPage() {
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
             const rocRows = calcROC(candles, rocPeriod) as any[];
-            // Always fit amplitude to data (TV-style open view) — ignore stale narrow/wide zoom
-            const zrR = oscTightRange(
-              rocRows.map((r: any) => Number(r.value)),
-              0.35,
-              2
-            );
-            oscPriceRangeRef.current["roc"] = zrR;
+            // Keep user zoom if set; only auto-fit when missing
+            let zrR = oscPriceRangeRef.current["roc"];
+            if (!zrR || !(zrR.to > zrR.from)) {
+              zrR = oscTightRange(
+                rocRows.map((r: any) => Number(r.value)),
+                0.35,
+                2
+              );
+              oscPriceRangeRef.current["roc"] = zrR;
+            }
             try {
               // zero line
               const ph = (cRoc && cRoc.bot > cRoc.top) ? (cRoc.bot - cRoc.top) : 0;
@@ -3055,14 +3058,16 @@ export default function DashboardPage() {
           if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
             const atrRows = calcATR(candles as any, atrPeriod, atrSmooth) as any[];
-            const zrA = oscTightRange(
-              atrRows.map((r: any) => Number(r.value)),
-              0.3,
-              0
-            );
-            // ATR is never negative
-            if (zrA.from < 0) zrA.from = 0;
-            oscPriceRangeRef.current["atr"] = zrA;
+            let zrA = oscPriceRangeRef.current["atr"];
+            if (!zrA || !(zrA.to > zrA.from)) {
+              zrA = oscTightRange(
+                atrRows.map((r: any) => Number(r.value)),
+                0.3,
+                0
+              );
+              if (zrA.from < 0) zrA.from = 0;
+              oscPriceRangeRef.current["atr"] = zrA;
+            }
             pushPane("atr", pathFrom(atrSeriesRef.current, atrRows, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
           if (dmiSeriesRef.current || paneClip["dmi"]) {
@@ -3104,12 +3109,15 @@ export default function DashboardPage() {
           if (macdSeriesRef.current || paneClip["macd"]) {
             const cMacd = paneClip["macd"];
             const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
-            const allV: number[] = [];
-            for (const r of m.macdLine || []) if (r?.value != null) allV.push(Number(r.value));
-            for (const r of m.signalLine || []) if (r?.value != null) allV.push(Number(r.value));
-            for (const r of m.hist || []) if (r?.value != null) allV.push(Number(r.value));
-            const zrM = oscTightRange(allV, 0.28, 0);
-            oscPriceRangeRef.current["macd"] = zrM;
+            let zrM = oscPriceRangeRef.current["macd"];
+            if (!zrM || !(zrM.to > zrM.from)) {
+              const allV: number[] = [];
+              for (const r of m.macdLine || []) if (r?.value != null) allV.push(Number(r.value));
+              for (const r of m.signalLine || []) if (r?.value != null) allV.push(Number(r.value));
+              for (const r of m.hist || []) if (r?.value != null) allV.push(Number(r.value));
+              zrM = oscTightRange(allV, 0.28, 0);
+              oscPriceRangeRef.current["macd"] = zrM;
+            }
             try {
               const ph = (cMacd && cMacd.bot > cMacd.top) ? (cMacd.bot - cMacd.top) : 0;
               if (ph > 0 && zrM.to > zrM.from) {
@@ -5887,8 +5895,11 @@ export default function DashboardPage() {
     removeROC();
     if (!showROC || !rocVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const rocData = calcROC(candlesRef.current, rocPeriod) as any[];
-    const rocZoom = oscTightRange(rocData.map((r) => Number(r.value)), 0.35, 2);
-    oscPriceRangeRef.current["roc"] = rocZoom;
+    let rocZoom = oscPriceRangeRef.current["roc"];
+    if (!rocZoom || !(rocZoom.to > rocZoom.from)) {
+      rocZoom = oscTightRange(rocData.map((r) => Number(r.value)), 0.35, 2);
+      oscPriceRangeRef.current["roc"] = rocZoom;
+    }
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
@@ -5920,9 +5931,12 @@ export default function DashboardPage() {
     removeATR();
     if (!showATR || !atrVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const atrRows = calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any[];
-    const atrZoom = oscTightRange(atrRows.map((r) => Number(r.value)), 0.3, 0);
-    if (atrZoom.from < 0) atrZoom.from = 0;
-    oscPriceRangeRef.current["atr"] = atrZoom;
+    let atrZoom = oscPriceRangeRef.current["atr"];
+    if (!atrZoom || !(atrZoom.to > atrZoom.from)) {
+      atrZoom = oscTightRange(atrRows.map((r) => Number(r.value)), 0.3, 0);
+      if (atrZoom.from < 0) atrZoom.from = 0;
+      oscPriceRangeRef.current["atr"] = atrZoom;
+    }
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "atr",
       priceLineVisible: false, lastValueVisible: true,
@@ -5960,12 +5974,15 @@ export default function DashboardPage() {
     if (!showMACD || !macdVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
-    const allV: number[] = [];
-    for (const r of macdLine || []) if (r?.value != null) allV.push(Number(r.value));
-    for (const r of signalLine || []) if (r?.value != null) allV.push(Number(r.value));
-    for (const r of hist || []) if (r?.value != null) allV.push(Number(r.value));
-    const macdZoom = oscTightRange(allV, 0.28, 0);
-    oscPriceRangeRef.current["macd"] = macdZoom;
+    let macdZoom = oscPriceRangeRef.current["macd"];
+    if (!macdZoom || !(macdZoom.to > macdZoom.from)) {
+      const allV: number[] = [];
+      for (const r of macdLine || []) if (r?.value != null) allV.push(Number(r.value));
+      for (const r of signalLine || []) if (r?.value != null) allV.push(Number(r.value));
+      for (const r of hist || []) if (r?.value != null) allV.push(Number(r.value));
+      macdZoom = oscTightRange(allV, 0.28, 0);
+      oscPriceRangeRef.current["macd"] = macdZoom;
+    }
     const macdProvider = () => {
       const z = oscPriceRangeRef.current["macd"] || macdZoom;
       return {
