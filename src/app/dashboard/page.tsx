@@ -2077,6 +2077,77 @@ export default function DashboardPage() {
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
+  useEffect(() => {
+    (window as any).__selectedPosId = selectedPosId;
+    (window as any).__setSelectedPosId = (id: string | null) => setSelectedPosId(id);
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+  }, [selectedPosId]);
+
+  // Click empty chart area → deselect position (hide labels)
+  useEffect(() => {
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest?.("[data-pos-handle],[data-pos-body],[data-pos-label],[data-pos-outline],[data-pos-toolbar]")) return;
+      const chartEl = chartContainerRef.current;
+      if (chartEl && chartEl.contains(t)) {
+        setSelectedPosId((cur) => (cur ? null : cur));
+      }
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, []);
+
+  // Price-scale pan/zoom (wheel OR drag on price axis) → keep handles/labels glued
+  useEffect(() => {
+    const el = chartContainerRef.current;
+    if (!el) return;
+    let raf = 0;
+    let burst = 0;
+    const kick = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        try { (window as any).__syncPosOverlays?.(); } catch {}
+      });
+    };
+    const onWheel = () => {
+      kick();
+      if (burst) cancelAnimationFrame(burst);
+      let n = 0;
+      const tick = () => {
+        kick();
+        n += 1;
+        if (n < 12) burst = requestAnimationFrame(tick);
+        else burst = 0;
+      };
+      burst = requestAnimationFrame(tick);
+    };
+    // Dragging price scale also moves Y — sync every pointermove while button down
+    let priceDrag = false;
+    const onPtrDown = (e: PointerEvent) => {
+      // right ~80px is typical price axis
+      const rect = el.getBoundingClientRect();
+      if (e.clientX > rect.right - 80) priceDrag = true;
+    };
+    const onPtrMove = () => {
+      if (priceDrag) kick();
+    };
+    const onPtrUp = () => { priceDrag = false; };
+    el.addEventListener("wheel", onWheel, { passive: true, capture: true });
+    el.addEventListener("pointerdown", onPtrDown, true);
+    el.addEventListener("pointermove", onPtrMove, { passive: true });
+    window.addEventListener("pointerup", onPtrUp, true);
+    return () => {
+      el.removeEventListener("wheel", onWheel, true);
+      el.removeEventListener("pointerdown", onPtrDown, true);
+      el.removeEventListener("pointermove", onPtrMove);
+      window.removeEventListener("pointerup", onPtrUp, true);
+      if (raf) cancelAnimationFrame(raf);
+      if (burst) cancelAnimationFrame(burst);
+    };
+  }, []);
+
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
@@ -4844,22 +4915,24 @@ export default function DashboardPage() {
                       // y smaller = higher on screen. Top side of box → label ABOVE; bottom side → label BELOW
                       const stopIsTop = Number(yS) < Number(yE);
                       const targetIsTop = Number(yT) < Number(yE);
+                      const isSel = String((window as any).__selectedPosId || "") === String(l.id);
                       const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
+                        // Labels only when position is selected
+                        if (!isSel) return;
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
                         d.dataset.posLabel = kind;
                         d.dataset.posLineId = String(l.id);
+                        d.dataset.posPlace = place;
                         let ty = "translate(-50%, -50%)";
                         if (place === "above") ty = "translate(-50%, calc(-100% - 6px))";
                         if (place === "below") ty = "translate(-50%, 6px)";
-                        // Labels fixed on lines — not free-draggable (middle must stay on entry)
-                        const canDrag = false;
                         d.style.cssText = [
                           `position:absolute;left:${midX}px;top:${baseY}px;transform:${ty};`,
                           `background:${bg};color:#fff;font-size:11px;font-weight:500;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
-                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;`,
+                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;pointer-events:none;`,
                           `line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
-                          kind === "entry" ? "border:1.5px solid #ffffff;pointer-events:none;" : "border:none;pointer-events:none;",
+                          kind === "entry" ? "border:1.5px solid #ffffff;" : "border:none;",
                         ].join("");
                         d.innerHTML = html;
                         host.appendChild(d);
@@ -7911,7 +7984,64 @@ export default function DashboardPage() {
 
       // User-driven range changes only (ignore our own programmatic sets)
       try {
+        const syncPosOverlaysNow = () => {
+          try {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser = seriesRef.current;
+            if (!host || !chart2 || !ser) return;
+            for (const child of Array.from(host.children) as HTMLElement[]) {
+              if (!(child.dataset.posHandle || child.dataset.posBody || child.dataset.posOutline || child.dataset.posLabel || (child.dataset.posId && !child.dataset.vlineId && !child.dataset.rayId && !child.dataset.arrowDir))) continue;
+              const pid = child.dataset.posLineId || child.dataset.posId;
+              if (!pid) continue;
+              const line = (linesRef.current || []).find((x) => String(x.id) === String(pid));
+              const note = line?.note ? String(line.note) : "";
+              if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
+              const nums = note.replace(/^__(?:long|short):/, "").split("|")[0].split(",").map(Number);
+              if (nums.length < 6) continue;
+              const tL = Math.min(nums[0], nums[2]);
+              const tR = Math.max(nums[0], nums[2]);
+              const pEntry = nums[1], pStop = nums[3], pTarget = nums[5];
+              let xL: number | null = null, xR: number | null = null;
+              let yE: number | null = null, yS: number | null = null, yT: number | null = null;
+              try { xL = chart2.timeScale().timeToCoordinate(tL as any); } catch {}
+              try { xR = chart2.timeScale().timeToCoordinate(tR as any); } catch {}
+              try { yE = ser.priceToCoordinate(pEntry); } catch {}
+              try { yS = ser.priceToCoordinate(pStop); } catch {}
+              try { yT = ser.priceToCoordinate(pTarget); } catch {}
+              if (xL == null || xR == null || yE == null || yS == null || yT == null) {
+                child.style.visibility = "hidden";
+                continue;
+              }
+              child.style.visibility = "visible";
+              const role = child.dataset.posHandle;
+              if (role === "target") { child.style.left = `${xL}px`; child.style.top = `${yT}px`; }
+              else if (role === "stop") { child.style.left = `${xL}px`; child.style.top = `${yS}px`; }
+              else if (role === "entryL") { child.style.left = `${xL}px`; child.style.top = `${yE}px`; }
+              else if (role === "entryR") { child.style.left = `${xR}px`; child.style.top = `${yE}px`; }
+              else if (child.dataset.posBody || child.dataset.posOutline) {
+                const yTop = Math.min(yT, yS, yE);
+                const yBot = Math.max(yT, yS, yE);
+                const pad = child.dataset.posOutline ? 4 : 0;
+                child.style.left = `${xL - pad}px`;
+                child.style.top = `${yTop - pad}px`;
+                child.style.width = `${Math.max(8, xR - xL + pad * 2)}px`;
+                child.style.height = `${Math.max(8, yBot - yTop + pad * 2)}px`;
+              } else if (child.dataset.posLabel) {
+                const midX = (xL + xR) / 2;
+                const kind = child.dataset.posLabel;
+                let yy = yE;
+                if (kind === "stop") yy = yS;
+                else if (kind === "target") yy = yT;
+                child.style.left = `${midX}px`;
+                child.style.top = `${yy}px`;
+              }
+            }
+          } catch {}
+        };
+        (window as any).__syncPosOverlays = syncPosOverlaysNow;
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+          try { syncPosOverlaysNow(); } catch {}
           // Reposition overlays always (including programmatic) — no flicker
           try {
             const host = vlineOverlayRef.current;
@@ -8449,6 +8579,8 @@ export default function DashboardPage() {
       container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
+        try { (window as any).__syncPosOverlays?.(); } catch {}
+
         // TV-style OHLC + volume under symbol
         try {
           const el = ohlcBarRef.current;
@@ -16226,6 +16358,15 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => {
+                        if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
+                          setSelectedPosId(String(l.id));
+                          setMode("none");
+                          setMovingId(null);
+                          setMovingType(null);
+                          try { moveDiagRef.current = null; } catch {}
+                          setStatusMsg("Position selected — drag blue handles");
+                          return;
+                        }
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
