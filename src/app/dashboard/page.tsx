@@ -1979,6 +1979,8 @@ export default function DashboardPage() {
     // snapshot at drag start
     tL: number; tR: number; pEntry: number; pStop: number; pTarget: number;
   }>(null);
+  const posDraggingRef = useRef(false);
+  const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -2124,11 +2126,16 @@ export default function DashboardPage() {
     };
 
     const onUp = (ev: PointerEvent) => {
+      // After dragging a position, keep it selected (TV style)
+      if (posDragMovedRef.current) {
+        posDragMovedRef.current = false;
+        return;
+      }
       // ignore UI chrome
       const t = ev.target as HTMLElement | null;
       if (!t) return;
       if (t.closest?.("button,input,a,label,[data-pos-toolbar],[role='dialog']")) return;
-      if (t.closest?.("[data-pos-handle]")) return; // handle drag already selected
+      if (t.closest?.("[data-pos-handle],[data-pos-body]")) return;
       const chartEl = chartContainerRef.current;
       if (!chartEl) return;
       // only when click is over the chart area
@@ -4191,7 +4198,16 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
     try {
-      vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => el.remove());
+      if (!posDraggingRef.current) {
+        vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => el.remove());
+      } else {
+        const dragId = posHandleDragRef.current?.id;
+        vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => {
+          const pid = (el as HTMLElement).dataset.posId || (el as HTMLElement).dataset.posLineId;
+          if (dragId && String(pid) === String(dragId)) return;
+          el.remove();
+        });
+      }
     } catch {}
     const paintVLines = () => {
       const host = vlineOverlayRef.current;
@@ -6625,6 +6641,14 @@ export default function DashboardPage() {
       if (!parsed) return;
       ev.preventDefault();
       ev.stopPropagation();
+      // 1) Select + show labels/handles immediately (TV-style)
+      posDragMovedRef.current = false;
+      posDraggingRef.current = false; // allow full DOM rebuild once
+      (window as any).__selectedPosId = String(id);
+      try { setSelectedPosId(String(id)); } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      // 2) Now lock DOM during the drag so setLines won't destroy handles mid-move
+      posDraggingRef.current = true;
       posHandleDragRef.current = {
         id,
         role,
@@ -6637,12 +6661,21 @@ export default function DashboardPage() {
         pStop: parsed.pStop,
         pTarget: parsed.pTarget,
       };
-      try { el.setPointerCapture?.(ev.pointerId); } catch {}
+      try {
+        const host = vlineOverlayRef.current;
+        const again = host?.querySelector?.(
+          role === "body"
+            ? `[data-pos-body][data-pos-line-id="${id}"], [data-pos-body][data-pos-id="${id}"]`
+            : `[data-pos-handle][data-pos-line-id="${id}"][data-pos-handle="${role}"]`
+        ) as HTMLElement | null;
+        (again || el).setPointerCapture?.(ev.pointerId);
+      } catch { try { el.setPointerCapture?.(ev.pointerId); } catch {} }
     };
 
     const onMove = (ev: PointerEvent) => {
       const drag = posHandleDragRef.current;
       if (!drag) return;
+      if (Math.abs(ev.clientX - drag.startX) > 3 || Math.abs(ev.clientY - drag.startY) > 3) posDragMovedRef.current = true;
       const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
       let { tL, tR, pEntry, pStop, pTarget } = drag;
       const kind = drag.note.startsWith("__long:") ? "long" : "short";
@@ -6746,6 +6779,7 @@ export default function DashboardPage() {
 
       const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget);
       drag.note = newNote;
+      try { (window as any).__syncPosOverlays?.(); } catch {}
       // keep snapshot roles relative for body uses start*; for handles live values
       if (drag.role !== "body") {
         drag.tL = tL; drag.tR = tR; drag.pEntry = pEntry; drag.pStop = pStop; drag.pTarget = pTarget;
@@ -6756,6 +6790,11 @@ export default function DashboardPage() {
       const drag = posHandleDragRef.current;
       if (!drag) return;
       posHandleDragRef.current = null;
+      posDraggingRef.current = false;
+      // Keep selected after move (TV style) and rebuild labels/handles cleanly
+      (window as any).__selectedPosId = String(drag.id);
+      try { setSelectedPosId(String(drag.id)); } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
       const line = (linesRef.current || []).find((x) => x.id === drag.id);
       const note = line?.note || drag.note;
       try {
