@@ -2076,6 +2076,7 @@ export default function DashboardPage() {
   const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
+  const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
   const fibPoint3Ref = useRef<{ time: number; price: number } | null>(null);
 
   const [showSMA, setShowSMA] = useState(() => loadLS("ind_sma", false));
@@ -4762,8 +4763,29 @@ export default function DashboardPage() {
                     extraSeries.push(band);
                   } catch {}
                 };
-                mkBand(stopLo, stopHi, "rgba(239,68,68,0.32)");
-                mkBand(tgtLo, tgtHi, "rgba(16,185,129,0.32)");
+                let stopFill = "rgba(239,68,68,0.32)";
+                let tgtFill = "rgba(16,185,129,0.32)";
+                try {
+                  const sc = (l.note || "").split("|").find((p: string) => p.startsWith("sc="));
+                  const tc = (l.note || "").split("|").find((p: string) => p.startsWith("tc="));
+                  if (sc) {
+                    const hex = sc.slice(3);
+                    stopFill = hex + "52"; // approx alpha
+                    if (hex.startsWith("#") && hex.length === 7) {
+                      const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                      stopFill = `rgba(${r},${g},${b},0.32)`;
+                    }
+                  }
+                  if (tc) {
+                    const hex = tc.slice(3);
+                    if (hex.startsWith("#") && hex.length === 7) {
+                      const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                      tgtFill = `rgba(${r},${g},${b},0.32)`;
+                    }
+                  }
+                } catch {}
+                mkBand(stopLo, stopHi, stopFill);
+                mkBand(tgtLo, tgtHi, tgtFill);
                 // horizontal edges
                 for (const [pr, col, w] of [
                   [pEntry, "#e5e7eb", 2],
@@ -4802,7 +4824,7 @@ export default function DashboardPage() {
                       const stopPct = (riskDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
                       const tgtPct = (rewardDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
                       const midX = (Number(xL) + Number(xR)) / 2;
-                      // optional per-label pixel offsets from note: |lab:stop,dx,dy;entry,dx,dy;target,dx,dy
+                      // optional per-label pixel offsets from note: |lab:kind,dx,dy;...
                       const labOff: Record<string, { dx: number; dy: number }> = {};
                       try {
                         const labPart = (l.note || "").split("|").find((p: string) => p.startsWith("lab:"));
@@ -4813,38 +4835,52 @@ export default function DashboardPage() {
                           }
                         }
                       } catch {}
-                      const mkLabel = (kind: string, html: string, y: number, bg: string, color: string, extraBorder?: string) => {
+                      const fmtN = (n: number) => {
+                        const a = Math.abs(n);
+                        if (a >= 100) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+                        if (a >= 1) return n.toFixed(5);
+                        return n.toFixed(5);
+                      };
+                      const mkLabel = (kind: string, html: string, baseY: number, bg: string, above: boolean) => {
                         const off = labOff[kind] || { dx: 0, dy: 0 };
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
                         d.dataset.posLabel = kind;
                         d.dataset.posLineId = String(l.id);
-                        d.style.cssText = `position:absolute;left:${midX + off.dx}px;top:${y + off.dy}px;transform:translate(-50%,-50%);background:${bg};color:${color};font-size:10px;font-weight:600;padding:3px 7px;border-radius:5px;white-space:nowrap;pointer-events:auto;cursor:move;z-index:22;touch-action:none;border:${extraBorder || "1px solid rgba(255,255,255,0.15)"};line-height:1.35;text-align:center;`;
+                        const ty = above ? "translate(-50%, calc(-100% - 6px))" : "translate(-50%, -50%)";
+                        d.style.cssText = [
+                          `position:absolute;left:${midX + off.dx}px;top:${baseY + off.dy}px;transform:${ty};`,
+                          `background:${bg};color:#fff;font-size:11px;font-weight:500;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
+                          `padding:4px 8px;border-radius:4px;white-space:nowrap;pointer-events:auto;cursor:move;z-index:22;`,
+                          `touch-action:none;line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
+                          kind === "entry" ? "border:1.5px solid #ffffff;" : "border:none;",
+                        ].join("");
                         d.innerHTML = html;
+                        d.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                         host.appendChild(d);
                       };
+                      // Stop & Target ABOVE their lines (TV style)
                       mkLabel(
                         "stop",
-                        `Stop: ${formatPrice(Math.abs(pEntry - pStop))} (${stopPct.toFixed(2)}%) Amt:${stopAmt.toFixed(0)}`,
+                        `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(Math.abs(pEntry - pStop))}, Amount: ${stopAmt.toFixed(0)}`,
                         Number(yS),
-                        "rgba(239,68,68,0.92)",
-                        "#fff"
+                        "#ef4444",
+                        true
                       );
                       mkLabel(
                         "target",
-                        `Target: ${formatPrice(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(2)}%) Amt:${targetAmt.toFixed(0)}`,
+                        `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(Math.abs(pTarget - pEntry))}, Amount: ${targetAmt.toFixed(2)}`,
                         Number(yT),
-                        "rgba(16,185,129,0.92)",
-                        "#fff"
+                        "#10b981",
+                        true
                       );
-                      const midBg = isLong ? "rgba(16,185,129,0.9)" : "rgba(239,68,68,0.9)";
+                      const midBg = isLong ? "#10b981" : "#ef4444";
                       mkLabel(
                         "entry",
-                        `Open PnL: — &nbsp; Qty: ${qty.toFixed(1)}<br/><span style="opacity:0.95;border-top:1px solid rgba(255,255,255,0.35);display:inline-block;margin-top:2px;padding-top:2px;">Risk/reward: ${rr.toFixed(2)}</span>`,
+                        `Open PnL: —, Qty: ${qty.toFixed(3)}<br/>Risk/reward ratio: ${rr.toFixed(2)}`,
                         Number(yE),
                         midBg,
-                        "#fff",
-                        "1.5px solid rgba(255,255,255,0.95)"
+                        false
                       );
                       // Invisible body hit-area to drag entire position
                       const yTop = Math.min(Number(yT), Number(yS), Number(yE));
@@ -4854,8 +4890,9 @@ export default function DashboardPage() {
                       body.dataset.posBody = "1";
                       body.dataset.posLineId = String(l.id);
                       body.style.cssText = `position:absolute;left:${Number(xL)}px;top:${yTop}px;width:${Math.max(8, Number(xR) - Number(xL))}px;height:${Math.max(8, yBot - yTop)}px;cursor:move;z-index:18;pointer-events:auto;touch-action:none;background:transparent;`;
+                      body.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                       host.appendChild(body);
-                      // 4 handles: target-left, entry-left, stop-left, entry-right
+                      // 4 handles
                       const handles: { role: string; x: number; y: number; cursor: string }[] = [
                         { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
                         { role: "entryL", x: Number(xL), y: Number(yE), cursor: "move" },
@@ -4867,9 +4904,8 @@ export default function DashboardPage() {
                         el.dataset.posId = String(l.id);
                         el.dataset.posHandle = h.role;
                         el.dataset.posLineId = String(l.id);
-                        el.dataset.posT = h.role === "entryR" ? String(tR) : String(tL);
-                        el.dataset.posP = h.role === "target" ? String(pTarget) : h.role === "stop" ? String(pStop) : String(pEntry);
                         el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;background:#0b0e11;border:2px solid #60a5fa;border-radius:2px;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
+                        el.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                         host.appendChild(el);
                       }
                     }
@@ -4878,7 +4914,6 @@ export default function DashboardPage() {
               }
             }
           } catch {}
-        } else if (isDiagonalLine(l)) {
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
@@ -10062,6 +10097,7 @@ export default function DashboardPage() {
               pushUndo();
               setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
               setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed — drag blue handles`);
+              try { setSelectedPosId(String((data as any).id)); } catch {}
             } else {
               const local: ChartLine = {
                 id: `local-pos-${Date.now()}`,
@@ -10076,6 +10112,7 @@ export default function DashboardPage() {
               pushUndo();
               setLines((prev) => [local, ...prev]);
               setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed (local)`);
+              try { setSelectedPosId(String(local.id)); } catch {}
             }
           } catch {
             setStatusMsg("Position save failed");
@@ -14481,6 +14518,70 @@ export default function DashboardPage() {
 
           {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
           {/* Fib settings modal */}
+          
+          {/* Position tool floating bar (colors + delete) */}
+          {selectedPosId && (() => {
+            const pl = lines.find((x) => String(x.id) === String(selectedPosId));
+            if (!pl || !pl.note || !(String(pl.note).startsWith("__long:") || String(pl.note).startsWith("__short:"))) return null;
+            const isLong = String(pl.note).startsWith("__long:");
+            return (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-gray-900/95 border border-gray-600 rounded-xl px-3 py-2 shadow-2xl pointer-events-auto">
+                <span className="text-[10px] text-gray-400 uppercase tracking-wide mr-1">{isLong ? "Long" : "Short"}</span>
+                <label className="flex items-center gap-1 cursor-pointer" title="Target / profit color">
+                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: "#10b981" }} />
+                  <input type="color" defaultValue="#10b981" className="w-0 h-0 opacity-0 absolute"
+                    onChange={(e) => {
+                      // store target color in note |tc=#...
+                      const note = String(pl.note);
+                      const parts = note.split("|").filter((p) => !p.startsWith("tc="));
+                      const newNote = [...parts, `tc=${e.target.value}`].join("|");
+                      setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId) ? { ...x, note: newNote } : x));
+                    }}
+                  />
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer" title="Stop / loss color">
+                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: "#ef4444" }} />
+                  <input type="color" defaultValue="#ef4444" className="w-0 h-0 opacity-0 absolute"
+                    onChange={(e) => {
+                      const note = String(pl.note);
+                      const parts = note.split("|").filter((p) => !p.startsWith("sc="));
+                      const newNote = [...parts, `sc=${e.target.value}`].join("|");
+                      setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId) ? { ...x, note: newNote } : x));
+                    }}
+                  />
+                </label>
+                <div className="w-px h-5 bg-gray-600 mx-0.5" />
+                <button
+                  type="button"
+                  title="Delete position"
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-500/15 border border-transparent hover:border-red-500/30"
+                  onClick={async () => {
+                    const id = selectedPosId;
+                    if (!id) return;
+                    setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                    setSelectedPosId(null);
+                    try {
+                      if (!String(id).startsWith("local-")) {
+                        await supabase.from("chart_lines").delete().eq("id", id);
+                      }
+                    } catch {}
+                    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  title="Deselect"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-white"
+                  onClick={() => setSelectedPosId(null)}
+                >×</button>
+              </div>
+            );
+          })()}
+
           {fibSettingsOpen && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}>
               <div
