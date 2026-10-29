@@ -4841,38 +4841,42 @@ export default function DashboardPage() {
                         if (a >= 1) return n.toFixed(5);
                         return n.toFixed(5);
                       };
-                      const mkLabel = (kind: string, html: string, baseY: number, bg: string, above: boolean) => {
-                        const off = labOff[kind] || { dx: 0, dy: 0 };
+                      // y smaller = higher on screen. Top side of box → label ABOVE; bottom side → label BELOW
+                      const stopIsTop = Number(yS) < Number(yE);
+                      const targetIsTop = Number(yT) < Number(yE);
+                      const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
                         d.dataset.posLabel = kind;
                         d.dataset.posLineId = String(l.id);
-                        const ty = above ? "translate(-50%, calc(-100% - 6px))" : "translate(-50%, -50%)";
+                        let ty = "translate(-50%, -50%)";
+                        if (place === "above") ty = "translate(-50%, calc(-100% - 6px))";
+                        if (place === "below") ty = "translate(-50%, 6px)";
+                        // Labels fixed on lines — not free-draggable (middle must stay on entry)
+                        const canDrag = false;
                         d.style.cssText = [
-                          `position:absolute;left:${midX + off.dx}px;top:${baseY + off.dy}px;transform:${ty};`,
+                          `position:absolute;left:${midX}px;top:${baseY}px;transform:${ty};`,
                           `background:${bg};color:#fff;font-size:11px;font-weight:500;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
-                          `padding:4px 8px;border-radius:4px;white-space:nowrap;pointer-events:auto;cursor:move;z-index:22;`,
-                          `touch-action:none;line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
-                          kind === "entry" ? "border:1.5px solid #ffffff;" : "border:none;",
+                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;`,
+                          `line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
+                          kind === "entry" ? "border:1.5px solid #ffffff;pointer-events:none;" : "border:none;pointer-events:none;",
                         ].join("");
                         d.innerHTML = html;
-                        d.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                         host.appendChild(d);
                       };
-                      // Stop & Target ABOVE their lines (TV style)
                       mkLabel(
                         "stop",
                         `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(Math.abs(pEntry - pStop))}, Amount: ${stopAmt.toFixed(0)}`,
                         Number(yS),
                         "#ef4444",
-                        true
+                        stopIsTop ? "above" : "below"
                       );
                       mkLabel(
                         "target",
                         `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(Math.abs(pTarget - pEntry))}, Amount: ${targetAmt.toFixed(2)}`,
                         Number(yT),
                         "#10b981",
-                        true
+                        targetIsTop ? "above" : "below"
                       );
                       const midBg = isLong ? "#10b981" : "#ef4444";
                       mkLabel(
@@ -4880,7 +4884,7 @@ export default function DashboardPage() {
                         `Open PnL: —, Qty: ${qty.toFixed(3)}<br/>Risk/reward ratio: ${rr.toFixed(2)}`,
                         Number(yE),
                         midBg,
-                        false
+                        "center"
                       );
                       // Invisible body hit-area to drag entire position
                       const yTop = Math.min(Number(yT), Number(yS), Number(yE));
@@ -4892,7 +4896,20 @@ export default function DashboardPage() {
                       body.style.cssText = `position:absolute;left:${Number(xL)}px;top:${yTop}px;width:${Math.max(8, Number(xR) - Number(xL))}px;height:${Math.max(8, yBot - yTop)}px;cursor:move;z-index:18;pointer-events:auto;touch-action:none;background:transparent;`;
                       body.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                       host.appendChild(body);
-                      // 4 handles
+                      // Selection dashed outline when this position is selected
+                      try {
+                        const selId = (window as any).__selectedPosId || null;
+                        if (selId && String(selId) === String(l.id)) {
+                          const yTop = Math.min(Number(yT), Number(yS), Number(yE));
+                          const yBot = Math.max(Number(yT), Number(yS), Number(yE));
+                          const outline = document.createElement("div");
+                          outline.dataset.posId = String(l.id);
+                          outline.dataset.posOutline = "1";
+                          outline.style.cssText = `position:absolute;left:${Number(xL) - 4}px;top:${yTop - 4}px;width:${Math.max(8, Number(xR) - Number(xL) + 8)}px;height:${Math.max(8, yBot - yTop + 8)}px;border:1.5px dashed rgba(96,165,250,0.9);border-radius:4px;pointer-events:none;z-index:17;box-sizing:border-box;`;
+                          host.appendChild(outline);
+                        }
+                      } catch {}
+                      // 4 handles — ROUND like TradingView
                       const handles: { role: string; x: number; y: number; cursor: string }[] = [
                         { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
                         { role: "entryL", x: Number(xL), y: Number(yE), cursor: "move" },
@@ -4904,7 +4921,7 @@ export default function DashboardPage() {
                         el.dataset.posId = String(l.id);
                         el.dataset.posHandle = h.role;
                         el.dataset.posLineId = String(l.id);
-                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;background:#0b0e11;border:2px solid #60a5fa;border-radius:2px;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
+                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:11px;height:11px;margin-left:-5.5px;margin-top:-5.5px;background:#0b0e11;border:2px solid #60a5fa;border-radius:50%;cursor:${h.cursor};z-index:28;pointer-events:auto;touch-action:none;`;
                         el.addEventListener("pointerdown", () => { try { (window as any).__setSelectedPosId?.(String(l.id)); } catch {} });
                         host.appendChild(el);
                       }
@@ -6488,7 +6505,12 @@ export default function DashboardPage() {
       if (!id) return;
       let role = "body";
       if (handle) role = handle.dataset.posHandle || "entryL";
-      else if (label) role = "label:" + (label.dataset.posLabel || "entry");
+      else if (label) {
+        // labels are fixed on lines — only select, don't drag text
+        const id0 = label.dataset.posLineId || label.dataset.posId;
+        if (id0) try { (window as any).__setSelectedPosId?.(id0); } catch {}
+        return;
+      }
       const line = (linesRef.current || []).find((x) => x.id === id);
       if (!line?.note) return;
       const parsed = parsePos(String(line.note));
@@ -14572,12 +14594,7 @@ export default function DashboardPage() {
                     <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  title="Deselect"
-                  className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-white"
-                  onClick={() => setSelectedPosId(null)}
-                >×</button>
+
               </div>
             );
           })()}
@@ -16095,6 +16112,8 @@ export default function DashboardPage() {
                             setFibSettingsTab("style");
                           }
                           setSelectedFibId(String(l.id));
+                          if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) setSelectedPosId(String(l.id));
+                          else setSelectedPosId(null);
                           setFibSettingsOpen(true);
                         }}
                         className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 flex items-center justify-center"
@@ -16213,6 +16232,8 @@ export default function DashboardPage() {
                         const fibHit = parseFibNote(l.note);
                         if (fibHit) {
                           setSelectedFibId(String(l.id));
+                          if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) setSelectedPosId(String(l.id));
+                          else setSelectedPosId(null);
                           movingVLineRef.current = false;
                           movingRayRef.current = false;
                           const hasC = fibHit.kind === "fib-ext" && fibHit.t3 != null && fibHit.p3 != null;
