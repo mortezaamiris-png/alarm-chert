@@ -3492,9 +3492,9 @@ export default function DashboardPage() {
               stoch: { from: 0, to: 100 },
               dmi: { from: 0, to: 60 },
               harsi: { from: -40, to: 40 },
-              macd: { from: -50, to: 50 },
+              macd: { from: -0.01, to: 0.01 },
               roc: { from: -20, to: 20 },
-              atr: { from: 0, to: 500 },
+              atr: { from: 0, to: 0.01 },
             };
             const tickVals: Record<string, number[]> = {
               rsi: [70, 50, 30],
@@ -3518,10 +3518,14 @@ export default function DashboardPage() {
               return tickVals[id] || [];
             };
             const fmtTick = (v: number) => {
-              if (Math.abs(v) >= 1000) return String(Math.round(v));
-              if (Math.abs(v) >= 100) return String(Math.round(v * 10) / 10);
-              if (Math.abs(v) >= 10) return String(Math.round(v * 10) / 10);
-              return String(Math.round(v * 100) / 100);
+              const a = Math.abs(v);
+              if (a >= 1000) return String(Math.round(v));
+              if (a >= 100) return String(Math.round(v * 10) / 10);
+              if (a >= 10) return String(Math.round(v * 10) / 10);
+              if (a >= 1) return String(Math.round(v * 100) / 100);
+              if (a >= 0.01) return String(Math.round(v * 10000) / 10000);
+              if (a >= 0.0001) return v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+              return v.toExponential(2);
             };
             const getSer = (): any => {
               if (oscId === "rsi") return rsiSeriesRef.current;
@@ -3534,21 +3538,23 @@ export default function DashboardPage() {
               return null;
             };
             const applyZoom = (from: number, to: number) => {
-              // min = how small range can get (zoom in); max = how large (zoom out)
-              const minSpan: Record<string, number> = {
-                rsi: 5, stoch: 2, dmi: 5, harsi: 6,
-                macd: 1, roc: 0.5, atr: 8,
+              // Relative min/max so low-priced coins (ATR ~0.001, MACD ~0.0001) don't collapse
+              const cur = oscPriceRangeRef.current[oscId];
+              const curSpan = cur && cur.to > cur.from ? (cur.to - cur.from) : Math.abs(to - from) || 1;
+              const minSpanFixed: Record<string, number> = {
+                rsi: 5, stoch: 5, dmi: 5, harsi: 6,
+                macd: 1e-12, roc: 0.05, atr: 1e-12,
               };
-              let span = Math.max((minSpan[oscId] ?? 5), to - from);
-              const maxSpan: Record<string, number> = {
-                rsi: 200, stoch: 200, dmi: 150, harsi: 200,
-                macd: 2000, roc: 5000, atr: 50000,
-              };
-              span = Math.min(span, maxSpan[oscId] ?? 5000);
+              // Never zoom in tighter than ~2% of current span, or absolute floor
+              const minSpan = Math.max(minSpanFixed[oscId] ?? 1e-9, curSpan * 0.02);
+              // Zoom out at most ~25× current (smooth, no sudden flat line)
+              const maxSpan = Math.max(minSpan * 2, curSpan * 25);
+              let span = Math.abs(to - from);
+              if (!(span > 0) || Number.isNaN(span)) span = curSpan;
+              span = Math.max(minSpan, Math.min(maxSpan, span));
               const mid = (from + to) / 2;
               from = mid - span / 2;
               to = mid + span / 2;
-              // ATR never goes below 0
               if (oscId === "atr" && from < 0) {
                 to -= from;
                 from = 0;
@@ -3592,12 +3598,30 @@ export default function DashboardPage() {
             const seedRange = () => {
               let prev = oscPriceRangeRef.current[oscId];
               if (!prev || !(prev.to > prev.from)) {
-                prev = defaults[oscId] || { from: 0, to: 100 };
-                if (oscId === "macd") prev = { from: -50, to: 50 };
-                if (oscId === "atr") prev = { from: 0, to: 500 };
-                if (oscId === "harsi") prev = { from: -40, to: 40 };
-                if (oscId === "roc") prev = { from: -20, to: 20 };
-                oscPriceRangeRef.current[oscId] = { ...prev };
+                try {
+                  const candles = candlesRef.current || [];
+                  if (oscId === "atr" && candles.length) {
+                    const rows = calcATR(candles as any, atrPeriod, atrSmooth) as any[];
+                    prev = oscTightRange(rows.map((r: any) => Number(r.value)), 0.3, 0);
+                    if (prev.from < 0) prev.from = 0;
+                  } else if (oscId === "macd" && candles.length) {
+                    const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
+                    const allV: number[] = [];
+                    for (const r of m.macdLine || []) if (r?.value != null) allV.push(Number(r.value));
+                    for (const r of m.signalLine || []) if (r?.value != null) allV.push(Number(r.value));
+                    for (const r of m.hist || []) if (r?.value != null) allV.push(Number(r.value));
+                    prev = oscTightRange(allV, 0.28, 0);
+                  } else if (oscId === "roc" && candles.length) {
+                    const rows = calcROC(candles, rocPeriod) as any[];
+                    prev = oscTightRange(rows.map((r: any) => Number(r.value)), 0.35, 2);
+                  } else {
+                    prev = defaults[oscId] || { from: 0, to: 100 };
+                    if (oscId === "harsi") prev = { from: -40, to: 40 };
+                  }
+                } catch {
+                  prev = defaults[oscId] || { from: 0, to: 100 };
+                }
+                oscPriceRangeRef.current[oscId] = { from: prev.from, to: prev.to };
               }
               return { from: prev.from, to: prev.to };
             };
@@ -3626,7 +3650,7 @@ export default function DashboardPage() {
               }
               if (!range0) return;
               const dy = clientY - y0;
-              const sens = (oscId === "macd" || oscId === "atr") ? 380 : (oscId === "roc" ? 140 : 280);
+              const sens = (oscId === "macd" || oscId === "atr") ? 520 : (oscId === "roc" ? 220 : 280);
               const factor = Math.exp(dy / sens);
               const mid = (range0.from + range0.to) / 2;
               const half0 = Math.max(1e-6, (range0.to - range0.from) / 2);
@@ -3716,9 +3740,11 @@ export default function DashboardPage() {
             const ws = (ev: WheelEvent) => {
               ev.preventDefault();
               ev.stopPropagation();
-              const prev = oscPriceRangeRef.current[oscId] || defaults[oscId] || { from: 0, to: 100 };
+              let prev = oscPriceRangeRef.current[oscId];
+              if (!prev || !(prev.to > prev.from)) prev = seedRange();
               const zoomIn = ev.deltaY < 0;
-              const factor = zoomIn ? 0.9 : 1.12;
+              // Mild steps — no sudden collapse
+              const factor = zoomIn ? 0.92 : 1.08;
               const mid = (prev.from + prev.to) / 2;
               const half = ((prev.to - prev.from) / 2) * factor;
               applyZoom(mid - half, mid + half);
