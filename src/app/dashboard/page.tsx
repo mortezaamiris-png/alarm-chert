@@ -481,6 +481,27 @@ function calcRSI(candles: { time: number; close: number }[], period = 14) {
 }
 
 
+
+/** Tight y-range for oscillator SVG so lines fill the pane like TradingView */
+function oscTightRange(values: number[], padFrac = 0.25, minSpan = 0): { from: number; to: number } {
+  let mn = Infinity, mx = -Infinity;
+  for (const v of values) {
+    if (v == null || Number.isNaN(Number(v))) continue;
+    mn = Math.min(mn, Number(v));
+    mx = Math.max(mx, Number(v));
+  }
+  if (!Number.isFinite(mn) || !Number.isFinite(mx)) return { from: -1, to: 1 };
+  let span = mx - mn;
+  if (span < minSpan) {
+    const mid = (mn + mx) / 2;
+    span = minSpan;
+    mn = mid - span / 2;
+    mx = mid + span / 2;
+  }
+  const pad = Math.max(span * padFrac, minSpan * 0.05, 1e-12);
+  return { from: mn - pad, to: mx + pad };
+}
+
 function calcROC(candles: { time: number; close: number }[], length = 9) {
   const out: { time: number; value: number }[] = [];
   const n = Math.max(1, length);
@@ -2701,11 +2722,11 @@ export default function DashboardPage() {
     const panesMap: Record<string, { id: string; on: boolean; h: number }> = {
       dmi: { id: "dmi", on: !!(showDMI && dmiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
       stoch: { id: "stoch", on: !!(showStoch && stochVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.18 },
+      macd: { id: "macd", on: !!(showMACD && macdVisible && !hideIndicators && !hideOscillators), h: 0.20 },
       harsi: { id: "harsi", on: !!(showHARSI && harsiVisible && !hideIndicators && !hideOscillators), h: 0.14 },
       rsi: { id: "rsi", on: !!(showRSI && rsiVisible && !hideIndicators && !hideOscillators), h: 0.12 },
-      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.16 },
-      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.16 },
+      roc: { id: "roc", on: !!(showROC && rocVisible && !hideIndicators && !hideOscillators), h: 0.18 },
+      atr: { id: "atr", on: !!(showATR && atrVisible && !hideIndicators && !hideOscillators), h: 0.18 },
       volume: { id: "volume", on: !!(showVol && volVisible) && !maxId, h: 0.10 },
     };
     // Order panes by oscOrder (unknown ids appended)
@@ -2732,7 +2753,7 @@ export default function DashboardPage() {
     }
     let totalH = active.reduce((s, p) => s + p.h, 0);
     // More room for osc stack so MACD/ATR don't collapse when many panes are on
-    const maxTotal = maxId ? 0.98 : 0.72;
+    const maxTotal = maxId ? 0.98 : 0.75;
     let scale = totalH > maxTotal ? maxTotal / totalH : 1;
     // Enforce a readable minimum height per oscillator pane (skip volume)
     const minH = 0.09;
@@ -2924,7 +2945,14 @@ export default function DashboardPage() {
             }
             if (zeroY == null) return "";
             const rects: string[] = [];
-            const barW = Math.max(1.5, hostW / Math.max(rows.length, 1) * 0.55);
+            // Bar width from visible spacing (TV-like thickness), not full history length
+            let barW = 3;
+            try {
+              const vis = (ts as any).getVisibleLogicalRange?.();
+              if (vis && vis.to > vis.from) {
+                barW = Math.max(1.5, Math.min(12, (hostW / Math.max(1, vis.to - vis.from)) * 0.7));
+              }
+            } catch {}
             for (const row of rows) {
               const x = ts.timeToCoordinate(row.time as any);
               if (x == null || Number(x) < -50 || Number(x) > hostW + 50) continue;
@@ -3004,47 +3032,37 @@ export default function DashboardPage() {
           }
           if (rocSeriesRef.current || paneClip["roc"]) {
             const cRoc = paneClip["roc"];
-            let zrR = oscPriceRangeRef.current["roc"];
-            if (!zrR || !(zrR.to > zrR.from)) {
-              // Default scale -20 .. 20 so side labels and line amplitude match TradingView-style ROC
-              zrR = { from: -20, to: 20 };
-              oscPriceRangeRef.current["roc"] = { ...zrR };
-            }
-            const phR = cRoc ? (cRoc.bot - cRoc.top) : 100;
-            if (cRoc && zrR.to > zrR.from) {
-              for (const [pv, col] of [
-                [20, "rgba(148,163,184,0.55)"],
-                [0, "rgba(148,163,184,0.8)"],
-                [-20, "rgba(148,163,184,0.55)"],
-              ] as [number, string][]) {
-                if (pv < zrR.from || pv > zrR.to) continue;
-                const rel = Math.max(0, Math.min(1, (pv - zrR.from) / (zrR.to - zrR.from)));
-                const y = (1 - rel) * phR;
+            const rocRows = calcROC(candles, rocPeriod) as any[];
+            // Always fit amplitude to data (TV-style open view) — ignore stale narrow/wide zoom
+            const zrR = oscTightRange(
+              rocRows.map((r: any) => Number(r.value)),
+              0.35,
+              2
+            );
+            oscPriceRangeRef.current["roc"] = zrR;
+            try {
+              // zero line
+              const ph = (cRoc && cRoc.bot > cRoc.top) ? (cRoc.bot - cRoc.top) : 0;
+              if (ph > 0 && zrR.to > zrR.from) {
+                const rel0 = Math.max(0, Math.min(1, (0 - zrR.from) / (zrR.to - zrR.from)));
+                const y = (1 - rel0) * ph;
+                const col = "rgba(148,163,184,0.55)";
                 pushPane("roc", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="${col}" stroke-width="1" stroke-dasharray="4 3" />`);
               }
-            }
-            pushPane("roc", pathFrom(rocSeriesRef.current, calcROC(candles, rocPeriod) as any, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
+            } catch {}
+            pushPane("roc", pathFrom(rocSeriesRef.current, rocRows, rocColor || "#2962FF", 2, cRoc?.top, cRoc?.bot, zrR.from, zrR.to));
           }
           if (atrSeriesRef.current || paneClip["atr"]) {
             const cAtr = paneClip["atr"];
             const atrRows = calcATR(candles as any, atrPeriod, atrSmooth) as any[];
-            let zrA = oscPriceRangeRef.current["atr"];
-            if (!zrA || !(zrA.to > zrA.from)) {
-              let mn = Infinity, mx = -Infinity;
-              for (const r of atrRows || []) {
-                if (r?.value == null || Number.isNaN(r.value)) continue;
-                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-              }
-              if (Number.isFinite(mn) && Number.isFinite(mx)) {
-                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6, 20);
-                const mid = (mn + mx) / 2;
-                zrA = { from: Math.max(0, mid - span * 0.6), to: mid + span * 0.6 };
-              } else {
-                zrA = { from: 0, to: 500 };
-              }
-              // Persist so zoom starts from visible range (prevents jump/vanish)
-              oscPriceRangeRef.current["atr"] = { ...zrA };
-            }
+            const zrA = oscTightRange(
+              atrRows.map((r: any) => Number(r.value)),
+              0.3,
+              0
+            );
+            // ATR is never negative
+            if (zrA.from < 0) zrA.from = 0;
+            oscPriceRangeRef.current["atr"] = zrA;
             pushPane("atr", pathFrom(atrSeriesRef.current, atrRows, atrColor || "#B71C1C", 2, cAtr?.top, cAtr?.bot, zrA.from, zrA.to));
           }
           if (dmiSeriesRef.current || paneClip["dmi"]) {
@@ -3084,40 +3102,22 @@ export default function DashboardPage() {
             pushPane("stoch", pathFrom(stochSeriesRef.current?.d, st.d as any, stochDColor || "#FF6D00", 1.5, cSt?.top, cSt?.bot, zrS.from, zrS.to));
           }
           if (macdSeriesRef.current || paneClip["macd"]) {
-            const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
             const cMacd = paneClip["macd"];
-            // Auto range from data when user hasn't zoomed
-            let zrM = oscPriceRangeRef.current["macd"];
-            if (!zrM || !(zrM.to > zrM.from)) {
-              let mn = Infinity, mx = -Infinity;
-              for (const r of (m.macdLine || []) as any[]) {
-                if (r?.value == null || Number.isNaN(r.value)) continue;
-                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
+            const m = calcMACD(candles, macdFast, macdSlow, macdSignal);
+            const allV: number[] = [];
+            for (const r of m.macdLine || []) if (r?.value != null) allV.push(Number(r.value));
+            for (const r of m.signalLine || []) if (r?.value != null) allV.push(Number(r.value));
+            for (const r of m.hist || []) if (r?.value != null) allV.push(Number(r.value));
+            const zrM = oscTightRange(allV, 0.28, 0);
+            oscPriceRangeRef.current["macd"] = zrM;
+            try {
+              const ph = (cMacd && cMacd.bot > cMacd.top) ? (cMacd.bot - cMacd.top) : 0;
+              if (ph > 0 && zrM.to > zrM.from) {
+                const rel0 = Math.max(0, Math.min(1, (0 - zrM.from) / (zrM.to - zrM.from)));
+                const y = (1 - rel0) * ph;
+                pushPane("macd", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.55)" stroke-width="1" stroke-dasharray="4 3" />`);
               }
-              for (const r of (m.signalLine || []) as any[]) {
-                if (r?.value == null || Number.isNaN(r.value)) continue;
-                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-              }
-              for (const r of (m.hist || []) as any[]) {
-                if (r?.value == null || Number.isNaN(r.value)) continue;
-                mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-              }
-              if (Number.isFinite(mn) && Number.isFinite(mx)) {
-                const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 5, 10);
-                const mid = (mn + mx) / 2;
-                zrM = { from: mid - span * 0.6, to: mid + span * 0.6 };
-              } else {
-                zrM = { from: -50, to: 50 };
-              }
-              oscPriceRangeRef.current["macd"] = { ...zrM };
-            }
-            // zero guide
-            if (cMacd && zrM.to > zrM.from && 0 >= zrM.from && 0 <= zrM.to) {
-              const rel = (0 - zrM.from) / (zrM.to - zrM.from);
-              const y = (1 - rel) * (cMacd.bot - cMacd.top);
-              pushPane("macd", `<line x1="0" y1="${y}" x2="${hostW - 54}" y2="${y}" stroke="rgba(148,163,184,0.55)" stroke-width="1" stroke-dasharray="4 3" />`);
-            }
-            // hist bars via SVG
+            } catch {}
             pushPane("macd", histRects(macdSeriesRef.current?.hist, (m.hist || []) as any, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
             pushPane("macd", pathFrom(macdSeriesRef.current?.macd, m.macdLine as any, macdColor || "#2962FF", 2, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
             pushPane("macd", pathFrom(macdSeriesRef.current?.signal, m.signalLine as any, macdSigColor || "#FF6D00", 1.5, cMacd?.top, cMacd?.bot, zrM.from, zrM.to));
@@ -4400,21 +4400,23 @@ export default function DashboardPage() {
             const showLv = fib.showLevels !== false;
             const showPx = fib.showPrices !== false;
             const prices: number[] = [];
-            // Time bounds — NEVER expand past real candle + future helper data
+            // Time bounds for extend modes
             const tA = Math.min(Number(fib.t1), Number(fib.t2));
             const tB = Math.max(Number(fib.t1), Number(fib.t2));
             const bars = candlesRef.current || [];
-            const chartFirst = bars.length ? Number(bars[0].time) : tA;
-            const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB;
-            const ext = fib.extend || "none";
-            // price lines = full width (extend right/both) without touching time scale
-            const usePriceLines = ext === "right" || ext === "both";
+            const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
+            const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
+            // Match chart future whitespace (FUTURE_BARS) so Extend Right reaches the edge
+            const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+            const FAR_LEFT = Math.min(chartFirst, tA) - barSec * Math.min(FUTURE_BARS, 900);
+            const FAR_RIGHT = Math.max(chartLast, tB) + barSec * (FUTURE_BARS + 20);
             let tFrom = tA;
             let tTo = tB;
-            if (ext === "right") { tFrom = tA; tTo = chartLast; }
-            else if (ext === "left") { tFrom = chartFirst; tTo = tB; }
-            else if (ext === "both") { tFrom = chartFirst; tTo = chartLast; }
-
+            const ext = fib.extend || "none";
+            if (ext === "right") { tFrom = tA; tTo = FAR_RIGHT; }
+            else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
+            else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
+            else { tFrom = tA; tTo = tB; } // none — only between anchors
             for (let i = 0; i < fib.levels.length; i++) {
               const lv = fib.levels[i];
               let price: number;
@@ -4428,53 +4430,101 @@ export default function DashboardPage() {
               const col = (fib.colors && fib.colors[i]) ||
                 (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
                 color || "#787B86";
+              // Label text TV style: "1.618 (0.07919)"
               let labelText = "";
               if (showLv && showPx) labelText = `${lv} (${formatPrice(price)})`;
               else if (showLv) labelText = String(lv);
               else if (showPx) labelText = String(formatPrice(price));
               try {
-                if (usePriceLines) {
-                  const pl = series.createPriceLine({
-                    price,
-                    color: col,
-                    lineWidth: lw,
-                    lineStyle: ls,
-                    axisLabelVisible: true,
-                    title: labelText || "",
-                  });
-                  pls.push(pl);
-                } else {
-                  // 2 points only — no dense samples (was freezing the chart)
-                  const hs: any = chart.addLineSeries({
-                    color: col,
-                    lineWidth: lw,
-                    lineStyle: ls,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  } as any);
-                  const c0 = Math.max(chartFirst, Math.min(tFrom, tTo));
-                  const c1 = Math.min(chartLast, Math.max(tFrom, tTo));
-                  hs.setData([
-                    { time: (c0 < c1 ? c0 : tA) as any, value: price },
-                    { time: (c0 < c1 ? c1 : tB) as any, value: price },
-                  ]);
-                  if (labelText) {
+                const lh = String((fib as any).labelH || "right");
+                const labV = String((fib as any).labelV || "middle");
+                const extRight = ext === "right" || ext === "both";
+                const extLeft = ext === "left" || ext === "both";
+                // Magnet ONLY when both Extend and Labels agree on that side
+                const magnetRight = lh === "right" && extRight;
+                const magnetLeft = lh === "left" && extLeft;
+                // True left frame of plot (next to toolbar) — pixel x≈2 → time
+                let visLeft = Number(chartFirst);
+                try {
+                  const tEdge = (chart.timeScale() as any).coordinateToTime?.(2);
+                  if (tEdge != null && !Number.isNaN(Number(tEdge))) visLeft = Number(tEdge);
+                  else {
+                    const vr = (chart.timeScale() as any).getVisibleRange?.();
+                    if (vr && vr.from != null) visLeft = Number(vr.from);
+                  }
+                } catch {}
+                const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
+                const labRight = extRight ? Math.max(chartLast, tB) : tB;
+                const labelT =
+                  lh === "left" ? (magnetLeft ? visLeft : labLeft) :
+                  lh === "center" ? Math.round((labLeft + labRight) / 2) :
+                  labRight;
+                const hs: any = chart.addLineSeries({
+                  color: col,
+                  lineWidth: lw,
+                  lineStyle: ls,
+                  priceLineVisible: false,
+                  // No colored axis chips — TV-style plain labels via DOM overlay
+                  lastValueVisible: false,
+                  title: undefined,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                } as any);
+                // Extend=None → only between anchors; extend uses tFrom/tTo (FAR_*)
+                const ptsMap = new Map<number, number>();
+                ptsMap.set(Number(tFrom), price);
+                ptsMap.set(Number(tTo), price);
+                ptsMap.set(Number(tA), price);
+                ptsMap.set(Number(tB), price);
+                ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
+                if (extRight || extLeft) {
+                  // denser points so long extend-right reaches far future without gaps
+                  const steps = 48;
+                  for (let s = 1; s < steps; s++) {
+                    const tt = Math.round(Number(tFrom) + ((Number(tTo) - Number(tFrom)) * s) / steps);
+                    ptsMap.set(tt, price);
+                  }
+                }
+                if (magnetLeft) {
+                  ptsMap.set(Number(visLeft), price);
+                }
+                const pts = Array.from(ptsMap.entries())
+                  .map(([time, value]) => ({ time: time as any, value }))
+                  .sort((a, b) => Number(a.time) - Number(b.time));
+                hs.setData(pts);
+                // Store for DOM labels (TV style: no colored box)
+                if (labelText) {
+                  try {
+                    let mTime: number;
+                    if (magnetLeft) mTime = Number(visLeft);
+                    else if (magnetRight) {
+                      // stick near right edge of plot (price axis side)
+                      try {
+                        const w = (chart.timeScale() as any).width?.() ?? 0;
+                        const tEdge = (chart.timeScale() as any).coordinateToTime?.(Math.max(0, w - 8));
+                        mTime = tEdge != null ? Number(tEdge) : Number(labRight);
+                      } catch { mTime = Number(labRight); }
+                    } else {
+                      mTime = Math.max(
+                        Math.min(Number(labelT), Number(tTo)),
+                        Math.min(Number(tFrom), Number(tTo))
+                      );
+                    }
                     (hs as any).__fibLabel = {
                       text: labelText,
                       price,
-                      time: c0 < c1 ? c1 : tB,
+                      time: mTime,
                       color: col,
-                      labV: String((fib as any).labelV || "middle"),
-                      magnetRight: false,
+                      labV,
+                      magnetRight,
                     };
-                  }
-                  extraSeries.push(hs);
+                  } catch {}
                 }
+                extraSeries.push(hs);
               } catch {}
             }
-            // Trend line: 2 points only (no denseDiagPoints)
+            // Trend / dashed path between anchors
+            // Fib: A→B when trend on; Fib-ext: always A→B→C (dashed)
             try {
               const needTrend = fib.kind === "fib-ext" || fib.trend;
               if (needTrend) {
@@ -4488,10 +4538,17 @@ export default function DashboardPage() {
                   autoscaleInfoProvider: () => null as any,
                 });
                 if (fib.kind === "fib-ext" && fib.t3 != null && fib.p3 != null) {
-                  tr.setData([
-                    { time: Number(fib.t1) as any, value: Number(fib.p1) },
-                    { time: Number(fib.t2) as any, value: Number(fib.p2) },
-                  ]);
+                  // two segments so B→C dashed is visible
+                  const densAB = denseDiagPoints(
+                    Number(fib.t1), Number(fib.t2), Number(fib.p1), Number(fib.p2),
+                    intervalToSeconds(String(intervalRef.current))
+                  );
+                  const densBC = denseDiagPoints(
+                    Number(fib.t2), Number(fib.t3), Number(fib.p2), Number(fib.p3),
+                    intervalToSeconds(String(intervalRef.current))
+                  );
+                  // gap at B so LWC doesn't connect with solid; use two series
+                  tr.setData(densAB);
                   extraSeries.push(tr);
                   const tr2: any = chart.addLineSeries({
                     color: fib.trendColor || "#f97316",
@@ -4502,51 +4559,96 @@ export default function DashboardPage() {
                     crosshairMarkerVisible: false,
                     autoscaleInfoProvider: () => null as any,
                   });
-                  tr2.setData([
-                    { time: Number(fib.t2) as any, value: Number(fib.p2) },
-                    { time: Number(fib.t3) as any, value: Number(fib.p3) },
-                  ]);
+                  tr2.setData(densBC);
                   extraSeries.push(tr2);
                 } else {
-                  tr.setData([
-                    { time: Number(fib.t1) as any, value: Number(fib.p1) },
-                    { time: Number(fib.t2) as any, value: Number(fib.p2) },
-                  ]);
+                  tr.setData(
+                    denseDiagPoints(
+                      Number(fib.t1), Number(fib.t2), Number(fib.p1), Number(fib.p2),
+                      intervalToSeconds(String(intervalRef.current))
+                    )
+                  );
                   extraSeries.push(tr);
                 }
               }
             } catch {}
-            // Single background band (min→max) — NOT one series per level pair
+            // Background: colored band BETWEEN each consecutive level (TradingView style)
             if (fib.background && prices.length >= 2) {
-              try {
-                const sorted = [...prices].sort((a, b) => a - b);
-                const lo = sorted[0];
-                const hi = sorted[sorted.length - 1];
-                const op = Math.max(0.05, Math.min(100, fib.bgOpacity ?? 20) / 100);
-                const bandCol = fib.bgColor || "#2962FF";
-                const band: any = chart.addBaselineSeries({
-                  baseValue: { type: "price", price: lo },
-                  topLineColor: "transparent",
-                  topFillColor1: hexToRgba(bandCol, Math.min(0.45, op * 0.85)),
-                  topFillColor2: hexToRgba(bandCol, Math.min(0.25, op * 0.5)),
-                  bottomLineColor: "transparent",
-                  bottomFillColor1: "transparent",
-                  bottomFillColor2: "transparent",
-                  lineWidth: 1,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-                let cFrom = usePriceLines ? chartFirst : Math.max(chartFirst, Math.min(tA, tB));
-                let cTo = usePriceLines ? chartLast : Math.min(chartLast, Math.max(tA, tB));
-                if (cTo <= cFrom) { cFrom = tA; cTo = tB; }
-                band.setData([
-                  { time: cFrom as any, value: hi },
-                  { time: cTo as any, value: hi },
-                ]);
-                extraSeries.push(band);
-              } catch {}
+              const op = Math.max(0.08, Math.min(100, fib.bgOpacity ?? 20) / 100);
+              const priced: { price: number; color: string }[] = [];
+              for (let i = 0; i < fib.levels.length; i++) {
+                const lvN = fib.levels[i];
+                let price: number;
+                if (fib.kind === "fib-ext" && fib.p3 != null) {
+                  price = fib.p3 + (fib.p2 - fib.p1) * lvN;
+                } else {
+                  price = fibPrice(fib.p1, fib.p2, lvN, fib.reverse);
+                }
+                if (!Number.isFinite(price)) continue;
+                const col = (fib.colors && fib.colors[i]) ||
+                  (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lvN) < 1e-6)?.color) ||
+                  "#787B86";
+                priced.push({ price, color: col });
+              }
+              priced.sort((a, b) => a.price - b.price);
+              for (let i = 0; i < priced.length - 1; i++) {
+                const lo = priced[i].price;
+                const hi = priced[i + 1].price;
+                if (!(hi > lo)) continue;
+                const bandCol = priced[i + 1].color || fib.bgColor || "#2962FF";
+                const fillA = hexToRgba(bandCol, Math.min(0.55, op * 0.9));
+                const fillB = hexToRgba(bandCol, Math.min(0.4, op * 0.6));
+                try {
+                  const band: any = chart.addBaselineSeries({
+                    baseValue: { type: "price", price: lo },
+                    topLineColor: "transparent",
+                    topFillColor1: fillA,
+                    topFillColor2: fillB,
+                    bottomLineColor: "transparent",
+                    bottomFillColor1: "transparent",
+                    bottomFillColor2: "transparent",
+                    lineWidth: 1,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  } as any);
+                  // background follows level lines; when extended, fill to same edge as lines
+                  let cFrom = tFrom;
+                  let cTo = tTo;
+                  if (ext === "none") {
+                    cFrom = tA;
+                    cTo = tB;
+                  }
+                  if (cTo <= cFrom) cTo = cFrom + 60;
+                  const cMid = Math.round((cFrom + cTo) / 2);
+                  band.setData([
+                    { time: cFrom as any, value: hi },
+                    { time: cMid as any, value: hi },
+                    { time: cTo as any, value: hi },
+                  ]);
+                  extraSeries.push(band);
+                } catch (e) {
+                  // fallback: thick transparent-ish line (if baseline unavailable)
+                  try {
+                    const fb: any = chart.addAreaSeries({
+                      lineColor: "transparent",
+                      topColor: fillA,
+                      bottomColor: fillB,
+                      lineWidth: 1,
+                      priceLineVisible: false,
+                      lastValueVisible: false,
+                      crosshairMarkerVisible: false,
+                      autoscaleInfoProvider: () => null as any,
+                    } as any);
+                    fb.setData([
+                      { time: Math.max(tFrom, chartFirst - 86400 * 7) as any, value: hi },
+                      { time: Math.min(tTo, chartLast + 86400 * 7) as any, value: hi },
+                    ]);
+                    extraSeries.push(fb);
+                  } catch {}
+                }
+              }
             }
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
             } // end visOk
@@ -5785,41 +5887,19 @@ export default function DashboardPage() {
     removeROC();
     if (!showROC || !rocVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const rocData = calcROC(candlesRef.current, rocPeriod) as any[];
-    let rocZoom = oscPriceRangeRef.current["roc"];
-    if (!rocZoom || !(rocZoom.to > rocZoom.from)) {
-      let mn = Infinity, mx = -Infinity;
-      for (const r of rocData || []) {
-        if (r?.value == null || Number.isNaN(Number(r.value))) continue;
-        mn = Math.min(mn, Number(r.value));
-        mx = Math.max(mx, Number(r.value));
-      }
-      if (Number.isFinite(mn) && Number.isFinite(mx)) {
-        const span = Math.max(mx - mn, 1);
-        // pad so the line is not a flat stub in a huge empty pane
-        const pad = span * 0.35;
-        rocZoom = { from: mn - pad, to: mx + pad };
-      } else {
-        rocZoom = { from: -10, to: 10 };
-      }
-      oscPriceRangeRef.current["roc"] = rocZoom;
-    }
+    const rocZoom = oscTightRange(rocData.map((r) => Number(r.value)), 0.35, 2);
+    oscPriceRangeRef.current["roc"] = rocZoom;
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "roc",
       priceLineVisible: false, lastValueVisible: true,
       crosshairMarkerVisible: false,
       title: "ROC",
       autoscaleInfoProvider: () => {
-        const z = oscPriceRangeRef.current["roc"] || rocZoom!;
-        return {
-          priceRange: {
-            minValue: z.from,
-            maxValue: z.to,
-          },
-        };
+        const z = oscPriceRangeRef.current["roc"] || rocZoom;
+        return { priceRange: { minValue: z.from, maxValue: z.to } };
       },
     });
     s.setData(rocData as any);
-    try { /* guides on SVG only */ } catch {}
     try { s.applyOptions({ visible: false } as any); } catch {}
     rocSeriesRef.current = s;
     try {
@@ -5827,9 +5907,7 @@ export default function DashboardPage() {
         try { updateMargins(); } catch {}
         requestAnimationFrame(() => { try { updateMargins(); } catch {} });
       });
-    } catch {
-      updateMargins();
-    }
+    } catch { updateMargins(); }
   }, [showROC, rocVisible, hideIndicators, hideOscillators, rocPeriod, rocColor, removeROC, updateMargins]);
 
   const removeATR = useCallback(() => {
@@ -5842,35 +5920,17 @@ export default function DashboardPage() {
     removeATR();
     if (!showATR || !atrVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const atrRows = calcATR(candlesRef.current as any, atrPeriod, atrSmooth) as any[];
-    let atrZoom = oscPriceRangeRef.current["atr"];
-    if (!atrZoom || !(atrZoom.to > atrZoom.from)) {
-      let mn = Infinity, mx = -Infinity;
-      for (const r of atrRows || []) {
-        if (r?.value == null || Number.isNaN(r.value)) continue;
-        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-      }
-      if (Number.isFinite(mn) && Number.isFinite(mx)) {
-        const span = Math.max(mx - mn, Math.abs(mx) * 0.08 + 1e-6);
-        const mid = (mn + mx) / 2;
-        atrZoom = { from: Math.max(0, mid - span * 0.6), to: mid + span * 0.6 };
-      } else {
-        atrZoom = { from: 0, to: 1 };
-      }
-    }
-    oscPriceRangeRef.current["atr"] = atrZoom!;
+    const atrZoom = oscTightRange(atrRows.map((r) => Number(r.value)), 0.3, 0);
+    if (atrZoom.from < 0) atrZoom.from = 0;
+    oscPriceRangeRef.current["atr"] = atrZoom;
     const s = chartRef.current.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "atr",
-      priceLineVisible: false, lastValueVisible: false,
+      priceLineVisible: false, lastValueVisible: true,
       crosshairMarkerVisible: false,
       title: "ATR",
       autoscaleInfoProvider: () => {
-        const z = oscPriceRangeRef.current["atr"] || atrZoom!;
-        return {
-          priceRange: {
-            minValue: z.from,
-            maxValue: z.to,
-          },
-        };
+        const z = oscPriceRangeRef.current["atr"] || atrZoom;
+        return { priceRange: { minValue: z.from, maxValue: z.to } };
       },
     });
     s.setData(atrRows as any);
@@ -5900,30 +5960,12 @@ export default function DashboardPage() {
     if (!showMACD || !macdVisible || hideIndicators || hideOscillators || !chartRef.current || !candlesRef.current.length) return;
     const chart = chartRef.current;
     const { macdLine, signalLine, hist } = calcMACD(candlesRef.current, macdFast, macdSlow, macdSignal);
-    let macdZoom = oscPriceRangeRef.current["macd"];
-    if (!macdZoom || !(macdZoom.to > macdZoom.from)) {
-      let mn = Infinity, mx = -Infinity;
-      for (const r of macdLine || []) {
-        if (r?.value == null || Number.isNaN(r.value)) continue;
-        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-      }
-      for (const r of signalLine || []) {
-        if (r?.value == null || Number.isNaN(r.value)) continue;
-        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-      }
-      for (const r of hist || []) {
-        if (r?.value == null || Number.isNaN(r.value)) continue;
-        mn = Math.min(mn, r.value); mx = Math.max(mx, r.value);
-      }
-      if (Number.isFinite(mn) && Number.isFinite(mx)) {
-        const span = Math.max(mx - mn, Math.abs(mx) * 0.15 + 1e-8);
-        const mid = (mn + mx) / 2;
-        macdZoom = { from: mid - span * 0.7, to: mid + span * 0.7 };
-      } else {
-        macdZoom = { from: -1, to: 1 };
-      }
-      oscPriceRangeRef.current["macd"] = macdZoom;
-    }
+    const allV: number[] = [];
+    for (const r of macdLine || []) if (r?.value != null) allV.push(Number(r.value));
+    for (const r of signalLine || []) if (r?.value != null) allV.push(Number(r.value));
+    for (const r of hist || []) if (r?.value != null) allV.push(Number(r.value));
+    const macdZoom = oscTightRange(allV, 0.28, 0);
+    oscPriceRangeRef.current["macd"] = macdZoom;
     const macdProvider = () => {
       const z = oscPriceRangeRef.current["macd"] || macdZoom;
       return {
@@ -5941,7 +5983,8 @@ export default function DashboardPage() {
     histS.setData(hist as any);
     const macdS = chart.addLineSeries({
       color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "macd",
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+      title: "MACD",
       autoscaleInfoProvider: macdProvider,
     });
     macdS.setData(macdLine as any);
