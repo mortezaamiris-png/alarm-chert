@@ -4786,29 +4786,7 @@ export default function DashboardPage() {
                     extraSeries.push(ls);
                   } catch {}
                 }
-                // vertical side lines (box outline)
-                try {
-                  const leftV: any = chart.addLineSeries({
-                    color: "rgba(148,163,184,0.5)", lineWidth: 1,
-                    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                  leftV.setData([
-                    { time: tL as any, value: Math.min(stopLo, tgtLo) },
-                    { time: tL as any, value: Math.max(stopHi, tgtHi) },
-                  ]);
-                  extraSeries.push(leftV);
-                  const rightV: any = chart.addLineSeries({
-                    color: "rgba(148,163,184,0.5)", lineWidth: 1,
-                    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                  rightV.setData([
-                    { time: tR as any, value: Math.min(stopLo, tgtLo) },
-                    { time: tR as any, value: Math.max(stopHi, tgtHi) },
-                  ]);
-                  extraSeries.push(rightV);
-                } catch {}
+                // (no vertical LWC lines — same-time points draw diagonals)
                 (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: [], series: extraSeries });
                 // DOM labels + 4 handles (target L, entry L, stop L, entry R)
                 try {
@@ -4824,30 +4802,49 @@ export default function DashboardPage() {
                       const stopPct = (riskDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
                       const tgtPct = (rewardDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
                       const midX = (Number(xL) + Number(xR)) / 2;
-                      const mkLabel = (text: string, y: number, bg: string, color: string) => {
+                      // optional per-label pixel offsets from note: |lab:stop,dx,dy;entry,dx,dy;target,dx,dy
+                      const labOff: Record<string, { dx: number; dy: number }> = {};
+                      try {
+                        const labPart = (l.note || "").split("|").find((p: string) => p.startsWith("lab:"));
+                        if (labPart) {
+                          for (const piece of labPart.slice(4).split(";")) {
+                            const [k, dxs, dys] = piece.split(",");
+                            if (k && dxs != null && dys != null) labOff[k] = { dx: Number(dxs) || 0, dy: Number(dys) || 0 };
+                          }
+                        }
+                      } catch {}
+                      const mkLabel = (kind: string, html: string, y: number, bg: string, color: string, extraBorder?: string) => {
+                        const off = labOff[kind] || { dx: 0, dy: 0 };
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
-                        d.style.cssText = `position:absolute;left:${midX}px;top:${y}px;transform:translate(-50%,-50%);background:${bg};color:${color};font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;white-space:nowrap;pointer-events:none;z-index:20;border:1px solid rgba(255,255,255,0.12);`;
-                        d.textContent = text;
+                        d.dataset.posLabel = kind;
+                        d.dataset.posLineId = String(l.id);
+                        d.style.cssText = `position:absolute;left:${midX + off.dx}px;top:${y + off.dy}px;transform:translate(-50%,-50%);background:${bg};color:${color};font-size:10px;font-weight:600;padding:3px 7px;border-radius:5px;white-space:nowrap;pointer-events:auto;cursor:move;z-index:22;touch-action:none;border:${extraBorder || "1px solid rgba(255,255,255,0.15)"};line-height:1.35;text-align:center;`;
+                        d.innerHTML = html;
                         host.appendChild(d);
                       };
                       mkLabel(
+                        "stop",
                         `Stop: ${formatPrice(Math.abs(pEntry - pStop))} (${stopPct.toFixed(2)}%) Amt:${stopAmt.toFixed(0)}`,
                         Number(yS),
-                        "rgba(239,68,68,0.9)",
+                        "rgba(239,68,68,0.92)",
                         "#fff"
                       );
                       mkLabel(
+                        "target",
                         `Target: ${formatPrice(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(2)}%) Amt:${targetAmt.toFixed(0)}`,
                         Number(yT),
-                        "rgba(16,185,129,0.9)",
+                        "rgba(16,185,129,0.92)",
                         "#fff"
                       );
+                      const midBg = isLong ? "rgba(16,185,129,0.9)" : "rgba(239,68,68,0.9)";
                       mkLabel(
-                        `Open PnL: —  Qty: ${qty.toFixed(1)}  Risk/reward: ${rr.toFixed(2)}`,
+                        "entry",
+                        `Open PnL: — &nbsp; Qty: ${qty.toFixed(1)}<br/><span style="opacity:0.95;border-top:1px solid rgba(255,255,255,0.35);display:inline-block;margin-top:2px;padding-top:2px;">Risk/reward: ${rr.toFixed(2)}</span>`,
                         Number(yE),
-                        isLong ? "rgba(16,185,129,0.85)" : "rgba(239,68,68,0.85)",
-                        "#fff"
+                        midBg,
+                        "#fff",
+                        "1.5px solid rgba(255,255,255,0.95)"
                       );
                       // Invisible body hit-area to drag entire position
                       const yTop = Math.min(Number(yT), Number(yS), Number(yE));
@@ -6448,12 +6445,15 @@ export default function DashboardPage() {
       const t = ev.target as HTMLElement | null;
       if (!t) return;
       const handle = t.closest?.("[data-pos-handle]") as HTMLElement | null;
+      const label = t.closest?.("[data-pos-label]") as HTMLElement | null;
       const body = t.closest?.("[data-pos-body]") as HTMLElement | null;
-      const el = handle || body;
+      const el = handle || label || body;
       if (!el) return;
       const id = el.dataset.posLineId || el.dataset.posId;
       if (!id) return;
-      const role = handle ? (handle.dataset.posHandle || "entryL") : "body";
+      let role = "body";
+      if (handle) role = handle.dataset.posHandle || "entryL";
+      else if (label) role = "label:" + (label.dataset.posLabel || "entry");
       const line = (linesRef.current || []).find((x) => x.id === id);
       if (!line?.note) return;
       const parsed = parsePos(String(line.note));
@@ -6482,7 +6482,54 @@ export default function DashboardPage() {
       let { tL, tR, pEntry, pStop, pTarget } = drag;
       const kind = drag.note.startsWith("__long:") ? "long" : "short";
 
-      if (drag.role === "body") {
+      if (drag.role.startsWith("label:")) {
+        // free-move label on chart — store pixel offset in note
+        const kind = drag.role.slice(6);
+        const dx = ev.clientX - drag.startX;
+        const dy = ev.clientY - drag.startY;
+        // read existing lab map from note
+        const parts = drag.note.split("|");
+        const base = parts[0];
+        const other = parts.slice(1).filter((p) => !p.startsWith("lab:"));
+        let labMap: Record<string, { dx: number; dy: number }> = {};
+        const existing = parts.find((p) => p.startsWith("lab:"));
+        if (existing) {
+          for (const piece of existing.slice(4).split(";")) {
+            const [k, dxs, dys] = piece.split(",");
+            if (k) labMap[k] = { dx: Number(dxs) || 0, dy: Number(dys) || 0 };
+          }
+        }
+        // offsets are absolute from original mid — accumulate from drag start baseline stored once
+        if (!(drag as any)._labBase) {
+          (drag as any)._labBase = { ...(labMap[kind] || { dx: 0, dy: 0 }) };
+        }
+        const baseOff = (drag as any)._labBase as { dx: number; dy: number };
+        labMap[kind] = { dx: baseOff.dx + dx, dy: baseOff.dy + dy };
+        const labStr = "lab:" + Object.entries(labMap).map(([k, v]) => `${k},${v.dx},${v.dy}`).join(";");
+        const newNote = [base, ...other, labStr].join("|");
+        drag.note = newNote;
+        // live move DOM without full re-render
+        try {
+          const host = vlineOverlayRef.current;
+          const el = host?.querySelector(`[data-pos-label="${kind}"][data-pos-line-id="${drag.id}"], [data-pos-label="${kind}"][data-pos-id="${drag.id}"]`) as HTMLElement | null;
+          // fallback query
+          const el2 = el || (host && Array.from(host.querySelectorAll("[data-pos-label]")).find((n) => (n as HTMLElement).dataset.posLabel === kind && ((n as HTMLElement).dataset.posLineId === drag.id || (n as HTMLElement).dataset.posId === drag.id)) as HTMLElement | undefined);
+          if (el2) {
+            // adjust via transform translate added to existing center
+            const curLeft = parseFloat(el2.style.left) || 0;
+            const curTop = parseFloat(el2.style.top) || 0;
+            // simpler: set left/top from start positions
+            if (!(drag as any)._labElStart) {
+              (drag as any)._labElStart = { left: curLeft - baseOff.dx, top: curTop - baseOff.dy };
+            }
+            const st = (drag as any)._labElStart as { left: number; top: number };
+            el2.style.left = `${st.left + baseOff.dx + dx}px`;
+            el2.style.top = `${st.top + baseOff.dy + dy}px`;
+          }
+        } catch {}
+        setLines((prev) => prev.map((x) => (x.id === drag.id ? { ...x, note: newNote } : x)));
+        return;
+      } else if (drag.role === "body") {
         // move entire box: delta time + delta price from start
         const tNow = timeFromClientX(ev.clientX);
         const t0 = timeFromClientX(drag.startX);
