@@ -16337,6 +16337,49 @@ export default function DashboardPage() {
                           <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
                         </svg>
                       </button>
+                    ) : typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:")) ? (
+                      <>
+                        {/* Target (green) + Stop (red) colors only — no Alarm, no line style */}
+                        {(() => {
+                          const note = String(l.note || "");
+                          const tcPart = note.split("|").find((p) => p.startsWith("tc="));
+                          const scPart = note.split("|").find((p) => p.startsWith("sc="));
+                          const tgtColor = tcPart ? tcPart.slice(3) : "#10b981";
+                          const stopColor = scPart ? scPart.slice(3) : "#ef4444";
+                          const setPosColor = (kind: "tc" | "sc", color: string) => {
+                            pushUndo();
+                            const parts = note.split("|").filter((p) => !p.startsWith(`${kind}=`));
+                            const newNote = [...parts, `${kind}=${color}`].join("|");
+                            setLines((prev) => prev.map((x) => x.id === l.id ? { ...x, note: newNote } : x));
+                            try {
+                              if (!String(l.id).startsWith("local-")) {
+                                void supabase.from("chart_lines").update({ note: newNote }).eq("id", l.id);
+                              }
+                            } catch {}
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          };
+                          return (
+                            <>
+                              <label className="relative w-6 h-6 rounded-full border-2 border-gray-500 shadow shrink-0 cursor-pointer hover:scale-110 transition-transform overflow-hidden" title="Target / green color" style={{ background: tgtColor }}>
+                                <input
+                                  type="color"
+                                  value={tgtColor}
+                                  onChange={(e) => setPosColor("tc", e.target.value)}
+                                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                                />
+                              </label>
+                              <label className="relative w-6 h-6 rounded-full border-2 border-gray-500 shadow shrink-0 cursor-pointer hover:scale-110 transition-transform overflow-hidden" title="Stop / red color" style={{ background: stopColor }}>
+                                <input
+                                  type="color"
+                                  value={stopColor}
+                                  onChange={(e) => setPosColor("sc", e.target.value)}
+                                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                                />
+                              </label>
+                            </>
+                          );
+                        })()}
+                      </>
                     ) : (
                       <>
                     {/* Color — palette popup (desktop) + native picker */}
