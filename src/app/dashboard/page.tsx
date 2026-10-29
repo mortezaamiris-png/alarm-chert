@@ -7476,63 +7476,46 @@ export default function DashboardPage() {
       try {
         const onWheelPrice = (e: WheelEvent) => {
           const rect = container.getBoundingClientRect();
+          // موس داخل کانتینر چارت باشد
+          if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+
           const fromRight = rect.right - e.clientX;
-          // account for time axis strip at bottom (~28px)
           const plotH = Math.max(1, rect.height - 28);
           const yFromTop = e.clientY - rect.top;
-          const yRatio = yFromTop / plotH; // 0 top → 1 bottom of plot area
+          const yRatio = Math.min(1, Math.max(0, yFromTop / plotH));
 
-          // Prefer zones written by updateMargins (correct order + heights)
+          // زون اسیلاتورها (از پایین)
           let zones: { id: string; top: number; bot: number }[] = [];
           try {
             const z = (paneSepRef.current as any)?.__paneZones as any[] | undefined;
             if (Array.isArray(z) && z.length) {
-              zones = z.map((x) => ({ id: x.id, top: 1 - x.top, bot: x.bot }));
+              zones = z.map((x) => ({ id: String(x.id), top: 1 - Number(x.top), bot: Number(x.bot) }));
             }
           } catch {}
-          if (!zones.length) {
-            const panes: { id: string; on: boolean; h: number }[] = [
-              { id: "dmi", on: !!(dmiSeriesRef.current), h: 0.12 },
-              { id: "stoch", on: !!(stochSeriesRef.current), h: 0.12 },
-              { id: "macd", on: !!(macdSeriesRef.current), h: 0.13 },
-              { id: "harsi", on: !!(harsiSeriesRef.current), h: 0.14 },
-              { id: "rsi", on: !!(rsiSeriesRef.current), h: 0.12 },
-              { id: "roc", on: !!(rocSeriesRef.current), h: 0.11 },
-              { id: "atr", on: !!(atrSeriesRef.current), h: 0.11 },
-              { id: "volume", on: !!(volumeSeriesRef.current), h: 0.10 },
-            ];
-            const order = ((window as any).__oscOrder as string[]) || ["atr","roc","rsi","harsi","macd","stoch","dmi","volume"];
-            const ordered: typeof panes = [];
-            const seen = new Set<string>();
-            for (const id of order) {
-              const p = panes.find((x) => x.id === id);
-              if (p) { ordered.push(p); seen.add(id); }
-            }
-            for (const p of panes) if (!seen.has(p.id)) ordered.push(p);
-            const active = ordered.filter((p) => p.on);
-            let totalH = active.reduce((s, p) => s + p.h, 0);
-            const sc = totalH > 0.55 ? 0.55 / totalH : 1;
-            let used = 0;
-            for (const p of active) {
-              const h = p.h * sc;
-              zones.push({ id: p.id, top: 1 - used - h, bot: used });
-              used += h;
-            }
+
+          let mainBottom = 1;
+          if (zones.length) {
+            const tops = zones.map((z) => z.top).filter((t) => Number.isFinite(t));
+            if (tops.length) mainBottom = Math.min(...tops);
           }
-          const inPane = zones.find((z) => yRatio >= z.top - 0.015 && yRatio <= 1 - z.bot + 0.015);
+          const inMainPane = yRatio < mainBottom + 0.03;
+          const inPane = !inMainPane
+            ? zones.find((z) => yRatio >= z.top - 0.02 && yRatio <= 1 - z.bot + 0.02)
+            : undefined;
 
-          // Scroll on RIGHT scale strip of an oscillator pane → zoom that pane's Y range (TV-style)
-          if (inPane && inPane.id !== "volume" && fromRight <= 120 && fromRight >= 0) {
-            e.preventDefault();
-            e.stopPropagation();
-            let delta = e.deltaY;
-            if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
-            if (e.deltaMode === 1) delta *= 16;
-            if (e.deltaMode === 2) delta *= 40;
-            if (delta === 0) return;
-            const steps = Math.max(1, Math.min(3, Math.round(Math.abs(delta) / 100)));
-            const zoomIn = delta < 0;
+          // نوار قیمت: ~۱۲۰px از لبه راست (اعداد BTC عریض‌اند)
+          const onPriceAxis = fromRight >= 0 && fromRight <= 130;
+          if (!onPriceAxis) return;
 
+          let delta = e.deltaY;
+          if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
+          if (e.deltaMode === 1) delta *= 16;
+          if (e.deltaMode === 2) delta *= 40;
+          if (!delta) return;
+          const zoomIn = delta < 0;
+
+          // ——— اسیلاتور ———
+          if (inPane && inPane.id !== "volume") {
             let ser: any = null;
             if (inPane.id === "rsi") ser = rsiSeriesRef.current;
             else if (inPane.id === "stoch") ser = stochSeriesRef.current?.k;
@@ -7541,186 +7524,131 @@ export default function DashboardPage() {
             else if (inPane.id === "roc") ser = rocSeriesRef.current;
             else if (inPane.id === "atr") ser = atrSeriesRef.current;
             else if (inPane.id === "harsi") ser = harsiSeriesRef.current;
-            if (!ser) return;
-
-            const defaults: Record<string, { from: number; to: number }> = {
-              rsi: { from: 0, to: 100 },
-              stoch: { from: 0, to: 100 },
-              dmi: { from: 0, to: 60 },
-              harsi: { from: -40, to: 40 },
-              macd: { from: -1, to: 1 },
-              roc: { from: -20, to: 20 },
-              atr: { from: 0, to: 1 },
-            };
-            const prev = oscPriceRangeRef.current[inPane.id] || defaults[inPane.id] || { from: 0, to: 100 };
-            let pBot = prev.from;
-            let pTop = prev.to;
-            // Invisible/SVG-backed series (ATR/ROC/MACD/etc.) give bad coordinateToPrice across full plot —
-            // only trust it for series that actually paint in the pane (RSI/HARSI/DMI/Stoch).
-            const trustCoord = inPane.id === "rsi" || inPane.id === "harsi" || inPane.id === "dmi" || inPane.id === "stoch";
-            if (trustCoord) {
+            if (ser) {
+              const defaults: Record<string, { from: number; to: number }> = {
+                rsi: { from: 0, to: 100 }, stoch: { from: 0, to: 100 }, dmi: { from: 0, to: 60 },
+                harsi: { from: -40, to: 40 }, macd: { from: -1, to: 1 }, roc: { from: -20, to: 20 }, atr: { from: 0, to: 1 },
+              };
+              const prev = oscPriceRangeRef.current[inPane.id] || defaults[inPane.id] || { from: 0, to: 100 };
+              const mid = (prev.from + prev.to) / 2;
+              const factor = zoomIn ? 0.88 : 1.14;
+              const newRange = Math.max((prev.to - prev.from) * factor, Math.abs(mid) * 0.05 + 0.5);
+              const newTop = mid + newRange / 2;
+              const newBot = mid - newRange / 2;
+              oscPriceRangeRef.current[inPane.id] = { from: newBot, to: newTop };
               try {
-                const t = ser.coordinateToPrice?.(1);
-                const b = ser.coordinateToPrice?.(Math.max(2, plotH - 1));
-                if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Math.abs(Number(t) - Number(b)) > 1e-9) {
-                  pTop = Math.max(Number(t), Number(b));
-                  pBot = Math.min(Number(t), Number(b));
-                }
+                ser.applyOptions({
+                  autoscaleInfoProvider: () => ({ priceRange: { minValue: newBot, maxValue: newTop } }),
+                } as any);
               } catch {}
-            }
-
-            const paneTopPx = plotH * inPane.top;
-            const paneBotPx = plotH * (1 - inPane.bot);
-            const relInPane = Math.min(1, Math.max(0, (yFromTop - paneTopPx) / Math.max(1, paneBotPx - paneTopPx)));
-            const priceAtCursor = pTop - relInPane * (pTop - pBot);
-
-            let factor = 1;
-            for (let i = 0; i < steps; i++) factor *= zoomIn ? 0.9 : 1.11;
-            const minRange = Math.max(Math.abs(priceAtCursor) * 0.02 + 0.5, (defaults[inPane.id]?.to ?? 100) * 0.05);
-            const newRange = Math.max((pTop - pBot) * factor, minRange);
-            const aboveRatio = (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot);
-            let newTop = priceAtCursor + newRange * aboveRatio;
-            let newBot = priceAtCursor - newRange * (1 - aboveRatio);
-            if (inPane.id === "rsi" || inPane.id === "stoch") {
-              newBot = Math.max(-5, newBot);
-              newTop = Math.min(105, newTop);
-            }
-            if (!(newTop > newBot)) return;
-            oscPriceRangeRef.current[inPane.id] = { from: newBot, to: newTop };
-
-            const provider = () => ({ priceRange: { minValue: newBot, maxValue: newTop } });
-            try {
-              ser.applyOptions({ autoscaleInfoProvider: provider });
-              if (inPane.id === "stoch" && stochSeriesRef.current?.d) {
-                stochSeriesRef.current.d.applyOptions({ autoscaleInfoProvider: provider });
-              }
-              if (inPane.id === "dmi" && dmiSeriesRef.current) {
-                dmiSeriesRef.current.plus?.applyOptions?.({ autoscaleInfoProvider: provider });
-                dmiSeriesRef.current.minus?.applyOptions?.({ autoscaleInfoProvider: provider });
-              }
-              if (inPane.id === "macd" && macdSeriesRef.current) {
-                macdSeriesRef.current.signal?.applyOptions?.({ autoscaleInfoProvider: provider });
-                macdSeriesRef.current.hist?.applyOptions?.({ autoscaleInfoProvider: provider });
-              }
-              try {
-                chartRef.current?.priceScale(inPane.id)?.applyOptions?.({ autoScale: true } as any);
-              } catch {}
-            } catch {}
-            try { updateMargins(); } catch {}
-            return;
-          }
-
-          // نوار قیمت سمت راست چارت اصلی — زوم عمودی
-          // فقط وقتی واقعاً روی نوار قیمت هستیم (نه وسط چارت)
-          if (fromRight > 80 || fromRight < 0) return;
-          // اگر روی پن اسیلاتور بودیم بالاتر handle شده؛ اینجا فقط main
-          if (inPane && inPane.id !== "volume") return;
-
-          const s = seriesRef.current as any;
-          if (!s) return;
-
-          let delta = e.deltaY;
-          if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
-          if (e.deltaMode === 1) delta *= 16;
-          if (e.deltaMode === 2) delta *= 40;
-          if (delta === 0) return;
-          const zoomIn = delta < 0;
-
-          // ارتفاع پن اصلی
-          let mainH = Math.max(40, plotH);
-          if (zones.length) {
-            const topMost = Math.min(...zones.map((z) => z.top));
-            if (Number.isFinite(topMost) && topMost > 0.05 && topMost < 0.95) {
-              mainH = Math.max(40, plotH * topMost);
+              e.preventDefault();
+              e.stopPropagation();
+              try { updateMargins(); } catch {}
+              return;
             }
           }
 
-          // منبع رنج: 1) override قبلی  2) getVisibleRange  3) coordinateToPrice
+          // ——— چارت اصلی ———
+          if (!inMainPane) return;
+          const ser = seriesRef.current as any;
+          if (!ser) return;
+
+          const mainH = Math.max(40, plotH * Math.min(1, mainBottom));
+
           let pTop: number | null = null;
           let pBot: number | null = null;
+
           const ov0 = priceRangeOverrideRef.current;
-          if (ov0 && ov0.to > ov0.from && Number.isFinite(ov0.from) && Number.isFinite(ov0.to)) {
+          if (ov0 && ov0.to > ov0.from) {
             pBot = ov0.from;
             pTop = ov0.to;
           }
-          if (pTop == null || pBot == null || !(pTop > pBot)) {
+          if (pTop == null || pBot == null) {
             try {
-              const ps0 = s.priceScale?.() || chart.priceScale("right");
+              const ps0 = ser.priceScale?.() || chart.priceScale("right");
               const vr = ps0?.getVisibleRange?.();
-              if (vr && Number.isFinite(vr.from) && Number.isFinite(vr.to) && vr.to > vr.from) {
+              if (vr && vr.to > vr.from) {
                 pBot = Number(vr.from);
                 pTop = Number(vr.to);
               }
             } catch {}
           }
-          if (pTop == null || pBot == null || !(pTop > pBot)) {
+          if (pTop == null || pBot == null) {
             try {
-              const t = s.coordinateToPrice?.(1);
-              const b = s.coordinateToPrice?.(Math.max(2, Math.floor(mainH) - 1));
+              const t = ser.coordinateToPrice?.(2);
+              const b = ser.coordinateToPrice?.(Math.max(4, Math.floor(mainH) - 2));
               if (t != null && b != null && Number.isFinite(t) && Number.isFinite(b) && Number(t) !== Number(b)) {
                 pTop = Math.max(Number(t), Number(b));
                 pBot = Math.min(Number(t), Number(b));
               }
             } catch {}
           }
-          // fallback: از آخرین کندل‌ها
-          if (pTop == null || pBot == null || !(pTop > pBot)) {
+          if (pTop == null || pBot == null) {
             try {
               const bars = candlesRef.current || [];
               if (bars.length) {
                 let hi = -Infinity, lo = Infinity;
-                const slice = bars.slice(Math.max(0, bars.length - 120));
-                for (const c of slice) {
+                for (const c of bars.slice(-200)) {
                   const h = Number((c as any).high ?? (c as any).close);
                   const l = Number((c as any).low ?? (c as any).close);
                   if (Number.isFinite(h)) hi = Math.max(hi, h);
                   if (Number.isFinite(l)) lo = Math.min(lo, l);
                 }
-                if (hi > lo) { pTop = hi; pBot = lo; }
+                if (hi > lo) {
+                  const pad = (hi - lo) * 0.05;
+                  pTop = hi + pad;
+                  pBot = lo - pad;
+                }
               }
             } catch {}
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
 
-          const mid = (pTop + pBot) / 2;
-          if (!(pTop - pBot > Math.abs(mid) * 1e-10 + 1e-14)) return;
-
-          const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, mainH)));
+          const relY = Math.min(1, Math.max(0, yFromTop / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          const factor = zoomIn ? 0.9 : 1.12;
+          const factor = zoomIn ? 0.88 : 1.14;
           let newRange = (pTop - pBot) * factor;
           const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
-          const minRange = absP * 1e-5;
-          const maxRange = absP * 100;
-          if (newRange < minRange) newRange = minRange;
-          if (newRange > maxRange) newRange = maxRange;
+          newRange = Math.max(newRange, absP * 1e-5);
+          newRange = Math.min(newRange, absP * 40);
           const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
 
-          // فقط بعد از محاسبه موفق، اسکرول پیش‌فرض را بگیر
           e.preventDefault();
           e.stopPropagation();
 
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
+
           try {
-            const ps = s.priceScale?.() || chart.priceScale("right");
-            // autoScale + provider تا رنج جدید اعمال شود
-            try { ps?.applyOptions?.({ autoScale: true }); } catch {}
-            try { ps?.setVisibleRange?.({ from: newBot, to: newTop }); } catch {}
-            // اجبار به اعمال autoscaleInfoProvider
+            // روش مطمئن LWC: autoScale خاموش + setVisibleRange
+            const ps = ser.priceScale?.() || chart.priceScale("right");
             try {
-              s.applyOptions({
+              ser.applyOptions({
                 autoscaleInfoProvider: () => ({
                   priceRange: { minValue: newBot, maxValue: newTop },
                 }),
               } as any);
             } catch {}
-            // trigger redraw
-            try { chart.timeScale().applyOptions({}); } catch {}
+            try {
+              ps.applyOptions({ autoScale: false });
+            } catch {}
+            try {
+              if (typeof ps.setVisibleRange === "function") {
+                ps.setVisibleRange({ from: newBot, to: newTop });
+              }
+            } catch {}
+            // بعضی نسخه‌ها فقط با autoScale + provider کار می‌کنند
+            try {
+              ps.applyOptions({ autoScale: true });
+            } catch {}
           } catch {}
-          try { requestAnimationFrame(() => (window as any).__syncPosOverlays?.()); } catch {}
+          try {
+            requestAnimationFrame(() => {
+              try { (window as any).__syncPosOverlays?.(); } catch {}
+            });
+          } catch {}
         };
         const toggleOscillatorsHide = () => {
           try {
@@ -7888,6 +7816,8 @@ export default function DashboardPage() {
         };
         // capture:true تا قبل از handler خود LWC اجرا شود
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+        // backup: document capture — در صورت پوشش overlay روی محور قیمت
+        document.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
         container.addEventListener("touchend", onTouchEndDoubleTap, { passive: true });
         const onCtxChart = (e: MouseEvent) => {
@@ -8089,6 +8019,7 @@ export default function DashboardPage() {
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
           try { container.removeEventListener("wheel", onWheelPrice); } catch {}
+          try { document.removeEventListener("wheel", onWheelPrice); } catch {}
           try { container.removeEventListener("dblclick", onDblPrice); } catch {}
           try { container.removeEventListener("touchend", onTouchEndDoubleTap); } catch {}
           try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
