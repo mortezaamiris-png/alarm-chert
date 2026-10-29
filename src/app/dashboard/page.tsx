@@ -4713,7 +4713,7 @@ export default function DashboardPage() {
               // time span of box = min/max of t0,t1 (t2 ignored for width; use same span)
               const tL = Math.min(t0, t1);
               const tR = Math.max(t0, t1);
-              if (tR <= tL) continue;
+              if (tR > tL) {
               const riskAmt = 750; // display scale like TV default risk unit
               const riskDist = Math.abs(pEntry - pStop) || 1e-12;
               const rewardDist = Math.abs(pTarget - pEntry) || 0;
@@ -4803,7 +4803,8 @@ export default function DashboardPage() {
                 } catch {}
               }
               (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
-            }
+              } // tR > tL
+            } // nums ok
           } catch {}
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
