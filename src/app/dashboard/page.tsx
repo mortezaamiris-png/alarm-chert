@@ -88,6 +88,8 @@ type ToolMode =
   | "callout"
   | "fib"
   | "fib-ext"
+  | "long-pos"
+  | "short-pos"
   | "alarm"
   | "alarm-ray"
   | "alarm-diag"
@@ -114,7 +116,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
     return false;
   }
   return (
@@ -902,6 +904,9 @@ function userFacingNote(note?: string | null): string {
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__curve:")) return "Curve";
+  if (s.startsWith("__long:")) return "Long position";
+  if (s.startsWith("__short:")) return "Short position";
+  if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
     if (idx >= 0) return s.slice(idx + 1).trim();
@@ -1963,6 +1968,10 @@ export default function DashboardPage() {
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
+  /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
+  const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
+  const [lineToolsOpen, setLineToolsOpen] = useState(false);
+  const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
   const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
@@ -4353,7 +4362,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__fib:") || s.startsWith("__fibext:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -4692,6 +4701,110 @@ export default function DashboardPage() {
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
             } // end visOk
           }
+        } else if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
+          // Long / Short position boxes (TradingView-style)
+          try {
+            const isLong = l.note.startsWith("__long:");
+            const body = l.note.replace(/^__(?:long|short):/, "");
+            const [coords, ...rest] = body.split("|");
+            const nums = coords.split(",").map(Number);
+            if (nums.length >= 6 && nums.every((n) => Number.isFinite(n))) {
+              let t0 = nums[0], pEntry = nums[1], t1 = nums[2], pStop = nums[3], t2 = nums[4], pTarget = nums[5];
+              // time span of box = min/max of t0,t1 (t2 ignored for width; use same span)
+              const tL = Math.min(t0, t1);
+              const tR = Math.max(t0, t1);
+              if (tR <= tL) continue;
+              const riskAmt = 750; // display scale like TV default risk unit
+              const riskDist = Math.abs(pEntry - pStop) || 1e-12;
+              const rewardDist = Math.abs(pTarget - pEntry) || 0;
+              const rr = rewardDist / riskDist;
+              const qty = riskAmt / riskDist;
+              const stopAmt = riskAmt;
+              const targetAmt = qty * rewardDist;
+              const openPnL = 0; // static drawing — live mark not tracked
+              const extraSeries: any[] = [];
+              const mkBand = (lo: number, hi: number, fill: string) => {
+                const band: any = chart.addBaselineSeries({
+                  baseValue: { type: "price", price: lo },
+                  topLineColor: "transparent",
+                  topFillColor1: fill,
+                  topFillColor2: fill,
+                  bottomLineColor: "transparent",
+                  bottomFillColor1: "transparent",
+                  bottomFillColor2: "transparent",
+                  lineWidth: 1,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                } as any);
+                band.setData([
+                  { time: tL as any, value: hi },
+                  { time: tR as any, value: hi },
+                ]);
+                extraSeries.push(band);
+              };
+              const stopLo = Math.min(pEntry, pStop);
+              const stopHi = Math.max(pEntry, pStop);
+              const tgtLo = Math.min(pEntry, pTarget);
+              const tgtHi = Math.max(pEntry, pTarget);
+              mkBand(stopLo, stopHi, "rgba(239,68,68,0.28)");
+              mkBand(tgtLo, tgtHi, "rgba(16,185,129,0.28)");
+              // Entry / stop / target lines
+              for (const [pr, col, w] of [
+                [pEntry, "#e5e7eb", 2],
+                [pStop, "#ef4444", 1],
+                [pTarget, "#10b981", 1],
+              ] as [number, string, number][]) {
+                const ls: any = chart.addLineSeries({
+                  color: col,
+                  lineWidth: w as 1 | 2 | 3,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                });
+                ls.setData([
+                  { time: tL as any, value: pr },
+                  { time: tR as any, value: pr },
+                ]);
+                extraSeries.push(ls);
+              }
+              // Labels via price lines on main series (titles)
+              const pls: any[] = [];
+              if (series) {
+                try {
+                  const stopPct = (riskDist / Math.abs(pEntry)) * 100;
+                  const tgtPct = (rewardDist / Math.abs(pEntry)) * 100;
+                  pls.push(series.createPriceLine({
+                    price: pStop,
+                    color: "#ef4444",
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Dotted,
+                    axisLabelVisible: true,
+                    title: `Stop: ${formatPrice(Math.abs(pEntry - pStop))} (${stopPct.toFixed(2)}%) Amt:${stopAmt.toFixed(0)}`,
+                  }));
+                  pls.push(series.createPriceLine({
+                    price: pTarget,
+                    color: "#10b981",
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Dotted,
+                    axisLabelVisible: true,
+                    title: `Target: ${formatPrice(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(2)}%) Amt:${targetAmt.toFixed(0)}`,
+                  }));
+                  pls.push(series.createPriceLine({
+                    price: pEntry,
+                    color: "#e5e7eb",
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: `Entry  RR:${rr.toFixed(2)}  Qty:${qty.toFixed(1)}`,
+                  }));
+                } catch {}
+              }
+              (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
+            }
+          } catch {}
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
@@ -9550,6 +9663,79 @@ export default function DashboardPage() {
           return;
         }
 
+        // Long / Short position: 3 taps — Entry → Stop → Target
+        if (m === "long-pos" || m === "short-pos") {
+          const t = resolveTime(param);
+          const kind = m === "long-pos" ? "long" : "short";
+          const draft = posDraftRef.current;
+          if (!draft || draft.kind !== kind) {
+            posDraftRef.current = { kind, t0: t, pEntry: fp };
+            setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap STOP price`);
+            return;
+          }
+          if (draft.pStop == null || draft.t1 == null) {
+            posDraftRef.current = { ...draft, t1: t, pStop: fp };
+            setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap TARGET price`);
+            return;
+          }
+          // third click — save
+          clickLockRef.current = true;
+          setSaving(true);
+          const pStop = draft.pStop;
+          const pEntry = draft.pEntry;
+          const pTarget = fp;
+          const t0 = draft.t0;
+          const t1 = draft.t1;
+          const note = `__${kind}:${t0},${pEntry},${t1},${pStop},${t},${pTarget}`;
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: pEntry,
+            end_price: pTarget,
+            start_time: t0,
+            end_time: t1,
+            color: kind === "long" ? "#10b981" : "#ef4444",
+            width: 1,
+            dash: "solid",
+            note,
+          };
+          posDraftRef.current = null;
+          try {
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+              (fb as any).user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position saved`);
+            } else {
+              const local: ChartLine = {
+                id: `local-pos-${Date.now()}`,
+                symbol: symbolRef.current.toUpperCase(),
+                price: pEntry,
+                color: base.color,
+                note,
+                start_time: t0,
+                end_time: t1,
+                end_price: pTarget,
+              };
+              pushUndo();
+              setLines((prev) => [local, ...prev]);
+              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position saved (local)`);
+            }
+          } catch {
+            setStatusMsg("Position save failed");
+          }
+          modeRef.current = "none";
+          setMode("none");
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
         // Fib Retracement: 2 points
         if (m === "fib") {
           const t = resolveTime(param);
@@ -12412,97 +12598,62 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Horizontal line (draw) */}
-            <button
-              type="button"
-              title="Horizontal line"
-              onClick={() => {
-                setMode(mode === "draw" ? "none" : "draw");
-                setMovingId(null);
-                setMovingType(null);
-                setDiagStart(null);
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "draw"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="3" y1="12" x2="21" y2="12" />
-              </svg>
-            </button>
+            {/* separator under alarm */}
+            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
 
-            {/* Horizontal ray */}
-            <button
-              type="button"
-              title="Horizontal ray"
-              onClick={() => {
-                clearPreview();
-                setMode(mode === "ray" ? "none" : "ray");
-                setMovingId(null);
-                setMovingType(null);
-                setDiagStart(null);
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "ray"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="4" y1="12" x2="18" y2="12" />
-                <polyline points="14,8 18,12 14,16" />
-              </svg>
-            </button>
+            {/* Line tools — 4 tools in one menu */}
+            <div className="relative" data-menu>
+              <button
+                type="button"
+                title="Lines"
+                onClick={() => {
+                  setLineToolsOpen((v) => !v);
+                  setFibToolsOpen(false);
+                  setDrawToolsOpen(false);
+                  setPosToolsOpen(false);
+                  setAlarmMenuOpen(false);
+                }}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline"
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="3" y1="8" x2="21" y2="8" />
+                  <line x1="3" y1="16" x2="14" y2="16" />
+                  <polyline points="14,12 18,16 14,20" />
+                </svg>
+              </button>
+              {lineToolsOpen && (
+                <div className="absolute left-full top-0 ml-2 z-50 w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Lines</div>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "draw" ? "text-orange-300" : ""}`}
+                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "draw" ? "none" : "draw"); setMovingId(null); setMovingType(null); setDiagStart(null); setStatusMsg("Horizontal line: tap on chart"); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
+                    Horizontal line
+                  </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "ray" ? "text-orange-300" : ""}`}
+                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "ray" ? "none" : "ray"); setMovingId(null); setMovingType(null); setDiagStart(null); setStatusMsg("Horizontal ray: tap on chart"); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="12" x2="18" y2="12" /><polyline points="14,8 18,12 14,16" /></svg>
+                    Horizontal ray
+                  </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "diag" ? "text-orange-300" : ""}`}
+                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "diag" ? "none" : "diag"); setMovingId(null); setMovingType(null); if (mode === "diag") setDiagStart(null); setStatusMsg("Trendline: tap two points"); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="18" x2="20" y2="6" /></svg>
+                    Trendline
+                  </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
+                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
+                    Vertical line
+                  </button>
+                </div>
+              )}
+            </div>
 
-            {/* Trendline / diagonal */}
-            <button
-              type="button"
-              title="Trendline (2 clicks)"
-              onClick={() => {
-                setMode(mode === "diag" ? "none" : "diag");
-                setMovingId(null);
-                setMovingType(null);
-                if (mode === "diag") setDiagStart(null);
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "diag"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="4" y1="18" x2="20" y2="6" />
-                <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                <circle cx="20" cy="6" r="1.5" fill="currentColor" />
-              </svg>
-            </button>
-
-            {/* Vertical line */}
-            <button
-              type="button"
-              title="Vertical line"
-              onClick={() => {
-                setMode(mode === "vline" ? "none" : "vline");
-                setDiagStart(null);
-                setAlarmMenuOpen(false);
-                clearPreview();
-                if (mode !== "vline") setStatusMsg("Vertical line: tap on chart");
-                else setStatusMsg("");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "vline"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="12" y1="3" x2="12" y2="21" />
-                <line x1="9" y1="3" x2="15" y2="3" />
-                <line x1="9" y1="21" x2="15" y2="21" />
-              </svg>
-            </button>
+            {/* separator before Fib / positions */}
+            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
 
             {/* Fibonacci tools — own icon above shapes */}
             <div className="relative" data-menu>
@@ -12639,16 +12790,60 @@ export default function DashboardPage() {
                     <span className="w-4 text-center">💬</span>
                     Callout
                   </button>
-                  <button
-                    type="button"
-                    className="w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 text-gray-400"
+
+                </div>
+              )}
+            </div>
+
+            {/* Long / Short position (Forecasting) */}
+            <div className="relative" data-menu>
+              <button
+                type="button"
+                title="Position tools"
+                onClick={() => {
+                  setPosToolsOpen((v) => !v);
+                  setFibToolsOpen(false);
+                  setLineToolsOpen(false);
+                  setDrawToolsOpen(false);
+                }}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                  posToolsOpen || mode === "long-pos" || mode === "short-pos"
+                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                }`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="3" width="16" height="7" rx="1" fill="rgba(16,185,129,0.35)" stroke="#10b981" />
+                  <rect x="4" y="14" width="16" height="7" rx="1" fill="rgba(239,68,68,0.35)" stroke="#ef4444" />
+                  <line x1="4" y1="12" x2="20" y2="12" stroke="#e5e7eb" />
+                </svg>
+              </button>
+              {posToolsOpen && (
+                <div className="absolute left-full top-0 ml-2 z-50 w-52 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
+                  <button type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "long-pos" ? "text-orange-300" : ""}`}
                     onClick={() => {
-                      setDrawToolsOpen(false);
-                      setFibSettingsOpen(true);
-                    }}
-                  >
-                    <span className="w-4 text-center">⚙</span>
-                    Fib settings…
+                      clearPreview();
+                      setPosToolsOpen(false);
+                      posDraftRef.current = null;
+                      setMode("long-pos");
+                      setStatusMsg("Long position: 1) Entry  2) Stop  3) Target");
+                    }}>
+                    <span className="w-4 text-center text-emerald-400 font-bold">L</span>
+                    Long position
+                  </button>
+                  <button type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "short-pos" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setPosToolsOpen(false);
+                      posDraftRef.current = null;
+                      setMode("short-pos");
+                      setStatusMsg("Short position: 1) Entry  2) Stop  3) Target");
+                    }}>
+                    <span className="w-4 text-center text-red-400 font-bold">S</span>
+                    Short position
                   </button>
                 </div>
               )}
