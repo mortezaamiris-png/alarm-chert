@@ -1970,6 +1970,7 @@ export default function DashboardPage() {
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
   const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
+  const posHandleDragRef = useRef<null | { id: string; role: string; note: string; startY: number; startX: number }>(null);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -4077,6 +4078,9 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-dir]").forEach((el) => el.remove());
     } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => el.remove());
+    } catch {}
     const paintVLines = () => {
       const host = vlineOverlayRef.current;
       const chart2 = chartRef.current;
@@ -4702,110 +4706,163 @@ export default function DashboardPage() {
             } // end visOk
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
-          // Long / Short position boxes (TradingView-style)
+          // Long / Short position — TV style boxes + 4 handles
           try {
             const isLong = l.note.startsWith("__long:");
             const body = l.note.replace(/^__(?:long|short):/, "");
-            const [coords, ...rest] = body.split("|");
-            const nums = coords.split(",").map(Number);
-            if (nums.length >= 6 && nums.every((n) => Number.isFinite(n))) {
-              let t0 = nums[0], pEntry = nums[1], t1 = nums[2], pStop = nums[3], t2 = nums[4], pTarget = nums[5];
-              // time span of box = min/max of t0,t1 (t2 ignored for width; use same span)
-              const tL = Math.min(t0, t1);
-              const tR = Math.max(t0, t1);
+            const coords = body.split("|")[0].split(",").map(Number);
+            if (coords.length >= 6 && coords.every((n) => Number.isFinite(n))) {
+              const tL = Math.min(coords[0], coords[2]);
+              const tR = Math.max(coords[0], coords[2]);
+              const pEntry = coords[1];
+              const pStop = coords[3];
+              const pTarget = coords[5];
               if (tR > tL) {
-              const riskAmt = 750; // display scale like TV default risk unit
-              const riskDist = Math.abs(pEntry - pStop) || 1e-12;
-              const rewardDist = Math.abs(pTarget - pEntry) || 0;
-              const rr = rewardDist / riskDist;
-              const qty = riskAmt / riskDist;
-              const stopAmt = riskAmt;
-              const targetAmt = qty * rewardDist;
-              const openPnL = 0; // static drawing — live mark not tracked
-              const extraSeries: any[] = [];
-              const mkBand = (lo: number, hi: number, fill: string) => {
-                const band: any = chart.addBaselineSeries({
-                  baseValue: { type: "price", price: lo },
-                  topLineColor: "transparent",
-                  topFillColor1: fill,
-                  topFillColor2: fill,
-                  bottomLineColor: "transparent",
-                  bottomFillColor1: "transparent",
-                  bottomFillColor2: "transparent",
-                  lineWidth: 1,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-                band.setData([
-                  { time: tL as any, value: hi },
-                  { time: tR as any, value: hi },
-                ]);
-                extraSeries.push(band);
-              };
-              const stopLo = Math.min(pEntry, pStop);
-              const stopHi = Math.max(pEntry, pStop);
-              const tgtLo = Math.min(pEntry, pTarget);
-              const tgtHi = Math.max(pEntry, pTarget);
-              mkBand(stopLo, stopHi, "rgba(239,68,68,0.28)");
-              mkBand(tgtLo, tgtHi, "rgba(16,185,129,0.28)");
-              // Entry / stop / target lines
-              for (const [pr, col, w] of [
-                [pEntry, "#e5e7eb", 2],
-                [pStop, "#ef4444", 1],
-                [pTarget, "#10b981", 1],
-              ] as [number, string, number][]) {
-                const ls: any = chart.addLineSeries({
-                  color: col,
-                  lineWidth: w as 1 | 2 | 3,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                });
-                ls.setData([
-                  { time: tL as any, value: pr },
-                  { time: tR as any, value: pr },
-                ]);
-                extraSeries.push(ls);
-              }
-              // Labels via price lines on main series (titles)
-              const pls: any[] = [];
-              if (series) {
+                const riskAmt = 750;
+                const riskDist = Math.abs(pEntry - pStop) || 1e-12;
+                const rewardDist = Math.abs(pTarget - pEntry) || 0;
+                const rr = rewardDist / riskDist;
+                const qty = riskAmt / riskDist;
+                const stopAmt = riskAmt;
+                const targetAmt = qty * rewardDist;
+                const extraSeries: any[] = [];
+                const stopLo = Math.min(pEntry, pStop);
+                const stopHi = Math.max(pEntry, pStop);
+                const tgtLo = Math.min(pEntry, pTarget);
+                const tgtHi = Math.max(pEntry, pTarget);
+                // filled zones
+                const mkBand = (lo: number, hi: number, fill: string) => {
+                  try {
+                    const band: any = chart.addBaselineSeries({
+                      baseValue: { type: "price", price: lo },
+                      topLineColor: "transparent",
+                      topFillColor1: fill,
+                      topFillColor2: fill,
+                      bottomLineColor: "transparent",
+                      bottomFillColor1: "transparent",
+                      bottomFillColor2: "transparent",
+                      lineWidth: 1,
+                      priceLineVisible: false,
+                      lastValueVisible: false,
+                      crosshairMarkerVisible: false,
+                      autoscaleInfoProvider: () => null as any,
+                    } as any);
+                    band.setData([
+                      { time: tL as any, value: hi },
+                      { time: tR as any, value: hi },
+                    ]);
+                    extraSeries.push(band);
+                  } catch {}
+                };
+                mkBand(stopLo, stopHi, "rgba(239,68,68,0.32)");
+                mkBand(tgtLo, tgtHi, "rgba(16,185,129,0.32)");
+                // horizontal edges
+                for (const [pr, col, w] of [
+                  [pEntry, "#e5e7eb", 2],
+                  [pStop, "#ef4444", 1],
+                  [pTarget, "#10b981", 1],
+                ] as [number, string, number][]) {
+                  try {
+                    const ls: any = chart.addLineSeries({
+                      color: col,
+                      lineWidth: w as 1 | 2 | 3,
+                      priceLineVisible: false,
+                      lastValueVisible: false,
+                      crosshairMarkerVisible: false,
+                      autoscaleInfoProvider: () => null as any,
+                    });
+                    ls.setData([
+                      { time: tL as any, value: pr },
+                      { time: tR as any, value: pr },
+                    ]);
+                    extraSeries.push(ls);
+                  } catch {}
+                }
+                // vertical side lines (box outline)
                 try {
-                  const stopPct = (riskDist / Math.abs(pEntry)) * 100;
-                  const tgtPct = (rewardDist / Math.abs(pEntry)) * 100;
-                  pls.push(series.createPriceLine({
-                    price: pStop,
-                    color: "#ef4444",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Dotted,
-                    axisLabelVisible: true,
-                    title: `Stop: ${formatPrice(Math.abs(pEntry - pStop))} (${stopPct.toFixed(2)}%) Amt:${stopAmt.toFixed(0)}`,
-                  }));
-                  pls.push(series.createPriceLine({
-                    price: pTarget,
-                    color: "#10b981",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Dotted,
-                    axisLabelVisible: true,
-                    title: `Target: ${formatPrice(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(2)}%) Amt:${targetAmt.toFixed(0)}`,
-                  }));
-                  pls.push(series.createPriceLine({
-                    price: pEntry,
-                    color: "#e5e7eb",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Solid,
-                    axisLabelVisible: true,
-                    title: `Entry  RR:${rr.toFixed(2)}  Qty:${qty.toFixed(1)}`,
-                  }));
+                  const leftV: any = chart.addLineSeries({
+                    color: "rgba(148,163,184,0.5)", lineWidth: 1,
+                    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                  leftV.setData([
+                    { time: tL as any, value: Math.min(stopLo, tgtLo) },
+                    { time: tL as any, value: Math.max(stopHi, tgtHi) },
+                  ]);
+                  extraSeries.push(leftV);
+                  const rightV: any = chart.addLineSeries({
+                    color: "rgba(148,163,184,0.5)", lineWidth: 1,
+                    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                  rightV.setData([
+                    { time: tR as any, value: Math.min(stopLo, tgtLo) },
+                    { time: tR as any, value: Math.max(stopHi, tgtHi) },
+                  ]);
+                  extraSeries.push(rightV);
+                } catch {}
+                (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: [], series: extraSeries });
+                // DOM labels + 4 handles (target L, entry L, stop L, entry R)
+                try {
+                  const host = vlineOverlayRef.current;
+                  if (host && chart && series) {
+                    host.querySelectorAll(`[data-pos-id="${l.id}"]`).forEach((el) => el.remove());
+                    const xL = chart.timeScale().timeToCoordinate(tL as any);
+                    const xR = chart.timeScale().timeToCoordinate(tR as any);
+                    const yE = series.priceToCoordinate(pEntry);
+                    const yS = series.priceToCoordinate(pStop);
+                    const yT = series.priceToCoordinate(pTarget);
+                    if (xL != null && xR != null && yE != null && yS != null && yT != null) {
+                      const stopPct = (riskDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
+                      const tgtPct = (rewardDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
+                      const midX = (Number(xL) + Number(xR)) / 2;
+                      const mkLabel = (text: string, y: number, bg: string, color: string) => {
+                        const d = document.createElement("div");
+                        d.dataset.posId = String(l.id);
+                        d.style.cssText = `position:absolute;left:${midX}px;top:${y}px;transform:translate(-50%,-50%);background:${bg};color:${color};font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;white-space:nowrap;pointer-events:none;z-index:20;border:1px solid rgba(255,255,255,0.12);`;
+                        d.textContent = text;
+                        host.appendChild(d);
+                      };
+                      mkLabel(
+                        `Stop: ${formatPrice(Math.abs(pEntry - pStop))} (${stopPct.toFixed(2)}%) Amt:${stopAmt.toFixed(0)}`,
+                        Number(yS),
+                        "rgba(239,68,68,0.9)",
+                        "#fff"
+                      );
+                      mkLabel(
+                        `Target: ${formatPrice(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(2)}%) Amt:${targetAmt.toFixed(0)}`,
+                        Number(yT),
+                        "rgba(16,185,129,0.9)",
+                        "#fff"
+                      );
+                      mkLabel(
+                        `Open PnL: —  Qty: ${qty.toFixed(1)}  Risk/reward: ${rr.toFixed(2)}`,
+                        Number(yE),
+                        isLong ? "rgba(16,185,129,0.85)" : "rgba(239,68,68,0.85)",
+                        "#fff"
+                      );
+                      // 4 handles: target-left, entry-left, stop-left, entry-right
+                      const handles: { role: string; x: number; y: number }[] = [
+                        { role: "target", x: Number(xL), y: Number(yT) },
+                        { role: "entryL", x: Number(xL), y: Number(yE) },
+                        { role: "stop", x: Number(xL), y: Number(yS) },
+                        { role: "entryR", x: Number(xR), y: Number(yE) },
+                      ];
+                      for (const h of handles) {
+                        const el = document.createElement("div");
+                        el.dataset.posId = String(l.id);
+                        el.dataset.posHandle = h.role;
+                        el.dataset.posLineId = String(l.id);
+                        el.style.cssText = `position:absolute;left:${h.x}px;top:${h.y}px;width:11px;height:11px;margin-left:-5.5px;margin-top:-5.5px;background:#0b0e11;border:2px solid #60a5fa;border-radius:2px;cursor:nwse-resize;z-index:28;pointer-events:auto;touch-action:none;`;
+                        host.appendChild(el);
+                      }
+                    }
+                  }
                 } catch {}
               }
-              (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
-              } // tR > tL
-            } // nums ok
+            }
           } catch {}
+        } else if (isDiagonalLine(l)) {
         } else if (isDiagonalLine(l)) {
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
@@ -6316,6 +6373,109 @@ export default function DashboardPage() {
       } catch {}
     }
   }, [hideOscillators]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drag 4 handles on Long/Short position (target / stop / entryL / entryR)
+  useEffect(() => {
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t || !t.dataset?.posHandle || !t.dataset?.posLineId) return;
+      const id = t.dataset.posLineId;
+      const role = t.dataset.posHandle;
+      const line = (linesRef.current || []).find((x) => x.id === id);
+      if (!line || !line.note) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      posHandleDragRef.current = {
+        id,
+        role,
+        note: String(line.note),
+        startY: ev.clientY,
+        startX: ev.clientX,
+      };
+      try { (t as HTMLElement).setPointerCapture?.(ev.pointerId); } catch {}
+    };
+    const onMove = (ev: PointerEvent) => {
+      const drag = posHandleDragRef.current;
+      if (!drag) return;
+      const chart = chartRef.current;
+      const series = seriesRef.current;
+      if (!chart || !series) return;
+      const note = drag.note;
+      const isLong = note.startsWith("__long:");
+      const body = note.replace(/^__(?:long|short):/, "");
+      const parts = body.split("|");
+      const nums = parts[0].split(",").map(Number);
+      if (nums.length < 6) return;
+      let tL = Math.min(nums[0], nums[2]);
+      let tR = Math.max(nums[0], nums[2]);
+      let pEntry = nums[1];
+      let pStop = nums[3];
+      let pTarget = nums[5];
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      if (drag.role === "entryR" || drag.role === "entryL") {
+        // entryL moves entry price; entryR moves right time (width)
+        if (drag.role === "entryR") {
+          const x = ev.clientX - rect.left;
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+          if (logical != null && candles.length) {
+            const lastIdx = candles.length - 1;
+            let tNew: number;
+            if (logical > lastIdx) tNew = candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
+            else if (logical < 0) tNew = candles[0].time + Math.round(logical) * barSec;
+            else tNew = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+            if (tNew > tL + barSec) tR = tNew;
+          }
+        } else {
+          const y = ev.clientY - rect.top;
+          const pr = series.coordinateToPrice(y);
+          if (pr != null && Number.isFinite(pr)) pEntry = Number(pr);
+        }
+      } else if (drag.role === "stop") {
+        const y = ev.clientY - rect.top;
+        const pr = series.coordinateToPrice(y);
+        if (pr != null && Number.isFinite(pr)) pStop = Number(pr);
+      } else if (drag.role === "target") {
+        const y = ev.clientY - rect.top;
+        const pr = series.coordinateToPrice(y);
+        if (pr != null && Number.isFinite(pr)) pTarget = Number(pr);
+      }
+      const kind = isLong ? "long" : "short";
+      const newNote = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+      drag.note = newNote;
+      setLines((prev) =>
+        prev.map((x) =>
+          x.id === drag.id
+            ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
+            : x
+        )
+      );
+    };
+    const onUp = async () => {
+      const drag = posHandleDragRef.current;
+      if (!drag) return;
+      posHandleDragRef.current = null;
+      const line = (linesRef.current || []).find((x) => x.id === drag.id);
+      const note = line?.note || drag.note;
+      try {
+        if (drag.id && !String(drag.id).startsWith("local-")) {
+          await supabase.from("chart_lines").update({ note }).eq("id", drag.id);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("pointermove", onMove, true);
+      document.removeEventListener("pointerup", onUp, true);
+    };
+  }, []);
+
 
 
 
@@ -9664,38 +9824,39 @@ export default function DashboardPage() {
           return;
         }
 
-        // Long / Short position: 3 taps — Entry → Stop → Target
+        // Long / Short position: ONE click places full tool (TV style) with 4 handles
         if (m === "long-pos" || m === "short-pos") {
           const t = resolveTime(param);
           const pNow = Number(fp);
-          if (!Number.isFinite(pNow)) return;
+          if (!Number.isFinite(pNow) || t == null) return;
           const kind: "long" | "short" = m === "long-pos" ? "long" : "short";
-          const draft = posDraftRef.current;
-          if (!draft || draft.kind !== kind) {
-            posDraftRef.current = { kind, t0: Number(t), pEntry: pNow };
-            setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap STOP price`);
-            return;
+          const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+          const widthBars = 28;
+          const tL = Number(t);
+          const tR = tL + barSec * widthBars;
+          const absP = Math.max(Math.abs(pNow), 1e-12);
+          // Default ~2% stop, ~4% target → RR ≈ 2
+          const stopPct = 0.02;
+          const tgtPct = 0.04;
+          let pEntry = pNow;
+          let pStop: number;
+          let pTarget: number;
+          if (kind === "long") {
+            pStop = pNow - absP * stopPct;
+            pTarget = pNow + absP * tgtPct;
+          } else {
+            pStop = pNow + absP * stopPct;
+            pTarget = pNow - absP * tgtPct;
           }
-          if (draft.pStop == null || draft.t1 == null) {
-            posDraftRef.current = { ...draft, t1: Number(t), pStop: pNow };
-            setStatusMsg(`${kind === "long" ? "Long" : "Short"}: tap TARGET price`);
-            return;
-          }
-          // third click — save
           clickLockRef.current = true;
           setSaving(true);
-          const pStop = Number(draft.pStop);
-          const pEntry = Number(draft.pEntry);
-          const pTarget = pNow;
-          const t0 = draft.t0;
-          const t1 = draft.t1;
-          const note = `__${kind}:${t0},${pEntry},${t1},${pStop},${t},${pTarget}`;
+          const note = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: pEntry,
             end_price: pTarget,
-            start_time: t0,
-            end_time: t1,
+            start_time: tL,
+            end_time: tR,
             color: kind === "long" ? "#10b981" : "#ef4444",
             width: 1,
             dash: "solid",
@@ -9713,7 +9874,7 @@ export default function DashboardPage() {
             if (!error && data) {
               pushUndo();
               setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position saved`);
+              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed — drag blue handles`);
             } else {
               const local: ChartLine = {
                 id: `local-pos-${Date.now()}`,
@@ -9721,13 +9882,13 @@ export default function DashboardPage() {
                 price: pEntry,
                 color: base.color,
                 note,
-                start_time: t0,
-                end_time: t1,
+                start_time: tL,
+                end_time: tR,
                 end_price: pTarget,
               };
               pushUndo();
               setLines((prev) => [local, ...prev]);
-              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position saved (local)`);
+              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed (local)`);
             }
           } catch {
             setStatusMsg("Position save failed");
@@ -12831,7 +12992,7 @@ export default function DashboardPage() {
                       setPosToolsOpen(false);
                       posDraftRef.current = null;
                       setMode("long-pos");
-                      setStatusMsg("Long position: 1) Entry  2) Stop  3) Target");
+                      setStatusMsg("Long position: click chart to place");
                     }}>
                     <span className="w-4 text-center text-emerald-400 font-bold">L</span>
                     Long position
@@ -12843,7 +13004,7 @@ export default function DashboardPage() {
                       setPosToolsOpen(false);
                       posDraftRef.current = null;
                       setMode("short-pos");
-                      setStatusMsg("Short position: 1) Entry  2) Stop  3) Target");
+                      setStatusMsg("Short position: click chart to place");
                     }}>
                     <span className="w-4 text-center text-red-400 font-bold">S</span>
                     Short position
