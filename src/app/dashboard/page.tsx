@@ -99,9 +99,6 @@ type ToolMode =
   | "move"
   | "measure";
 
-/** Project price on a diagonal line at unix time t (extends beyond end). */
-
-
 /** Volume histogram helper (shared by AVP / FRVP). Uses real volume or tick-count fallback. */
 function computeVolumeProfile(
   candles: { time: number; high: number; low: number; close: number; volume?: number }[],
@@ -253,44 +250,7 @@ function paintVolumeProfileDOM(
   }
 }
 
-[],
-  anchorTime: number,
-  binCount = 28
-): { priceLo: number; priceHi: number; bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number } | null {
-  const slice = candles.filter((c) => Number(c.time) >= anchorTime);
-  if (slice.length < 2) return null;
-  let pLo = Infinity, pHi = -Infinity;
-  for (const c of slice) {
-    pLo = Math.min(pLo, Number(c.low));
-    pHi = Math.max(pHi, Number(c.high));
-  }
-  if (!Number.isFinite(pLo) || !Number.isFinite(pHi) || pHi <= pLo) return null;
-  const n = Math.max(8, Math.min(60, binCount));
-  const step = (pHi - pLo) / n;
-  const vols = new Array(n).fill(0);
-  for (const c of slice) {
-    const v = Math.max(0, Number(c.volume) || 0);
-    if (v <= 0) continue;
-    const lo = Number(c.low), hi = Number(c.high);
-    const i0 = Math.max(0, Math.min(n - 1, Math.floor((lo - pLo) / step)));
-    const i1 = Math.max(0, Math.min(n - 1, Math.floor((hi - pLo) / step)));
-    const span = i1 - i0 + 1;
-    const each = v / span;
-    for (let i = i0; i <= i1; i++) vols[i] += each;
-  }
-  let maxVol = 0, pocIdx = 0;
-  for (let i = 0; i < n; i++) {
-    if (vols[i] > maxVol) { maxVol = vols[i]; pocIdx = i; }
-  }
-  const bins = vols.map((vol, i) => ({
-    lo: pLo + i * step,
-    hi: pLo + (i + 1) * step,
-    vol,
-  }));
-  const poc = pLo + (pocIdx + 0.5) * step;
-  return { priceLo: pLo, priceHi: pHi, bins, maxVol: maxVol || 1, poc };
-}
-
+/** Project price on a diagonal line at unix time t (extends beyond end). */
 function projectedPriceOnDiag(
   startTime: number,
   startPrice: number,
