@@ -4375,6 +4375,7 @@ export default function DashboardPage() {
     } catch {}
 
     try {
+      vlineOverlayRef.current?.querySelectorAll("[data-frvp-preview]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-rect-preview]").forEach((el) => el.remove());
     } catch {}
     // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
@@ -9526,7 +9527,7 @@ priced.sort((a, b) => a.price - b.price);
         const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
         const isMeasure =
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
-        const isRectDraw = m0 === "rect" && !!diagStartRef.current;
+        const isRectDraw = (m0 === "rect" || m0 === "frvp") && !!diagStartRef.current;
         // measureEnd is state — use measureStartRef only for live drag
         if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
@@ -9613,6 +9614,83 @@ priced.sort((a, b) => a.price - b.price);
                     handleAElRef.current.style.top = `${yA}px`;
                     handleAElRef.current.style.borderColor = col;
                   }
+                }
+              }
+            } catch {}
+            return;
+          }
+
+          // Fixed Range VP live preview — verticals + box + live histogram
+          if (modeNow === "frvp" && diagStartRef.current) {
+            const a = diagStartRef.current;
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                host.querySelectorAll("[data-frvp-preview]").forEach((el) => el.remove());
+                const x0 = chart.timeScale().timeToCoordinate(a.time as any);
+                const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
+                if (x0 != null && x1 != null) {
+                  const left = Math.min(Number(x0), Number(x1));
+                  const right = Math.max(Number(x0), Number(x1));
+                  const w = Math.max(2, right - left);
+                  // dimmed box
+                  const box = document.createElement("div");
+                  box.setAttribute("data-frvp-preview", "1");
+                  box.style.cssText =
+                    `position:absolute;left:${left}px;width:${w}px;top:0;bottom:0;` +
+                    `background:rgba(41,98,255,0.10);border:1px solid rgba(41,98,255,0.45);` +
+                    `pointer-events:none;z-index:20;box-sizing:border-box;`;
+                  host.appendChild(box);
+                  // start vertical
+                  const v0 = document.createElement("div");
+                  v0.setAttribute("data-frvp-preview", "1");
+                  v0.style.cssText =
+                    `position:absolute;left:${Number(x0)}px;top:0;bottom:0;width:0;` +
+                    `border-left:1px solid #2962FF;pointer-events:none;z-index:21;`;
+                  host.appendChild(v0);
+                  // end vertical
+                  const v1 = document.createElement("div");
+                  v1.setAttribute("data-frvp-preview", "1");
+                  v1.style.cssText =
+                    `position:absolute;left:${Number(x1)}px;top:0;bottom:0;width:0;` +
+                    `border-left:1px dashed #2962FF;pointer-events:none;z-index:21;`;
+                  host.appendChild(v1);
+                  // live volume profile inside the range
+                  const t0 = Math.min(a.time, tCursor);
+                  const t1 = Math.max(a.time, tCursor);
+                  if (Math.abs(t1 - t0) > 1) {
+                    const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, 28);
+                    if (vp) {
+                      const wrap = document.createElement("div");
+                      wrap.setAttribute("data-frvp-preview", "1");
+                      paintVolumeProfileDOM(wrap, vp, series, chart, {
+                        layout: "range",
+                        showBox: false,
+                        x0: left,
+                        x1: right,
+                      });
+                      host.appendChild(wrap);
+                    }
+                  }
+                }
+              }
+              // hollow points
+              const yA = series.priceToCoordinate(a.price);
+              const xA = chart.timeScale().timeToCoordinate(a.time as any);
+              if (handleAElRef.current && xA != null && yA != null) {
+                handleAElRef.current.style.display = "block";
+                handleAElRef.current.style.left = `${xA}px`;
+                handleAElRef.current.style.top = `${yA}px`;
+                handleAElRef.current.style.borderColor = "#2962FF";
+              }
+              if (handleBElRef.current) {
+                const xB = chart.timeScale().timeToCoordinate(tCursor as any);
+                const yB = series.priceToCoordinate(price);
+                if (xB != null && yB != null) {
+                  handleBElRef.current.style.display = "block";
+                  handleBElRef.current.style.left = `${xB}px`;
+                  handleBElRef.current.style.top = `${yB}px`;
+                  handleBElRef.current.style.borderColor = "#2962FF";
                 }
               }
             } catch {}
@@ -11588,24 +11666,62 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
-        // Fixed Range Volume Profile — two clicks
+        // Fixed Range Volume Profile — two clicks (TV style: point → drag vertical → confirm)
         if (m === "frvp") {
           const t = resolveTime(param);
           if (t == null) return;
-          if (!diagStart) {
+          const start = diagStartRef.current;
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
-            setStatusMsg("Fixed Range VP: now tap end point");
+            // hollow anchor point
+            try {
+              const elA = handleAElRef.current;
+              if (elA) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
+                  elA.style.display = "block";
+                  elA.style.left = `${x}px`;
+                  elA.style.top = `${y}px`;
+                  elA.style.borderColor = "#2962FF";
+                  elA.style.width = "14px";
+                  elA.style.height = "14px";
+                }
+              }
+              if (handleBElRef.current) handleBElRef.current.style.display = "none";
+              // start vertical guide
+              const host = vlineOverlayRef.current;
+              if (host) {
+                host.querySelectorAll("[data-frvp-preview]").forEach((el) => el.remove());
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                if (x != null) {
+                  const v = document.createElement("div");
+                  v.setAttribute("data-frvp-preview", "1");
+                  v.style.cssText =
+                    `position:absolute;left:${Number(x)}px;top:0;bottom:0;width:0;` +
+                    `border-left:1px dashed #2962FF;pointer-events:none;z-index:22;`;
+                  host.appendChild(v);
+                }
+              }
+            } catch {}
+            setStatusMsg("Fixed Range VP: drag, then tap end point");
             return;
           }
-          const t0 = Math.min(diagStart.time, t);
-          const t1 = Math.max(diagStart.time, t);
+          // second click → place
+          const t0 = Math.min(start.time, t);
+          const t1 = Math.max(start.time, t);
+          if (Math.abs(t1 - t0) < 1) {
+            setStatusMsg("Fixed Range VP: choose a wider range");
+            return;
+          }
           clickLockRef.current = true;
           setSaving(true);
           try {
-            const note = `__frvp:${t0}|${t1}|bins=28|side=right`;
+            const note = `__frvp:${t0}|${t1}|bins=32`;
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
-              price: fp,
+              price: start.price,
               color: "#2962FF",
               width: 1,
               dash: "solid",
@@ -11628,7 +11744,14 @@ priced.sort((a, b) => a.price - b.price);
               setStatusMsg("Fixed Range VP placed");
             } else setStatusMsg("FRVP save failed");
           } catch { setStatusMsg("FRVP save failed"); }
+          diagStartRef.current = null;
           setDiagStart(null);
+          try {
+            vlineOverlayRef.current?.querySelectorAll("[data-frvp-preview]").forEach((el) => el.remove());
+            if (handleAElRef.current) handleAElRef.current.style.display = "none";
+            if (handleBElRef.current) handleBElRef.current.style.display = "none";
+          } catch {}
+          clearPreview();
           setMode("none");
           modeRef.current = "none";
           setSaving(false);
