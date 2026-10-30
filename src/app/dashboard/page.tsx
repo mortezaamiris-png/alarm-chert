@@ -189,10 +189,13 @@ function computeAnchoredVWAP(
   lower1: { time: number; value: number }[];
   upper2: { time: number; value: number }[];
   lower2: { time: number; value: number }[];
+  upper3: { time: number; value: number }[];
+  lower3: { time: number; value: number }[];
 } {
-  const empty = { vwap: [], upper1: [], lower1: [], upper2: [], lower2: [] };
+  const empty = {
+    vwap: [], upper1: [], lower1: [], upper2: [], lower2: [], upper3: [], lower3: [],
+  };
   const at = Number(anchorTime);
-  // include candle at or after anchor
   const slice = candles.filter((c) => Number(c.time) >= at - 0.5);
   if (slice.length < 1) return empty;
   let sumPV = 0, sumV = 0, sumPV2 = 0;
@@ -201,12 +204,14 @@ function computeAnchoredVWAP(
   const lower1: { time: number; value: number }[] = [];
   const upper2: { time: number; value: number }[] = [];
   const lower2: { time: number; value: number }[] = [];
+  const upper3: { time: number; value: number }[] = [];
+  const lower3: { time: number; value: number }[] = [];
   for (const c of slice) {
     const h = Number(c.high), l = Number(c.low), cl = Number(c.close);
     if (!Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(cl)) continue;
     const tp = (h + l + cl) / 3;
     let v = Number(c.volume);
-    if (!Number.isFinite(v) || v <= 0) v = 1; // tick fallback
+    if (!Number.isFinite(v) || v <= 0) v = 1;
     sumPV += tp * v;
     sumPV2 += tp * tp * v;
     sumV += v;
@@ -219,8 +224,10 @@ function computeAnchoredVWAP(
     lower1.push({ time: t, value: vw - std });
     upper2.push({ time: t, value: vw + 2 * std });
     lower2.push({ time: t, value: vw - 2 * std });
+    upper3.push({ time: t, value: vw + 3 * std });
+    lower3.push({ time: t, value: vw - 3 * std });
   }
-  return { vwap, upper1, lower1, upper2, lower2 };
+  return { vwap, upper1, lower1, upper2, lower2, upper3, lower3 };
 }
 
 /**
@@ -5811,8 +5818,8 @@ priced.sort((a, b) => a.price - b.price);
                 const lo1 = mkLine(pack.lower1, "#4caf50", 1, false);
                 const u2 = mkLine(pack.upper2, "#8d6e63", 1, false);
                 const lo2 = mkLine(pack.lower2, "#8d6e63", 1, false);
-                const u3 = mkLine(pack.upper3 || [], "#26a69a", 1, false);
-                const lo3 = mkLine(pack.lower3 || [], "#26a69a", 1, false);
+                const u3 = mkLine(pack.upper3, "#26a69a", 1, false);
+                const lo3 = mkLine(pack.lower3, "#26a69a", 1, false);
 
                 if (main && pack.vwap[0]) {
                   try {
