@@ -1128,6 +1128,45 @@ function denseDiagPoints(
   ];
 }
 
+function parseRectNote(note: string): {
+  t0: number; t1: number; p0: number; p1: number;
+  fill: string; fillOpacity: number;
+} | null {
+  if (!note || !note.startsWith("__rect:")) return null;
+  const raw = note.replace(/^__rect:/, "");
+  const parts = raw.split("|");
+  if (parts.length < 2) return null;
+  const [a, b] = parts;
+  const [t0s, p0s] = a.split(",");
+  const [t1s, p1s] = b.split(",");
+  const t0 = Number(t0s), t1 = Number(t1s), p0 = Number(p0s), p1 = Number(p1s);
+  if (![t0, t1, p0, p1].every(Number.isFinite)) return null;
+  let fill = "#787B86";
+  let fillOpacity = 28;
+  for (let i = 2; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.startsWith("fill=")) fill = p.slice(5) || fill;
+    else if (p.startsWith("fo=")) {
+      const n = Number(p.slice(3));
+      if (Number.isFinite(n)) fillOpacity = Math.max(0, Math.min(100, n));
+    }
+  }
+  return {
+    t0: Math.min(t0, t1),
+    t1: Math.max(t0, t1),
+    p0: Math.min(p0, p1),
+    p1: Math.max(p0, p1),
+    fill,
+    fillOpacity,
+  };
+}
+function buildRectNote(
+  t0: number, t1: number, p0: number, p1: number,
+  fill = "#787B86", fillOpacity = 28
+): string {
+  return `__rect:${Math.min(t0,t1)},${Math.min(p0,p1)}|${Math.max(t0,t1)},${Math.max(p0,p1)}|fill=${fill}|fo=${fillOpacity}`;
+}
+
 /** Format unix seconds in a given IANA timezone */
 
 /** Snap unix time to the candle that contains it (floor) — critical for rays on higher TFs */
@@ -4042,6 +4081,10 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-preview-tip]").forEach((el) => el.remove());
     } catch {}
+
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-rect-preview]").forEach((el) => el.remove());
+    } catch {}
     // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
     hideHandles();
     // Restore chart pan/zoom (never touch page overflow)
@@ -4202,6 +4245,9 @@ export default function DashboardPage() {
     } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-fib-band]").forEach((el) => el.remove());
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-fib-line]").forEach((el) => el.remove());
     } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
@@ -4612,84 +4658,66 @@ export default function DashboardPage() {
             else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
             else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
             else { tFrom = tA; tTo = tB; } // none — only between anchors
-            for (let i = 0; i < fib.levels.length; i++) {
-              const lv = fib.levels[i];
-              let price: number;
-              if (fib.kind === "fib-ext" && fib.p3 != null) {
-                price = fib.p3 + (fib.p2 - fib.p1) * lv;
-              } else {
-                price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
-              }
-              if (!Number.isFinite(price)) continue;
-              prices.push(price);
-              const col = (fib.colors && fib.colors[i]) ||
-                (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
-                color || "#787B86";
-              // Label text TV style: "1.618 (0.07919)"
-              let labelText = "";
-              if (showLv && showPx) labelText = `${lv} (${formatPrice(price)})`;
-              else if (showLv) labelText = String(lv);
-              else if (showPx) labelText = String(formatPrice(price));
-              try {
-                const lh = String((fib as any).labelH || "right");
-                const labV = String((fib as any).labelV || "middle");
-                const extRight = ext === "right" || ext === "both";
-                const extLeft = ext === "left" || ext === "both";
-                // Magnet ONLY when both Extend and Labels agree on that side
-                const magnetRight = lh === "right" && extRight;
-                const magnetLeft = lh === "left" && extLeft;
-                // True left frame of plot (next to toolbar) — pixel x≈2 → time
-                let visLeft = Number(chartFirst);
-                try {
-                  const tEdge = (chart.timeScale() as any).coordinateToTime?.(2);
-                  if (tEdge != null && !Number.isNaN(Number(tEdge))) visLeft = Number(tEdge);
-                  else {
-                    const vr = (chart.timeScale() as any).getVisibleRange?.();
-                    if (vr && vr.from != null) visLeft = Number(vr.from);
+            // Fib levels as DOM lines (no LineSeries) — eliminates lag while panning
+            const fibLabelMetas: any[] = [];
+            try {
+              const hostF = vlineOverlayRef.current;
+              const chartF = chartRef.current;
+              const serF = seriesRef.current;
+              if (hostF && chartF && serF) {
+                for (let i = 0; i < fib.levels.length; i++) {
+                  const lv = fib.levels[i];
+                  let price: number;
+                  if (fib.kind === "fib-ext" && fib.p3 != null) {
+                    price = fib.p3 + (fib.p2 - fib.p1) * lv;
+                  } else {
+                    price = fibPrice(fib.p1, fib.p2, lv, fib.reverse);
                   }
-                } catch {}
-                const labLeft = extLeft ? Math.min(chartFirst, tA) : tA;
-                const labRight = extRight ? Math.max(chartLast, tB) : tB;
-                const labelT =
-                  lh === "left" ? (magnetLeft ? visLeft : labLeft) :
-                  lh === "center" ? Math.round((labLeft + labRight) / 2) :
-                  labRight;
-                const hs: any = chart.addLineSeries({
-                  color: col,
-                  lineWidth: lw,
-                  lineStyle: ls,
-                  priceLineVisible: false,
-                  // No colored axis chips — TV-style plain labels via DOM overlay
-                  lastValueVisible: false,
-                  title: undefined,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-                // Horizontal fib: only 2 endpoints (dense points caused lag with many levels)
-                const pts = [
-                  { time: Number(tFrom) as any, value: price },
-                  { time: Number(tTo) as any, value: price },
-                ].sort((a, b) => Number(a.time) - Number(b.time));
-                hs.setData(pts);
-                // Store for DOM labels (TV style: no colored box)
-                if (labelText) {
-                  try {
-                    let mTime: number;
-                    if (magnetLeft) mTime = Number(visLeft);
-                    else if (magnetRight) {
-                      // stick near right edge of plot (price axis side)
-                      try {
-                        const w = (chart.timeScale() as any).width?.() ?? 0;
-                        const tEdge = (chart.timeScale() as any).coordinateToTime?.(Math.max(0, w - 8));
-                        mTime = tEdge != null ? Number(tEdge) : Number(labRight);
-                      } catch { mTime = Number(labRight); }
-                    } else {
-                      mTime = Math.max(
-                        Math.min(Number(labelT), Number(tTo)),
-                        Math.min(Number(tFrom), Number(tTo))
-                      );
+                  if (!Number.isFinite(price)) continue;
+                  prices.push(price);
+                  const col = (fib.colors && fib.colors[i]) ||
+                    (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
+                    "#787B86";
+                  const x0 = chartF.timeScale().timeToCoordinate(Number(tFrom) as any);
+                  const x1 = chartF.timeScale().timeToCoordinate(Number(tTo) as any);
+                  const y = serF.priceToCoordinate(price);
+                  if (x0 == null || x1 == null || y == null) continue;
+                  const left = Math.min(Number(x0), Number(x1));
+                  const width = Math.max(2, Math.abs(Number(x1) - Number(x0)));
+                  const lineEl = document.createElement("div");
+                  lineEl.dataset.fibLine = "1";
+                  lineEl.dataset.fibId = String(l.id);
+                  lineEl.dataset.fibPrice = String(price);
+                  lineEl.dataset.fibT0 = String(tFrom);
+                  lineEl.dataset.fibT1 = String(tTo);
+                  const bw = Math.max(1, Math.min(3, Number(lw) || 1));
+                  const borderStyle =
+                    fib.lineStyle === "dashed" ? "dashed" :
+                    fib.lineStyle === "dotted" ? "dotted" : "solid";
+                  lineEl.style.cssText =
+                    `position:absolute;left:${left}px;top:${Number(y)}px;width:${width}px;height:0;` +
+                    `border-top:${bw}px ${borderStyle} ${col};pointer-events:none;z-index:6;`;
+                  hostF.appendChild(lineEl);
+
+                  const showLv = fib.showLevels !== false;
+                  const showPx = fib.showPrices !== false;
+                  let labelText = "";
+                  if (showLv && showPx) labelText = `${lv} (${price})`;
+                  else if (showLv) labelText = String(lv);
+                  else if (showPx) labelText = String(price);
+                  if (labelText) {
+                    const labH = fib.labelHorz || "right";
+                    const labV = fib.labelVert || "middle";
+                    const magnetRight = labH === "right" && (ext === "right" || ext === "both");
+                    const magnetLeft = labH === "left" && (ext === "left" || ext === "both");
+                    let mTime = Number(tTo);
+                    if (magnetLeft) mTime = Number(tFrom);
+                    else if (!magnetRight) {
+                      if (labH === "left") mTime = Number(tFrom);
+                      else if (labH === "center") mTime = Math.round((Number(tFrom) + Number(tTo)) / 2);
+                      else mTime = Number(tTo);
                     }
-                    (hs as any).__fibLabel = {
+                    fibLabelMetas.push({
                       text: labelText,
                       price,
                       time: mTime,
@@ -4697,13 +4725,14 @@ export default function DashboardPage() {
                       labV,
                       magnetRight,
                       magnetLeft,
-                    };
-                  } catch {}
+                    });
+                  }
                 }
-                extraSeries.push(hs);
-              } catch {}
-            }
-            // Trend / dashed path between anchors
+              }
+            } catch {}
+            (extraSeries as any).__fibLabelMetas = fibLabelMetas;
+
+                        // Trend / dashed path between anchors
             // Fib: A→B when trend on; Fib-ext: always A→B→C (dashed)
             try {
               const needTrend = fib.kind === "fib-ext" || fib.trend;
@@ -4813,7 +4842,7 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch {}
             } // end fib.background
-            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
+            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries, fibLabelMetas: (extraSeries as any).__fibLabelMetas || [] });
             } // end visOk
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
@@ -5092,23 +5121,19 @@ priced.sort((a, b) => a.price - b.price);
           }
           chartLinesRef.current.set(l.id, ls);
         } else if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
-          const raw = l.note.replace(/^__rect:/, "");
-          const parts = raw.split("|");
-          if (parts.length >= 2) {
-            const [a, b] = parts;
-            const [t0s, p0s] = a.split(",");
-            const [t1s, p1s] = b.split(",");
-            const t0 = Number(t0s), t1 = Number(t1s), p0 = Number(p0s), p1 = Number(p1s);
-            if (Number.isFinite(t0) && Number.isFinite(t1) && Number.isFinite(p0) && Number.isFinite(p1) && t0 !== t1) {
+          const rp = parseRectNote(String(l.note));
+          if (rp) {
+            const { t0, t1, p0, p1, fill, fillOpacity } = rp;
+            if (t0 !== t1) {
               try {
                 const host = vlineOverlayRef.current;
                 const chart2 = chartRef.current;
                 const ser2 = seriesRef.current;
                 if (host && chart2 && ser2) {
-                  const xa = chart2.timeScale().timeToCoordinate(Math.min(t0, t1) as any);
-                  const xb = chart2.timeScale().timeToCoordinate(Math.max(t0, t1) as any);
-                  const ya = ser2.priceToCoordinate(Math.max(p0, p1));
-                  const yb = ser2.priceToCoordinate(Math.min(p0, p1));
+                  const xa = chart2.timeScale().timeToCoordinate(t0 as any);
+                  const xb = chart2.timeScale().timeToCoordinate(t1 as any);
+                  const ya = ser2.priceToCoordinate(p1);
+                  const yb = ser2.priceToCoordinate(p0);
                   if (xa != null && xb != null && ya != null && yb != null) {
                     const left = Math.min(Number(xa), Number(xb));
                     const top = Math.min(Number(ya), Number(yb));
@@ -5116,15 +5141,20 @@ priced.sort((a, b) => a.price - b.price);
                     const h = Math.abs(Number(yb) - Number(ya));
                     const box = document.createElement("div");
                     box.dataset.rectId = String(l.id);
-                    box.dataset.rectT0 = String(Math.min(t0, t1));
-                    box.dataset.rectT1 = String(Math.max(t0, t1));
-                    box.dataset.rectP0 = String(Math.min(p0, p1));
-                    box.dataset.rectP1 = String(Math.max(p0, p1));
+                    box.dataset.rectT0 = String(t0);
+                    box.dataset.rectT1 = String(t1);
+                    box.dataset.rectP0 = String(p0);
+                    box.dataset.rectP1 = String(p1);
                     const col = color || "#787B86";
+                    const bw = Math.max(1, Math.min(4, Number(width) || 1));
+                    const dash = String(l.dash || l.style || "solid");
+                    const borderStyle =
+                      dash === "dashed" ? "dashed" : dash === "dotted" ? "dotted" : "solid";
+                    const fo = Math.max(0, Math.min(100, fillOpacity)) / 100;
                     box.style.cssText =
                       `position:absolute;left:${left}px;top:${top}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;` +
-                      `background:rgba(120,123,134,0.28);border:1.5px solid ${col};` +
-                      `pointer-events:auto;z-index:12;box-sizing:border-box;`;
+                      `background:${hexToRgba(fill, fo)};border:${bw}px ${borderStyle} ${col};` +
+                      `pointer-events:auto;z-index:12;box-sizing:border-box;cursor:move;`;
                     const hs: [string, string, string][] = [
                       ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
                       ["w", "0%", "50%"], ["e", "100%", "50%"],
@@ -5132,12 +5162,17 @@ priced.sort((a, b) => a.price - b.price);
                     ];
                     for (const [role, leftP, topP] of hs) {
                       const hEl = document.createElement("div");
-                      hEl.dataset.rectHandle = role;
                       hEl.dataset.rectId = String(l.id);
+                      hEl.dataset.rectHandle = role;
+                      const cursor =
+                        role === "n" || role === "s" ? "ns-resize" :
+                        role === "e" || role === "w" ? "ew-resize" :
+                        role === "ne" || role === "sw" ? "nesw-resize" : "nwse-resize";
                       hEl.style.cssText =
                         `position:absolute;left:${leftP};top:${topP};width:10px;height:10px;` +
-                        `transform:translate(-50%,-50%);border-radius:50%;` +
-                        `background:#0b0e11;border:2px solid #2962FF;z-index:13;pointer-events:auto;cursor:pointer;`;
+                        `transform:translate(-50%,-50%);border-radius:50%;background:#3b82f6;` +
+                        `border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.35);` +
+                        `pointer-events:auto;z-index:13;cursor:${cursor};`;
                       box.appendChild(hEl);
                     }
                     host.appendChild(box);
@@ -5424,7 +5459,7 @@ priced.sort((a, b) => a.price - b.price);
     paintVLines();
     paintRays();
     paintCallouts();
-    // TV-style fib labels (no colored LWC chips)
+    // TV-style fib labels from fibLabelMetas (DOM levels — no LWC series)
     try {
       const host = vlineOverlayRef.current;
       const chart2 = chartRef.current;
@@ -5433,16 +5468,18 @@ priced.sort((a, b) => a.price - b.price);
         host.querySelectorAll("[data-fib-label]").forEach((el) => el.remove());
         if (!hideLines) {
           chartLinesRef.current.forEach((entry: any) => {
-            const seriesList = entry?.series;
-            if (!Array.isArray(seriesList)) return;
-            for (const hs of seriesList) {
-              const meta = (hs as any)?.__fibLabel;
+            const metas = entry?.fibLabelMetas;
+            const list = Array.isArray(metas) && metas.length
+              ? metas
+              : (Array.isArray(entry?.series)
+                  ? entry.series.map((hs: any) => hs?.__fibLabel).filter(Boolean)
+                  : []);
+            for (const meta of list) {
               if (!meta || !meta.text) continue;
               try {
                 let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
                 const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
                 if (x == null || y == null) continue;
-                // magnetRight/Left: pin to chart frame (no series rebuild on pan)
                 if (meta.magnetRight) {
                   try {
                     const w = Number((chart2.timeScale() as any).width?.() ?? 0);
@@ -5591,6 +5628,24 @@ priced.sort((a, b) => a.price - b.price);
               el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
               el.style.height = `${Math.max(1, Math.abs(Number(y1) - Number(y0)))}px`;
             });
+            host.querySelectorAll("[data-fib-line]").forEach((node) => {
+              const el = node as HTMLElement;
+              const t0 = Number(el.dataset.fibT0);
+              const t1 = Number(el.dataset.fibT1);
+              const price = Number(el.dataset.fibPrice);
+              if (!Number.isFinite(t0) || !Number.isFinite(price)) return;
+              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
+              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              const y = ser2.priceToCoordinate(price);
+              if (x0 == null || x1 == null || y == null) {
+                el.style.display = "none";
+                return;
+              }
+              el.style.display = "block";
+              el.style.left = `${Math.min(Number(x0), Number(x1))}px`;
+              el.style.top = `${Number(y)}px`;
+              el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
+            });
           }
         } catch {}
         // Reposition fib DOM labels while panning (update in place when possible)
@@ -5599,45 +5654,57 @@ priced.sort((a, b) => a.price - b.price);
           const chart2 = chartRef.current;
           const ser2 = seriesRef.current;
           if (host && chart2 && ser2) {
-            const nodes = host.querySelectorAll("[data-fib-label]");
-            // rebuild from series meta (cheap)
-            nodes.forEach((el) => el.remove());
+            // Update fib labels in place when possible; only create missing ones
+            const existing = Array.from(host.querySelectorAll("[data-fib-label]")) as HTMLElement[];
+            let ei = 0;
+            const placeLabel = (meta: any) => {
+              if (!meta || !meta.text) return;
+              let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
+              const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
+              if (x == null || y == null) return;
+              if (meta.magnetRight) {
+                try {
+                  const w = Number((chart2.timeScale() as any).width?.() ?? 0);
+                  if (w > 20) x = w - 6;
+                } catch {}
+              } else if (meta.magnetLeft) {
+                x = 6;
+              }
+              let el = existing[ei++];
+              if (!el) {
+                el = document.createElement("div");
+                el.dataset.fibLabel = "1";
+                host.appendChild(el);
+              }
+              el.textContent = meta.text;
+              el.style.cssText =
+                "position:absolute;pointer-events:none;z-index:18;" +
+                "font-size:11px;line-height:1.2;font-family:ui-sans-serif,system-ui,sans-serif;" +
+                "padding:1px 4px;border-radius:2px;" +
+                "background:rgba(15,18,24,0.82);color:" + (meta.color || "#d1d5db") + ";" +
+                "white-space:nowrap;transform:translate(-100%,-50%);" +
+                "border-left:2px solid " + (meta.color || "#787B86") + ";";
+              if (meta.labV === "top") el.style.transform = "translate(-100%,-110%)";
+              else if (meta.labV === "bottom") el.style.transform = "translate(-100%,10%)";
+              el.style.left = `${Number(x)}px`;
+              el.style.top = `${Number(y)}px`;
+              el.style.display = "block";
+            };
             chartLinesRef.current.forEach((entry: any) => {
+              const metas = entry?.fibLabelMetas;
+              if (Array.isArray(metas) && metas.length) {
+                for (const meta of metas) placeLabel(meta);
+                return;
+              }
               const seriesList = entry?.series;
               if (!Array.isArray(seriesList)) return;
               for (const hs of seriesList) {
                 const meta = (hs as any)?.__fibLabel;
-                if (!meta || !meta.text) continue;
-                try {
-                  let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
-                  const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
-                  if (x == null || y == null) continue;
-                  if (meta.magnetRight) {
-                    try {
-                      const w = Number((chart2.timeScale() as any).width?.() ?? 0);
-                      if (w > 20) x = w - 6;
-                    } catch {}
-                  } else if (meta.magnetLeft) {
-                    x = 6;
-                  }
-                  const el = document.createElement("div");
-                  el.dataset.fibLabel = "1";
-                  el.textContent = meta.text;
-                  el.style.cssText =
-                    "position:absolute;pointer-events:none;z-index:18;" +
-                    "font-size:11px;line-height:1.2;font-family:ui-sans-serif,system-ui,sans-serif;" +
-                    "padding:1px 4px;border-radius:2px;" +
-                    "background:rgba(15,18,24,0.82);color:" + (meta.color || "#d1d5db") + ";" +
-                    "white-space:nowrap;transform:translate(-100%,-50%);" +
-                    "border-left:2px solid " + (meta.color || "#787B86") + ";";
-                  if (meta.labV === "top") el.style.transform = "translate(-100%,-110%)";
-                  else if (meta.labV === "bottom") el.style.transform = "translate(-100%,10%)";
-                  el.style.left = `${Number(x)}px`;
-                  el.style.top = `${Number(y)}px`;
-                  host.appendChild(el);
-                } catch {}
+                placeLabel(meta);
               }
             });
+            // hide unused leftover labels
+            for (; ei < existing.length; ei++) existing[ei].style.display = "none";
           }
         } catch {}
       });
@@ -7013,7 +7080,9 @@ priced.sort((a, b) => a.price - b.price);
       if (!drag) return;
       rectDragRef.current = null;
       const { id, t0, t1, p0, p1 } = drag;
-      const note = `__rect:${Math.min(t0, t1)},${Math.min(p0, p1)}|${Math.max(t0, t1)},${Math.max(p0, p1)}`;
+      const prev = (linesRef.current || []).find((x) => x.id === id);
+      const prevP = prev?.note ? parseRectNote(String(prev.note)) : null;
+      const note = buildRectNote(t0, t1, p0, p1, prevP?.fill || "#787B86", prevP?.fillOpacity ?? 28);
       setLines((prev) =>
         prev.map((x) =>
           x.id === id
@@ -8684,8 +8753,9 @@ priced.sort((a, b) => a.price - b.price);
         const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
         const isMeasure =
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
+        const isRectDraw = m0 === "rect" && !!diagStartRef.current;
         // measureEnd is state — use measureStartRef only for live drag
-        if (!isDiagDraw && !isDiagMove && !isRayPreview && !(m0 === "measure" && measureStartRef.current)) return;
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -8703,7 +8773,9 @@ priced.sort((a, b) => a.price - b.price);
             modeNow !== "ray" &&
             modeNow !== "alarm-ray" &&
             modeNow !== "measure" &&
-            modeNow !== "move"
+            modeNow !== "move" &&
+            modeNow !== "rect" &&
+            modeNow !== "arrow"
           ) {
             return;
           }
@@ -8730,6 +8802,50 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
           if (tCursor == null) return;
+
+          // Rectangle live preview (TV-style: first click fixed, drag to second)
+          if (modeNow === "rect" && diagStartRef.current) {
+            const a = diagStartRef.current;
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                let box = host.querySelector("[data-rect-preview]") as HTMLElement | null;
+                if (!box) {
+                  box = document.createElement("div");
+                  box.dataset.rectPreview = "1";
+                  host.appendChild(box);
+                }
+                const x0 = chart.timeScale().timeToCoordinate(a.time as any);
+                const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
+                const y0 = series.priceToCoordinate(a.price);
+                const y1 = series.priceToCoordinate(price);
+                if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                  const col = drawColorRef.current || "#787B86";
+                  const bw = Math.max(1, drawWidthRef.current || 1);
+                  const dash = drawDashRef.current === "dashed" ? "dashed" : "solid";
+                  box.style.cssText =
+                    `position:absolute;left:${Math.min(Number(x0), Number(x1))}px;` +
+                    `top:${Math.min(Number(y0), Number(y1))}px;` +
+                    `width:${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px;` +
+                    `height:${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px;` +
+                    `background:rgba(120,123,134,0.22);border:${bw}px ${dash} ${col};` +
+                    `pointer-events:none;z-index:20;box-sizing:border-box;`;
+                }
+                // hollow start point
+                if (handleAElRef.current) {
+                  const xA = chart.timeScale().timeToCoordinate(a.time as any);
+                  const yA = series.priceToCoordinate(a.price);
+                  if (xA != null && yA != null) {
+                    handleAElRef.current.style.display = "block";
+                    handleAElRef.current.style.left = `${xA}px`;
+                    handleAElRef.current.style.top = `${yA}px`;
+                    handleAElRef.current.style.borderColor = col;
+                  }
+                }
+              }
+            } catch {}
+            return;
+          }
 
           // Measure live preview — DOM only (no setState → no lag)
           if (modeNow === "measure" && measureStartRef.current) {
@@ -10469,7 +10585,23 @@ priced.sort((a, b) => a.price - b.price);
           if (!start) {
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
-            setStatusMsg("Rectangle: tap opposite corner");
+            setStatusMsg("Rectangle: drag to opposite corner, then tap");
+            lockChartInteraction(true);
+            try {
+              // show hollow start point
+              const chart = chartRef.current;
+              const series = seriesRef.current;
+              if (chart && series && handleAElRef.current) {
+                const xA = chart.timeScale().timeToCoordinate(t as any);
+                const yA = series.priceToCoordinate(fp);
+                if (xA != null && yA != null) {
+                  handleAElRef.current.style.display = "block";
+                  handleAElRef.current.style.left = `${xA}px`;
+                  handleAElRef.current.style.top = `${yA}px`;
+                  handleAElRef.current.style.borderColor = drawColorRef.current || "#3b82f6";
+                }
+              }
+            } catch {}
             return;
           }
           clickLockRef.current = true;
@@ -10478,7 +10610,7 @@ priced.sort((a, b) => a.price - b.price);
           const t1 = Math.max(start.time, t);
           const p0 = Math.min(start.price, fp);
           const p1 = Math.max(start.price, fp);
-          const note = `__rect:${t0},${p0}|${t1},${p1}`;
+          const note = buildRectNote(t0, t1, p0, p1, drawColorRef.current || "#787B86", 28);
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: p0,
@@ -12527,16 +12659,41 @@ priced.sort((a, b) => a.price - b.price);
     pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
     await supabase.from("chart_lines").update({ color }).eq("id", id);
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateLineWidth = async (id: string, width: number) => {
     pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
     await supabase.from("chart_lines").update({ width }).eq("id", id);
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateLineDash = async (id: string, dash: string) => {
     pushUndo();
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
     await supabase.from("chart_lines").update({ dash }).eq("id", id);
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+  };
+
+  const updateRectFill = async (id: string, fill: string, fillOpacity?: number) => {
+    pushUndo();
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== id || !String(l.note || "").startsWith("__rect:")) return l;
+        const p = parseRectNote(String(l.note));
+        if (!p) return l;
+        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity);
+        return { ...l, note };
+      })
+    );
+    try {
+      const cur = (linesRef.current || []).find((x) => x.id === id);
+      const p = cur?.note ? parseRectNote(String(cur.note)) : null;
+      if (p) {
+        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity);
+        await supabase.from("chart_lines").update({ note }).eq("id", id);
+      }
+    } catch {}
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
 
   const convertLineToAlarm = async (line: ChartLine) => {
@@ -16506,6 +16663,8 @@ priced.sort((a, b) => a.price - b.price);
                       ? "Fib Ext"
                       : typeof l.note === "string" && l.note.startsWith("__fib:")
                       ? "Fib"
+                      : typeof l.note === "string" && l.note.startsWith("__rect:")
+                      ? "Rectangle"
                       : l.note === "__vline__"
                       ? "Vertical"
                       : isDiagonalLine(l)
@@ -16671,7 +16830,7 @@ priced.sort((a, b) => a.price - b.price);
                       />
                       {openMenu === `l-color-${l.id}` && (
                         <div
-                          className="absolute z-50 bottom-full mb-2 right-0 p-3 rounded-2xl border border-white/20 shadow-[0_12px_48px_rgba(0,0,0,0.55)] isolate min-w-[200px]"
+                          className="absolute z-50 bottom-full mb-2 right-0 p-3 rounded-2xl border border-white/20 shadow-[0_12px_48px_rgba(0,0,0,0.55)] isolate min-w-[220px]"
                           style={{
                             animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)",
                             background: "rgba(22,22,26,0.92)",
@@ -16679,33 +16838,83 @@ priced.sort((a, b) => a.price - b.price);
                             WebkitBackdropFilter: "blur(28px) saturate(180%)",
                           }}
                         >
-                          <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
-                          <div className="grid grid-cols-5 gap-1.5 mb-3">
-                            {["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"].map((c) => (
-                              <button
-                                key={c}
-                                type="button"
-                                onClick={() => { pushUndo(); updateLineColor(l.id, c); setOpenMenu(null); }}
-                                className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
-                                  (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
-                                    ? "border-orange-400 ring-2 ring-orange-400/40"
-                                    : "border-white/10"
-                                }`}
-                                style={{ background: c }}
-                              />
-                            ))}
-                          </div>
-                          <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
-                            <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
-                              <input
-                                type="color"
-                                value={l.color || DEFAULT_LINE_COLOR}
-                                onChange={(e) => { pushUndo(); updateLineColor(l.id, e.target.value); }}
-                                className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
-                              />
-                            </span>
-                            Custom color
-                          </label>
+                          {(() => {
+                            const isRect = typeof l.note === "string" && l.note.startsWith("__rect:");
+                            const rp = isRect ? parseRectNote(String(l.note)) : null;
+                            const palette = ["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"];
+                            return (
+                              <>
+                                <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">{isRect ? "Border color" : "Colors"}</div>
+                                <div className="grid grid-cols-5 gap-1.5 mb-3">
+                                  {palette.map((c) => (
+                                    <button
+                                      key={"b-"+c}
+                                      type="button"
+                                      onClick={() => { pushUndo(); updateLineColor(l.id, c); setOpenMenu(null); }}
+                                      className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                        (l.color || DEFAULT_LINE_COLOR).toLowerCase() === c.toLowerCase()
+                                          ? "border-orange-400 ring-2 ring-orange-400/40"
+                                          : "border-white/10"
+                                      }`}
+                                      style={{ background: c }}
+                                    />
+                                  ))}
+                                </div>
+                                <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer mb-2">
+                                  <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                                    <input
+                                      type="color"
+                                      value={l.color || DEFAULT_LINE_COLOR}
+                                      onChange={(e) => { pushUndo(); updateLineColor(l.id, e.target.value); }}
+                                      className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                    />
+                                  </span>
+                                  {isRect ? "Custom border" : "Custom color"}
+                                </label>
+                                {isRect && rp && (
+                                  <>
+                                    <div className="border-t border-white/10 my-2" />
+                                    <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Fill color</div>
+                                    <div className="grid grid-cols-5 gap-1.5 mb-3">
+                                      {palette.map((c) => (
+                                        <button
+                                          key={"f-"+c}
+                                          type="button"
+                                          onClick={() => { void updateRectFill(l.id, c); setOpenMenu(null); }}
+                                          className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                            (rp.fill || "").toLowerCase() === c.toLowerCase()
+                                              ? "border-orange-400 ring-2 ring-orange-400/40"
+                                              : "border-white/10"
+                                          }`}
+                                          style={{ background: c }}
+                                        />
+                                      ))}
+                                    </div>
+                                    <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer mb-2">
+                                      <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                                        <input
+                                          type="color"
+                                          value={rp.fill || "#787B86"}
+                                          onChange={(e) => { void updateRectFill(l.id, e.target.value); }}
+                                          className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                        />
+                                      </span>
+                                      Custom fill
+                                    </label>
+                                    <div className="text-[10px] text-gray-400 mb-1">Fill opacity {rp.fillOpacity}%</div>
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={100}
+                                      value={rp.fillOpacity}
+                                      onChange={(e) => { void updateRectFill(l.id, rp.fill, Number(e.target.value)); }}
+                                      className="w-full accent-orange-500"
+                                    />
+                                  </>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       )}
                     </div>
