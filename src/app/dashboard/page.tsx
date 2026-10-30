@@ -88,6 +88,7 @@ type ToolMode =
   | "callout"
   | "fib"
   | "fib-ext"
+  | "avp"
   | "long-pos"
   | "short-pos"
   | "alarm"
@@ -97,6 +98,47 @@ type ToolMode =
   | "measure";
 
 /** Project price on a diagonal line at unix time t (extends beyond end). */
+
+/** Anchored Volume Profile: volume histogram from anchor time → last bar */
+function computeAnchoredVP(
+  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  anchorTime: number,
+  binCount = 28
+): { priceLo: number; priceHi: number; bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number } | null {
+  const slice = candles.filter((c) => Number(c.time) >= anchorTime);
+  if (slice.length < 2) return null;
+  let pLo = Infinity, pHi = -Infinity;
+  for (const c of slice) {
+    pLo = Math.min(pLo, Number(c.low));
+    pHi = Math.max(pHi, Number(c.high));
+  }
+  if (!Number.isFinite(pLo) || !Number.isFinite(pHi) || pHi <= pLo) return null;
+  const n = Math.max(8, Math.min(60, binCount));
+  const step = (pHi - pLo) / n;
+  const vols = new Array(n).fill(0);
+  for (const c of slice) {
+    const v = Math.max(0, Number(c.volume) || 0);
+    if (v <= 0) continue;
+    const lo = Number(c.low), hi = Number(c.high);
+    const i0 = Math.max(0, Math.min(n - 1, Math.floor((lo - pLo) / step)));
+    const i1 = Math.max(0, Math.min(n - 1, Math.floor((hi - pLo) / step)));
+    const span = i1 - i0 + 1;
+    const each = v / span;
+    for (let i = i0; i <= i1; i++) vols[i] += each;
+  }
+  let maxVol = 0, pocIdx = 0;
+  for (let i = 0; i < n; i++) {
+    if (vols[i] > maxVol) { maxVol = vols[i]; pocIdx = i; }
+  }
+  const bins = vols.map((vol, i) => ({
+    lo: pLo + i * step,
+    hi: pLo + (i + 1) * step,
+    vol,
+  }));
+  const poc = pLo + (pocIdx + 0.5) * step;
+  return { priceLo: pLo, priceHi: pHi, bins, maxVol: maxVol || 1, poc };
+}
+
 function projectedPriceOnDiag(
   startTime: number,
   startPrice: number,
@@ -116,7 +158,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:"))) {
     return false;
   }
   return (
@@ -904,6 +946,7 @@ function userFacingNote(note?: string | null): string {
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
+  if (s.startsWith("__avp:")) return "Anchored VP";
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -4257,6 +4300,7 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
     } catch {}
     try {
@@ -4568,7 +4612,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -5332,6 +5376,72 @@ priced.sort((a, b) => a.price - b.price);
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
+        } else if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
+          try {
+            const body = l.note.replace(/^__avp:/, "");
+            const parts = body.split("|");
+            const anchor = Number(parts[0]);
+            let binsN = 28;
+            let side: "left" | "right" = "right";
+            for (const p of parts.slice(1)) {
+              if (p.startsWith("bins=")) binsN = Math.max(8, Math.min(60, parseInt(p.slice(5), 10) || 28));
+              if (p === "side=left") side = "left";
+              if (p === "side=right") side = "right";
+            }
+            if (!Number.isFinite(anchor)) { /* skip */ }
+            else {
+              const vp = computeAnchoredVP(candlesRef.current || [], anchor, binsN);
+              const host = vlineOverlayRef.current;
+              const chart2 = chartRef.current;
+              const ser2 = seriesRef.current;
+              if (vp && host && chart2 && ser2) {
+                const wrap = document.createElement("div");
+                wrap.setAttribute("data-avp-id", String(l.id));
+                wrap.setAttribute("data-avp-anchor", String(anchor));
+                wrap.setAttribute("data-avp-bins", String(binsN));
+                wrap.setAttribute("data-avp-side", side);
+                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9;overflow:hidden;";
+                const maxBarW = Math.min(160, Math.max(60, (chart2.timeScale().width() || 300) * 0.22));
+                const col = l.color || "#2962FF";
+                // POC line
+                const yPoc = ser2.priceToCoordinate(vp.poc);
+                if (yPoc != null) {
+                  const pocEl = document.createElement("div");
+                  pocEl.setAttribute("data-avp-poc", "1");
+                  pocEl.style.cssText = `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:1px;background:${col};opacity:0.85;`;
+                  wrap.appendChild(pocEl);
+                }
+                // Anchor vertical
+                const xA = chart2.timeScale().timeToCoordinate(anchor as any);
+                if (xA != null) {
+                  const vline = document.createElement("div");
+                  vline.setAttribute("data-avp-anchor-line", "1");
+                  vline.style.cssText = `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:1px;background:${col};opacity:0.5;border-left:1px dashed ${col};`;
+                  wrap.appendChild(vline);
+                }
+                for (const b of vp.bins) {
+                  if (b.vol <= 0) continue;
+                  const y0 = ser2.priceToCoordinate(b.hi);
+                  const y1 = ser2.priceToCoordinate(b.lo);
+                  if (y0 == null || y1 == null) continue;
+                  const top = Math.min(Number(y0), Number(y1));
+                  const h = Math.max(1, Math.abs(Number(y1) - Number(y0)));
+                  const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
+                  const isPoc = Math.abs((b.lo + b.hi) / 2 - vp.poc) < (b.hi - b.lo) * 0.6;
+                  const bar = document.createElement("div");
+                  bar.style.cssText =
+                    `position:absolute;top:${top}px;height:${h}px;width:${w}px;` +
+                    (side === "right"
+                      ? `right:48px;`
+                      : `left:4px;`) +
+                    `background:${isPoc ? col : col};opacity:${isPoc ? 0.55 : 0.28};border-radius:1px;pointer-events:none;`;
+                  wrap.appendChild(bar);
+                }
+                host.appendChild(wrap);
+                chartLinesRef.current.set(l.id, { __avpDom: true } as any);
+              }
+            }
+          } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
           try {
             const raw = l.note.replace(/^__brush:/, "");
@@ -5708,6 +5818,48 @@ priced.sort((a, b) => a.price - b.price);
               el.querySelectorAll("polyline").forEach((poly) => {
                 poly.setAttribute("points", coords.join(" "));
               });
+            });
+
+            host.querySelectorAll("[data-avp-id]").forEach((node) => {
+              const el = node as HTMLElement;
+              const anchor = Number(el.dataset.avpAnchor);
+              const binsN = Number(el.dataset.avpBins) || 28;
+              const side = (el.dataset.avpSide === "left" ? "left" : "right") as "left" | "right";
+              if (!Number.isFinite(anchor)) return;
+              const vp = computeAnchoredVP(candlesRef.current || [], anchor, binsN);
+              if (!vp) { el.style.display = "none"; return; }
+              el.style.display = "block";
+              el.innerHTML = "";
+              const maxBarW = Math.min(160, Math.max(60, (chart2.timeScale().width() || 300) * 0.22));
+              const col = "#2962FF";
+              const yPoc = ser2.priceToCoordinate(vp.poc);
+              if (yPoc != null) {
+                const pocEl = document.createElement("div");
+                pocEl.style.cssText = `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:1px;background:${col};opacity:0.85;`;
+                el.appendChild(pocEl);
+              }
+              const xA = chart2.timeScale().timeToCoordinate(anchor as any);
+              if (xA != null) {
+                const vline = document.createElement("div");
+                vline.style.cssText = `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:1px;border-left:1px dashed ${col};opacity:0.5;`;
+                el.appendChild(vline);
+              }
+              for (const b of vp.bins) {
+                if (b.vol <= 0) continue;
+                const y0 = ser2.priceToCoordinate(b.hi);
+                const y1 = ser2.priceToCoordinate(b.lo);
+                if (y0 == null || y1 == null) continue;
+                const top = Math.min(Number(y0), Number(y1));
+                const h = Math.max(1, Math.abs(Number(y1) - Number(y0)));
+                const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
+                const isPoc = Math.abs((b.lo + b.hi) / 2 - vp.poc) < (b.hi - b.lo) * 0.6;
+                const bar = document.createElement("div");
+                bar.style.cssText =
+                  `position:absolute;top:${top}px;height:${h}px;width:${w}px;` +
+                  (side === "right" ? `right:48px;` : `left:4px;`) +
+                  `background:${col};opacity:${isPoc ? 0.55 : 0.28};border-radius:1px;`;
+                el.appendChild(bar);
+              }
             });
 // Fib background bands (DOM) track pan
             host.querySelectorAll("[data-fib-band]").forEach((node) => {
@@ -9750,6 +9902,7 @@ priced.sort((a, b) => a.price - b.price);
               n0.startsWith("__rect:") ||
               n0.startsWith("__path:") ||
               n0.startsWith("__brush:") ||
+              n0.startsWith("__avp:") ||
               n0.startsWith("__curve:") ||
               n0.startsWith("__fib:") ||
               n0.startsWith("__fibext:") ||
@@ -11058,6 +11211,49 @@ priced.sort((a, b) => a.price - b.price);
         }
 
         // Fib Retracement: 2 points
+        // Anchored Volume Profile — single click sets anchor
+        if (m === "avp") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          clickLockRef.current = true;
+          setSaving(true);
+          try {
+            const note = `__avp:${t}|bins=28|side=right`;
+            const base: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: fp,
+              color: "#2962FF",
+              width: 1,
+              dash: "solid",
+              start_time: t,
+              end_time: t,
+              end_price: fp,
+              note,
+            };
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            if (uid) base.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: t };
+              if (uid) (fb as any).user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Anchored VP placed — tap again for another, or exit tool");
+            } else {
+              setStatusMsg("AVP save failed");
+            }
+          } catch {
+            setStatusMsg("AVP save failed");
+          }
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 250);
+          // stay in avp mode like TV (user can place multiple)
+          return;
+        }
+
         if (m === "fib") {
           const t = resolveTime(param);
           if (t == null) return;
@@ -12117,6 +12313,7 @@ priced.sort((a, b) => a.price - b.price);
         mode === "brush" ||
         mode === "curve" ||
         mode === "rect" ||
+        mode === "avp" ||
         mode === "alarm" ||
         mode === "alarm-ray" ||
         mode === "alarm-diag" ||
@@ -14022,7 +14219,7 @@ priced.sort((a, b) => a.price - b.price);
                   setDrawToolsOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  fibToolsOpen || mode === "fib" || mode === "fib-ext"
+                  fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "avp"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -14075,6 +14272,30 @@ priced.sort((a, b) => a.price - b.price);
                       <path d="M5 18L12 10L19 6" />
                     </svg>
                     Trend-based fib extension
+                  </button>
+                  <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Volume-based</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "avp" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode("avp");
+                      modeRef.current = "avp";
+                      setStatusMsg("Anchored VP: tap chart to set anchor");
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0">
+                      <line x1="4" y1="5" x2="14" y2="5" />
+                      <line x1="4" y1="9" x2="18" y2="9" />
+                      <line x1="4" y1="13" x2="11" y2="13" />
+                      <line x1="4" y1="17" x2="16" y2="17" />
+                      <line x1="4" y1="21" x2="9" y2="21" />
+                    </svg>
+                    Anchored volume profile
                   </button>
                 </div>
               )}
@@ -17008,6 +17229,8 @@ priced.sort((a, b) => a.price - b.price);
                       ? "Rectangle"
                       : typeof l.note === "string" && l.note.startsWith("__brush:")
                       ? "Brush"
+                      : typeof l.note === "string" && l.note.startsWith("__avp:")
+                      ? "Anchored VP"
                       : l.note === "__vline__"
                       ? "Vertical"
                       : isDiagonalLine(l)
