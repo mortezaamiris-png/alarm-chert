@@ -4934,8 +4934,23 @@ export default function DashboardPage() {
             l.note === "__arrow_down__" ||
             l.note === "__arrow_marker__" ||
             l.note.startsWith("__arrow"));
+        const specialNote =
+          typeof l.note === "string" &&
+          (l.note.startsWith("__avwap:") ||
+            l.note.startsWith("__avp:") ||
+            l.note.startsWith("__frvp:") ||
+            l.note.startsWith("__rect:") ||
+            l.note.startsWith("__path:") ||
+            l.note.startsWith("__brush:") ||
+            l.note.startsWith("__curve:") ||
+            l.note.startsWith("__fib:") ||
+            l.note.startsWith("__fibext:") ||
+            l.note.startsWith("__long:") ||
+            l.note.startsWith("__short:") ||
+            l.note.startsWith("__callout:"));
         const isVLine =
           !isArrowMark &&
+          !specialNote &&
           (l.note === "__vline__" ||
             (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
             (l.start_time != null &&
@@ -11802,8 +11817,9 @@ priced.sort((a, b) => a.price - b.price);
               width: 2,
               dash: "solid",
               start_time: t,
-              end_time: t,
-              end_price: fp,
+              // do NOT set end_time === start_time (that marks vertical line elsewhere)
+              end_time: null,
+              end_price: null,
               note,
             };
             const uid = (await supabase.auth.getSession()).data.session?.user?.id;
