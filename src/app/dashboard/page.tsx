@@ -9549,7 +9549,8 @@ priced.sort((a, b) => a.price - b.price);
             modeNow !== "measure" &&
             modeNow !== "move" &&
             modeNow !== "rect" &&
-            modeNow !== "arrow"
+            modeNow !== "arrow" &&
+            modeNow !== "frvp"
           ) {
             return;
           }
@@ -9621,7 +9622,7 @@ priced.sort((a, b) => a.price - b.price);
           }
 
           // Fixed Range VP live preview — verticals + box + live histogram
-          if (modeNow === "frvp" && diagStartRef.current) {
+          if ((modeNow as ToolMode) === "frvp" && diagStartRef.current) {
             const a = diagStartRef.current;
             try {
               const host = vlineOverlayRef.current;
