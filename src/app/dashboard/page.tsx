@@ -260,42 +260,139 @@ function paintVolumeProfileDOM(
   }
   const rangeW = Math.max(20, xRight - xLeft);
 
-  // dimmed box over the profile range
+  // TV: dark semi-transparent overlay over the whole selected range
   if (opts.showBox !== false && layout === "range") {
-    const yTop = ser.priceToCoordinate(vp.bins[vp.bins.length - 1]?.hi ?? vp.poc);
-    const yBot = ser.priceToCoordinate(vp.bins[0]?.lo ?? vp.poc);
-    // full height box is clearer
     const box = document.createElement("div");
     box.style.cssText =
       `position:absolute;left:${xLeft}px;width:${rangeW}px;top:0;bottom:0;` +
-      `background:rgba(41,98,255,0.08);border:1px solid rgba(41,98,255,0.35);box-sizing:border-box;z-index:1;`;
+      `background:rgba(15,23,42,0.42);border-left:1px solid rgba(41,98,255,0.85);` +
+      `border-right:1px solid rgba(41,98,255,0.55);box-sizing:border-box;z-index:1;`;
     host.appendChild(box);
   }
 
-  // POC dashed line across range / chart
+  // TV Fixed Range: histogram sits on the LEFT ~35% of the box, grows rightward
+  // Anchored (right layout): bars hug the right price scale
+  const maxBarW =
+    layout === "range"
+      ? Math.max(28, rangeW * 0.36)
+      : Math.min(200, Math.max(90, (chart.timeScale().width() || 400) * 0.28));
+
+  // Value-area estimate: bins covering ~70% of total volume around POC
+  const totalVol = vp.bins.reduce((s, b) => s + b.vol, 0);
+  let vaLo = vp.poc, vaHi = vp.poc;
+  if (totalVol > 0) {
+    const sorted = [...vp.bins].sort((a, b) => b.vol - a.vol);
+    let acc = 0;
+    const inVa: typeof vp.bins = [];
+    for (const b of sorted) {
+      inVa.push(b);
+      acc += b.vol;
+      if (acc >= totalVol * 0.7) break;
+    }
+    if (inVa.length) {
+      vaLo = Math.min(...inVa.map((b) => b.lo));
+      vaHi = Math.max(...inVa.map((b) => b.hi));
+    }
+  }
+
+  // Value Area outline (TV red/orange box on densest region)
+  if (layout === "range" && vaHi > vaLo) {
+    const yHi = ser.priceToCoordinate(vaHi);
+    const yLo = ser.priceToCoordinate(vaLo);
+    if (yHi != null && yLo != null) {
+      const top = Math.min(Number(yHi), Number(yLo));
+      const h = Math.max(4, Math.abs(Number(yHi) - Number(yLo)));
+      const va = document.createElement("div");
+      va.style.cssText =
+        `position:absolute;left:${xLeft}px;width:${Math.max(12, maxBarW * 1.05)}px;` +
+        `top:${top}px;height:${h}px;border:1px solid rgba(239,83,80,0.75);` +
+        `box-sizing:border-box;z-index:2;pointer-events:none;`;
+      host.appendChild(va);
+    }
+  }
+
+  for (const b of vp.bins) {
+    if (b.vol <= 0) continue;
+    const y0 = ser.priceToCoordinate(b.hi);
+    const y1 = ser.priceToCoordinate(b.lo);
+    if (y0 == null || y1 == null) continue;
+    const top = Math.min(Number(y0), Number(y1));
+    const h = Math.max(1.5, Math.abs(Number(y1) - Number(y0)) - 0.3);
+    const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
+    const mid = (b.lo + b.hi) / 2;
+    const isPoc = Math.abs(mid - vp.poc) < (b.hi - b.lo) * 0.6;
+    const buy = Number(b.buy) || 0;
+    const sell = Number(b.sell) || 0;
+    const buyRatio = buy + sell > 0 ? buy / (buy + sell) : 0.5;
+
+    // TV-like colors: up = blue/cyan, down = yellow/gold (classic VP palette)
+    const buyCol = isPoc ? "rgba(41,98,255,0.85)" : "rgba(41,98,255,0.55)";
+    const sellCol = isPoc ? "rgba(255,193,7,0.85)" : "rgba(255,193,7,0.5)";
+
+    const bar = document.createElement("div");
+    const buyW = Math.max(0, w * buyRatio);
+    const sellW = Math.max(0, w - buyW);
+
+    if (layout === "range") {
+      bar.style.cssText =
+        `position:absolute;top:${top}px;height:${h}px;left:${xLeft}px;width:${w.toFixed(1)}px;` +
+        `display:flex;flex-direction:row;z-index:3;overflow:hidden;` +
+        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
+    } else {
+      bar.style.cssText =
+        `position:absolute;top:${top}px;height:${h}px;right:48px;width:${w.toFixed(1)}px;` +
+        `display:flex;flex-direction:row-reverse;z-index:3;overflow:hidden;` +
+        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
+    }
+    if (buyW > 0.5) {
+      const buyEl = document.createElement("div");
+      buyEl.style.cssText = `width:${buyW}px;height:100%;background:${buyCol};`;
+      bar.appendChild(buyEl);
+    }
+    if (sellW > 0.5) {
+      const sellEl = document.createElement("div");
+      sellEl.style.cssText = `width:${sellW}px;height:100%;background:${sellCol};`;
+      bar.appendChild(sellEl);
+    }
+    host.appendChild(bar);
+  }
+
+  // POC horizontal line — TV style: solid orange across the full range box
   const yPoc = ser.priceToCoordinate(vp.poc);
   if (yPoc != null) {
     const pocEl = document.createElement("div");
     if (layout === "range") {
       pocEl.style.cssText =
         `position:absolute;left:${xLeft}px;width:${rangeW}px;top:${Number(yPoc)}px;height:0;` +
-        `border-top:1px dashed #f59e0b;opacity:0.95;z-index:3;`;
+        `border-top:1.5px solid #f59e0b;opacity:0.95;z-index:5;`;
     } else {
       pocEl.style.cssText =
-        `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:0;` +
-        `border-top:1px dashed #f59e0b;opacity:0.95;z-index:3;`;
+        `position:absolute;left:0;right:48px;top:${Number(yPoc)}px;height:0;` +
+        `border-top:1.5px solid #f59e0b;opacity:0.95;z-index:5;`;
     }
     host.appendChild(pocEl);
+    // small POC marker on left edge
+    const dot = document.createElement("div");
+    if (layout === "range") {
+      dot.style.cssText =
+        `position:absolute;left:${xLeft - 3}px;top:${Number(yPoc) - 3}px;` +
+        `width:6px;height:6px;border-radius:50%;background:#f59e0b;z-index:6;`;
+    } else {
+      dot.style.cssText =
+        `position:absolute;right:45px;top:${Number(yPoc) - 3}px;` +
+        `width:6px;height:6px;border-radius:50%;background:#f59e0b;z-index:6;`;
+    }
+    host.appendChild(dot);
   }
 
-  // Anchor vertical
+  // Anchor / end verticals (FRVP edges)
   if (opts.anchorTime != null) {
     const xA = chart.timeScale().timeToCoordinate(opts.anchorTime as any);
     if (xA != null) {
       const vline = document.createElement("div");
       vline.style.cssText =
         `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:0;` +
-        `border-left:1px dashed rgba(41,98,255,0.85);z-index:2;`;
+        `border-left:1px solid rgba(41,98,255,0.9);z-index:4;`;
       host.appendChild(vline);
     }
   }
@@ -305,73 +402,13 @@ function paintVolumeProfileDOM(
       const vline = document.createElement("div");
       vline.style.cssText =
         `position:absolute;left:${Number(xB)}px;top:0;bottom:0;width:0;` +
-        `border-left:1px dashed rgba(41,98,255,0.55);z-index:2;`;
+        `border-left:1px solid rgba(41,98,255,0.55);z-index:4;`;
       host.appendChild(vline);
-    }
-  }
-
-  const maxBarW = layout === "range" ? rangeW * 0.92 : Math.min(200, Math.max(90, (chart.timeScale().width() || 400) * 0.3));
-
-  for (const b of vp.bins) {
-    if (b.vol <= 0) continue;
-    const y0 = ser.priceToCoordinate(b.hi);
-    const y1 = ser.priceToCoordinate(b.lo);
-    if (y0 == null || y1 == null) continue;
-    const top = Math.min(Number(y0), Number(y1));
-    const h = Math.max(2, Math.abs(Number(y1) - Number(y0)) - 0.4);
-    const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
-    const mid = (b.lo + b.hi) / 2;
-    const isPoc = Math.abs(mid - vp.poc) < (b.hi - b.lo) * 0.55;
-    const buy = Number(b.buy) || 0;
-    const sell = Number(b.sell) || 0;
-    const buyRatio = buy + sell > 0 ? buy / (buy + sell) : 0.5;
-
-    if (layout === "range") {
-      // bars grow from LEFT of the range box (TV style)
-      const bar = document.createElement("div");
-      // split buy/sell coloring
-      const buyW = Math.max(0, w * buyRatio);
-      const sellW = Math.max(0, w - buyW);
-      bar.style.cssText =
-        `position:absolute;top:${top}px;height:${h}px;left:${xLeft}px;width:${w.toFixed(1)}px;` +
-        `display:flex;flex-direction:row;z-index:2;border-radius:1px;overflow:hidden;` +
-        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
-      if (buyW > 0) {
-        const buyEl = document.createElement("div");
-        buyEl.style.cssText = `width:${buyW}px;height:100%;background:rgba(8,153,129,0.55);`;
-        bar.appendChild(buyEl);
-      }
-      if (sellW > 0) {
-        const sellEl = document.createElement("div");
-        sellEl.style.cssText = `width:${sellW}px;height:100%;background:rgba(242,54,69,0.55);`;
-        bar.appendChild(sellEl);
-      }
-      host.appendChild(bar);
-    } else {
-      // right-aligned bars (Anchored VP classic)
-      const bar = document.createElement("div");
-      const buyW = Math.max(0, w * buyRatio);
-      const sellW = Math.max(0, w - buyW);
-      bar.style.cssText =
-        `position:absolute;top:${top}px;height:${h}px;right:48px;width:${w.toFixed(1)}px;` +
-        `display:flex;flex-direction:row-reverse;z-index:2;border-radius:1px;overflow:hidden;` +
-        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
-      if (buyW > 0) {
-        const buyEl = document.createElement("div");
-        buyEl.style.cssText = `width:${buyW}px;height:100%;background:rgba(8,153,129,0.55);`;
-        bar.appendChild(buyEl);
-      }
-      if (sellW > 0) {
-        const sellEl = document.createElement("div");
-        sellEl.style.cssText = `width:${sellW}px;height:100%;background:rgba(242,54,69,0.55);`;
-        bar.appendChild(sellEl);
-      }
-      host.appendChild(bar);
     }
   }
 }
 
-/** Project price on a diagonal line at unix time t (extends beyond end). */
+
 function projectedPriceOnDiag(
   startTime: number,
   startPrice: number,
@@ -5620,7 +5657,7 @@ priced.sort((a, b) => a.price - b.price);
             const anchor = Number(parts[0]);
             let binsN = 32;
             for (const p of parts.slice(1)) {
-              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(48, parseInt(p.slice(5), 10) || 32));
+              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
@@ -5663,9 +5700,9 @@ priced.sort((a, b) => a.price - b.price);
             const parts = body.split("|");
             const t0 = Number(parts[0]);
             const t1 = Number(parts[1]);
-            let binsN = 32;
+            let binsN = 48;
             for (const p of parts.slice(2)) {
-              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(48, parseInt(p.slice(5), 10) || 32));
+              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
@@ -9660,7 +9697,7 @@ priced.sort((a, b) => a.price - b.price);
                   const t0 = Math.min(a.time, tCursor);
                   const t1 = Math.max(a.time, tCursor);
                   if (Math.abs(t1 - t0) > 1) {
-                    const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, 28);
+                    const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, 48);
                     if (vp) {
                       const wrap = document.createElement("div");
                       wrap.setAttribute("data-frvp-preview", "1");
@@ -11719,7 +11756,7 @@ priced.sort((a, b) => a.price - b.price);
           clickLockRef.current = true;
           setSaving(true);
           try {
-            const note = `__frvp:${t0}|${t1}|bins=32`;
+            const note = `__frvp:${t0}|${t1}|bins=48`;
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: start.price,
