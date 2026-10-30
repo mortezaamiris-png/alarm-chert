@@ -2010,6 +2010,7 @@ export default function DashboardPage() {
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
   const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
+  const rectDragRafRef = useRef(0);
   const rectDragRef = useRef<null | {
     id: string;
     role: string; // body | nw|n|ne|w|e|sw|s|se
@@ -4658,15 +4659,24 @@ export default function DashboardPage() {
             else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
             else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
             else { tFrom = tA; tTo = tB; } // none — only between anchors
-            // Fib levels as DOM lines (no LineSeries) — eliminates lag while panning
+            // Fib levels as DOM lines — clamp coords so labels/lines never vanish off-scale
             const fibLabelMetas: any[] = [];
             try {
               const hostF = vlineOverlayRef.current;
               const chartF = chartRef.current;
               const serF = seriesRef.current;
               if (hostF && chartF && serF) {
+                const plotW = Math.max(50, Number((chartF.timeScale() as any).width?.() ?? hostF.clientWidth ?? 300));
+                const fmtFibPx = (v: number) => {
+                  const a = Math.abs(v);
+                  if (a >= 1000) return v.toFixed(2);
+                  if (a >= 1) return v.toFixed(4);
+                  if (a >= 0.01) return v.toFixed(5);
+                  return v.toFixed(6);
+                };
                 for (let i = 0; i < fib.levels.length; i++) {
-                  const lv = fib.levels[i];
+                  const lv = Number(fib.levels[i]);
+                  if (!Number.isFinite(lv)) continue;
                   let price: number;
                   if (fib.kind === "fib-ext" && fib.p3 != null) {
                     price = fib.p3 + (fib.p2 - fib.p1) * lv;
@@ -4678,12 +4688,18 @@ export default function DashboardPage() {
                   const col = (fib.colors && fib.colors[i]) ||
                     (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - lv) < 1e-6)?.color) ||
                     "#787B86";
-                  const x0 = chartF.timeScale().timeToCoordinate(Number(tFrom) as any);
-                  const x1 = chartF.timeScale().timeToCoordinate(Number(tTo) as any);
+                  let x0 = chartF.timeScale().timeToCoordinate(Number(tFrom) as any) as number | null;
+                  let x1 = chartF.timeScale().timeToCoordinate(Number(tTo) as any) as number | null;
+                  // Clamp off-scale times to plot edges (extend left/right)
+                  if (x0 == null) x0 = ext === "left" || ext === "both" || ext === "none" ? 0 : 0;
+                  if (x1 == null) x1 = plotW - 2;
+                  if (x0 != null && x1 != null && Number(x1) < Number(x0)) {
+                    const tmp = x0; x0 = x1; x1 = tmp;
+                  }
                   const y = serF.priceToCoordinate(price);
-                  if (x0 == null || x1 == null || y == null) continue;
+                  if (y == null) continue;
                   const left = Math.min(Number(x0), Number(x1));
-                  const width = Math.max(2, Math.abs(Number(x1) - Number(x0)));
+                  const widthPx = Math.max(2, Math.abs(Number(x1) - Number(x0)));
                   const lineEl = document.createElement("div");
                   lineEl.dataset.fibLine = "1";
                   lineEl.dataset.fibId = String(l.id);
@@ -4695,16 +4711,14 @@ export default function DashboardPage() {
                     fib.lineStyle === "dashed" ? "dashed" :
                     fib.lineStyle === "dotted" ? "dotted" : "solid";
                   lineEl.style.cssText =
-                    `position:absolute;left:${left}px;top:${Number(y)}px;width:${width}px;height:0;` +
+                    `position:absolute;left:${left}px;top:${Number(y)}px;width:${widthPx}px;height:0;` +
                     `border-top:${bw}px ${borderStyle} ${col};pointer-events:none;z-index:6;`;
                   hostF.appendChild(lineEl);
 
-                  const showLv = fib.showLevels !== false;
-                  const showPx = fib.showPrices !== false;
                   let labelText = "";
-                  if (showLv && showPx) labelText = `${lv} (${price})`;
+                  if (showLv && showPx) labelText = `${lv} (${fmtFibPx(price)})`;
                   else if (showLv) labelText = String(lv);
-                  else if (showPx) labelText = String(price);
+                  else if (showPx) labelText = fmtFibPx(price);
                   if (labelText) {
                     const labH = fib.labelH || "right";
                     const labV = fib.labelV || "middle";
@@ -4842,7 +4856,7 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch {}
             } // end fib.background
-            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries, fibLabelMetas: (extraSeries as any).__fibLabelMetas || [] });
+            (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries, fibLabelMetas });
             } // end visOk
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
@@ -5477,16 +5491,21 @@ priced.sort((a, b) => a.price - b.price);
             for (const meta of list) {
               if (!meta || !meta.text) continue;
               try {
-                let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
                 const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
-                if (x == null || y == null) continue;
+                if (y == null) continue;
+                let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
                 if (meta.magnetRight) {
                   try {
-                    const w = Number((chart2.timeScale() as any).width?.() ?? 0);
-                    if (w > 20) x = w - 6;
-                  } catch {}
+                    const w = Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 0);
+                    x = w > 20 ? w - 6 : (x ?? 0);
+                  } catch { x = x ?? 0; }
                 } else if (meta.magnetLeft) {
                   x = 6;
+                } else if (x == null) {
+                  try {
+                    const w = Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 0);
+                    x = w > 20 ? w - 8 : 0;
+                  } catch { continue; }
                 }
                 const el = document.createElement("div");
                 el.dataset.fibLabel = "1";
@@ -5614,14 +5633,17 @@ priced.sort((a, b) => a.price - b.price);
               const lo = Number(el.dataset.fibLo);
               const hi = Number(el.dataset.fibHi);
               if (!Number.isFinite(t0) || !Number.isFinite(hi)) return;
-              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
-              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              let x0 = chart2.timeScale().timeToCoordinate(t0 as any) as number | null;
+              let x1 = chart2.timeScale().timeToCoordinate(t1 as any) as number | null;
               const y0 = ser2.priceToCoordinate(hi);
               const y1 = ser2.priceToCoordinate(lo);
-              if (x0 == null || x1 == null || y0 == null || y1 == null) {
+              if (y0 == null || y1 == null) {
                 el.style.display = "none";
                 return;
               }
+              const plotW = Math.max(50, Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 300));
+              if (x0 == null) x0 = 0;
+              if (x1 == null) x1 = plotW - 2;
               el.style.display = "block";
               el.style.left = `${Math.min(Number(x0), Number(x1))}px`;
               el.style.top = `${Math.min(Number(y0), Number(y1))}px`;
@@ -5634,13 +5656,16 @@ priced.sort((a, b) => a.price - b.price);
               const t1 = Number(el.dataset.fibT1);
               const price = Number(el.dataset.fibPrice);
               if (!Number.isFinite(t0) || !Number.isFinite(price)) return;
-              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
-              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              let x0 = chart2.timeScale().timeToCoordinate(t0 as any) as number | null;
+              let x1 = chart2.timeScale().timeToCoordinate(t1 as any) as number | null;
               const y = ser2.priceToCoordinate(price);
-              if (x0 == null || x1 == null || y == null) {
+              if (y == null) {
                 el.style.display = "none";
                 return;
               }
+              const plotW = Math.max(50, Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 300));
+              if (x0 == null) x0 = 0;
+              if (x1 == null) x1 = plotW - 2;
               el.style.display = "block";
               el.style.left = `${Math.min(Number(x0), Number(x1))}px`;
               el.style.top = `${Number(y)}px`;
@@ -5659,16 +5684,22 @@ priced.sort((a, b) => a.price - b.price);
             let ei = 0;
             const placeLabel = (meta: any) => {
               if (!meta || !meta.text) return;
-              let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
               const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
-              if (x == null || y == null) return;
+              if (y == null) return;
+              let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
               if (meta.magnetRight) {
                 try {
-                  const w = Number((chart2.timeScale() as any).width?.() ?? 0);
-                  if (w > 20) x = w - 6;
-                } catch {}
+                  const w = Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 0);
+                  x = w > 20 ? w - 6 : (x ?? 0);
+                } catch { x = x ?? 0; }
               } else if (meta.magnetLeft) {
                 x = 6;
+              } else if (x == null) {
+                // fallback: right side of plot so label still shows
+                try {
+                  const w = Number((chart2.timeScale() as any).width?.() ?? host.clientWidth ?? 0);
+                  x = w > 20 ? w - 8 : 0;
+                } catch { return; }
               }
               let el = existing[ei++];
               if (!el) {
@@ -7033,52 +7064,71 @@ priced.sort((a, b) => a.price - b.price);
         startY: ev.clientY,
         startT0: t0, startT1: t1, startP0: p0, startP1: p1,
       };
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+          handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: true, mouseWheel: true, pinch: false },
+        });
+      } catch {}
       try { (handle || box).setPointerCapture?.(ev.pointerId); } catch {}
     };
     const onMove = (ev: PointerEvent) => {
       const drag = rectDragRef.current;
       if (!drag) return;
-      const tNow = timeFromClientX(ev.clientX);
-      const pNow = priceFromClientY(ev.clientY);
-      if (tNow == null || pNow == null) return;
-      let t0 = drag.startT0, t1 = drag.startT1, p0 = drag.startP0, p1 = drag.startP1;
-      const role = drag.role;
-      if (role === "body") {
-        const tA = timeFromClientX(drag.startX);
-        const pA = priceFromClientY(drag.startY);
-        if (tA == null || pA == null) return;
-        const dt = tNow - tA;
-        const dp = pNow - pA;
-        t0 = drag.startT0 + dt;
-        t1 = drag.startT1 + dt;
-        p0 = drag.startP0 + dp;
-        p1 = drag.startP1 + dp;
-      } else if (role === "n") {
-        p1 = pNow;
-      } else if (role === "s") {
-        p0 = pNow;
-      } else if (role === "w") {
-        t0 = tNow;
-      } else if (role === "e") {
-        t1 = tNow;
-      } else if (role === "nw") {
-        t0 = tNow; p1 = pNow;
-      } else if (role === "ne") {
-        t1 = tNow; p1 = pNow;
-      } else if (role === "sw") {
-        t0 = tNow; p0 = pNow;
-      } else if (role === "se") {
-        t1 = tNow; p0 = pNow;
-      }
-      if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
-      if (p0 > p1) { const tmp = p0; p0 = p1; p1 = tmp; }
-      drag.t0 = t0; drag.t1 = t1; drag.p0 = p0; drag.p1 = p1;
-      applyVisual(drag.id, t0, t1, p0, p1);
+      if (rectDragRafRef.current) return;
+      const cx = ev.clientX, cy = ev.clientY;
+      rectDragRafRef.current = requestAnimationFrame(() => {
+        rectDragRafRef.current = 0;
+        const drag2 = rectDragRef.current;
+        if (!drag2) return;
+        const tNow = timeFromClientX(cx);
+        const pNow = priceFromClientY(cy);
+        if (tNow == null || pNow == null) return;
+        let t0 = drag2.startT0, t1 = drag2.startT1, p0 = drag2.startP0, p1 = drag2.startP1;
+        const role = drag2.role;
+        if (role === "body") {
+          const tA = timeFromClientX(drag2.startX);
+          const pA = priceFromClientY(drag2.startY);
+          if (tA == null || pA == null) return;
+          const dt = tNow - tA;
+          const dp = pNow - pA;
+          t0 = drag2.startT0 + dt;
+          t1 = drag2.startT1 + dt;
+          p0 = drag2.startP0 + dp;
+          p1 = drag2.startP1 + dp;
+        } else if (role === "n") {
+          p1 = pNow;
+        } else if (role === "s") {
+          p0 = pNow;
+        } else if (role === "w") {
+          t0 = tNow;
+        } else if (role === "e") {
+          t1 = tNow;
+        } else if (role === "nw") {
+          t0 = tNow; p1 = pNow;
+        } else if (role === "ne") {
+          t1 = tNow; p1 = pNow;
+        } else if (role === "sw") {
+          t0 = tNow; p0 = pNow;
+        } else if (role === "se") {
+          t1 = tNow; p0 = pNow;
+        }
+        if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
+        if (p0 > p1) { const tmp = p0; p0 = p1; p1 = tmp; }
+        drag2.t0 = t0; drag2.t1 = t1; drag2.p0 = p0; drag2.p1 = p1;
+        applyVisual(drag2.id, t0, t1, p0, p1);
+      });
     };
     const onUp = async () => {
       const drag = rectDragRef.current;
       if (!drag) return;
       rectDragRef.current = null;
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+          handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+        });
+      } catch {}
       const { id, t0, t1, p0, p1 } = drag;
       const prev = (linesRef.current || []).find((x) => x.id === id);
       const prevP = prev?.note ? parseRectNote(String(prev.note)) : null;
