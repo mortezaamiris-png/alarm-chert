@@ -906,7 +906,11 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
-  if (s.startsWith("__rect:")) return "Rectangle";
+  if (s.startsWith("__rect:")) {
+    const rp = parseRectNote(s);
+    if (rp?.text) return rp.text;
+    return "";
+  }
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
@@ -1131,6 +1135,7 @@ function denseDiagPoints(
 function parseRectNote(note: string): {
   t0: number; t1: number; p0: number; p1: number;
   fill: string; fillOpacity: number;
+  text: string;
 } | null {
   if (!note || !note.startsWith("__rect:")) return null;
   const raw = note.replace(/^__rect:/, "");
@@ -1143,12 +1148,15 @@ function parseRectNote(note: string): {
   if (![t0, t1, p0, p1].every(Number.isFinite)) return null;
   let fill = "#787B86";
   let fillOpacity = 28;
+  let text = "";
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p.startsWith("fill=")) fill = p.slice(5) || fill;
     else if (p.startsWith("fo=")) {
       const n = Number(p.slice(3));
       if (Number.isFinite(n)) fillOpacity = Math.max(0, Math.min(100, n));
+    } else if (p.startsWith("txt=")) {
+      try { text = decodeURIComponent(p.slice(4)); } catch { text = p.slice(4); }
     }
   }
   return {
@@ -1158,13 +1166,16 @@ function parseRectNote(note: string): {
     p1: Math.max(p0, p1),
     fill,
     fillOpacity,
+    text,
   };
 }
 function buildRectNote(
   t0: number, t1: number, p0: number, p1: number,
-  fill = "#787B86", fillOpacity = 28
+  fill = "#787B86", fillOpacity = 28, text = ""
 ): string {
-  return `__rect:${Math.min(t0,t1)},${Math.min(p0,p1)}|${Math.max(t0,t1)},${Math.max(p0,p1)}|fill=${fill}|fo=${fillOpacity}`;
+  let s = `__rect:${Math.min(t0,t1)},${Math.min(p0,p1)}|${Math.max(t0,t1)},${Math.max(p0,p1)}|fill=${fill}|fo=${fillOpacity}`;
+  if (text && String(text).trim()) s += `|txt=${encodeURIComponent(String(text).trim())}`;
+  return s;
 }
 
 /** Format unix seconds in a given IANA timezone */
@@ -2011,6 +2022,7 @@ export default function DashboardPage() {
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
   const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
   const rectDragRafRef = useRef(0);
+  const selectedRectIdRef = useRef<string | null>(null);
   const rectDragRef = useRef<null | {
     id: string;
     role: string; // body | nw|n|ne|w|e|sw|s|se
@@ -5138,7 +5150,7 @@ priced.sort((a, b) => a.price - b.price);
         } else if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
           const rp = parseRectNote(String(l.note));
           if (rp) {
-            const { t0, t1, p0, p1, fill, fillOpacity } = rp;
+            const { t0, t1, p0, p1, fill, fillOpacity, text } = rp;
             if (t0 !== t1) {
               try {
                 const host = vlineOverlayRef.current;
@@ -5166,29 +5178,44 @@ priced.sort((a, b) => a.price - b.price);
                     const borderStyle =
                       dash === "dashed" ? "dashed" : dash === "dotted" ? "dotted" : "solid";
                     const fo = Math.max(0, Math.min(100, fillOpacity)) / 100;
+                    const selected = selectedRectIdRef.current === String(l.id);
                     box.style.cssText =
                       `position:absolute;left:${left}px;top:${top}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;` +
                       `background:${hexToRgba(fill, fo)};border:${bw}px ${borderStyle} ${col};` +
                       `pointer-events:auto;z-index:12;box-sizing:border-box;cursor:move;`;
-                    const hs: [string, string, string][] = [
-                      ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
-                      ["w", "0%", "50%"], ["e", "100%", "50%"],
-                      ["sw", "0%", "100%"], ["s", "50%", "100%"], ["se", "100%", "100%"],
-                    ];
-                    for (const [role, leftP, topP] of hs) {
-                      const hEl = document.createElement("div");
-                      hEl.dataset.rectId = String(l.id);
-                      hEl.dataset.rectHandle = role;
-                      const cursor =
-                        role === "n" || role === "s" ? "ns-resize" :
-                        role === "e" || role === "w" ? "ew-resize" :
-                        role === "ne" || role === "sw" ? "nesw-resize" : "nwse-resize";
-                      hEl.style.cssText =
-                        `position:absolute;left:${leftP};top:${topP};width:10px;height:10px;` +
-                        `transform:translate(-50%,-50%);border-radius:50%;background:#3b82f6;` +
-                        `border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.35);` +
-                        `pointer-events:auto;z-index:13;cursor:${cursor};`;
-                      box.appendChild(hEl);
+                    // note label above box
+                    if (text && String(text).trim()) {
+                      const lab = document.createElement("div");
+                      lab.dataset.rectLabel = "1";
+                      lab.textContent = String(text).trim();
+                      lab.style.cssText =
+                        `position:absolute;left:0;bottom:100%;margin-bottom:2px;padding:1px 6px;` +
+                        `font-size:11px;line-height:1.2;color:#e5e7eb;background:rgba(15,18,22,0.85);` +
+                        `border-radius:4px;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;` +
+                        `pointer-events:none;z-index:14;`;
+                      box.appendChild(lab);
+                    }
+                    if (selected) {
+                      const hs: [string, string, string][] = [
+                        ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
+                        ["w", "0%", "50%"], ["e", "100%", "50%"],
+                        ["sw", "0%", "100%"], ["s", "50%", "100%"], ["se", "100%", "100%"],
+                      ];
+                      for (const [role, leftP, topP] of hs) {
+                        const hEl = document.createElement("div");
+                        hEl.dataset.rectId = String(l.id);
+                        hEl.dataset.rectHandle = role;
+                        const cursor =
+                          role === "n" || role === "s" ? "ns-resize" :
+                          role === "e" || role === "w" ? "ew-resize" :
+                          role === "ne" || role === "sw" ? "nesw-resize" : "nwse-resize";
+                        hEl.style.cssText =
+                          `position:absolute;left:${leftP};top:${topP};width:11px;height:11px;` +
+                          `transform:translate(-50%,-50%);border-radius:50%;background:#3b82f6;` +
+                          `border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.35);` +
+                          `pointer-events:auto;z-index:13;cursor:${cursor};touch-action:none;`;
+                        box.appendChild(hEl);
+                      }
                     }
                     host.appendChild(box);
                   }
@@ -6945,17 +6972,17 @@ priced.sort((a, b) => a.price - b.price);
   }, []);
 
 
-  // Rectangle: drag body + 8 handles (TV style)
+  // Rectangle: drag body + 8 handles (TV style) — selected handles only
   useEffect(() => {
     const timeFromClientX = (clientX: number): number | null => {
       const chart = chartRef.current;
+      const candles = candlesRef.current || [];
       const rect = chartContainerRef.current?.getBoundingClientRect();
-      if (!chart || !rect) return null;
+      if (!chart || !rect || !candles.length) return null;
       const x = clientX - rect.left;
       const logical = chart.timeScale().coordinateToLogical(x);
-      const candles = candlesRef.current;
+      if (logical == null || Number.isNaN(Number(logical))) return null;
       const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
-      if (logical == null || !candles.length) return null;
       const lastIdx = candles.length - 1;
       if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
       if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
@@ -6969,13 +6996,28 @@ priced.sort((a, b) => a.price - b.price);
       const pr = series.coordinateToPrice(y);
       return pr != null && Number.isFinite(pr) ? Number(pr) : null;
     };
-    const applyVisual = (id: string, t0: number, t1: number, p0: number, p1: number) => {
-      const host = vlineOverlayRef.current;
+    const lockChart = (lock: boolean) => {
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: !lock,
+            horzTouchDrag: !lock,
+            vertTouchDrag: !lock,
+          },
+          handleScale: {
+            axisPressedMouseMove: !lock,
+            axisDoubleClickReset: true,
+            mouseWheel: true,
+            pinch: !lock,
+          },
+        });
+      } catch {}
+    };
+    const applyVisual = (box: HTMLElement, t0: number, t1: number, p0: number, p1: number) => {
       const chart2 = chartRef.current;
       const ser2 = seriesRef.current;
-      if (!host || !chart2 || !ser2) return;
-      const box = host.querySelector(`[data-rect-id="${id}"]:not([data-rect-handle])`) as HTMLElement | null;
-      if (!box) return;
+      if (!chart2 || !ser2) return;
       const x0 = chart2.timeScale().timeToCoordinate(Math.min(t0, t1) as any);
       const x1 = chart2.timeScale().timeToCoordinate(Math.max(t0, t1) as any);
       const y0 = ser2.priceToCoordinate(Math.max(p0, p1));
@@ -6990,16 +7032,42 @@ priced.sort((a, b) => a.price - b.price);
       box.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
       box.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
     };
+    const selectRect = (id: string | null) => {
+      if (selectedRectIdRef.current === id) return;
+      selectedRectIdRef.current = id;
+      // lightweight: only re-render lines overlay for handle visibility
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    };
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as HTMLElement | null;
       if (!t) return;
       const handle = t.closest?.("[data-rect-handle]") as HTMLElement | null;
       let box = t.closest?.("[data-rect-id]") as HTMLElement | null;
-      if (handle) box = handle.closest?.("[data-rect-id]:not([data-rect-handle])") as HTMLElement | null
-        || handle.parentElement;
-      if (!handle && box && box.dataset.rectHandle) return;
-      if (!box || !box.dataset.rectT0 || !box.dataset.rectId) return;
-      const id = box.dataset.rectId;
+      if (handle) {
+        box = (handle.closest?.("[data-rect-id]:not([data-rect-handle])") as HTMLElement | null)
+          || handle.parentElement;
+      }
+      // click outside any rect → deselect handles
+      if (!box || (box.dataset.rectHandle && !handle)) {
+        if (selectedRectIdRef.current && !t.closest?.("[data-rect-id]")) {
+          // only deselect if click is inside chart container
+          const inChart = !!t.closest?.("[data-chart-root], .tv-chart, #chart-container")
+            || !!chartContainerRef.current?.contains(t);
+          if (inChart || t === chartContainerRef.current) {
+            selectRect(null);
+          }
+        }
+        return;
+      }
+      if (!box.dataset.rectT0 || !box.dataset.rectId) return;
+      const id = String(box.dataset.rectId);
+      const wasSelected = selectedRectIdRef.current === id;
+      // first tap on body → only select (show handles); drag needs already-selected or a handle
+      if (!wasSelected) {
+        selectedRectIdRef.current = id;
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        if (!handle) return;
+      }
       const role = handle ? (handle.dataset.rectHandle || "body") : "body";
       const t0 = Number(box.dataset.rectT0);
       const t1 = Number(box.dataset.rectT1);
@@ -7009,70 +7077,75 @@ priced.sort((a, b) => a.price - b.price);
       ev.preventDefault();
       ev.stopPropagation();
       rectDragRef.current = {
-        id: String(id),
+        id,
         role,
         t0, t1, p0, p1,
         startX: ev.clientX,
         startY: ev.clientY,
         startT0: t0, startT1: t1, startP0: p0, startP1: p1,
-      };
+        box,
+      } as any;
+      lockChart(true);
       try { (handle || box).setPointerCapture?.(ev.pointerId); } catch {}
     };
     const onMove = (ev: PointerEvent) => {
-      const drag = rectDragRef.current;
+      const drag = rectDragRef.current as any;
       if (!drag) return;
       if (rectDragRafRef.current) return;
       const cx = ev.clientX, cy = ev.clientY;
       rectDragRafRef.current = requestAnimationFrame(() => {
         rectDragRafRef.current = 0;
-        const drag2 = rectDragRef.current;
+        const drag2 = rectDragRef.current as any;
         if (!drag2) return;
         const tNow = timeFromClientX(cx);
         const pNow = priceFromClientY(cy);
         if (tNow == null || pNow == null) return;
         let t0 = drag2.startT0, t1 = drag2.startT1, p0 = drag2.startP0, p1 = drag2.startP1;
         const role = drag2.role;
-      if (role === "body") {
-        const tA = timeFromClientX(drag2.startX);
-        const pA = priceFromClientY(drag2.startY);
-        if (tA == null || pA == null) return;
-        const dt = tNow - tA;
-        const dp = pNow - pA;
-        t0 = drag2.startT0 + dt;
-        t1 = drag2.startT1 + dt;
-        p0 = drag2.startP0 + dp;
-        p1 = drag2.startP1 + dp;
-      } else if (role === "n") {
-        p1 = pNow;
-      } else if (role === "s") {
-        p0 = pNow;
-      } else if (role === "w") {
-        t0 = tNow;
-      } else if (role === "e") {
-        t1 = tNow;
-      } else if (role === "nw") {
-        t0 = tNow; p1 = pNow;
-      } else if (role === "ne") {
-        t1 = tNow; p1 = pNow;
-      } else if (role === "sw") {
-        t0 = tNow; p0 = pNow;
-      } else if (role === "se") {
-        t1 = tNow; p0 = pNow;
-      }
-      if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
-      if (p0 > p1) { const tmp = p0; p0 = p1; p1 = tmp; }
-      drag2.t0 = t0; drag2.t1 = t1; drag2.p0 = p0; drag2.p1 = p1;
-      applyVisual(drag2.id, t0, t1, p0, p1);
-    });
+        if (role === "body") {
+          const tA = timeFromClientX(drag2.startX);
+          const pA = priceFromClientY(drag2.startY);
+          if (tA == null || pA == null) return;
+          const dt = tNow - tA;
+          const dp = pNow - pA;
+          t0 = drag2.startT0 + dt;
+          t1 = drag2.startT1 + dt;
+          p0 = drag2.startP0 + dp;
+          p1 = drag2.startP1 + dp;
+        } else if (role === "n") p1 = pNow;
+        else if (role === "s") p0 = pNow;
+        else if (role === "w") t0 = tNow;
+        else if (role === "e") t1 = tNow;
+        else if (role === "nw") { t0 = tNow; p1 = pNow; }
+        else if (role === "ne") { t1 = tNow; p1 = pNow; }
+        else if (role === "sw") { t0 = tNow; p0 = pNow; }
+        else if (role === "se") { t1 = tNow; p0 = pNow; }
+        if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
+        if (p0 > p1) { const tmp = p0; p0 = p1; p1 = tmp; }
+        drag2.t0 = t0; drag2.t1 = t1; drag2.p0 = p0; drag2.p1 = p1;
+        const box = drag2.box as HTMLElement | null;
+        if (box && box.isConnected) applyVisual(box, t0, t1, p0, p1);
+        else {
+          const host = vlineOverlayRef.current;
+          const el = host?.querySelector(`[data-rect-id="${drag2.id}"]:not([data-rect-handle])`) as HTMLElement | null;
+          if (el) applyVisual(el, t0, t1, p0, p1);
+        }
+      });
     };
     const onUp = async () => {
-      const drag = rectDragRef.current;
+      const drag = rectDragRef.current as any;
       if (!drag) return;
       rectDragRef.current = null;
+      lockChart(false);
       const { id, t0, t1, p0, p1 } = drag;
-      const prev = (linesRef.current || []).find((x) => x.id === id);
+      const prev = (linesRef.current || []).find((x: any) => x.id === id);
       const prevP = prev?.note ? parseRectNote(String(prev.note)) : null;
-      const note = buildRectNote(t0, t1, p0, p1, prevP?.fill || "#787B86", prevP?.fillOpacity ?? 28);
+      const note = buildRectNote(
+        t0, t1, p0, p1,
+        prevP?.fill || "#787B86",
+        prevP?.fillOpacity ?? 28,
+        prevP?.text || ""
+      );
       setLines((prev) =>
         prev.map((x) =>
           x.id === id
@@ -7103,10 +7176,12 @@ priced.sort((a, b) => a.price - b.price);
     document.addEventListener("pointerdown", onDown, true);
     document.addEventListener("pointermove", onMove, true);
     document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", onUp, true);
     return () => {
       document.removeEventListener("pointerdown", onDown, true);
       document.removeEventListener("pointermove", onMove, true);
       document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", onUp, true);
     };
   }, []);
 
@@ -12668,7 +12743,7 @@ priced.sort((a, b) => a.price - b.price);
         if (l.id !== id || !String(l.note || "").startsWith("__rect:")) return l;
         const p = parseRectNote(String(l.note));
         if (!p) return l;
-        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity);
+        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity, p.text || "");
         return { ...l, note };
       })
     );
@@ -12676,7 +12751,7 @@ priced.sort((a, b) => a.price - b.price);
       const cur = (linesRef.current || []).find((x) => x.id === id);
       const p = cur?.note ? parseRectNote(String(cur.note)) : null;
       if (p) {
-        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity);
+        const note = buildRectNote(p.t0, p.t1, p.p0, p.p1, fill, fillOpacity ?? p.fillOpacity, p.text || "");
         await supabase.from("chart_lines").update({ note }).eq("id", id);
       }
     } catch {}
@@ -12832,6 +12907,11 @@ priced.sort((a, b) => a.price - b.price);
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         } else if (s.startsWith("__callout:")) {
           noteToSave = `__callout:${noteDraft.trim()}`;
+        } else if (s.startsWith("__rect:")) {
+          const rp = parseRectNote(s);
+          if (rp) {
+            noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
+          }
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
           noteToSave = s; // vertical lines have no user note slot
         }
@@ -14198,7 +14278,7 @@ priced.sort((a, b) => a.price - b.price);
               <div
                 ref={paneSepRef}
                 className="absolute inset-0 overflow-hidden rounded-xl"
-                style={{ zIndex: 22, pointerEvents: "none" }}
+                style={{ zIndex: 28, pointerEvents: "none" }}
               />
               {/* Hollow circle handles — same coordinate space as chart */}
               <div
