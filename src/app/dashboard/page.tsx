@@ -5333,13 +5333,13 @@ priced.sort((a, b) => a.price - b.price);
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
-          // Freehand brush — DOM SVG (order preserved; may go back in time)
           try {
             const raw = l.note.replace(/^__brush:/, "");
             const pts = raw.split("|").map((s) => {
+              if (s.startsWith("txt=")) return null;
               const [tt, pp] = s.split(",");
               return { time: Number(tt), price: Number(pp) };
-            }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+            }).filter((p): p is { time: number; price: number } => !!p && Number.isFinite(p.time) && Number.isFinite(p.price));
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
@@ -5349,12 +5349,15 @@ priced.sort((a, b) => a.price - b.price);
                 const x = chart2.timeScale().timeToCoordinate(p.time as any);
                 const y = ser2.priceToCoordinate(p.price);
                 if (x == null || y == null) continue;
-                coords.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
               }
               if (coords.length >= 2) {
+                const wrap = document.createElement("div");
+                wrap.setAttribute("data-brush-id", String(l.id));
+                wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
+                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
                 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                svg.setAttribute("data-brush-id", String(l.id));
-                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
+                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
                 const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
                 poly.setAttribute("points", coords.join(" "));
                 poly.setAttribute("fill", "none");
@@ -5363,7 +5366,8 @@ priced.sort((a, b) => a.price - b.price);
                 poly.setAttribute("stroke-linecap", "round");
                 poly.setAttribute("stroke-linejoin", "round");
                 svg.appendChild(poly);
-                host.appendChild(svg);
+                wrap.appendChild(svg);
+                host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __brushDom: true } as any);
               }
             }
@@ -5685,7 +5689,27 @@ priced.sort((a, b) => a.price - b.price);
               el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
               el.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
             });
-            // Fib background bands (DOM) track pan
+            
+            host.querySelectorAll("[data-brush-id]").forEach((node) => {
+              const el = node as HTMLElement;
+              const raw = el.dataset.brushPts || "";
+              if (!raw) return;
+              const pts = raw.split("|").map((s) => {
+                const [tt, pp] = s.split(",");
+                return { time: Number(tt), price: Number(pp) };
+              }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+              const coords: string[] = [];
+              for (const p of pts) {
+                const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                const y = ser2.priceToCoordinate(p.price);
+                if (x == null || y == null) continue;
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+              }
+              el.querySelectorAll("polyline").forEach((poly) => {
+                poly.setAttribute("points", coords.join(" "));
+              });
+            });
+// Fib background bands (DOM) track pan
             host.querySelectorAll("[data-fib-band]").forEach((node) => {
               const el = node as HTMLElement;
               const t0 = Number(el.dataset.fibT0);
@@ -7260,9 +7284,15 @@ priced.sort((a, b) => a.price - b.price);
       if (logical == null || Number.isNaN(Number(logical))) return null;
       const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
       const lastIdx = candles.length - 1;
-      if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
-      if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
-      return Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+      const L = Number(logical);
+      // fractional time so freehand stays locked while panning
+      if (L > lastIdx) return Number(candles[lastIdx].time) + (L - lastIdx) * barSec;
+      if (L < 0) return Number(candles[0].time) + L * barSec;
+      const i0 = Math.max(0, Math.min(lastIdx - 1, Math.floor(L)));
+      const i1 = Math.min(lastIdx, i0 + 1);
+      const t0 = Number(candles[i0].time);
+      const t1 = Number(candles[i1].time);
+      return t0 + (t1 - t0) * (L - i0);
     };
     const priceFromClientY = (clientY: number): number | null => {
       const series = seriesRef.current;
@@ -14245,6 +14275,39 @@ priced.sort((a, b) => a.price - b.price);
             {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
             <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
             <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
+
+            {/* Brush — freehand pencil (top-level, same as TV) */}
+            <button
+              type="button"
+              title="Brush"
+              onClick={() => {
+                clearPreview();
+                setFibToolsOpen(false);
+                setLineToolsOpen(false);
+                setDrawToolsOpen(false);
+                setPosToolsOpen(false);
+                setAlarmMenuOpen(false);
+                setDiagStart(null);
+                setMovingId(null);
+                pathPointsRef.current = [];
+                const next = mode === "brush" ? "none" : "brush";
+                setMode(next as any);
+                modeRef.current = next as any;
+                setStatusMsg(next === "brush" ? "Brush: draw on chart — tap Brush again to exit" : "");
+              }}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                mode === "brush"
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 20c2-1 4-3 7-3 2 0 3 .5 5 2" />
+                <path d="M14 6l4 4" />
+                <path d="M12.5 7.5L18 2l4 4-5.5 5.5" />
+                <path d="M11 13l-7 7" />
+              </svg>
+            </button>
 
             {/* Measure — classic ruler icon */}
             <button
