@@ -4706,8 +4706,8 @@ export default function DashboardPage() {
                   else if (showLv) labelText = String(lv);
                   else if (showPx) labelText = String(price);
                   if (labelText) {
-                    const labH = fib.labelHorz || "right";
-                    const labV = fib.labelVert || "middle";
+                    const labH = fib.labelH || "right";
+                    const labV = fib.labelV || "middle";
                     const magnetRight = labH === "right" && (ext === "right" || ext === "both");
                     const magnetLeft = labH === "left" && (ext === "left" || ext === "both");
                     let mTime = Number(tTo);
