@@ -14089,9 +14089,12 @@ priced.sort((a, b) => a.price - b.price);
                 onClick={() => {
                   setDrawToolsOpen((v) => !v);
                   setFibToolsOpen(false);
+                  setLineToolsOpen(false);
+                  setPosToolsOpen(false);
+                  setAlarmMenuOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "brush"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "brush" || mode === "long-pos" || mode === "short-pos"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -14173,6 +14176,52 @@ priced.sort((a, b) => a.price - b.price);
                     Brush
                   </button>
                   <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "long-pos" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      posDraftRef.current = null;
+                      setMode("long-pos");
+                      modeRef.current = "long-pos";
+                      setStatusMsg("Long position: click chart to place");
+                    }}
+                  >
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="4" r="2.2" />
+                      <line x1="6.5" y1="4" x2="26" y2="4" />
+                      <circle cx="4" cy="18" r="2.2" />
+                      <line x1="6.5" y1="18" x2="26" y2="18" />
+                      <line x1="6.5" y1="11" x2="18" y2="11" />
+                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">L</text>
+                    </svg>
+                    Long position
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "short-pos" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      posDraftRef.current = null;
+                      setMode("short-pos");
+                      modeRef.current = "short-pos";
+                      setStatusMsg("Short position: click chart to place");
+                    }}
+                  >
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="4" r="2.2" />
+                      <line x1="6.5" y1="4" x2="26" y2="4" />
+                      <circle cx="4" cy="18" r="2.2" />
+                      <line x1="6.5" y1="18" x2="26" y2="18" />
+                      <line x1="6.5" y1="11" x2="18" y2="11" />
+                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">S</text>
+                    </svg>
+                    Short position
+                  </button>
+                  <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
                   <button
                     type="button"
@@ -14200,114 +14249,9 @@ priced.sort((a, b) => a.price - b.price);
               )}
             </div>
 
-            {/* Long / Short position (Forecasting) */}
-            <div className="relative" data-menu>
-              <button
-                type="button"
-                title="Position tools"
-                onClick={() => {
-                  setPosToolsOpen((v) => !v);
-                  setFibToolsOpen(false);
-                  setLineToolsOpen(false);
-                  setDrawToolsOpen(false);
-                }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  posToolsOpen || mode === "long-pos" || mode === "short-pos"
-                    ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                    : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                }`}
-              >
-                {/* TV-style long/short position icon */}
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="5" cy="6" r="2" />
-                  <line x1="7" y1="6" x2="20" y2="6" />
-                  <circle cx="5" cy="18" r="2" />
-                  <line x1="7" y1="18" x2="20" y2="18" />
-                  <line x1="11" y1="10" x2="11" y2="14" />
-                  <line x1="9" y1="12" x2="13" y2="12" />
-                </svg>
-              </button>
-              {posToolsOpen && (
-                <div className="absolute left-full top-0 ml-2 z-50 w-52 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
-                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
-                  <button type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "long-pos" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setPosToolsOpen(false);
-                      posDraftRef.current = null;
-                      setMode("long-pos");
-                      setStatusMsg("Long position: click chart to place");
-                    }}>
-                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
-                      <circle cx="4" cy="4" r="2.2" />
-                      <line x1="6.5" y1="4" x2="26" y2="4" />
-                      <circle cx="4" cy="18" r="2.2" />
-                      <line x1="6.5" y1="18" x2="26" y2="18" />
-                      <line x1="6.5" y1="11" x2="18" y2="11" />
-                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">L</text>
-                    </svg>
-                    Long position
-                  </button>
-                  <button type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "short-pos" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setPosToolsOpen(false);
-                      posDraftRef.current = null;
-                      setMode("short-pos");
-                      setStatusMsg("Short position: click chart to place");
-                    }}>
-                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
-                      <circle cx="4" cy="4" r="2.2" />
-                      <line x1="6.5" y1="4" x2="26" y2="4" />
-                      <circle cx="4" cy="18" r="2.2" />
-                      <line x1="6.5" y1="18" x2="26" y2="18" />
-                      <line x1="6.5" y1="11" x2="18" y2="11" />
-                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">S</text>
-                    </svg>
-                    Short position
-                  </button>
-                </div>
-              )}
-            </div>
-
             {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
             <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
             <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
-
-            {/* Brush — freehand pencil (top-level, same as TV) */}
-            <button
-              type="button"
-              title="Brush"
-              onClick={() => {
-                clearPreview();
-                setFibToolsOpen(false);
-                setLineToolsOpen(false);
-                setDrawToolsOpen(false);
-                setPosToolsOpen(false);
-                setAlarmMenuOpen(false);
-                setDiagStart(null);
-                setMovingId(null);
-                pathPointsRef.current = [];
-                const next = mode === "brush" ? "none" : "brush";
-                setMode(next as any);
-                modeRef.current = next as any;
-                setStatusMsg(next === "brush" ? "Brush: draw on chart — tap Brush again to exit" : "");
-              }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                mode === "brush"
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 20c2-1 4-3 7-3 2 0 3 .5 5 2" />
-                <path d="M14 6l4 4" />
-                <path d="M12.5 7.5L18 2l4 4-5.5 5.5" />
-                <path d="M11 13l-7 7" />
-              </svg>
-            </button>
 
             {/* Measure — classic ruler icon */}
             <button
