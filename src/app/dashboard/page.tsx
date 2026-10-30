@@ -4650,27 +4650,11 @@ export default function DashboardPage() {
                   crosshairMarkerVisible: false,
                   autoscaleInfoProvider: () => null as any,
                 } as any);
-                // Extend=None → only between anchors; extend uses tFrom/tTo (FAR_*)
-                const ptsMap = new Map<number, number>();
-                ptsMap.set(Number(tFrom), price);
-                ptsMap.set(Number(tTo), price);
-                ptsMap.set(Number(tA), price);
-                ptsMap.set(Number(tB), price);
-                ptsMap.set(Math.round((Number(tFrom) + Number(tTo)) / 2), price);
-                if (extRight || extLeft) {
-                  // denser points so long extend-right reaches far future without gaps
-                  const steps = 48;
-                  for (let s = 1; s < steps; s++) {
-                    const tt = Math.round(Number(tFrom) + ((Number(tTo) - Number(tFrom)) * s) / steps);
-                    ptsMap.set(tt, price);
-                  }
-                }
-                if (magnetLeft) {
-                  ptsMap.set(Number(visLeft), price);
-                }
-                const pts = Array.from(ptsMap.entries())
-                  .map(([time, value]) => ({ time: time as any, value }))
-                  .sort((a, b) => Number(a.time) - Number(b.time));
+                // Horizontal fib: only 2 endpoints (dense points caused lag with many levels)
+                const pts = [
+                  { time: Number(tFrom) as any, value: price },
+                  { time: Number(tTo) as any, value: price },
+                ].sort((a, b) => Number(a.time) - Number(b.time));
                 hs.setData(pts);
                 // Store for DOM labels (TV style: no colored box)
                 if (labelText) {
@@ -4697,6 +4681,7 @@ export default function DashboardPage() {
                       color: col,
                       labV,
                       magnetRight,
+                      magnetLeft,
                     };
                   } catch {}
                 }
@@ -5428,12 +5413,14 @@ export default function DashboardPage() {
                 let x: number | null = chart2.timeScale().timeToCoordinate(meta.time as any) as number | null;
                 const y: number | null = ser2.priceToCoordinate(meta.price) as number | null;
                 if (x == null || y == null) continue;
-                // magnetRight: pin near right edge of plot
+                // magnetRight/Left: pin to chart frame (no series rebuild on pan)
                 if (meta.magnetRight) {
                   try {
                     const w = Number((chart2.timeScale() as any).width?.() ?? 0);
                     if (w > 20) x = w - 6;
                   } catch {}
+                } else if (meta.magnetLeft) {
+                  x = 6;
                 }
                 const el = document.createElement("div");
                 el.dataset.fibLabel = "1";
@@ -5548,6 +5535,8 @@ export default function DashboardPage() {
                       const w = Number((chart2.timeScale() as any).width?.() ?? 0);
                       if (w > 20) x = w - 6;
                     } catch {}
+                  } else if (meta.magnetLeft) {
+                    x = 6;
                   }
                   const el = document.createElement("div");
                   el.dataset.fibLabel = "1";
@@ -5582,19 +5571,12 @@ export default function DashboardPage() {
               try { updateMargins(); } catch {}
             });
           } catch {}
-          // Left-magnet fib: labels stay glued to left frame of chart while panning
+          // Fib labels (incl. magnet) reposition via scheduleOverlaySync — no full re-render
           try {
             if ((window as any).__fibLeftMagnetRaf) cancelAnimationFrame((window as any).__fibLeftMagnetRaf);
             (window as any).__fibLeftMagnetRaf = requestAnimationFrame(() => {
               try {
-                const hasLeftMagnet = (linesRef.current || []).some((l: any) => {
-                  const f = parseFibNote(l?.note);
-                  return !!(f && (f.extend === "left" || f.extend === "both") && f.labelH === "left");
-                });
-                if (hasLeftMagnet) renderAllLinesAndAlarmsRef.current?.();
-              } catch {}
-              // Keep fib/diag move handles glued to anchors while scrolling
-              try {
+                // Keep fib/diag move handles glued to anchors while scrolling
                 const md = moveDiagRef.current;
                 if (md && (md.phase === "pick" || md.phase === "drag-a" || md.phase === "drag-b")) {
                   const chart2 = chartRef.current;
@@ -11323,7 +11305,7 @@ export default function DashboardPage() {
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -11341,6 +11323,9 @@ export default function DashboardPage() {
       }
       if (fibToolsOpen && !el.closest?.("[data-menu]")) {
         setFibToolsOpen(false);
+      }
+      if (posToolsOpen && !el.closest?.("[data-menu]")) {
+        setPosToolsOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -11397,6 +11382,7 @@ export default function DashboardPage() {
     drawToolsOpen,
     fibToolsOpen,
     alarmMenuOpen,
+    posToolsOpen,
   ]);
 
   // Cancel tool / move: outside click (move only) OR right-click (any tool)
@@ -11463,6 +11449,9 @@ export default function DashboardPage() {
       const el = e.target as HTMLElement | null;
       if (el?.closest?.("[data-menu]") || el?.closest?.("[data-move-bar]")) return;
       e.preventDefault();
+      try { setPosToolsOpen(false); } catch {}
+      try { setFibToolsOpen(false); } catch {}
+      try { setDrawToolsOpen(false); } catch {}
       cancelAll();
     };
 
@@ -13436,17 +13425,21 @@ export default function DashboardPage() {
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="4" y="3" width="16" height="7" rx="1" fill="rgba(16,185,129,0.35)" stroke="#10b981" />
-                  <rect x="4" y="14" width="16" height="7" rx="1" fill="rgba(239,68,68,0.35)" stroke="#ef4444" />
-                  <line x1="4" y1="12" x2="20" y2="12" stroke="#e5e7eb" />
+                {/* TV-style long/short position icon */}
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="5" cy="6" r="2" />
+                  <line x1="7" y1="6" x2="20" y2="6" />
+                  <circle cx="5" cy="18" r="2" />
+                  <line x1="7" y1="18" x2="20" y2="18" />
+                  <line x1="11" y1="10" x2="11" y2="14" />
+                  <line x1="9" y1="12" x2="13" y2="12" />
                 </svg>
               </button>
               {posToolsOpen && (
                 <div className="absolute left-full top-0 ml-2 z-50 w-52 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1 text-xs text-gray-200">
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
                   <button type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "long-pos" ? "text-orange-300" : ""}`}
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "long-pos" ? "text-orange-300" : ""}`}
                     onClick={() => {
                       clearPreview();
                       setPosToolsOpen(false);
@@ -13454,11 +13447,18 @@ export default function DashboardPage() {
                       setMode("long-pos");
                       setStatusMsg("Long position: click chart to place");
                     }}>
-                    <span className="w-4 text-center text-emerald-400 font-bold">L</span>
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="4" r="2.2" />
+                      <line x1="6.5" y1="4" x2="26" y2="4" />
+                      <circle cx="4" cy="18" r="2.2" />
+                      <line x1="6.5" y1="18" x2="26" y2="18" />
+                      <line x1="6.5" y1="11" x2="18" y2="11" />
+                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">L</text>
+                    </svg>
                     Long position
                   </button>
                   <button type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "short-pos" ? "text-orange-300" : ""}`}
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2.5 ${mode === "short-pos" ? "text-orange-300" : ""}`}
                     onClick={() => {
                       clearPreview();
                       setPosToolsOpen(false);
@@ -13466,7 +13466,14 @@ export default function DashboardPage() {
                       setMode("short-pos");
                       setStatusMsg("Short position: click chart to place");
                     }}>
-                    <span className="w-4 text-center text-red-400 font-bold">S</span>
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="4" r="2.2" />
+                      <line x1="6.5" y1="4" x2="26" y2="4" />
+                      <circle cx="4" cy="18" r="2.2" />
+                      <line x1="6.5" y1="18" x2="26" y2="18" />
+                      <line x1="6.5" y1="11" x2="18" y2="11" />
+                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">S</text>
+                    </svg>
                     Short position
                   </button>
                 </div>
