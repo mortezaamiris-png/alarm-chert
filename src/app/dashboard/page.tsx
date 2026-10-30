@@ -1971,6 +1971,13 @@ export default function DashboardPage() {
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
   const posDraftRef = useRef<null | { kind: "long" | "short"; t0: number; pEntry: number; t1?: number; pStop?: number }>(null);
+  const rectDragRef = useRef<null | {
+    id: string;
+    role: string; // body | nw|n|ne|w|e|sw|s|se
+    t0: number; t1: number; p0: number; p1: number;
+    startX: number; startY: number;
+    startT0: number; startT1: number; startP0: number; startP1: number;
+  }>(null);
   const posHandleDragRef = useRef<null | {
     id: string;
     role: string; // target | stop | entryL | entryR | body
@@ -4189,9 +4196,12 @@ export default function DashboardPage() {
     rayItemsRef.current = [];
     calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
-    // clear previous DOM rects (rebuilt below)
+    // clear previous DOM rects + fib bands (rebuilt below)
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-fib-band]").forEach((el) => el.remove());
     } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
@@ -4760,66 +4770,49 @@ export default function DashboardPage() {
                   "#787B86";
                 priced.push({ price, color: col });
               }
-              priced.sort((a, b) => a.price - b.price);
-              for (let i = 0; i < priced.length - 1; i++) {
-                const lo = priced[i].price;
-                const hi = priced[i + 1].price;
-                if (!(hi > lo)) continue;
-                const bandCol = priced[i + 1].color || fib.bgColor || "#2962FF";
-                const fillA = hexToRgba(bandCol, Math.min(0.55, op * 0.9));
-                const fillB = hexToRgba(bandCol, Math.min(0.4, op * 0.6));
-                try {
-                  const band: any = chart.addBaselineSeries({
-                    baseValue: { type: "price", price: lo },
-                    topLineColor: "transparent",
-                    topFillColor1: fillA,
-                    topFillColor2: fillB,
-                    bottomLineColor: "transparent",
-                    bottomFillColor1: "transparent",
-                    bottomFillColor2: "transparent",
-                    lineWidth: 1,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  } as any);
-                  // background follows level lines; when extended, fill to same edge as lines
+priced.sort((a, b) => a.price - b.price);
+              // DOM bands instead of BaselineSeries — major lag fix while panning
+              try {
+                const hostB = vlineOverlayRef.current;
+                const chartB = chartRef.current;
+                const serB = seriesRef.current;
+                if (hostB && chartB && serB && priced.length >= 2) {
                   let cFrom = tFrom;
                   let cTo = tTo;
-                  if (ext === "none") {
-                    cFrom = tA;
-                    cTo = tB;
-                  }
+                  if (ext === "none") { cFrom = tA; cTo = tB; }
                   if (cTo <= cFrom) cTo = cFrom + 60;
-                  const cMid = Math.round((cFrom + cTo) / 2);
-                  band.setData([
-                    { time: cFrom as any, value: hi },
-                    { time: cMid as any, value: hi },
-                    { time: cTo as any, value: hi },
-                  ]);
-                  extraSeries.push(band);
-                } catch (e) {
-                  // fallback: thick transparent-ish line (if baseline unavailable)
-                  try {
-                    const fb: any = chart.addAreaSeries({
-                      lineColor: "transparent",
-                      topColor: fillA,
-                      bottomColor: fillB,
-                      lineWidth: 1,
-                      priceLineVisible: false,
-                      lastValueVisible: false,
-                      crosshairMarkerVisible: false,
-                      autoscaleInfoProvider: () => null as any,
-                    } as any);
-                    fb.setData([
-                      { time: Math.max(tFrom, chartFirst - 86400 * 7) as any, value: hi },
-                      { time: Math.min(tTo, chartLast + 86400 * 7) as any, value: hi },
-                    ]);
-                    extraSeries.push(fb);
-                  } catch {}
+                  const xL = chartB.timeScale().timeToCoordinate(cFrom as any);
+                  const xR = chartB.timeScale().timeToCoordinate(cTo as any);
+                  if (xL != null && xR != null) {
+                    const left = Math.min(Number(xL), Number(xR));
+                    const width = Math.max(2, Math.abs(Number(xR) - Number(xL)));
+                    for (let i = 0; i < priced.length - 1; i++) {
+                      const lo = priced[i].price;
+                      const hi = priced[i + 1].price;
+                      if (!(hi > lo)) continue;
+                      const yTop = serB.priceToCoordinate(hi);
+                      const yBot = serB.priceToCoordinate(lo);
+                      if (yTop == null || yBot == null) continue;
+                      const top = Math.min(Number(yTop), Number(yBot));
+                      const height = Math.max(1, Math.abs(Number(yBot) - Number(yTop)));
+                      const bandCol = priced[i + 1].color || fib.bgColor || "#2962FF";
+                      const el = document.createElement("div");
+                      el.dataset.fibBand = "1";
+                      el.dataset.fibId = String(l.id);
+                      el.dataset.fibLo = String(lo);
+                      el.dataset.fibHi = String(hi);
+                      el.dataset.fibT0 = String(cFrom);
+                      el.dataset.fibT1 = String(cTo);
+                      el.style.cssText =
+                        `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;` +
+                        `background:${hexToRgba(bandCol, Math.min(0.45, (fib.bgOpacity ?? 20) / 100 * 0.9))};` +
+                        `pointer-events:none;z-index:5;`;
+                      hostB.appendChild(el);
+                    }
+                  }
                 }
-              }
-            }
+              } catch {}
+            } // end fib.background
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
             } // end visOk
           }
@@ -5575,6 +5568,28 @@ export default function DashboardPage() {
               el.style.top = `${Math.min(Number(y0), Number(y1))}px`;
               el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
               el.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
+            });
+            // Fib background bands (DOM) track pan
+            host.querySelectorAll("[data-fib-band]").forEach((node) => {
+              const el = node as HTMLElement;
+              const t0 = Number(el.dataset.fibT0);
+              const t1 = Number(el.dataset.fibT1);
+              const lo = Number(el.dataset.fibLo);
+              const hi = Number(el.dataset.fibHi);
+              if (!Number.isFinite(t0) || !Number.isFinite(hi)) return;
+              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
+              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              const y0 = ser2.priceToCoordinate(hi);
+              const y1 = ser2.priceToCoordinate(lo);
+              if (x0 == null || x1 == null || y0 == null || y1 == null) {
+                el.style.display = "none";
+                return;
+              }
+              el.style.display = "block";
+              el.style.left = `${Math.min(Number(x0), Number(x1))}px`;
+              el.style.top = `${Math.min(Number(y0), Number(y1))}px`;
+              el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
+              el.style.height = `${Math.max(1, Math.abs(Number(y1) - Number(y0)))}px`;
             });
           }
         } catch {}
@@ -6869,6 +6884,163 @@ export default function DashboardPage() {
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     };
 
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("pointermove", onMove, true);
+      document.removeEventListener("pointerup", onUp, true);
+    };
+  }, []);
+
+
+  // Rectangle: drag body + 8 handles (TV style)
+  useEffect(() => {
+    const timeFromClientX = (clientX: number): number | null => {
+      const chart = chartRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !rect) return null;
+      const x = clientX - rect.left;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      const candles = candlesRef.current;
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      if (logical == null || !candles.length) return null;
+      const lastIdx = candles.length - 1;
+      if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
+      if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
+      return Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+    };
+    const priceFromClientY = (clientY: number): number | null => {
+      const series = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!series || !rect) return null;
+      const y = clientY - rect.top;
+      const pr = series.coordinateToPrice(y);
+      return pr != null && Number.isFinite(pr) ? Number(pr) : null;
+    };
+    const applyVisual = (id: string, t0: number, t1: number, p0: number, p1: number) => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser2 = seriesRef.current;
+      if (!host || !chart2 || !ser2) return;
+      const box = host.querySelector(`[data-rect-id="${id}"]:not([data-rect-handle])`) as HTMLElement | null;
+      if (!box) return;
+      const x0 = chart2.timeScale().timeToCoordinate(Math.min(t0, t1) as any);
+      const x1 = chart2.timeScale().timeToCoordinate(Math.max(t0, t1) as any);
+      const y0 = ser2.priceToCoordinate(Math.max(p0, p1));
+      const y1 = ser2.priceToCoordinate(Math.min(p0, p1));
+      if (x0 == null || x1 == null || y0 == null || y1 == null) return;
+      box.dataset.rectT0 = String(Math.min(t0, t1));
+      box.dataset.rectT1 = String(Math.max(t0, t1));
+      box.dataset.rectP0 = String(Math.min(p0, p1));
+      box.dataset.rectP1 = String(Math.max(p0, p1));
+      box.style.left = `${Math.min(Number(x0), Number(x1))}px`;
+      box.style.top = `${Math.min(Number(y0), Number(y1))}px`;
+      box.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
+      box.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
+    };
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      const handle = t.closest?.("[data-rect-handle]") as HTMLElement | null;
+      let box = t.closest?.("[data-rect-id]") as HTMLElement | null;
+      if (handle) box = handle.closest?.("[data-rect-id]:not([data-rect-handle])") as HTMLElement | null
+        || handle.parentElement;
+      if (!handle && box && box.dataset.rectHandle) return;
+      if (!box || !box.dataset.rectT0 || !box.dataset.rectId) return;
+      const id = box.dataset.rectId;
+      const role = handle ? (handle.dataset.rectHandle || "body") : "body";
+      const t0 = Number(box.dataset.rectT0);
+      const t1 = Number(box.dataset.rectT1);
+      const p0 = Number(box.dataset.rectP0);
+      const p1 = Number(box.dataset.rectP1);
+      if (![t0, t1, p0, p1].every(Number.isFinite)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      rectDragRef.current = {
+        id: String(id),
+        role,
+        t0, t1, p0, p1,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        startT0: t0, startT1: t1, startP0: p0, startP1: p1,
+      };
+      try { (handle || box).setPointerCapture?.(ev.pointerId); } catch {}
+    };
+    const onMove = (ev: PointerEvent) => {
+      const drag = rectDragRef.current;
+      if (!drag) return;
+      const tNow = timeFromClientX(ev.clientX);
+      const pNow = priceFromClientY(ev.clientY);
+      if (tNow == null || pNow == null) return;
+      let t0 = drag.startT0, t1 = drag.startT1, p0 = drag.startP0, p1 = drag.startP1;
+      const role = drag.role;
+      if (role === "body") {
+        const tA = timeFromClientX(drag.startX);
+        const pA = priceFromClientY(drag.startY);
+        if (tA == null || pA == null) return;
+        const dt = tNow - tA;
+        const dp = pNow - pA;
+        t0 = drag.startT0 + dt;
+        t1 = drag.startT1 + dt;
+        p0 = drag.startP0 + dp;
+        p1 = drag.startP1 + dp;
+      } else if (role === "n") {
+        p1 = pNow;
+      } else if (role === "s") {
+        p0 = pNow;
+      } else if (role === "w") {
+        t0 = tNow;
+      } else if (role === "e") {
+        t1 = tNow;
+      } else if (role === "nw") {
+        t0 = tNow; p1 = pNow;
+      } else if (role === "ne") {
+        t1 = tNow; p1 = pNow;
+      } else if (role === "sw") {
+        t0 = tNow; p0 = pNow;
+      } else if (role === "se") {
+        t1 = tNow; p0 = pNow;
+      }
+      if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
+      if (p0 > p1) { const tmp = p0; p0 = p1; p1 = tmp; }
+      drag.t0 = t0; drag.t1 = t1; drag.p0 = p0; drag.p1 = p1;
+      applyVisual(drag.id, t0, t1, p0, p1);
+    };
+    const onUp = async () => {
+      const drag = rectDragRef.current;
+      if (!drag) return;
+      rectDragRef.current = null;
+      const { id, t0, t1, p0, p1 } = drag;
+      const note = `__rect:${Math.min(t0, t1)},${Math.min(p0, p1)}|${Math.max(t0, t1)},${Math.max(p0, p1)}`;
+      setLines((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? {
+                ...x,
+                note,
+                price: Math.min(p0, p1),
+                end_price: Math.max(p0, p1),
+                start_time: Math.min(t0, t1),
+                end_time: Math.max(t0, t1),
+              }
+            : x
+        )
+      );
+      try {
+        await supabase
+          .from("chart_lines")
+          .update({
+            note,
+            price: Math.min(p0, p1),
+            end_price: Math.max(p0, p1),
+            start_time: Math.min(t0, t1),
+            end_time: Math.max(t0, t1),
+          })
+          .eq("id", id);
+      } catch {}
+    };
     document.addEventListener("pointerdown", onDown, true);
     document.addEventListener("pointermove", onMove, true);
     document.addEventListener("pointerup", onUp, true);
