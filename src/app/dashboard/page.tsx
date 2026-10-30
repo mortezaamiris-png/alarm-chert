@@ -179,7 +179,7 @@ function computeAnchoredVP(
   return computeVolumeProfile(candles, anchorTime, undefined, binCount);
 }
 
-/** Anchored VWAP + optional std-dev bands (TradingView style) */
+/** Anchored VWAP + std-dev bands (TradingView style) */
 function computeAnchoredVWAP(
   candles: { time: number; high: number; low: number; close: number; volume?: number }[],
   anchorTime: number
@@ -191,7 +191,9 @@ function computeAnchoredVWAP(
   lower2: { time: number; value: number }[];
 } {
   const empty = { vwap: [], upper1: [], lower1: [], upper2: [], lower2: [] };
-  const slice = candles.filter((c) => Number(c.time) >= Number(anchorTime));
+  const at = Number(anchorTime);
+  // include candle at or after anchor
+  const slice = candles.filter((c) => Number(c.time) >= at - 0.5);
   if (slice.length < 1) return empty;
   let sumPV = 0, sumV = 0, sumPV2 = 0;
   const vwap: { time: number; value: number }[] = [];
@@ -200,14 +202,15 @@ function computeAnchoredVWAP(
   const upper2: { time: number; value: number }[] = [];
   const lower2: { time: number; value: number }[] = [];
   for (const c of slice) {
-    const tp = (Number(c.high) + Number(c.low) + Number(c.close)) / 3;
-    let v = Math.max(0, Number(c.volume) || 0);
-    if (v <= 0) v = 1;
+    const h = Number(c.high), l = Number(c.low), cl = Number(c.close);
+    if (!Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(cl)) continue;
+    const tp = (h + l + cl) / 3;
+    let v = Number(c.volume);
+    if (!Number.isFinite(v) || v <= 0) v = 1; // tick fallback
     sumPV += tp * v;
     sumPV2 += tp * tp * v;
     sumV += v;
     const vw = sumPV / sumV;
-    // volume-weighted variance
     const variance = Math.max(0, sumPV2 / sumV - vw * vw);
     const std = Math.sqrt(variance);
     const t = Number(c.time);
@@ -5764,30 +5767,50 @@ priced.sort((a, b) => a.price - b.price);
             if (Number.isFinite(anchor)) {
               const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
               if (pack.vwap.length >= 1) {
-                const mk = (pts: { time: number; value: number }[], color: string, width: number) => {
+                const mk = (
+                  pts: { time: number; value: number }[],
+                  color: string,
+                  width: number,
+                  showLast: boolean
+                ) => {
                   if (pts.length < 1) return null;
                   const ls = chart.addLineSeries({
                     color,
                     lineWidth: width as any,
                     priceLineVisible: false,
-                    lastValueVisible: false,
+                    lastValueVisible: showLast,
                     crosshairMarkerVisible: false,
                     title: "",
+                    // don't steal autoscale from candles
+                    autoscaleInfoProvider: () => null as any,
                   });
                   ls.setData(pts.map((p) => ({ time: p.time as any, value: p.value })));
                   return ls;
                 };
-                const main = mk(pack.vwap, l.color || "#2962FF", Math.max(2, Number(l.width) || 2));
-                const u1 = mk(pack.upper1, "rgba(8,153,129,0.85)", 1);
-                const lo1 = mk(pack.lower1, "rgba(8,153,129,0.85)", 1);
-                const u2 = mk(pack.upper2, "rgba(242,54,69,0.55)", 1);
-                const lo2 = mk(pack.lower2, "rgba(242,54,69,0.55)", 1);
-                // store main series; extras on synthetic keys for cleanup
-                if (main) chartLinesRef.current.set(l.id, main);
-                if (u1) chartLinesRef.current.set(`${l.id}__u1` as any, u1);
-                if (lo1) chartLinesRef.current.set(`${l.id}__lo1` as any, lo1);
-                if (u2) chartLinesRef.current.set(`${l.id}__u2` as any, u2);
-                if (lo2) chartLinesRef.current.set(`${l.id}__lo2` as any, lo2);
+                // TV colors: VWAP blue, ±1σ green, ±2σ lighter green
+                const colMain = l.color || "#2962FF";
+                const main = mk(pack.vwap, colMain, Math.max(2, Number(l.width) || 2), true);
+                const u1 = mk(pack.upper1, "#26a69a", 1, false);
+                const lo1 = mk(pack.lower1, "#26a69a", 1, false);
+                const u2 = mk(pack.upper2, "rgba(38,166,154,0.55)", 1, false);
+                const lo2 = mk(pack.lower2, "rgba(38,166,154,0.55)", 1, false);
+                // anchor hollow circle marker on main line
+                if (main && pack.vwap[0]) {
+                  try {
+                    main.setMarkers([
+                      {
+                        time: pack.vwap[0].time as any,
+                        position: "inBar",
+                        color: colMain,
+                        shape: "circle",
+                        size: 1.5,
+                      } as any,
+                    ]);
+                  } catch {}
+                }
+                // store all series under one id as array → cleanup removes all
+                const all = [main, u1, lo1, u2, lo2].filter(Boolean);
+                if (all.length) chartLinesRef.current.set(l.id, all as any);
               }
             }
           } catch {}
@@ -11728,13 +11751,21 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
-        // Anchored VWAP — single click
+        // Anchored VWAP — single click (TV: anchor + VWAP + σ bands to the right)
         if (m === "avwap") {
           const t = resolveTime(param);
           if (t == null) return;
           clickLockRef.current = true;
           setSaving(true);
           try {
+            // verify we can compute something so user sees lines
+            const pack = computeAnchoredVWAP(candlesRef.current || [], Number(t));
+            if (!pack.vwap.length) {
+              setStatusMsg("VWAP: no candles from this anchor");
+              setSaving(false);
+              setTimeout(() => { clickLockRef.current = false; }, 250);
+              return;
+            }
             const note = `__avwap:${t}`;
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
@@ -11761,12 +11792,14 @@ priced.sort((a, b) => a.price - b.price);
               setStatusMsg("Anchored VWAP placed");
             } else setStatusMsg("VWAP save failed");
           } catch { setStatusMsg("VWAP save failed"); }
+          setMode("none");
+          modeRef.current = "none";
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 250);
           return;
         }
 
-        // Fixed Range Volume Profile — two clicks (TV style: point → drag vertical → confirm)
+// Fixed Range Volume Profile — two clicks (TV style: point → drag vertical → confirm)
         if (m === "frvp") {
           const t = resolveTime(param);
           if (t == null) return;
