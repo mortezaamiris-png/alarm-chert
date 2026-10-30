@@ -8815,14 +8815,14 @@ priced.sort((a, b) => a.price - b.price);
                   box.dataset.rectPreview = "1";
                   host.appendChild(box);
                 }
+                const col = drawColorRef.current || "#787B86";
+                const bw = Math.max(1, drawWidthRef.current || 1);
+                const dash = drawDashRef.current === "dashed" ? "dashed" : "solid";
                 const x0 = chart.timeScale().timeToCoordinate(a.time as any);
                 const x1 = chart.timeScale().timeToCoordinate(tCursor as any);
                 const y0 = series.priceToCoordinate(a.price);
                 const y1 = series.priceToCoordinate(price);
                 if (x0 != null && x1 != null && y0 != null && y1 != null) {
-                  const col = drawColorRef.current || "#787B86";
-                  const bw = Math.max(1, drawWidthRef.current || 1);
-                  const dash = drawDashRef.current === "dashed" ? "dashed" : "solid";
                   box.style.cssText =
                     `position:absolute;left:${Math.min(Number(x0), Number(x1))}px;` +
                     `top:${Math.min(Number(y0), Number(y1))}px;` +
