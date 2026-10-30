@@ -903,7 +903,10 @@ function userFacingNote(note?: string | null): string {
   if (s === "__vline__") return "";
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
-  if (s.startsWith("__brush:")) return "Brush";
+  if (s.startsWith("__brush:")) {
+    const bp = parseBrushNote(s);
+    return (bp?.text && bp.text.trim()) ? bp.text.trim() : "Brush";
+  }
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -1131,6 +1134,33 @@ function denseDiagPoints(
     { time: aT as any, value: aV },
     { time: bT as any, value: bV },
   ];
+}
+
+
+function parseBrushNote(note?: string | null): { pts: { time: number; price: number }[]; text: string } | null {
+  if (!note || typeof note !== "string" || !note.startsWith("__brush:")) return null;
+  const raw = note.replace(/^__brush:/, "");
+  const parts = raw.split("|");
+  const pts: { time: number; price: number }[] = [];
+  let text = "";
+  for (const p of parts) {
+    if (p.startsWith("txt=")) {
+      try { text = decodeURIComponent(p.slice(4)); } catch { text = p.slice(4); }
+      continue;
+    }
+    const [tt, pp] = p.split(",");
+    const t = Number(tt), pr = Number(pp);
+    if (Number.isFinite(t) && Number.isFinite(pr)) pts.push({ time: t, price: pr });
+  }
+  if (pts.length < 2) return null;
+  return { pts, text };
+}
+function buildBrushNote(pts: { time: number; price: number }[], text?: string): string {
+  let s = "__brush:" + pts.map((p) => `${p.time},${p.price}`).join("|");
+  if (text && text.trim()) {
+    try { s += "|txt=" + encodeURIComponent(text.trim()); } catch { s += "|txt=" + text.trim(); }
+  }
+  return s;
 }
 
 function parseRectNote(note: string): {
@@ -5333,37 +5363,61 @@ priced.sort((a, b) => a.price - b.price);
             chartLinesRef.current.set(l.id, ls);
           }
         } else if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
-          // Freehand brush — DOM SVG (order preserved; may go back in time)
+          // Freehand brush — DOM SVG, fractional times so pan stays locked
           try {
-            const raw = l.note.replace(/^__brush:/, "");
-            const pts = raw.split("|").map((s) => {
-              const [tt, pp] = s.split(",");
-              return { time: Number(tt), price: Number(pp) };
-            }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+            const parsed = parseBrushNote(l.note);
+            const pts = parsed?.pts || [];
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
             if (host && chart2 && ser2 && pts.length >= 2) {
               const coords: string[] = [];
+              let firstXY: { x: number; y: number } | null = null;
               for (const p of pts) {
                 const x = chart2.timeScale().timeToCoordinate(p.time as any);
                 const y = ser2.priceToCoordinate(p.price);
                 if (x == null || y == null) continue;
-                coords.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                if (!firstXY) firstXY = { x: Number(x), y: Number(y) };
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
               }
               if (coords.length >= 2) {
+                const wrap = document.createElement("div");
+                wrap.setAttribute("data-brush-id", String(l.id));
+                wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
+                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
                 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                svg.setAttribute("data-brush-id", String(l.id));
-                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
+                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:stroke;";
                 const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                poly.setAttribute("data-brush-poly", "1");
                 poly.setAttribute("points", coords.join(" "));
                 poly.setAttribute("fill", "none");
                 poly.setAttribute("stroke", color || "#e5e7eb");
-                poly.setAttribute("stroke-width", String(Math.max(1, Number(width) || 2)));
+                poly.setAttribute("stroke-width", String(Math.max(2, Number(width) || 2)));
                 poly.setAttribute("stroke-linecap", "round");
                 poly.setAttribute("stroke-linejoin", "round");
+                // wider invisible stroke for easier hit/drag
+                const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                hit.setAttribute("data-brush-hit", String(l.id));
+                hit.setAttribute("points", coords.join(" "));
+                hit.setAttribute("fill", "none");
+                hit.setAttribute("stroke", "transparent");
+                hit.setAttribute("stroke-width", "14");
+                hit.setAttribute("stroke-linecap", "round");
+                hit.setAttribute("stroke-linejoin", "round");
+                hit.style.pointerEvents = "stroke";
+                hit.style.cursor = "move";
+                svg.appendChild(hit);
                 svg.appendChild(poly);
-                host.appendChild(svg);
+                wrap.appendChild(svg);
+                const noteTxt = (parsed?.text || "").trim();
+                if (noteTxt && firstXY) {
+                  const lab = document.createElement("div");
+                  lab.setAttribute("data-brush-label", "1");
+                  lab.textContent = noteTxt;
+                  lab.style.cssText = `position:absolute;left:${firstXY.x}px;top:${firstXY.y - 18}px;transform:translate(-0%,-100%);font-size:11px;font-weight:600;color:${color || "#e5e7eb"};text-shadow:0 1px 2px #000;pointer-events:none;white-space:nowrap;z-index:12;`;
+                  wrap.appendChild(lab);
+                }
+                host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __brushDom: true } as any);
               }
             }
@@ -5685,7 +5739,36 @@ priced.sort((a, b) => a.price - b.price);
               el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
               el.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
             });
-            // Fib background bands (DOM) track pan
+            
+            // Brush strokes track pan (fractional times)
+            host.querySelectorAll("[data-brush-id]").forEach((node) => {
+              const el = node as HTMLElement;
+              const raw = el.dataset.brushPts || "";
+              if (!raw) return;
+              const pts = raw.split("|").map((s) => {
+                const [tt, pp] = s.split(",");
+                return { time: Number(tt), price: Number(pp) };
+              }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+              const coords: string[] = [];
+              let firstXY: { x: number; y: number } | null = null;
+              for (const p of pts) {
+                const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                const y = ser2.priceToCoordinate(p.price);
+                if (x == null || y == null) continue;
+                if (!firstXY) firstXY = { x: Number(x), y: Number(y) };
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+              }
+              const ptsStr = coords.join(" ");
+              el.querySelectorAll("polyline").forEach((poly) => {
+                poly.setAttribute("points", ptsStr);
+              });
+              const lab = el.querySelector("[data-brush-label]") as HTMLElement | null;
+              if (lab && firstXY) {
+                lab.style.left = `${firstXY.x}px`;
+                lab.style.top = `${firstXY.y - 18}px`;
+              }
+            });
+// Fib background bands (DOM) track pan
             host.querySelectorAll("[data-fib-band]").forEach((node) => {
               const el = node as HTMLElement;
               const t0 = Number(el.dataset.fibT0);
@@ -7260,9 +7343,16 @@ priced.sort((a, b) => a.price - b.price);
       if (logical == null || Number.isNaN(Number(logical))) return null;
       const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
       const lastIdx = candles.length - 1;
-      if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
-      if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
-      return Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+      const L = Number(logical);
+      // fractional time — critical so freehand stays locked while panning
+      if (L > lastIdx) return Number(candles[lastIdx].time) + (L - lastIdx) * barSec;
+      if (L < 0) return Number(candles[0].time) + L * barSec;
+      const i0 = Math.max(0, Math.min(lastIdx - 1, Math.floor(L)));
+      const i1 = Math.min(lastIdx, i0 + 1);
+      const t0 = Number(candles[i0].time);
+      const t1 = Number(candles[i1].time);
+      const f = L - i0;
+      return t0 + (t1 - t0) * f;
     };
     const priceFromClientY = (clientY: number): number | null => {
       const series = seriesRef.current;
@@ -7344,8 +7434,21 @@ priced.sort((a, b) => a.price - b.price);
       if (t == null || p == null) return;
       const pts = brushPtsRef.current;
       const last = pts[pts.length - 1];
-      // min distance to avoid huge notes
-      if (last && Math.abs(last.time - t) < 1 && Math.abs(last.price - p) < (Math.abs(p) * 1e-6 + 1e-8)) return;
+      // throttle by ~2px equivalent so strokes stay smooth but not huge
+      if (last) {
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (chart && ser) {
+          const x0 = chart.timeScale().timeToCoordinate(last.time as any);
+          const x1 = chart.timeScale().timeToCoordinate(t as any);
+          const y0 = ser.priceToCoordinate(last.price);
+          const y1 = ser.priceToCoordinate(p);
+          if (x0 != null && x1 != null && y0 != null && y1 != null) {
+            const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+            if (dx * dx + dy * dy < 4) return; // ~2px
+          }
+        }
+      }
       pts.push({ time: t, price: p });
       if (pts.length > 800) pts.splice(0, pts.length - 800);
       paintPreview(pts);
@@ -7366,7 +7469,7 @@ priced.sort((a, b) => a.price - b.price);
         const step = Math.ceil(use.length / 300);
         use = use.filter((_, i) => i % step === 0 || i === use.length - 1);
       }
-      const note = `__brush:` + use.map((p) => `${p.time},${p.price}`).join("|");
+      const note = buildBrushNote(use);
       const first = use[0];
       const last = use[use.length - 1];
       try {
@@ -7411,6 +7514,171 @@ priced.sort((a, b) => a.price - b.price);
       window.removeEventListener("pointercancel", onUp);
     };
   }, [mode]);
+
+  // Move existing brush strokes (click & drag) when not actively drawing
+  const brushDragRef = useRef<{
+    id: string;
+    pts: { time: number; price: number }[];
+    startT: number;
+    startP: number;
+    text: string;
+    color: string;
+    width: number;
+  } | null>(null);
+  useEffect(() => {
+    if (mode === "brush") return; // drawing owns pointers
+    const timeFromClientX = (clientX: number): number | null => {
+      const chart = chartRef.current;
+      const candles = candlesRef.current || [];
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !rect || !candles.length) return null;
+      const x = clientX - rect.left;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      if (logical == null || Number.isNaN(Number(logical))) return null;
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      const lastIdx = candles.length - 1;
+      const L = Number(logical);
+      if (L > lastIdx) return Number(candles[lastIdx].time) + (L - lastIdx) * barSec;
+      if (L < 0) return Number(candles[0].time) + L * barSec;
+      const i0 = Math.max(0, Math.min(lastIdx - 1, Math.floor(L)));
+      const i1 = Math.min(lastIdx, i0 + 1);
+      const t0 = Number(candles[i0].time);
+      const t1 = Number(candles[i1].time);
+      return t0 + (t1 - t0) * (L - i0);
+    };
+    const priceFromClientY = (clientY: number): number | null => {
+      const series = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!series || !rect) return null;
+      const pr = series.coordinateToPrice(clientY - rect.top);
+      return pr != null && Number.isFinite(pr) ? Number(pr) : null;
+    };
+    const applyPtsVisual = (id: string, pts: { time: number; price: number }[]) => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser2 = seriesRef.current;
+      if (!host || !chart2 || !ser2) return;
+      const el = host.querySelector(`[data-brush-id="${id}"]`) as HTMLElement | null;
+      if (!el) return;
+      el.dataset.brushPts = pts.map((p) => `${p.time},${p.price}`).join("|");
+      const coords: string[] = [];
+      let firstXY: { x: number; y: number } | null = null;
+      for (const p of pts) {
+        const x = chart2.timeScale().timeToCoordinate(p.time as any);
+        const y = ser2.priceToCoordinate(p.price);
+        if (x == null || y == null) continue;
+        if (!firstXY) firstXY = { x: Number(x), y: Number(y) };
+        coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+      }
+      const ptsStr = coords.join(" ");
+      el.querySelectorAll("polyline").forEach((poly) => poly.setAttribute("points", ptsStr));
+      const lab = el.querySelector("[data-brush-label]") as HTMLElement | null;
+      if (lab && firstXY) {
+        lab.style.left = `${firstXY.x}px`;
+        lab.style.top = `${firstXY.y - 18}px`;
+      }
+    };
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      const hit = t.closest?.("[data-brush-hit]") as SVGPolylineElement | null;
+      if (!hit) return;
+      const id = hit.getAttribute("data-brush-hit");
+      if (!id) return;
+      const line = (linesRef.current || []).find((x) => String(x.id) === String(id));
+      if (!line || typeof line.note !== "string") return;
+      const parsed = parseBrushNote(line.note);
+      if (!parsed) return;
+      const st = timeFromClientX(ev.clientX);
+      const sp = priceFromClientY(ev.clientY);
+      if (st == null || sp == null) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      brushDragRef.current = {
+        id: String(id),
+        pts: parsed.pts.map((p) => ({ ...p })),
+        startT: st,
+        startP: sp,
+        text: parsed.text || "",
+        color: line.color || "#e5e7eb",
+        width: line.width || 2,
+      };
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+          handleScale: { axisPressedMouseMove: false, axisDoubleClickReset: true, mouseWheel: true, pinch: false },
+        });
+      } catch {}
+    };
+    const onMove = (ev: PointerEvent) => {
+      const drag = brushDragRef.current;
+      if (!drag) return;
+      const t = timeFromClientX(ev.clientX);
+      const p = priceFromClientY(ev.clientY);
+      if (t == null || p == null) return;
+      const dt = t - drag.startT;
+      const dp = p - drag.startP;
+      const moved = drag.pts.map((pt) => ({ time: pt.time + dt, price: pt.price + dp }));
+      applyPtsVisual(drag.id, moved);
+    };
+    const onUp = async () => {
+      const drag = brushDragRef.current;
+      if (!drag) return;
+      brushDragRef.current = null;
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+          handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+        });
+      } catch {}
+      // read final pts from DOM dataset
+      const el = vlineOverlayRef.current?.querySelector(`[data-brush-id="${drag.id}"]`) as HTMLElement | null;
+      const raw = el?.dataset.brushPts || "";
+      const pts = raw.split("|").map((s) => {
+        const [tt, pp] = s.split(",");
+        return { time: Number(tt), price: Number(pp) };
+      }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+      if (pts.length < 2) return;
+      const note = buildBrushNote(pts, drag.text);
+      const first = pts[0], last = pts[pts.length - 1];
+      pushUndo();
+      setLines((prev) =>
+        prev.map((x) =>
+          String(x.id) === drag.id
+            ? { ...x, note, price: first.price, end_price: last.price, start_time: first.time, end_time: last.time }
+            : x
+        )
+      );
+      try {
+        if (!String(drag.id).startsWith("local-")) {
+          await supabase
+            .from("chart_lines")
+            .update({
+              note,
+              price: first.price,
+              end_price: last.price,
+              start_time: first.time,
+              end_time: last.time,
+            })
+            .eq("id", drag.id);
+        }
+      } catch {}
+    };
+    const host = chartContainerRef.current;
+    if (!host) return;
+    host.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      host.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [mode]);
+
+
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
     try {
@@ -13154,12 +13422,18 @@ priced.sort((a, b) => a.price - b.price);
           if (rp) {
             noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
           }
+        } else if (s.startsWith("__brush:")) {
+          const bp = parseBrushNote(s);
+          if (bp) {
+            noteToSave = buildBrushNote(bp.pts, noteDraft.trim());
+          }
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
           noteToSave = s; // vertical lines have no user note slot
         }
       }
       await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
       setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     } else {
       await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
       setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
@@ -17300,7 +17574,9 @@ priced.sort((a, b) => a.price - b.price);
                         </div>
                       )}
                     </div>
-                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__path:") || l.note.startsWith("__rect:") || l.note.startsWith("__curve:"))) && (
+                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                    )}
                       </>
                     )}
                     <button
