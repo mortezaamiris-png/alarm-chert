@@ -89,6 +89,8 @@ type ToolMode =
   | "fib"
   | "fib-ext"
   | "avp"
+  | "avwap"
+  | "frvp"
   | "long-pos"
   | "short-pos"
   | "alarm"
@@ -99,9 +101,159 @@ type ToolMode =
 
 /** Project price on a diagonal line at unix time t (extends beyond end). */
 
-/** Anchored Volume Profile: volume histogram from anchor time → last bar */
+
+/** Volume histogram helper (shared by AVP / FRVP). Uses real volume or tick-count fallback. */
+function computeVolumeProfile(
+  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  t0: number,
+  t1?: number,
+  binCount = 28
+): { priceLo: number; priceHi: number; bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number } | null {
+  const tEnd = t1 == null ? Number.POSITIVE_INFINITY : Number(t1);
+  const slice = candles.filter((c) => {
+    const t = Number(c.time);
+    return t >= Number(t0) && t <= tEnd;
+  });
+  if (slice.length < 1) return null;
+  let pLo = Infinity, pHi = -Infinity;
+  for (const c of slice) {
+    pLo = Math.min(pLo, Number(c.low));
+    pHi = Math.max(pHi, Number(c.high));
+  }
+  if (!Number.isFinite(pLo) || !Number.isFinite(pHi) || pHi <= pLo) {
+    pLo = Math.min(...slice.map((c) => Number(c.close)));
+    pHi = Math.max(...slice.map((c) => Number(c.close)));
+    if (!(pHi > pLo)) return null;
+  }
+  // pad range a bit so bars don't hug edges
+  const pad = (pHi - pLo) * 0.02;
+  pLo -= pad; pHi += pad;
+  const n = Math.max(12, Math.min(48, binCount));
+  const step = (pHi - pLo) / n;
+  const vols = new Array(n).fill(0);
+  let anyVol = false;
+  for (const c of slice) {
+    const v = Math.max(0, Number(c.volume) || 0);
+    if (v > 0) anyVol = true;
+    const lo = Number(c.low), hi = Number(c.high);
+    const i0 = Math.max(0, Math.min(n - 1, Math.floor((lo - pLo) / step)));
+    const i1 = Math.max(0, Math.min(n - 1, Math.floor((hi - pLo) / step)));
+    const span = Math.max(1, i1 - i0 + 1);
+    const each = (v > 0 ? v : 1) / span;
+    for (let i = i0; i <= i1; i++) vols[i] += each;
+  }
+  if (!anyVol) {
+    // pure tick volume already applied via each=1 above
+  }
+  let maxVol = 0, pocIdx = 0;
+  for (let i = 0; i < n; i++) {
+    if (vols[i] > maxVol) { maxVol = vols[i]; pocIdx = i; }
+  }
+  if (maxVol <= 0) return null;
+  const bins = vols.map((vol, i) => ({
+    lo: pLo + i * step,
+    hi: pLo + (i + 1) * step,
+    vol,
+  }));
+  const poc = pLo + (pocIdx + 0.5) * step;
+  return { priceLo: pLo, priceHi: pHi, bins, maxVol, poc };
+}
+
+/** Backward-compatible alias */
 function computeAnchoredVP(
   candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  anchorTime: number,
+  binCount = 28
+) {
+  return computeVolumeProfile(candles, anchorTime, undefined, binCount);
+}
+
+/** Anchored VWAP points from anchor → last candle */
+function computeAnchoredVWAP(
+  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  anchorTime: number
+): { time: number; value: number }[] {
+  const slice = candles.filter((c) => Number(c.time) >= Number(anchorTime));
+  if (slice.length < 1) return [];
+  let sumPV = 0, sumV = 0;
+  const out: { time: number; value: number }[] = [];
+  for (const c of slice) {
+    const tp = (Number(c.high) + Number(c.low) + Number(c.close)) / 3;
+    let v = Math.max(0, Number(c.volume) || 0);
+    if (v <= 0) v = 1; // tick fallback
+    sumPV += tp * v;
+    sumV += v;
+    out.push({ time: Number(c.time), value: sumPV / sumV });
+  }
+  return out;
+}
+
+/** Render volume-profile histogram into a host element (DOM). */
+function paintVolumeProfileDOM(
+  host: HTMLElement,
+  vp: { bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number },
+  ser: any,
+  chart: any,
+  opts: { color?: string; side?: "left" | "right"; anchorTime?: number; endTime?: number }
+) {
+  const col = opts.color || "#2962FF";
+  const side = opts.side || "right";
+  host.innerHTML = "";
+  host.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9;overflow:hidden;";
+  const chartW = chart.timeScale().width() || 400;
+  const maxBarW = Math.min(180, Math.max(80, chartW * 0.28));
+
+  // POC horizontal line
+  const yPoc = ser.priceToCoordinate(vp.poc);
+  if (yPoc != null) {
+    const pocEl = document.createElement("div");
+    pocEl.style.cssText =
+      `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:0;border-top:1px dashed #f59e0b;opacity:0.95;z-index:2;`;
+    host.appendChild(pocEl);
+  }
+
+  // Anchor / range vertical guides
+  if (opts.anchorTime != null) {
+    const xA = chart.timeScale().timeToCoordinate(opts.anchorTime as any);
+    if (xA != null) {
+      const vline = document.createElement("div");
+      vline.style.cssText =
+        `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:0;border-left:1px dashed ${col};opacity:0.7;z-index:1;`;
+      host.appendChild(vline);
+    }
+  }
+  if (opts.endTime != null) {
+    const xB = chart.timeScale().timeToCoordinate(opts.endTime as any);
+    if (xB != null) {
+      const vline = document.createElement("div");
+      vline.style.cssText =
+        `position:absolute;left:${Number(xB)}px;top:0;bottom:0;width:0;border-left:1px dashed ${col};opacity:0.55;z-index:1;`;
+      host.appendChild(vline);
+    }
+  }
+
+  for (const b of vp.bins) {
+    if (b.vol <= 0) continue;
+    const y0 = ser.priceToCoordinate(b.hi);
+    const y1 = ser.priceToCoordinate(b.lo);
+    if (y0 == null || y1 == null) continue;
+    const top = Math.min(Number(y0), Number(y1));
+    const h = Math.max(2, Math.abs(Number(y1) - Number(y0)) - 0.5);
+    const w = Math.max(3, (b.vol / vp.maxVol) * maxBarW);
+    const mid = (b.lo + b.hi) / 2;
+    const isPoc = Math.abs(mid - vp.poc) < (b.hi - b.lo) * 0.55;
+    const bar = document.createElement("div");
+    const bg = isPoc ? "rgba(245,158,11,0.72)" : "rgba(41,98,255,0.42)";
+    bar.style.cssText =
+      `position:absolute;top:${top}px;height:${h}px;width:${w.toFixed(1)}px;` +
+      (side === "right" ? `right:52px;` : `left:6px;`) +
+      `background:${bg};border-radius:1px;z-index:2;box-sizing:border-box;` +
+      (isPoc ? `border:1px solid rgba(245,158,11,0.9);` : `border:1px solid rgba(41,98,255,0.35);`);
+    host.appendChild(bar);
+  }
+}
+
+[],
   anchorTime: number,
   binCount = 28
 ): { priceLo: number; priceHi: number; bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number } | null {
@@ -158,7 +310,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:"))) {
     return false;
   }
   return (
@@ -947,6 +1099,8 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
   if (s.startsWith("__avp:")) return "Anchored VP";
+  if (s.startsWith("__avwap:")) return "Anchored VWAP";
+  if (s.startsWith("__frvp:")) return "Fixed Range VP";
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -4301,6 +4455,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-frvp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
     } catch {}
     try {
@@ -4612,7 +4767,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -5384,61 +5539,72 @@ priced.sort((a, b) => a.price - b.price);
             let binsN = 28;
             let side: "left" | "right" = "right";
             for (const p of parts.slice(1)) {
-              if (p.startsWith("bins=")) binsN = Math.max(8, Math.min(60, parseInt(p.slice(5), 10) || 28));
+              if (p.startsWith("bins=")) binsN = Math.max(12, Math.min(48, parseInt(p.slice(5), 10) || 28));
               if (p === "side=left") side = "left";
-              if (p === "side=right") side = "right";
             }
-            if (!Number.isFinite(anchor)) { /* skip */ }
-            else {
-              const vp = computeAnchoredVP(candlesRef.current || [], anchor, binsN);
-              const host = vlineOverlayRef.current;
-              const chart2 = chartRef.current;
-              const ser2 = seriesRef.current;
-              if (vp && host && chart2 && ser2) {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser2 = seriesRef.current;
+            if (Number.isFinite(anchor) && host && chart2 && ser2) {
+              const vp = computeVolumeProfile(candlesRef.current || [], anchor, undefined, binsN);
+              if (vp) {
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-avp-id", String(l.id));
                 wrap.setAttribute("data-avp-anchor", String(anchor));
                 wrap.setAttribute("data-avp-bins", String(binsN));
                 wrap.setAttribute("data-avp-side", side);
-                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9;overflow:hidden;";
-                const maxBarW = Math.min(160, Math.max(60, (chart2.timeScale().width() || 300) * 0.22));
-                const col = l.color || "#2962FF";
-                // POC line
-                const yPoc = ser2.priceToCoordinate(vp.poc);
-                if (yPoc != null) {
-                  const pocEl = document.createElement("div");
-                  pocEl.setAttribute("data-avp-poc", "1");
-                  pocEl.style.cssText = `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:1px;background:${col};opacity:0.85;`;
-                  wrap.appendChild(pocEl);
-                }
-                // Anchor vertical
-                const xA = chart2.timeScale().timeToCoordinate(anchor as any);
-                if (xA != null) {
-                  const vline = document.createElement("div");
-                  vline.setAttribute("data-avp-anchor-line", "1");
-                  vline.style.cssText = `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:1px;background:${col};opacity:0.5;border-left:1px dashed ${col};`;
-                  wrap.appendChild(vline);
-                }
-                for (const b of vp.bins) {
-                  if (b.vol <= 0) continue;
-                  const y0 = ser2.priceToCoordinate(b.hi);
-                  const y1 = ser2.priceToCoordinate(b.lo);
-                  if (y0 == null || y1 == null) continue;
-                  const top = Math.min(Number(y0), Number(y1));
-                  const h = Math.max(1, Math.abs(Number(y1) - Number(y0)));
-                  const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
-                  const isPoc = Math.abs((b.lo + b.hi) / 2 - vp.poc) < (b.hi - b.lo) * 0.6;
-                  const bar = document.createElement("div");
-                  bar.style.cssText =
-                    `position:absolute;top:${top}px;height:${h}px;width:${w}px;` +
-                    (side === "right"
-                      ? `right:48px;`
-                      : `left:4px;`) +
-                    `background:${isPoc ? col : col};opacity:${isPoc ? 0.55 : 0.28};border-radius:1px;pointer-events:none;`;
-                  wrap.appendChild(bar);
-                }
+                paintVolumeProfileDOM(wrap, vp, ser2, chart2, { color: l.color || "#2962FF", side, anchorTime: anchor });
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __avpDom: true } as any);
+              }
+            }
+          } catch {}
+        } else if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
+          try {
+            const body = l.note.replace(/^__frvp:/, "");
+            const parts = body.split("|");
+            const t0 = Number(parts[0]);
+            const t1 = Number(parts[1]);
+            let binsN = 28;
+            let side: "left" | "right" = "right";
+            for (const p of parts.slice(2)) {
+              if (p.startsWith("bins=")) binsN = Math.max(12, Math.min(48, parseInt(p.slice(5), 10) || 28));
+              if (p === "side=left") side = "left";
+            }
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser2 = seriesRef.current;
+            if (Number.isFinite(t0) && Number.isFinite(t1) && host && chart2 && ser2) {
+              const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
+              if (vp) {
+                const wrap = document.createElement("div");
+                wrap.setAttribute("data-frvp-id", String(l.id));
+                wrap.setAttribute("data-frvp-t0", String(t0));
+                wrap.setAttribute("data-frvp-t1", String(t1));
+                wrap.setAttribute("data-frvp-bins", String(binsN));
+                wrap.setAttribute("data-frvp-side", side);
+                paintVolumeProfileDOM(wrap, vp, ser2, chart2, { color: l.color || "#2962FF", side, anchorTime: t0, endTime: t1 });
+                host.appendChild(wrap);
+                chartLinesRef.current.set(l.id, { __frvpDom: true } as any);
+              }
+            }
+          } catch {}
+        } else if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
+          try {
+            const anchor = Number(l.note.replace(/^__avwap:/, "").split("|")[0]);
+            if (Number.isFinite(anchor)) {
+              const pts = computeAnchoredVWAP(candlesRef.current || [], anchor);
+              if (pts.length >= 2) {
+                const ls = chart.addLineSeries({
+                  color: l.color || "#2962FF",
+                  lineWidth: Math.max(1, Number(l.width) || 2) as any,
+                  priceLineVisible: false,
+                  lastValueVisible: true,
+                  crosshairMarkerVisible: false,
+                  title: "",
+                });
+                ls.setData(pts.map((p) => ({ time: p.time as any, value: p.value })));
+                chartLinesRef.current.set(l.id, ls);
               }
             }
           } catch {}
@@ -5826,41 +5992,33 @@ priced.sort((a, b) => a.price - b.price);
               const binsN = Number(el.dataset.avpBins) || 28;
               const side = (el.dataset.avpSide === "left" ? "left" : "right") as "left" | "right";
               if (!Number.isFinite(anchor)) return;
-              const vp = computeAnchoredVP(candlesRef.current || [], anchor, binsN);
+              const vp = computeVolumeProfile(candlesRef.current || [], anchor, undefined, binsN);
               if (!vp) { el.style.display = "none"; return; }
               el.style.display = "block";
-              el.innerHTML = "";
-              const maxBarW = Math.min(160, Math.max(60, (chart2.timeScale().width() || 300) * 0.22));
-              const col = "#2962FF";
-              const yPoc = ser2.priceToCoordinate(vp.poc);
-              if (yPoc != null) {
-                const pocEl = document.createElement("div");
-                pocEl.style.cssText = `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:1px;background:${col};opacity:0.85;`;
-                el.appendChild(pocEl);
-              }
-              const xA = chart2.timeScale().timeToCoordinate(anchor as any);
-              if (xA != null) {
-                const vline = document.createElement("div");
-                vline.style.cssText = `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:1px;border-left:1px dashed ${col};opacity:0.5;`;
-                el.appendChild(vline);
-              }
-              for (const b of vp.bins) {
-                if (b.vol <= 0) continue;
-                const y0 = ser2.priceToCoordinate(b.hi);
-                const y1 = ser2.priceToCoordinate(b.lo);
-                if (y0 == null || y1 == null) continue;
-                const top = Math.min(Number(y0), Number(y1));
-                const h = Math.max(1, Math.abs(Number(y1) - Number(y0)));
-                const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
-                const isPoc = Math.abs((b.lo + b.hi) / 2 - vp.poc) < (b.hi - b.lo) * 0.6;
-                const bar = document.createElement("div");
-                bar.style.cssText =
-                  `position:absolute;top:${top}px;height:${h}px;width:${w}px;` +
-                  (side === "right" ? `right:48px;` : `left:4px;`) +
-                  `background:${col};opacity:${isPoc ? 0.55 : 0.28};border-radius:1px;`;
-                el.appendChild(bar);
-              }
+              paintVolumeProfileDOM(el, vp, ser2, chart2, { color: "#2962FF", side, anchorTime: anchor });
+              el.setAttribute("data-avp-id", el.getAttribute("data-avp-id") || "");
+              el.setAttribute("data-avp-anchor", String(anchor));
+              el.setAttribute("data-avp-bins", String(binsN));
+              el.setAttribute("data-avp-side", side);
             });
+            host.querySelectorAll("[data-frvp-id]").forEach((node) => {
+              const el = node as HTMLElement;
+              const t0 = Number(el.dataset.frvpT0);
+              const t1 = Number(el.dataset.frvpT1);
+              const binsN = Number(el.dataset.frvpBins) || 28;
+              const side = (el.dataset.frvpSide === "left" ? "left" : "right") as "left" | "right";
+              if (!Number.isFinite(t0) || !Number.isFinite(t1)) return;
+              const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
+              if (!vp) { el.style.display = "none"; return; }
+              el.style.display = "block";
+              paintVolumeProfileDOM(el, vp, ser2, chart2, { color: "#2962FF", side, anchorTime: t0, endTime: t1 });
+              el.setAttribute("data-frvp-id", el.getAttribute("data-frvp-id") || "");
+              el.setAttribute("data-frvp-t0", String(t0));
+              el.setAttribute("data-frvp-t1", String(t1));
+              el.setAttribute("data-frvp-bins", String(binsN));
+              el.setAttribute("data-frvp-side", side);
+            });
+
 // Fib background bands (DOM) track pan
             host.querySelectorAll("[data-fib-band]").forEach((node) => {
               const el = node as HTMLElement;
@@ -9903,6 +10061,8 @@ priced.sort((a, b) => a.price - b.price);
               n0.startsWith("__path:") ||
               n0.startsWith("__brush:") ||
               n0.startsWith("__avp:") ||
+              n0.startsWith("__avwap:") ||
+              n0.startsWith("__frvp:") ||
               n0.startsWith("__curve:") ||
               n0.startsWith("__fib:") ||
               n0.startsWith("__fibext:") ||
@@ -11234,23 +11394,104 @@ priced.sort((a, b) => a.price - b.price);
             if (uid) base.user_id = uid;
             let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
             if (error) {
-              const fb = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: t };
-              if (uid) (fb as any).user_id = uid;
+              const fb: any = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: t };
+              if (uid) fb.user_id = uid;
               ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
             }
             if (!error && data) {
               pushUndo();
               setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg("Anchored VP placed — tap again for another, or exit tool");
-            } else {
-              setStatusMsg("AVP save failed");
-            }
-          } catch {
-            setStatusMsg("AVP save failed");
-          }
+              setStatusMsg("Anchored VP placed");
+            } else setStatusMsg("AVP save failed");
+          } catch { setStatusMsg("AVP save failed"); }
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 250);
-          // stay in avp mode like TV (user can place multiple)
+          return;
+        }
+
+        // Anchored VWAP — single click
+        if (m === "avwap") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          clickLockRef.current = true;
+          setSaving(true);
+          try {
+            const note = `__avwap:${t}`;
+            const base: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: fp,
+              color: "#2962FF",
+              width: 2,
+              dash: "solid",
+              start_time: t,
+              end_time: t,
+              end_price: fp,
+              note,
+            };
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            if (uid) base.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb: any = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: t };
+              if (uid) fb.user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Anchored VWAP placed");
+            } else setStatusMsg("VWAP save failed");
+          } catch { setStatusMsg("VWAP save failed"); }
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 250);
+          return;
+        }
+
+        // Fixed Range Volume Profile — two clicks
+        if (m === "frvp") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          if (!diagStart) {
+            setDiagStart({ time: t, price: fp });
+            setStatusMsg("Fixed Range VP: now tap end point");
+            return;
+          }
+          const t0 = Math.min(diagStart.time, t);
+          const t1 = Math.max(diagStart.time, t);
+          clickLockRef.current = true;
+          setSaving(true);
+          try {
+            const note = `__frvp:${t0}|${t1}|bins=28|side=right`;
+            const base: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: fp,
+              color: "#2962FF",
+              width: 1,
+              dash: "solid",
+              start_time: t0,
+              end_time: t1,
+              end_price: fp,
+              note,
+            };
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            if (uid) base.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb: any = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: t0, end_time: t1 };
+              if (uid) fb.user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Fixed Range VP placed");
+            } else setStatusMsg("FRVP save failed");
+          } catch { setStatusMsg("FRVP save failed"); }
+          setDiagStart(null);
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 250);
           return;
         }
 
@@ -12314,6 +12555,8 @@ priced.sort((a, b) => a.price - b.price);
         mode === "curve" ||
         mode === "rect" ||
         mode === "avp" ||
+        mode === "avwap" ||
+        mode === "frvp" ||
         mode === "alarm" ||
         mode === "alarm-ray" ||
         mode === "alarm-diag" ||
@@ -14219,7 +14462,7 @@ priced.sort((a, b) => a.price - b.price);
                   setDrawToolsOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "avp"
+                  fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "avp" || mode === "avwap" || mode === "frvp"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -14275,6 +14518,45 @@ priced.sort((a, b) => a.price - b.price);
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Volume-based</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "avwap" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode("avwap");
+                      modeRef.current = "avwap";
+                      setStatusMsg("Anchored VWAP: tap chart to set anchor");
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0">
+                      <path d="M4 18c3-8 6-12 8-12s5 4 8 12" />
+                      <circle cx="12" cy="6" r="1.5" fill="currentColor" />
+                    </svg>
+                    Anchored VWAP
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "frvp" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode("frvp");
+                      modeRef.current = "frvp";
+                      setStatusMsg("Fixed Range VP: tap start, then end");
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0">
+                      <rect x="3" y="4" width="4" height="16" rx="0.5" opacity="0.4" fill="currentColor" />
+                      <rect x="9" y="8" width="4" height="12" rx="0.5" opacity="0.6" fill="currentColor" />
+                      <rect x="15" y="6" width="4" height="14" rx="0.5" opacity="0.85" fill="currentColor" />
+                    </svg>
+                    Fixed range volume profile
+                  </button>
                   <button
                     type="button"
                     className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "avp" ? "text-orange-300" : ""}`}
@@ -17231,6 +17513,10 @@ priced.sort((a, b) => a.price - b.price);
                       ? "Brush"
                       : typeof l.note === "string" && l.note.startsWith("__avp:")
                       ? "Anchored VP"
+                      : typeof l.note === "string" && l.note.startsWith("__avwap:")
+                      ? "Anchored VWAP"
+                      : typeof l.note === "string" && l.note.startsWith("__frvp:")
+                      ? "Fixed Range VP"
                       : l.note === "__vline__"
                       ? "Vertical"
                       : isDiagonalLine(l)
@@ -17530,7 +17816,9 @@ priced.sort((a, b) => a.price - b.price);
                         </div>
                       )}
                     </div>
-                    <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
+                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
+                    )}
                       </>
                     )}
                     <button
