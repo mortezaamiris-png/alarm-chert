@@ -5767,7 +5767,25 @@ priced.sort((a, b) => a.price - b.price);
             if (Number.isFinite(anchor)) {
               const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
               if (pack.vwap.length >= 1) {
-                const mk = (
+                const toData = (pts: { time: number; value: number }[]) =>
+                  pts.map((p) => ({ time: p.time as any, value: p.value }));
+
+                // TV Background #1: soft blue fill under upper band #1
+                let fillSer: any = null;
+                try {
+                  fillSer = chart.addAreaSeries({
+                    topColor: "rgba(41, 98, 255, 0.16)",
+                    bottomColor: "rgba(41, 98, 255, 0.03)",
+                    lineColor: "transparent",
+                    lineWidth: 1,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                  } as any);
+                  fillSer.setData(toData(pack.upper1));
+                } catch {}
+
+                const mkLine = (
                   pts: { time: number; value: number }[],
                   color: string,
                   width: number,
@@ -5781,20 +5799,21 @@ priced.sort((a, b) => a.price - b.price);
                     lastValueVisible: showLast,
                     crosshairMarkerVisible: false,
                     title: "",
-                    // don't steal autoscale from candles
-                    autoscaleInfoProvider: () => null as any,
                   });
-                  ls.setData(pts.map((p) => ({ time: p.time as any, value: p.value })));
+                  ls.setData(toData(pts));
                   return ls;
                 };
-                // TV colors: VWAP blue, ±1σ green, ±2σ lighter green
+
+                // TV docs colors: VWAP blue, band1 green, band2 olive, band3 teal
                 const colMain = l.color || "#2962FF";
-                const main = mk(pack.vwap, colMain, Math.max(2, Number(l.width) || 2), true);
-                const u1 = mk(pack.upper1, "#26a69a", 1, false);
-                const lo1 = mk(pack.lower1, "#26a69a", 1, false);
-                const u2 = mk(pack.upper2, "rgba(38,166,154,0.55)", 1, false);
-                const lo2 = mk(pack.lower2, "rgba(38,166,154,0.55)", 1, false);
-                // anchor hollow circle marker on main line
+                const main = mkLine(pack.vwap, colMain, Math.max(2, Number(l.width) || 2), true);
+                const u1 = mkLine(pack.upper1, "#4caf50", 1, false);
+                const lo1 = mkLine(pack.lower1, "#4caf50", 1, false);
+                const u2 = mkLine(pack.upper2, "#8d6e63", 1, false);
+                const lo2 = mkLine(pack.lower2, "#8d6e63", 1, false);
+                const u3 = mkLine(pack.upper3 || [], "#26a69a", 1, false);
+                const lo3 = mkLine(pack.lower3 || [], "#26a69a", 1, false);
+
                 if (main && pack.vwap[0]) {
                   try {
                     main.setMarkers([
@@ -5803,13 +5822,15 @@ priced.sort((a, b) => a.price - b.price);
                         position: "inBar",
                         color: colMain,
                         shape: "circle",
-                        size: 1.5,
+                        size: 2,
                       } as any,
                     ]);
                   } catch {}
                 }
-                // store all series under one id as array → cleanup removes all
-                const all = [main, u1, lo1, u2, lo2].filter(Boolean);
+
+                const all: any[] = [];
+                if (fillSer) all.push(fillSer);
+                for (const s of [main, u1, lo1, u2, lo2, u3, lo3]) if (s) all.push(s);
                 if (all.length) chartLinesRef.current.set(l.id, all as any);
               }
             }
