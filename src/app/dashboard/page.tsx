@@ -906,6 +906,7 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
+  if (s.startsWith("__rect:")) return "Rectangle";
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
@@ -4188,6 +4189,10 @@ export default function DashboardPage() {
     rayItemsRef.current = [];
     calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
+    // clear previous DOM rects (rebuilt below)
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
+    } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-arrow-ring]").forEach((el) => el.remove());
     } catch {}
@@ -5101,21 +5106,52 @@ export default function DashboardPage() {
             const [t0s, p0s] = a.split(",");
             const [t1s, p1s] = b.split(",");
             const t0 = Number(t0s), t1 = Number(t1s), p0 = Number(p0s), p1 = Number(p1s);
-            if (t1 > t0 && p1 !== p0) {
-              const ls: any = chart.addLineSeries({
-                color, lineWidth: width, lineStyle: style,
-                priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-                autoscaleInfoProvider: () => null as any,
-              });
-              // rectangle as 4 edges via two horizontal + connecting (simplified box outline)
-              ls.setData([
-                { time: t0 as any, value: p0 },
-                { time: t1 as any, value: p0 },
-                { time: t1 as any, value: p1 },
-                { time: t0 as any, value: p1 },
-                { time: (t0 + 1) as any, value: p0 },
-              ]);
-              chartLinesRef.current.set(l.id, ls);
+            if (Number.isFinite(t0) && Number.isFinite(t1) && Number.isFinite(p0) && Number.isFinite(p1) && t0 !== t1) {
+              try {
+                const host = vlineOverlayRef.current;
+                const chart2 = chartRef.current;
+                const ser2 = seriesRef.current;
+                if (host && chart2 && ser2) {
+                  const xa = chart2.timeScale().timeToCoordinate(Math.min(t0, t1) as any);
+                  const xb = chart2.timeScale().timeToCoordinate(Math.max(t0, t1) as any);
+                  const ya = ser2.priceToCoordinate(Math.max(p0, p1));
+                  const yb = ser2.priceToCoordinate(Math.min(p0, p1));
+                  if (xa != null && xb != null && ya != null && yb != null) {
+                    const left = Math.min(Number(xa), Number(xb));
+                    const top = Math.min(Number(ya), Number(yb));
+                    const w = Math.abs(Number(xb) - Number(xa));
+                    const h = Math.abs(Number(yb) - Number(ya));
+                    const box = document.createElement("div");
+                    box.dataset.rectId = String(l.id);
+                    box.dataset.rectT0 = String(Math.min(t0, t1));
+                    box.dataset.rectT1 = String(Math.max(t0, t1));
+                    box.dataset.rectP0 = String(Math.min(p0, p1));
+                    box.dataset.rectP1 = String(Math.max(p0, p1));
+                    const col = color || "#787B86";
+                    box.style.cssText =
+                      `position:absolute;left:${left}px;top:${top}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;` +
+                      `background:rgba(120,123,134,0.28);border:1.5px solid ${col};` +
+                      `pointer-events:auto;z-index:12;box-sizing:border-box;`;
+                    const hs: [string, string, string][] = [
+                      ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
+                      ["w", "0%", "50%"], ["e", "100%", "50%"],
+                      ["sw", "0%", "100%"], ["s", "50%", "100%"], ["se", "100%", "100%"],
+                    ];
+                    for (const [role, leftP, topP] of hs) {
+                      const hEl = document.createElement("div");
+                      hEl.dataset.rectHandle = role;
+                      hEl.dataset.rectId = String(l.id);
+                      hEl.style.cssText =
+                        `position:absolute;left:${leftP};top:${topP};width:10px;height:10px;` +
+                        `transform:translate(-50%,-50%);border-radius:50%;` +
+                        `background:#0b0e11;border:2px solid #2962FF;z-index:13;pointer-events:auto;cursor:pointer;`;
+                      box.appendChild(hEl);
+                    }
+                    host.appendChild(box);
+                  }
+                }
+              } catch {}
+              chartLinesRef.current.set(l.id, { __rectDom: true } as any);
             }
           }
         } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
@@ -5511,7 +5547,38 @@ export default function DashboardPage() {
         }
         // Fib/diag handles must track chart on every pan frame
         syncMoveHandlesNow();
-        // Reposition fib DOM labels while panning
+        // Reposition DOM rectangles while panning
+        try {
+          const host = vlineOverlayRef.current;
+          const chart2 = chartRef.current;
+          const ser2 = seriesRef.current;
+          if (host && chart2 && ser2) {
+            host.querySelectorAll("[data-rect-id]").forEach((node) => {
+              const el = node as HTMLElement;
+              // only top-level boxes (not handles)
+              if (el.dataset.rectHandle) return;
+              if (!el.dataset.rectT0) return;
+              const t0 = Number(el.dataset.rectT0);
+              const t1 = Number(el.dataset.rectT1);
+              const p0 = Number(el.dataset.rectP0);
+              const p1 = Number(el.dataset.rectP1);
+              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
+              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              const y0 = ser2.priceToCoordinate(p1);
+              const y1 = ser2.priceToCoordinate(p0);
+              if (x0 == null || x1 == null || y0 == null || y1 == null) {
+                el.style.display = "none";
+                return;
+              }
+              el.style.display = "block";
+              el.style.left = `${Math.min(Number(x0), Number(x1))}px`;
+              el.style.top = `${Math.min(Number(y0), Number(y1))}px`;
+              el.style.width = `${Math.max(2, Math.abs(Number(x1) - Number(x0)))}px`;
+              el.style.height = `${Math.max(2, Math.abs(Number(y1) - Number(y0)))}px`;
+            });
+          }
+        } catch {}
+        // Reposition fib DOM labels while panning (update in place when possible)
         try {
           const host = vlineOverlayRef.current;
           const chart2 = chartRef.current;
@@ -5607,8 +5674,17 @@ export default function DashboardPage() {
       const hostEl = chartContainerRef.current;
       if (hostEl) {
         hostEl.addEventListener("wheel", scheduleOverlaySync, { passive: true });
-        hostEl.addEventListener("pointermove", scheduleOverlaySync, { passive: true });
-        hostEl.addEventListener("touchmove", scheduleOverlaySync, { passive: true });
+        // pointermove was too heavy with fib bands — throttle via rAF only on actual drag
+        let __pmRaf = 0;
+        const onPm = () => {
+          if (__pmRaf) return;
+          __pmRaf = requestAnimationFrame(() => {
+            __pmRaf = 0;
+            scheduleOverlaySync();
+          });
+        };
+        hostEl.addEventListener("pointermove", onPm, { passive: true });
+        hostEl.addEventListener("touchmove", onPm, { passive: true });
       }
     } catch {}
 
@@ -13347,7 +13423,7 @@ export default function DashboardPage() {
                   setFibToolsOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -13402,6 +13478,29 @@ export default function DashboardPage() {
                   >
                     <span className="w-4 text-center">💬</span>
                     Callout
+                  </button>
+                  <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "rect" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode("rect");
+                      setStatusMsg("Rectangle: tap first corner, then opposite");
+                    }}
+                  >
+                    <svg width="18" height="16" viewBox="0 0 24 20" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0 opacity-90">
+                      <rect x="3" y="2" width="18" height="16" rx="1" />
+                      <circle cx="3" cy="2" r="1.8" fill="currentColor" stroke="none" />
+                      <circle cx="21" cy="2" r="1.8" fill="currentColor" stroke="none" />
+                      <circle cx="3" cy="18" r="1.8" fill="currentColor" stroke="none" />
+                      <circle cx="21" cy="18" r="1.8" fill="currentColor" stroke="none" />
+                    </svg>
+                    Rectangle
                   </button>
 
                 </div>
