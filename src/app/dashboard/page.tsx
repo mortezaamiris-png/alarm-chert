@@ -5793,13 +5793,6 @@ priced.sort((a, b) => a.price - b.price);
                 const toData = (pts: { time: number; value: number }[]) =>
                   pts.map((p) => ({ time: p.time as any, value: p.value }));
 
-                // TV-style: fill ONLY between upper1 and lower1 (not to chart bottom).
-                // LWC has no native band-fill; approximate with many thin baseline strips
-                // OR skip fill and keep clean lines. Prefer clean TV-like lines without
-                // the tall blue rectangle bug from area-series-to-bottom.
-                // Soft channel: draw upper1 as area with very low opacity is wrong
-                // because it fills to zero. So: no area series.
-
                 const mkLine = (
                   pts: { time: number; value: number }[],
                   color: string,
@@ -5819,18 +5812,13 @@ priced.sort((a, b) => a.price - b.price);
                   return ls;
                 };
 
-                // Match TV default view: VWAP blue + band1 green (±1σ).
-                // Band2/band3 thinner & muted (TV shows them optional).
+                // TV default look: VWAP (blue) + band #1 only (±1σ teal).
+                // No ±2/±3 (extra lines) and no DOM fill (lags on pan).
                 const colMain = l.color || "#2962FF";
                 const main = mkLine(pack.vwap, colMain, Math.max(2, Number(l.width) || 2), true);
-                const u1 = mkLine(pack.upper1, "#26a69a", 1, false); // TV teal-green
+                const u1 = mkLine(pack.upper1, "#26a69a", 1, false);
                 const lo1 = mkLine(pack.lower1, "#26a69a", 1, false);
-                const u2 = mkLine(pack.upper2, "rgba(141,110,99,0.55)", 1, false);
-                const lo2 = mkLine(pack.lower2, "rgba(141,110,99,0.55)", 1, false);
-                const u3 = mkLine(pack.upper3, "rgba(38,166,154,0.35)", 1, false);
-                const lo3 = mkLine(pack.lower3, "rgba(38,166,154,0.35)", 1, false);
 
-                // Anchor hollow circle at first point (TV style)
                 if (main && pack.vwap[0]) {
                   try {
                     main.setMarkers([
@@ -5845,49 +5833,8 @@ priced.sort((a, b) => a.price - b.price);
                   } catch {}
                 }
 
-                // Channel fill between upper1 & lower1 via DOM (TV Background #1)
-                try {
-                  const host = vlineOverlayRef.current;
-                  const ser2 = seriesRef.current;
-                  const chart2 = chartRef.current;
-                  if (host && ser2 && chart2 && pack.upper1.length >= 2) {
-                    const wrap = document.createElement("div");
-                    wrap.setAttribute("data-avwap-fill", String(l.id));
-                    wrap.style.cssText =
-                      "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:5;overflow:hidden;";
-                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                    svg.style.cssText =
-                      "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
-                    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-                    const pts: string[] = [];
-                    // upper edge left→right
-                    for (const p of pack.upper1) {
-                      const x = chart2.timeScale().timeToCoordinate(p.time as any);
-                      const y = ser2.priceToCoordinate(p.value);
-                      if (x == null || y == null) continue;
-                      pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
-                    }
-                    // lower edge right→left
-                    for (let i = pack.lower1.length - 1; i >= 0; i--) {
-                      const p = pack.lower1[i];
-                      const x = chart2.timeScale().timeToCoordinate(p.time as any);
-                      const y = ser2.priceToCoordinate(p.value);
-                      if (x == null || y == null) continue;
-                      pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
-                    }
-                    if (pts.length >= 4) {
-                      poly.setAttribute("points", pts.join(" "));
-                      poly.setAttribute("fill", "rgba(38, 166, 154, 0.12)");
-                      poly.setAttribute("stroke", "none");
-                      svg.appendChild(poly);
-                      wrap.appendChild(svg);
-                      host.appendChild(wrap);
-                    }
-                  }
-                } catch {}
-
                 const all: any[] = [];
-                for (const s of [main, u1, lo1, u2, lo2, u3, lo3]) if (s) all.push(s);
+                for (const s of [main, u1, lo1]) if (s) all.push(s);
                 if (all.length) chartLinesRef.current.set(l.id, all as any);
               }
             }
