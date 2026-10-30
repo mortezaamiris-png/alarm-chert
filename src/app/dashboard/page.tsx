@@ -260,13 +260,39 @@ function paintVolumeProfileDOM(
   }
   const rangeW = Math.max(20, xRight - xLeft);
 
-  // TV: dark semi-transparent overlay over the whole selected range
-  if (opts.showBox !== false && layout === "range") {
+  // Price range of profile (only bins with volume) — TV box is NOT full chart height
+  let boxYTop: number | null = null;
+  let boxYBot: number | null = null;
+  {
+    let pHi = -Infinity, pLo = Infinity;
+    for (const b of vp.bins) {
+      if (b.vol <= 0) continue;
+      if (b.hi > pHi) pHi = b.hi;
+      if (b.lo < pLo) pLo = b.lo;
+    }
+    if (!(pHi > pLo)) {
+      pHi = vp.poc * 1.002;
+      pLo = vp.poc * 0.998;
+    }
+    // small pad so bars aren't flush with border
+    const pad = (pHi - pLo) * 0.04 || vp.poc * 0.001;
+    const yA = ser.priceToCoordinate(pHi + pad);
+    const yB = ser.priceToCoordinate(pLo - pad);
+    if (yA != null && yB != null) {
+      boxYTop = Math.min(Number(yA), Number(yB));
+      boxYBot = Math.max(Number(yA), Number(yB));
+    }
+  }
+
+  // TV: dark overlay ONLY between start/end time AND between price hi/lo of the profile
+  if (opts.showBox !== false && layout === "range" && boxYTop != null && boxYBot != null) {
     const box = document.createElement("div");
     box.style.cssText =
-      `position:absolute;left:${xLeft}px;width:${rangeW}px;top:0;bottom:0;` +
-      `background:rgba(15,23,42,0.42);border-left:1px solid rgba(41,98,255,0.85);` +
-      `border-right:1px solid rgba(41,98,255,0.55);box-sizing:border-box;z-index:1;`;
+      `position:absolute;left:${xLeft}px;width:${rangeW}px;` +
+      `top:${boxYTop}px;height:${Math.max(8, boxYBot - boxYTop)}px;` +
+      `background:rgba(15,23,42,0.45);border:1px solid rgba(41,98,255,0.55);` +
+      `border-left:1px solid rgba(41,98,255,0.9);border-right:1px solid rgba(41,98,255,0.7);` +
+      `box-sizing:border-box;z-index:1;`;
     host.appendChild(box);
   }
 
@@ -357,42 +383,45 @@ function paintVolumeProfileDOM(
     host.appendChild(bar);
   }
 
-  // POC horizontal line — TV style: solid orange across the full range box
+  // POC horizontal line — TV: solid line across FULL width of the range box
   const yPoc = ser.priceToCoordinate(vp.poc);
   if (yPoc != null) {
     const pocEl = document.createElement("div");
     if (layout === "range") {
       pocEl.style.cssText =
         `position:absolute;left:${xLeft}px;width:${rangeW}px;top:${Number(yPoc)}px;height:0;` +
-        `border-top:1.5px solid #f59e0b;opacity:0.95;z-index:5;`;
+        `border-top:2px solid #ef5350;opacity:0.95;z-index:5;`;
     } else {
       pocEl.style.cssText =
         `position:absolute;left:0;right:48px;top:${Number(yPoc)}px;height:0;` +
-        `border-top:1.5px solid #f59e0b;opacity:0.95;z-index:5;`;
+        `border-top:2px solid #ef5350;opacity:0.95;z-index:5;`;
     }
     host.appendChild(pocEl);
-    // small POC marker on left edge
-    const dot = document.createElement("div");
-    if (layout === "range") {
+    // end dots like TV (small circles on the POC line)
+    for (const x of layout === "range" ? [xLeft, xLeft + rangeW] : [null]) {
+      if (x == null) continue;
+      const dot = document.createElement("div");
       dot.style.cssText =
-        `position:absolute;left:${xLeft - 3}px;top:${Number(yPoc) - 3}px;` +
-        `width:6px;height:6px;border-radius:50%;background:#f59e0b;z-index:6;`;
-    } else {
-      dot.style.cssText =
-        `position:absolute;right:45px;top:${Number(yPoc) - 3}px;` +
-        `width:6px;height:6px;border-radius:50%;background:#f59e0b;z-index:6;`;
+        `position:absolute;left:${Number(x) - 3}px;top:${Number(yPoc) - 3}px;` +
+        `width:6px;height:6px;border-radius:50%;background:#ef5350;border:1px solid #fff;z-index:6;box-sizing:border-box;`;
+      host.appendChild(dot);
     }
-    host.appendChild(dot);
   }
 
-  // Anchor / end verticals (FRVP edges)
+  // Anchor / end verticals — only span the profile box height (TV style)
+  const vTop = boxYTop != null ? boxYTop : 0;
+  const vH = boxYTop != null && boxYBot != null ? Math.max(8, boxYBot - boxYTop) : 0;
+  const vStyle = (x: number, strong: boolean) =>
+    boxYTop != null
+      ? `position:absolute;left:${x}px;top:${vTop}px;height:${vH}px;width:0;` +
+        `border-left:1px solid rgba(41,98,255,${strong ? "0.95" : "0.6"});z-index:4;`
+      : `position:absolute;left:${x}px;top:0;bottom:0;width:0;` +
+        `border-left:1px solid rgba(41,98,255,${strong ? "0.95" : "0.6"});z-index:4;`;
   if (opts.anchorTime != null) {
     const xA = chart.timeScale().timeToCoordinate(opts.anchorTime as any);
     if (xA != null) {
       const vline = document.createElement("div");
-      vline.style.cssText =
-        `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:0;` +
-        `border-left:1px solid rgba(41,98,255,0.9);z-index:4;`;
+      vline.style.cssText = vStyle(Number(xA), true);
       host.appendChild(vline);
     }
   }
@@ -400,9 +429,7 @@ function paintVolumeProfileDOM(
     const xB = chart.timeScale().timeToCoordinate(opts.endTime as any);
     if (xB != null) {
       const vline = document.createElement("div");
-      vline.style.cssText =
-        `position:absolute;left:${Number(xB)}px;top:0;bottom:0;width:0;` +
-        `border-left:1px solid rgba(41,98,255,0.55);z-index:4;`;
+      vline.style.cssText = vStyle(Number(xB), false);
       host.appendChild(vline);
     }
   }
@@ -10720,6 +10747,41 @@ priced.sort((a, b) => a.price - b.price);
                 width: md.width,
                 dash: md.dash,
               };
+              // Fixed Range VP — only time range matters
+              if ((md as any).isFrvp && typ === "line") {
+                const t0 = Math.min(md.pointA.time, md.pointB.time);
+                const t1 = Math.max(md.pointA.time, md.pointB.time);
+                const binsN = Number((md as any).binsN) || 48;
+                const note = `__frvp:${t0}|${t1}|bins=${binsN}`;
+                patch.note = note;
+                patch.start_time = t0;
+                patch.end_time = t1;
+                patch.price = md.pointA.price;
+                patch.end_price = md.pointB.price;
+                await supabase.from("chart_lines").update(patch).eq("id", id);
+                setLines((prev) =>
+                  prev.map((a) =>
+                    a.id === id
+                      ? {
+                          ...a,
+                          note,
+                          price: md.pointA.price,
+                          start_time: t0,
+                          end_time: t1,
+                          end_price: md.pointB.price,
+                          color: md.color,
+                        }
+                      : a
+                  )
+                );
+                md.phase = "pick";
+                lockChartInteraction(false);
+                refreshHandles();
+                setStatusMsg("FRVP saved — tap handle to edit more, or ✓ Done");
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 300);
+                return;
+              }
               // If this is a fib, rebuild note with new anchors
               if ((md as any).isFib && typ === "line") {
                 const cur = (linesRef.current || []).find((x) => x.id === id);
@@ -11778,8 +11840,27 @@ priced.sort((a, b) => a.price - b.price);
             }
             if (!error && data) {
               pushUndo();
-              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg("Fixed Range VP placed");
+              const row = { ...(data as ChartLine), ...base, id: (data as any).id } as ChartLine;
+              setLines((prev) => [row, ...prev]);
+              setStatusMsg("Fixed Range VP placed — Move to adjust ends");
+              // auto-select handles so user can tweak immediately
+              try {
+                setMode("move");
+                setMovingId(row.id);
+                setMovingType("line");
+                moveDiagRef.current = {
+                  id: row.id,
+                  phase: "pick",
+                  pointA: { time: t0, price: start.price },
+                  pointB: { time: t1, price: fp },
+                  color: "#2962FF",
+                  width: 1,
+                  dash: "solid",
+                  isFrvp: true,
+                  binsN: 48,
+                } as any;
+                positionHandles({ time: t0, price: start.price }, { time: t1, price: fp }, null);
+              } catch {}
             } else setStatusMsg("FRVP save failed");
           } catch { setStatusMsg("FRVP save failed"); }
           diagStartRef.current = null;
@@ -18138,6 +18219,51 @@ priced.sort((a, b) => a.price - b.price);
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Fixed Range VP — two time handles
+                        if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
+                          try {
+                            const body = l.note.replace(/^__frvp:/, "");
+                            const parts = body.split("|");
+                            const t0 = Number(parts[0]);
+                            const t1 = Number(parts[1]);
+                            let binsN = 48;
+                            for (const p of parts.slice(2)) {
+                              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
+                            }
+                            const midP = Number(l.price) || Number(l.end_price) || 0;
+                            // fallback mid from candles if needed
+                            let pA = midP, pB = midP;
+                            try {
+                              const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
+                              if (vp) {
+                                pA = vp.bins.length ? vp.bins[vp.bins.length - 1].hi : vp.poc;
+                                pB = vp.bins.length ? vp.bins[0].lo : vp.poc;
+                              }
+                            } catch {}
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: Math.min(t0, t1), price: pA },
+                              pointB: { time: Math.max(t0, t1), price: pB },
+                              color: l.color || "#2962FF",
+                              width: 1,
+                              dash: "solid",
+                              isFrvp: true,
+                              binsN,
+                            } as any;
+                            positionHandles(
+                              { time: Math.min(t0, t1), price: pA },
+                              { time: Math.max(t0, t1), price: pB },
+                              null
+                            );
+                            setStatusMsg("FRVP: tap a circle to move start/end — ✓ Done");
+                          } catch {
+                            setStatusMsg("FRVP move failed");
+                          }
+                          return;
+                        }
                         const fibHit = parseFibNote(l.note);
                         if (fibHit) {
                           setSelectedFibId(String(l.id));
