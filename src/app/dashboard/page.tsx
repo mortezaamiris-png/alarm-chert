@@ -116,7 +116,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:"))) {
     return false;
   }
   return (
@@ -903,6 +903,7 @@ function userFacingNote(note?: string | null): string {
   if (s === "__vline__") return "";
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
+  if (s.startsWith("__brush:")) return "Brush";
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -4255,6 +4256,8 @@ export default function DashboardPage() {
     // clear previous DOM rects + fib bands (rebuilt below)
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
     } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-fib-band]").forEach((el) => el.remove());
@@ -5329,6 +5332,42 @@ priced.sort((a, b) => a.price - b.price);
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
+        } else if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
+          // Freehand brush — DOM SVG (order preserved; may go back in time)
+          try {
+            const raw = l.note.replace(/^__brush:/, "");
+            const pts = raw.split("|").map((s) => {
+              const [tt, pp] = s.split(",");
+              return { time: Number(tt), price: Number(pp) };
+            }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            const ser2 = seriesRef.current;
+            if (host && chart2 && ser2 && pts.length >= 2) {
+              const coords: string[] = [];
+              for (const p of pts) {
+                const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                const y = ser2.priceToCoordinate(p.price);
+                if (x == null || y == null) continue;
+                coords.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+              }
+              if (coords.length >= 2) {
+                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                svg.setAttribute("data-brush-id", String(l.id));
+                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
+                const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                poly.setAttribute("points", coords.join(" "));
+                poly.setAttribute("fill", "none");
+                poly.setAttribute("stroke", color || "#e5e7eb");
+                poly.setAttribute("stroke-width", String(Math.max(1, Number(width) || 2)));
+                poly.setAttribute("stroke-linecap", "round");
+                poly.setAttribute("stroke-linejoin", "round");
+                svg.appendChild(poly);
+                host.appendChild(svg);
+                chartLinesRef.current.set(l.id, { __brushDom: true } as any);
+              }
+            }
+          } catch {}
         } else if (
           (typeof l.note === "string" && l.note.startsWith("__ray:")) ||
           (l.start_time != null &&
@@ -7041,11 +7080,24 @@ priced.sort((a, b) => a.price - b.price);
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as HTMLElement | null;
       if (!t) return;
-      const handle = t.closest?.("[data-rect-handle]") as HTMLElement | null;
-      let box = t.closest?.("[data-rect-id]") as HTMLElement | null;
+      // Ignore clicks that aren't directly on the box/handle (avoid invisible hit zones)
+      const handle = (t.dataset?.rectHandle ? t : t.closest?.("[data-rect-handle]")) as HTMLElement | null;
+      let box: HTMLElement | null = null;
       if (handle) {
         box = (handle.closest?.("[data-rect-id]:not([data-rect-handle])") as HTMLElement | null)
-          || handle.parentElement;
+          || (handle.parentElement as HTMLElement | null);
+      } else if (t.dataset?.rectId && !t.dataset?.rectHandle && !t.dataset?.rectLabel) {
+        box = t;
+      } else {
+        // only accept the box element itself, not expanded ancestors
+        const cand = t.closest?.("[data-rect-id]:not([data-rect-handle])") as HTMLElement | null;
+        if (cand && (t === cand || cand.contains(t)) && !t.dataset?.rectLabel) {
+          // verify pointer is inside the visible border box (not label hanging outside)
+          const r = cand.getBoundingClientRect();
+          if (ev.clientX >= r.left - 2 && ev.clientX <= r.right + 2 && ev.clientY >= r.top - 2 && ev.clientY <= r.bottom + 2) {
+            box = cand;
+          }
+        }
       }
       // click outside any rect → deselect handles
       if (!box || (box.dataset.rectHandle && !handle)) {
@@ -7184,6 +7236,181 @@ priced.sort((a, b) => a.price - b.price);
       document.removeEventListener("pointercancel", onUp, true);
     };
   }, []);
+
+
+  // Brush / freehand pencil — hold & drag; stays active until tool toggled off
+  const brushPtsRef = useRef<{ time: number; price: number }[]>([]);
+  const brushDrawingRef = useRef(false);
+  useEffect(() => {
+    if (mode !== "brush") {
+      brushDrawingRef.current = false;
+      brushPtsRef.current = [];
+      try {
+        vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
+      } catch {}
+      return;
+    }
+    const timeFromClientX = (clientX: number): number | null => {
+      const chart = chartRef.current;
+      const candles = candlesRef.current || [];
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !rect || !candles.length) return null;
+      const x = clientX - rect.left;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      if (logical == null || Number.isNaN(Number(logical))) return null;
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      const lastIdx = candles.length - 1;
+      if (logical > lastIdx) return candles[lastIdx].time + Math.round(logical - lastIdx) * barSec;
+      if (logical < 0) return candles[0].time + Math.round(logical) * barSec;
+      return Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+    };
+    const priceFromClientY = (clientY: number): number | null => {
+      const series = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!series || !rect) return null;
+      const y = clientY - rect.top;
+      const pr = series.coordinateToPrice(y);
+      return pr != null && Number.isFinite(pr) ? Number(pr) : null;
+    };
+    const paintPreview = (pts: { time: number; price: number }[]) => {
+      const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser2 = seriesRef.current;
+      if (!host || !chart2 || !ser2 || pts.length < 1) return;
+      let svg = host.querySelector("[data-brush-preview]") as SVGSVGElement | null;
+      if (!svg) {
+        svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("data-brush-preview", "1");
+        svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:30;overflow:visible;";
+        host.appendChild(svg);
+      }
+      const coords: string[] = [];
+      for (const p of pts) {
+        const x = chart2.timeScale().timeToCoordinate(p.time as any);
+        const y = ser2.priceToCoordinate(p.price);
+        if (x == null || y == null) continue;
+        coords.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+      }
+      let poly = svg.querySelector("polyline");
+      if (!poly) {
+        poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        poly.setAttribute("fill", "none");
+        poly.setAttribute("stroke-linecap", "round");
+        poly.setAttribute("stroke-linejoin", "round");
+        svg.appendChild(poly);
+      }
+      poly.setAttribute("points", coords.join(" "));
+      poly.setAttribute("stroke", drawColorRef.current || "#e5e7eb");
+      poly.setAttribute("stroke-width", String(Math.max(1, drawWidthRef.current || 2)));
+    };
+    const lockChart = (lock: boolean) => {
+      try {
+        chartRef.current?.applyOptions({
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: !lock,
+            horzTouchDrag: !lock,
+            vertTouchDrag: !lock,
+          },
+          handleScale: {
+            axisPressedMouseMove: !lock,
+            axisDoubleClickReset: true,
+            mouseWheel: true,
+            pinch: !lock,
+          },
+        });
+      } catch {}
+    };
+    const onDown = (ev: PointerEvent) => {
+      const el = ev.target as HTMLElement | null;
+      if (!el) return;
+      if (el.closest?.("[data-menu]") || el.closest?.("[data-note-edit]") || el.closest?.("[data-ind-panel]")) return;
+      const inChart = !!chartContainerRef.current?.contains(el) || !!el.closest?.("[data-chart-root]");
+      if (!inChart) return;
+      const t = timeFromClientX(ev.clientX);
+      const p = priceFromClientY(ev.clientY);
+      if (t == null || p == null) return;
+      ev.preventDefault();
+      brushDrawingRef.current = true;
+      brushPtsRef.current = [{ time: t, price: p }];
+      lockChart(true);
+      paintPreview(brushPtsRef.current);
+      try { chartContainerRef.current?.setPointerCapture?.(ev.pointerId); } catch {}
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (!brushDrawingRef.current) return;
+      const t = timeFromClientX(ev.clientX);
+      const p = priceFromClientY(ev.clientY);
+      if (t == null || p == null) return;
+      const pts = brushPtsRef.current;
+      const last = pts[pts.length - 1];
+      // min distance to avoid huge notes
+      if (last && Math.abs(last.time - t) < 1 && Math.abs(last.price - p) < (Math.abs(p) * 1e-6 + 1e-8)) return;
+      pts.push({ time: t, price: p });
+      if (pts.length > 800) pts.splice(0, pts.length - 800);
+      paintPreview(pts);
+    };
+    const onUp = async () => {
+      if (!brushDrawingRef.current) return;
+      brushDrawingRef.current = false;
+      lockChart(false);
+      const pts = brushPtsRef.current.slice();
+      brushPtsRef.current = [];
+      try {
+        vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
+      } catch {}
+      if (pts.length < 2) return;
+      // downsample if very dense
+      let use = pts;
+      if (use.length > 300) {
+        const step = Math.ceil(use.length / 300);
+        use = use.filter((_, i) => i % step === 0 || i === use.length - 1);
+      }
+      const note = `__brush:` + use.map((p) => `${p.time},${p.price}`).join("|");
+      const first = use[0];
+      const last = use[use.length - 1];
+      try {
+        const base: any = {
+          symbol: symbolRef.current.toUpperCase(),
+          price: first.price,
+          end_price: last.price,
+          start_time: first.time,
+          end_time: last.time,
+          color: drawColorRef.current || "#e5e7eb",
+          width: drawWidthRef.current || 2,
+          dash: "solid",
+          note,
+        };
+        const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+        if (uid) base.user_id = uid;
+        let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+        if (error) {
+          const fb = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: base.start_time, end_time: base.end_time, end_price: base.end_price };
+          if (uid) (fb as any).user_id = uid;
+          ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+        }
+        if (!error && data) {
+          pushUndo();
+          setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+          setStatusMsg("Brush — keep drawing or tap Brush again to exit");
+        }
+      } catch {
+        setStatusMsg("Brush save failed");
+      }
+    };
+    const host = chartContainerRef.current;
+    if (!host) return;
+    host.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      host.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [mode]);
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
     try {
@@ -9487,6 +9714,21 @@ priced.sort((a, b) => a.price - b.price);
             }
           };
           for (const l of list) {
+            // Skip complex drawings — they have their own DOM hit targets (no invisible H-line)
+            const n0 = typeof l.note === "string" ? l.note : "";
+            if (
+              n0.startsWith("__rect:") ||
+              n0.startsWith("__path:") ||
+              n0.startsWith("__brush:") ||
+              n0.startsWith("__curve:") ||
+              n0.startsWith("__fib:") ||
+              n0.startsWith("__fibext:") ||
+              n0.startsWith("__long:") ||
+              n0.startsWith("__short:") ||
+              n0.startsWith("__callout:")
+            ) {
+              continue;
+            }
             const isArrow =
               typeof l.note === "string" &&
               (l.note === "__arrow_up__" ||
@@ -13819,7 +14061,7 @@ priced.sort((a, b) => a.price - b.price);
                   setFibToolsOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "brush"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -13874,6 +14116,31 @@ priced.sort((a, b) => a.price - b.price);
                   >
                     <span className="w-4 text-center">💬</span>
                     Callout
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "brush" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      pathPointsRef.current = [];
+                      const next = mode === "brush" ? "none" : "brush";
+                      setMode(next as any);
+                      modeRef.current = next as any;
+                      setStatusMsg(next === "brush" ? "Brush: draw on chart — tap Brush again to exit" : "");
+                    }}
+                  >
+                    <span className="w-4 text-center">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 20c2-1 4-3 7-3 2 0 3 .5 5 2" />
+                        <path d="M14 6l4 4" />
+                        <path d="M12.5 7.5L18 2l4 4-5.5 5.5" />
+                        <path d="M11 13l-7 7" />
+                      </svg>
+                    </span>
+                    Brush
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
@@ -16732,6 +16999,8 @@ priced.sort((a, b) => a.price - b.price);
                       ? "Fib"
                       : typeof l.note === "string" && l.note.startsWith("__rect:")
                       ? "Rectangle"
+                      : typeof l.note === "string" && l.note.startsWith("__brush:")
+                      ? "Brush"
                       : l.note === "__vline__"
                       ? "Vertical"
                       : isDiagonalLine(l)
