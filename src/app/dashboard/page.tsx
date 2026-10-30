@@ -99,13 +99,20 @@ type ToolMode =
   | "move"
   | "measure";
 
+
 /** Volume histogram helper (shared by AVP / FRVP). Uses real volume or tick-count fallback. */
 function computeVolumeProfile(
-  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  candles: { time: number; open?: number; high: number; low: number; close: number; volume?: number }[],
   t0: number,
   t1?: number,
-  binCount = 28
-): { priceLo: number; priceHi: number; bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number } | null {
+  binCount = 32
+): {
+  priceLo: number;
+  priceHi: number;
+  bins: { lo: number; hi: number; vol: number; buy: number; sell: number }[];
+  maxVol: number;
+  poc: number;
+} | null {
   const tEnd = t1 == null ? Number.POSITIVE_INFINITY : Number(t1);
   const slice = candles.filter((c) => {
     const t = Number(c.time);
@@ -122,100 +129,173 @@ function computeVolumeProfile(
     pHi = Math.max(...slice.map((c) => Number(c.close)));
     if (!(pHi > pLo)) return null;
   }
-  // pad range a bit so bars don't hug edges
-  const pad = (pHi - pLo) * 0.02;
-  pLo -= pad; pHi += pad;
-  const n = Math.max(12, Math.min(48, binCount));
+  const pad = (pHi - pLo) * 0.01 || pLo * 0.001;
+  pLo -= pad;
+  pHi += pad;
+  const n = Math.max(16, Math.min(48, binCount));
   const step = (pHi - pLo) / n;
   const vols = new Array(n).fill(0);
-  let anyVol = false;
+  const buys = new Array(n).fill(0);
+  const sells = new Array(n).fill(0);
   for (const c of slice) {
-    const v = Math.max(0, Number(c.volume) || 0);
-    if (v > 0) anyVol = true;
+    let v = Math.max(0, Number(c.volume) || 0);
+    if (v <= 0) v = 1;
+    const isBuy = Number(c.close) >= Number(c.open ?? c.close);
     const lo = Number(c.low), hi = Number(c.high);
     const i0 = Math.max(0, Math.min(n - 1, Math.floor((lo - pLo) / step)));
     const i1 = Math.max(0, Math.min(n - 1, Math.floor((hi - pLo) / step)));
     const span = Math.max(1, i1 - i0 + 1);
-    const each = (v > 0 ? v : 1) / span;
-    for (let i = i0; i <= i1; i++) vols[i] += each;
-  }
-  if (!anyVol) {
-    // pure tick volume already applied via each=1 above
+    const each = v / span;
+    for (let i = i0; i <= i1; i++) {
+      vols[i] += each;
+      if (isBuy) buys[i] += each;
+      else sells[i] += each;
+    }
   }
   let maxVol = 0, pocIdx = 0;
   for (let i = 0; i < n; i++) {
-    if (vols[i] > maxVol) { maxVol = vols[i]; pocIdx = i; }
+    if (vols[i] > maxVol) {
+      maxVol = vols[i];
+      pocIdx = i;
+    }
   }
   if (maxVol <= 0) return null;
   const bins = vols.map((vol, i) => ({
     lo: pLo + i * step,
     hi: pLo + (i + 1) * step,
     vol,
+    buy: buys[i],
+    sell: sells[i],
   }));
   const poc = pLo + (pocIdx + 0.5) * step;
   return { priceLo: pLo, priceHi: pHi, bins, maxVol, poc };
 }
 
-/** Backward-compatible alias */
 function computeAnchoredVP(
-  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
+  candles: { time: number; open?: number; high: number; low: number; close: number; volume?: number }[],
   anchorTime: number,
-  binCount = 28
+  binCount = 32
 ) {
   return computeVolumeProfile(candles, anchorTime, undefined, binCount);
 }
 
-/** Anchored VWAP points from anchor → last candle */
+/** Anchored VWAP + optional std-dev bands (TradingView style) */
 function computeAnchoredVWAP(
   candles: { time: number; high: number; low: number; close: number; volume?: number }[],
   anchorTime: number
-): { time: number; value: number }[] {
+): {
+  vwap: { time: number; value: number }[];
+  upper1: { time: number; value: number }[];
+  lower1: { time: number; value: number }[];
+  upper2: { time: number; value: number }[];
+  lower2: { time: number; value: number }[];
+} {
+  const empty = { vwap: [], upper1: [], lower1: [], upper2: [], lower2: [] };
   const slice = candles.filter((c) => Number(c.time) >= Number(anchorTime));
-  if (slice.length < 1) return [];
-  let sumPV = 0, sumV = 0;
-  const out: { time: number; value: number }[] = [];
+  if (slice.length < 1) return empty;
+  let sumPV = 0, sumV = 0, sumPV2 = 0;
+  const vwap: { time: number; value: number }[] = [];
+  const upper1: { time: number; value: number }[] = [];
+  const lower1: { time: number; value: number }[] = [];
+  const upper2: { time: number; value: number }[] = [];
+  const lower2: { time: number; value: number }[] = [];
   for (const c of slice) {
     const tp = (Number(c.high) + Number(c.low) + Number(c.close)) / 3;
     let v = Math.max(0, Number(c.volume) || 0);
-    if (v <= 0) v = 1; // tick fallback
+    if (v <= 0) v = 1;
     sumPV += tp * v;
+    sumPV2 += tp * tp * v;
     sumV += v;
-    out.push({ time: Number(c.time), value: sumPV / sumV });
+    const vw = sumPV / sumV;
+    // volume-weighted variance
+    const variance = Math.max(0, sumPV2 / sumV - vw * vw);
+    const std = Math.sqrt(variance);
+    const t = Number(c.time);
+    vwap.push({ time: t, value: vw });
+    upper1.push({ time: t, value: vw + std });
+    lower1.push({ time: t, value: vw - std });
+    upper2.push({ time: t, value: vw + 2 * std });
+    lower2.push({ time: t, value: vw - 2 * std });
   }
-  return out;
+  return { vwap, upper1, lower1, upper2, lower2 };
 }
 
-/** Render volume-profile histogram into a host element (DOM). */
+/**
+ * Paint volume profile histogram.
+ * layout "range": bars fill between x0..x1 (FRVP / AVP box)
+ * layout "right": bars aligned to right edge of chart (AVP classic)
+ */
 function paintVolumeProfileDOM(
   host: HTMLElement,
-  vp: { bins: { lo: number; hi: number; vol: number }[]; maxVol: number; poc: number },
+  vp: {
+    bins: { lo: number; hi: number; vol: number; buy?: number; sell?: number }[];
+    maxVol: number;
+    poc: number;
+  },
   ser: any,
   chart: any,
-  opts: { color?: string; side?: "left" | "right"; anchorTime?: number; endTime?: number }
+  opts: {
+    color?: string;
+    layout?: "range" | "right";
+    x0?: number | null;
+    x1?: number | null;
+    anchorTime?: number;
+    endTime?: number;
+    showBox?: boolean;
+  }
 ) {
-  const col = opts.color || "#2962FF";
-  const side = opts.side || "right";
+  const layout = opts.layout || "right";
   host.innerHTML = "";
-  host.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9;overflow:hidden;";
-  const chartW = chart.timeScale().width() || 400;
-  const maxBarW = Math.min(180, Math.max(80, chartW * 0.28));
+  host.style.cssText =
+    "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9;overflow:hidden;";
 
-  // POC horizontal line
+  let xLeft = 0;
+  let xRight = (chart.timeScale().width() || 400) - 52;
+  if (opts.x0 != null && Number.isFinite(opts.x0)) xLeft = Number(opts.x0);
+  if (opts.x1 != null && Number.isFinite(opts.x1)) xRight = Number(opts.x1);
+  if (xRight < xLeft) {
+    const tmp = xLeft;
+    xLeft = xRight;
+    xRight = tmp;
+  }
+  const rangeW = Math.max(20, xRight - xLeft);
+
+  // dimmed box over the profile range
+  if (opts.showBox !== false && layout === "range") {
+    const yTop = ser.priceToCoordinate(vp.bins[vp.bins.length - 1]?.hi ?? vp.poc);
+    const yBot = ser.priceToCoordinate(vp.bins[0]?.lo ?? vp.poc);
+    // full height box is clearer
+    const box = document.createElement("div");
+    box.style.cssText =
+      `position:absolute;left:${xLeft}px;width:${rangeW}px;top:0;bottom:0;` +
+      `background:rgba(41,98,255,0.08);border:1px solid rgba(41,98,255,0.35);box-sizing:border-box;z-index:1;`;
+    host.appendChild(box);
+  }
+
+  // POC dashed line across range / chart
   const yPoc = ser.priceToCoordinate(vp.poc);
   if (yPoc != null) {
     const pocEl = document.createElement("div");
-    pocEl.style.cssText =
-      `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:0;border-top:1px dashed #f59e0b;opacity:0.95;z-index:2;`;
+    if (layout === "range") {
+      pocEl.style.cssText =
+        `position:absolute;left:${xLeft}px;width:${rangeW}px;top:${Number(yPoc)}px;height:0;` +
+        `border-top:1px dashed #f59e0b;opacity:0.95;z-index:3;`;
+    } else {
+      pocEl.style.cssText =
+        `position:absolute;left:0;right:0;top:${Number(yPoc)}px;height:0;` +
+        `border-top:1px dashed #f59e0b;opacity:0.95;z-index:3;`;
+    }
     host.appendChild(pocEl);
   }
 
-  // Anchor / range vertical guides
+  // Anchor vertical
   if (opts.anchorTime != null) {
     const xA = chart.timeScale().timeToCoordinate(opts.anchorTime as any);
     if (xA != null) {
       const vline = document.createElement("div");
       vline.style.cssText =
-        `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:0;border-left:1px dashed ${col};opacity:0.7;z-index:1;`;
+        `position:absolute;left:${Number(xA)}px;top:0;bottom:0;width:0;` +
+        `border-left:1px dashed rgba(41,98,255,0.85);z-index:2;`;
       host.appendChild(vline);
     }
   }
@@ -224,10 +304,13 @@ function paintVolumeProfileDOM(
     if (xB != null) {
       const vline = document.createElement("div");
       vline.style.cssText =
-        `position:absolute;left:${Number(xB)}px;top:0;bottom:0;width:0;border-left:1px dashed ${col};opacity:0.55;z-index:1;`;
+        `position:absolute;left:${Number(xB)}px;top:0;bottom:0;width:0;` +
+        `border-left:1px dashed rgba(41,98,255,0.55);z-index:2;`;
       host.appendChild(vline);
     }
   }
+
+  const maxBarW = layout === "range" ? rangeW * 0.92 : Math.min(200, Math.max(90, (chart.timeScale().width() || 400) * 0.3));
 
   for (const b of vp.bins) {
     if (b.vol <= 0) continue;
@@ -235,18 +318,56 @@ function paintVolumeProfileDOM(
     const y1 = ser.priceToCoordinate(b.lo);
     if (y0 == null || y1 == null) continue;
     const top = Math.min(Number(y0), Number(y1));
-    const h = Math.max(2, Math.abs(Number(y1) - Number(y0)) - 0.5);
-    const w = Math.max(3, (b.vol / vp.maxVol) * maxBarW);
+    const h = Math.max(2, Math.abs(Number(y1) - Number(y0)) - 0.4);
+    const w = Math.max(2, (b.vol / vp.maxVol) * maxBarW);
     const mid = (b.lo + b.hi) / 2;
     const isPoc = Math.abs(mid - vp.poc) < (b.hi - b.lo) * 0.55;
-    const bar = document.createElement("div");
-    const bg = isPoc ? "rgba(245,158,11,0.72)" : "rgba(41,98,255,0.42)";
-    bar.style.cssText =
-      `position:absolute;top:${top}px;height:${h}px;width:${w.toFixed(1)}px;` +
-      (side === "right" ? `right:52px;` : `left:6px;`) +
-      `background:${bg};border-radius:1px;z-index:2;box-sizing:border-box;` +
-      (isPoc ? `border:1px solid rgba(245,158,11,0.9);` : `border:1px solid rgba(41,98,255,0.35);`);
-    host.appendChild(bar);
+    const buy = Number(b.buy) || 0;
+    const sell = Number(b.sell) || 0;
+    const buyRatio = buy + sell > 0 ? buy / (buy + sell) : 0.5;
+
+    if (layout === "range") {
+      // bars grow from LEFT of the range box (TV style)
+      const bar = document.createElement("div");
+      // split buy/sell coloring
+      const buyW = Math.max(0, w * buyRatio);
+      const sellW = Math.max(0, w - buyW);
+      bar.style.cssText =
+        `position:absolute;top:${top}px;height:${h}px;left:${xLeft}px;width:${w.toFixed(1)}px;` +
+        `display:flex;flex-direction:row;z-index:2;border-radius:1px;overflow:hidden;` +
+        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
+      if (buyW > 0) {
+        const buyEl = document.createElement("div");
+        buyEl.style.cssText = `width:${buyW}px;height:100%;background:rgba(8,153,129,0.55);`;
+        bar.appendChild(buyEl);
+      }
+      if (sellW > 0) {
+        const sellEl = document.createElement("div");
+        sellEl.style.cssText = `width:${sellW}px;height:100%;background:rgba(242,54,69,0.55);`;
+        bar.appendChild(sellEl);
+      }
+      host.appendChild(bar);
+    } else {
+      // right-aligned bars (Anchored VP classic)
+      const bar = document.createElement("div");
+      const buyW = Math.max(0, w * buyRatio);
+      const sellW = Math.max(0, w - buyW);
+      bar.style.cssText =
+        `position:absolute;top:${top}px;height:${h}px;right:48px;width:${w.toFixed(1)}px;` +
+        `display:flex;flex-direction:row-reverse;z-index:2;border-radius:1px;overflow:hidden;` +
+        (isPoc ? `outline:1px solid rgba(245,158,11,0.95);` : "");
+      if (buyW > 0) {
+        const buyEl = document.createElement("div");
+        buyEl.style.cssText = `width:${buyW}px;height:100%;background:rgba(8,153,129,0.55);`;
+        bar.appendChild(buyEl);
+      }
+      if (sellW > 0) {
+        const sellEl = document.createElement("div");
+        sellEl.style.cssText = `width:${sellW}px;height:100%;background:rgba(242,54,69,0.55);`;
+        bar.appendChild(sellEl);
+      }
+      host.appendChild(bar);
+    }
   }
 }
 
@@ -5496,24 +5617,40 @@ priced.sort((a, b) => a.price - b.price);
             const body = l.note.replace(/^__avp:/, "");
             const parts = body.split("|");
             const anchor = Number(parts[0]);
-            let binsN = 28;
-            let side: "left" | "right" = "right";
+            let binsN = 32;
             for (const p of parts.slice(1)) {
-              if (p.startsWith("bins=")) binsN = Math.max(12, Math.min(48, parseInt(p.slice(5), 10) || 28));
-              if (p === "side=left") side = "left";
+              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(48, parseInt(p.slice(5), 10) || 32));
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
             if (Number.isFinite(anchor) && host && chart2 && ser2) {
-              const vp = computeVolumeProfile(candlesRef.current || [], anchor, undefined, binsN);
+              const candles = candlesRef.current || [];
+              const lastT = candles.length ? Number(candles[candles.length - 1].time) : anchor;
+              const vp = computeVolumeProfile(candles, anchor, undefined, binsN);
               if (vp) {
+                const x0 = chart2.timeScale().timeToCoordinate(anchor as any);
+                const x1 = chart2.timeScale().timeToCoordinate(lastT as any);
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-avp-id", String(l.id));
                 wrap.setAttribute("data-avp-anchor", String(anchor));
                 wrap.setAttribute("data-avp-bins", String(binsN));
-                wrap.setAttribute("data-avp-side", side);
-                paintVolumeProfileDOM(wrap, vp, ser2, chart2, { color: l.color || "#2962FF", side, anchorTime: anchor });
+                // TV style: profile on the RIGHT of the chart + dimmed zone from anchor
+                paintVolumeProfileDOM(wrap, vp, ser2, chart2, {
+                  layout: "right",
+                  showBox: true,
+                  anchorTime: anchor,
+                  x0: x0 != null ? Number(x0) : undefined,
+                  x1: x1 != null ? Number(x1) : undefined,
+                });
+                // add dimmed zone from anchor → right
+                if (x0 != null) {
+                  const zone = document.createElement("div");
+                  zone.style.cssText =
+                    `position:absolute;left:${Number(x0)}px;right:0;top:0;bottom:0;` +
+                    `background:rgba(41,98,255,0.06);pointer-events:none;z-index:0;`;
+                  wrap.insertBefore(zone, wrap.firstChild);
+                }
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __avpDom: true } as any);
               }
@@ -5525,11 +5662,9 @@ priced.sort((a, b) => a.price - b.price);
             const parts = body.split("|");
             const t0 = Number(parts[0]);
             const t1 = Number(parts[1]);
-            let binsN = 28;
-            let side: "left" | "right" = "right";
+            let binsN = 32;
             for (const p of parts.slice(2)) {
-              if (p.startsWith("bins=")) binsN = Math.max(12, Math.min(48, parseInt(p.slice(5), 10) || 28));
-              if (p === "side=left") side = "left";
+              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(48, parseInt(p.slice(5), 10) || 32));
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
@@ -5537,13 +5672,22 @@ priced.sort((a, b) => a.price - b.price);
             if (Number.isFinite(t0) && Number.isFinite(t1) && host && chart2 && ser2) {
               const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
               if (vp) {
+                const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
+                const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-frvp-id", String(l.id));
                 wrap.setAttribute("data-frvp-t0", String(t0));
                 wrap.setAttribute("data-frvp-t1", String(t1));
                 wrap.setAttribute("data-frvp-bins", String(binsN));
-                wrap.setAttribute("data-frvp-side", side);
-                paintVolumeProfileDOM(wrap, vp, ser2, chart2, { color: l.color || "#2962FF", side, anchorTime: t0, endTime: t1 });
+                // TV style: histogram INSIDE the selected time range
+                paintVolumeProfileDOM(wrap, vp, ser2, chart2, {
+                  layout: "range",
+                  showBox: true,
+                  anchorTime: t0,
+                  endTime: t1,
+                  x0: x0 != null ? Number(x0) : 0,
+                  x1: x1 != null ? Number(x1) : (chart2.timeScale().width() || 300),
+                });
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __frvpDom: true } as any);
               }
@@ -5553,18 +5697,32 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const anchor = Number(l.note.replace(/^__avwap:/, "").split("|")[0]);
             if (Number.isFinite(anchor)) {
-              const pts = computeAnchoredVWAP(candlesRef.current || [], anchor);
-              if (pts.length >= 2) {
-                const ls = chart.addLineSeries({
-                  color: l.color || "#2962FF",
-                  lineWidth: Math.max(1, Number(l.width) || 2) as any,
-                  priceLineVisible: false,
-                  lastValueVisible: true,
-                  crosshairMarkerVisible: false,
-                  title: "",
-                });
-                ls.setData(pts.map((p) => ({ time: p.time as any, value: p.value })));
-                chartLinesRef.current.set(l.id, ls);
+              const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
+              if (pack.vwap.length >= 1) {
+                const mk = (pts: { time: number; value: number }[], color: string, width: number) => {
+                  if (pts.length < 1) return null;
+                  const ls = chart.addLineSeries({
+                    color,
+                    lineWidth: width as any,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    title: "",
+                  });
+                  ls.setData(pts.map((p) => ({ time: p.time as any, value: p.value })));
+                  return ls;
+                };
+                const main = mk(pack.vwap, l.color || "#2962FF", Math.max(2, Number(l.width) || 2));
+                const u1 = mk(pack.upper1, "rgba(8,153,129,0.85)", 1);
+                const lo1 = mk(pack.lower1, "rgba(8,153,129,0.85)", 1);
+                const u2 = mk(pack.upper2, "rgba(242,54,69,0.55)", 1);
+                const lo2 = mk(pack.lower2, "rgba(242,54,69,0.55)", 1);
+                // store main series; extras on synthetic keys for cleanup
+                if (main) chartLinesRef.current.set(l.id, main);
+                if (u1) chartLinesRef.current.set(`${l.id}__u1` as any, u1);
+                if (lo1) chartLinesRef.current.set(`${l.id}__lo1` as any, lo1);
+                if (u2) chartLinesRef.current.set(`${l.id}__u2` as any, u2);
+                if (lo2) chartLinesRef.current.set(`${l.id}__lo2` as any, lo2);
               }
             }
           } catch {}
@@ -5949,35 +6107,58 @@ priced.sort((a, b) => a.price - b.price);
             host.querySelectorAll("[data-avp-id]").forEach((node) => {
               const el = node as HTMLElement;
               const anchor = Number(el.dataset.avpAnchor);
-              const binsN = Number(el.dataset.avpBins) || 28;
-              const side = (el.dataset.avpSide === "left" ? "left" : "right") as "left" | "right";
+              const binsN = Number(el.dataset.avpBins) || 32;
               if (!Number.isFinite(anchor)) return;
-              const vp = computeVolumeProfile(candlesRef.current || [], anchor, undefined, binsN);
+              const candles = candlesRef.current || [];
+              const lastT = candles.length ? Number(candles[candles.length - 1].time) : anchor;
+              const vp = computeVolumeProfile(candles, anchor, undefined, binsN);
               if (!vp) { el.style.display = "none"; return; }
               el.style.display = "block";
-              paintVolumeProfileDOM(el, vp, ser2, chart2, { color: "#2962FF", side, anchorTime: anchor });
+              const x0 = chart2.timeScale().timeToCoordinate(anchor as any);
+              const x1 = chart2.timeScale().timeToCoordinate(lastT as any);
+              paintVolumeProfileDOM(el, vp, ser2, chart2, {
+                layout: "right",
+                showBox: true,
+                anchorTime: anchor,
+                x0: x0 != null ? Number(x0) : undefined,
+                x1: x1 != null ? Number(x1) : undefined,
+              });
+              if (x0 != null) {
+                const zone = document.createElement("div");
+                zone.style.cssText =
+                  `position:absolute;left:${Number(x0)}px;right:0;top:0;bottom:0;` +
+                  `background:rgba(41,98,255,0.06);pointer-events:none;z-index:0;`;
+                el.insertBefore(zone, el.firstChild);
+              }
               el.setAttribute("data-avp-id", el.getAttribute("data-avp-id") || "");
               el.setAttribute("data-avp-anchor", String(anchor));
               el.setAttribute("data-avp-bins", String(binsN));
-              el.setAttribute("data-avp-side", side);
             });
             host.querySelectorAll("[data-frvp-id]").forEach((node) => {
               const el = node as HTMLElement;
               const t0 = Number(el.dataset.frvpT0);
               const t1 = Number(el.dataset.frvpT1);
-              const binsN = Number(el.dataset.frvpBins) || 28;
-              const side = (el.dataset.frvpSide === "left" ? "left" : "right") as "left" | "right";
+              const binsN = Number(el.dataset.frvpBins) || 32;
               if (!Number.isFinite(t0) || !Number.isFinite(t1)) return;
               const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
               if (!vp) { el.style.display = "none"; return; }
               el.style.display = "block";
-              paintVolumeProfileDOM(el, vp, ser2, chart2, { color: "#2962FF", side, anchorTime: t0, endTime: t1 });
+              const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
+              const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+              paintVolumeProfileDOM(el, vp, ser2, chart2, {
+                layout: "range",
+                showBox: true,
+                anchorTime: t0,
+                endTime: t1,
+                x0: x0 != null ? Number(x0) : 0,
+                x1: x1 != null ? Number(x1) : (chart2.timeScale().width() || 300),
+              });
               el.setAttribute("data-frvp-id", el.getAttribute("data-frvp-id") || "");
               el.setAttribute("data-frvp-t0", String(t0));
               el.setAttribute("data-frvp-t1", String(t1));
               el.setAttribute("data-frvp-bins", String(binsN));
-              el.setAttribute("data-frvp-side", side);
             });
+
 
 // Fib background bands (DOM) track pan
             host.querySelectorAll("[data-fib-band]").forEach((node) => {
