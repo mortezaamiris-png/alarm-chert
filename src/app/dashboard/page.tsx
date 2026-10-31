@@ -907,6 +907,51 @@ function buildChannelNote(cfg: {
   return `__channel:${parts.join("|")}`;
 }
 
+/** Place / update 6 Parallel-Channel edit handles on overlay */
+function placeChannelHandles(
+  host: HTMLElement | null,
+  geo: { t1: number; p1: number; t2: number; p2: number; offset: number },
+  active?: string | null
+) {
+  if (!host) return;
+  host.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove());
+  const t1 = geo.t1, p1 = geo.p1, t2 = geo.t2, p2 = geo.p2, off = geo.offset;
+  const mids = {
+    t0: (t1 + t2) / 2,
+    p0: (p1 + p2) / 2,
+    t1m: (t1 + t2) / 2,
+    p1m: (p1 + off + p2 + off) / 2,
+  };
+  const nodes: { key: string; t: number; p: number; shape: "circle" | "square" }[] = [
+    { key: "a0", t: t1, p: p1, shape: "circle" },
+    { key: "b0", t: t2, p: p2, shape: "circle" },
+    { key: "a1", t: t1, p: p1 + off, shape: "circle" },
+    { key: "b1", t: t2, p: p2 + off, shape: "circle" },
+    { key: "m0", t: mids.t0, p: mids.p0, shape: "square" },
+    { key: "m1", t: mids.t1m, p: mids.p1m, shape: "square" },
+  ];
+  for (const n of nodes) {
+    const el = document.createElement("div");
+    el.setAttribute("data-ch-handle", n.key);
+    el.setAttribute("data-t", String(n.t));
+    el.setAttribute("data-p", String(n.p));
+    const isAct = active === n.key;
+    const size = isAct ? 16 : 12;
+    const border = isAct ? "#f97316" : "#3b82f6";
+    if (n.shape === "square") {
+      el.style.cssText =
+        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:rgba(15,23,42,0.85);` +
+        `transform:translate(-50%,-50%);z-index:45;pointer-events:auto;cursor:move;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
+    } else {
+      el.style.cssText =
+        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:transparent;border-radius:9999px;` +
+        `transform:translate(-50%,-50%);z-index:45;pointer-events:auto;cursor:move;box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
+    }
+    host.appendChild(el);
+  }
+}
+
+
 
 
 
@@ -5397,6 +5442,7 @@ export default function DashboardPage() {
       (previewDiagSeriesRef as any)._ch2 = null;
       (previewDiagSeriesRef as any)._ch3 = null;
     } catch {}
+    try { vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove()); } catch {}
     if (previewFibSeriesRef.current.length && seriesRef.current) {
       for (const pl of previewFibSeriesRef.current) {
         try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -6813,31 +6859,48 @@ priced.sort((a, b) => a.price - b.price);
                     ].sort((a, b) => Number(a.time) - Number(b.time)));
                     seriesList.push(s);
                   }
-                  // Background: DOM polygon, always refreshed with current coordinates
+                  // Background: store time/price pts — synced on pan/zoom (no lag)
                   if (cfg.showBg) {
                     try {
                       const host = vlineOverlayRef.current;
                       if (host) {
-                        const xA = chart2.timeScale().timeToCoordinate(ta as any);
-                        const xB = chart2.timeScale().timeToCoordinate(tb as any);
-                        const ser = seriesRef.current;
-                        const y0a = ser?.priceToCoordinate(priceAt(ta, 0));
-                        const y0b = ser?.priceToCoordinate(priceAt(tb, 0));
-                        const y1a = ser?.priceToCoordinate(priceAt(ta, 1));
-                        const y1b = ser?.priceToCoordinate(priceAt(tb, 1));
-                        if (xA != null && xB != null && y0a != null && y0b != null && y1a != null && y1b != null) {
-                          const hex = (cfg.bgColor || "#2962FF").replace("#", "");
-                          const rr = parseInt(hex.slice(0, 2), 16) || 41;
-                          const gg = parseInt(hex.slice(2, 4), 16) || 98;
-                          const bb = parseInt(hex.slice(4, 6), 16) || 255;
-                          const aa = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
-                          const poly = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                          poly.setAttribute("data-channel-id", String(l.id));
-                          poly.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;";
-                          const pts = `${Number(xA)},${Number(y0a)} ${Number(xB)},${Number(y0b)} ${Number(xB)},${Number(y1b)} ${Number(xA)},${Number(y1a)}`;
-                          poly.innerHTML = `<polygon points="${pts}" fill="rgba(${rr},${gg},${bb},${aa})" />`;
-                          host.appendChild(poly);
+                        const hex = (cfg.bgColor || "#2962FF").replace("#", "");
+                        const rr = parseInt(hex.slice(0, 2), 16) || 41;
+                        const gg = parseInt(hex.slice(2, 4), 16) || 98;
+                        const bb = parseInt(hex.slice(4, 6), 16) || 255;
+                        const aa = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
+                        // sample along channel for smooth fill when extended
+                        const pairs: { t: number; p0: number; p1: number }[] = [];
+                        const steps = 8;
+                        for (let i = 0; i <= steps; i++) {
+                          const tt = ta + (tb - ta) * (i / steps);
+                          pairs.push({ t: tt, p0: priceAt(tt, 0), p1: priceAt(tt, 1) });
                         }
+                        const wrap = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                        wrap.setAttribute("data-channel-id", String(l.id));
+                        wrap.setAttribute("data-channel-fill", String(l.id));
+                        wrap.setAttribute("data-channel-pts", JSON.stringify(pairs));
+                        wrap.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;";
+                        wrap.innerHTML = `<polygon points="" fill="rgba(${rr},${gg},${bb},${aa})" />`;
+                        host.appendChild(wrap);
+                        // initial place
+                        try {
+                          const ser = seriesRef.current;
+                          const pts: string[] = [];
+                          for (const p of pairs) {
+                            const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                            const y = ser?.priceToCoordinate(p.p0);
+                            if (x != null && y != null) pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                          }
+                          for (let i = pairs.length - 1; i >= 0; i--) {
+                            const p = pairs[i];
+                            const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                            const y = ser?.priceToCoordinate(p.p1);
+                            if (x != null && y != null) pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                          }
+                          const poly = wrap.querySelector("polygon");
+                          if (poly && pts.length >= 4) poly.setAttribute("points", pts.join(" "));
+                        } catch {}
                       }
                     } catch {}
                   }
@@ -6849,6 +6912,9 @@ priced.sort((a, b) => a.price - b.price);
                       if (host && x != null && y != null) {
                         const lab = document.createElement("div");
                         lab.setAttribute("data-channel-id", String(l.id));
+                        lab.setAttribute("data-channel-label", "1");
+                        lab.setAttribute("data-t", String(Math.min(t1, t2)));
+                        lab.setAttribute("data-p", String(priceAt(Math.min(t1, t2), 0.5)));
                         lab.textContent = cfg.text;
                         lab.style.cssText = `position:absolute;left:${Number(x) + 6}px;top:${Number(y)}px;font-size:${cfg.textSize || 14}px;color:${cfg.color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;`;
                         host.appendChild(lab);
@@ -7619,6 +7685,51 @@ priced.sort((a, b) => a.price - b.price);
                 const chart2 = chartRef.current;
                 const ser2 = seriesRef.current;
                 if (!host || !chart2 || !ser2) return;
+                // Parallel channel fill + label sync
+                host.querySelectorAll("[data-channel-fill]").forEach((wrap) => {
+                  const raw = (wrap as HTMLElement).getAttribute("data-channel-pts");
+                  if (!raw) return;
+                  let pairs: { t: number; p0: number; p1: number }[] = [];
+                  try { pairs = JSON.parse(raw); } catch { return; }
+                  const pts: string[] = [];
+                  for (const p of pairs) {
+                    const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                    const y = ser2.priceToCoordinate(p.p0);
+                    if (x == null || y == null) continue;
+                    pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                  }
+                  for (let i = pairs.length - 1; i >= 0; i--) {
+                    const p = pairs[i];
+                    const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                    const y = ser2.priceToCoordinate(p.p1);
+                    if (x == null || y == null) continue;
+                    pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                  }
+                  const poly = wrap.querySelector("polygon");
+                  if (poly && pts.length >= 4) poly.setAttribute("points", pts.join(" "));
+                });
+                host.querySelectorAll("[data-channel-label]").forEach((lab) => {
+                  const el = lab as HTMLElement;
+                  const tt = Number(el.getAttribute("data-t"));
+                  const pp = Number(el.getAttribute("data-p"));
+                  const x = chart2.timeScale().timeToCoordinate(tt as any);
+                  const y = ser2.priceToCoordinate(pp);
+                  if (x == null || y == null) return;
+                  el.style.left = `${Number(x) + 6}px`;
+                  el.style.top = `${Number(y)}px`;
+                });
+                // 6 channel edit handles
+                host.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                  const el = h as HTMLElement;
+                  const tt = Number(el.getAttribute("data-t"));
+                  const pp = Number(el.getAttribute("data-p"));
+                  const x = chart2.timeScale().timeToCoordinate(tt as any);
+                  const y = ser2.priceToCoordinate(pp);
+                  if (x == null || y == null) { el.style.display = "none"; return; }
+                  el.style.display = "block";
+                  el.style.left = `${Number(x)}px`;
+                  el.style.top = `${Number(y)}px`;
+                });
                 host.querySelectorAll("[data-avwap-fill]").forEach((wrap) => {
                   const raw = (wrap as HTMLElement).getAttribute("data-avwap-pts");
                   if (!raw) return;
@@ -11335,7 +11446,186 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
         });
       };
-      container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
+      
+      // Parallel channel: drag 6 handles
+      const onChPointerDown = (e: PointerEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (!t || !t.getAttribute || !t.getAttribute("data-ch-handle")) return;
+        const md = moveDiagRef.current;
+        if (!md || !(md as any).isChannel || modeRef.current !== "move") return;
+        e.preventDefault();
+        e.stopPropagation();
+        const key = t.getAttribute("data-ch-handle") || "";
+        (md as any).channelHandle = key;
+        md.phase = "drag-a"; // reuse drag phase flag
+        lockChartInteraction(true);
+        try { t.setPointerCapture(e.pointerId); } catch {}
+        setStatusMsg(`Channel: dragging ${key}`);
+      };
+      const onChPointerMove = (e: PointerEvent) => {
+        const md = moveDiagRef.current;
+        if (!md || !(md as any).isChannel || !(md as any).channelHandle) return;
+        if (modeRef.current !== "move") return;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        const cont = chartContainerRef.current;
+        if (!chart || !ser || !cont) return;
+        const rect = cont.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(y);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) {
+              tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            } else if (logical < 0) {
+              tCursor = candles[0].time + Math.round(logical * barSec);
+            } else {
+              const i = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+              tCursor = candles[i].time;
+            }
+          }
+        } catch {}
+        if (tCursor == null) return;
+        const key = String((md as any).channelHandle);
+        let t1 = md.pointA.time, p1 = md.pointA.price, t2 = md.pointB.time, p2 = md.pointB.price;
+        let off = Number((md as any).channelOffset ?? 0);
+        if (key === "a0") { t1 = tCursor; p1 = price; }
+        else if (key === "b0") { t2 = tCursor; p2 = price; }
+        else if (key === "a1") {
+          // change offset from base at t1
+          t1 = tCursor;
+          off = price - p1;
+        } else if (key === "b1") {
+          t2 = tCursor;
+          off = price - p2;
+        } else if (key === "m0") {
+          // move base line vertically by delta at mid
+          const midP = (p1 + p2) / 2;
+          const dlt = price - midP;
+          p1 += dlt; p2 += dlt;
+        } else if (key === "m1") {
+          // change offset so mid of parallel matches
+          const midBase = (p1 + p2) / 2;
+          off = price - midBase;
+        }
+        md.pointA = { time: t1, price: p1 };
+        md.pointB = { time: t2, price: p2 };
+        (md as any).channelOffset = off;
+        try {
+          placeChannelHandles(vlineOverlayRef.current, { t1, p1, t2, p2, offset: off }, key);
+          const host = vlineOverlayRef.current;
+          if (host) {
+            host.querySelectorAll("[data-ch-handle]").forEach((h) => {
+              const el = h as HTMLElement;
+              const xx = chart.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+              const yy = ser.priceToCoordinate(Number(el.getAttribute("data-p")));
+              if (xx != null && yy != null) {
+                el.style.left = `${Number(xx)}px`;
+                el.style.top = `${Number(yy)}px`;
+              }
+            });
+          }
+          // live update (throttled)
+          const cur = (linesRef.current || []).find((x) => x.id === md.id);
+          if (cur) {
+            const oldP = parseChannelNote(cur.note as any);
+            const note = buildChannelNote({
+              ...(oldP || {}),
+              t1, p1, t2, p2, offset: off,
+            });
+            cur.note = note;
+            cur.price = p1;
+            cur.start_time = t1;
+            cur.end_time = t2;
+            cur.end_price = p2;
+            if (!(window as any).__chDragRaf) {
+              (window as any).__chDragRaf = requestAnimationFrame(() => {
+                (window as any).__chDragRaf = 0;
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                const md2 = moveDiagRef.current;
+                if (md2 && (md2 as any).isChannel) {
+                  const a = md2.pointA, b = md2.pointB;
+                  const o = Number((md2 as any).channelOffset ?? 0);
+                  placeChannelHandles(vlineOverlayRef.current, {
+                    t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset: o,
+                  }, (md2 as any).channelHandle || null);
+                  const c2 = chartRef.current;
+                  const s2 = seriesRef.current;
+                  if (c2 && s2) {
+                    vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                      const el = h as HTMLElement;
+                      const xx = c2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                      const yy = s2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                      if (xx != null && yy != null) {
+                        el.style.left = `${Number(xx)}px`;
+                        el.style.top = `${Number(yy)}px`;
+                      }
+                    });
+                  }
+                }
+              });
+            }
+          }
+        } catch {}
+      };
+      const onChPointerUp = async (e: PointerEvent) => {
+        const md = moveDiagRef.current;
+        if (!md || !(md as any).isChannel || !(md as any).channelHandle) return;
+        if (modeRef.current !== "move") return;
+        const key = (md as any).channelHandle;
+        (md as any).channelHandle = null;
+        md.phase = "pick";
+        lockChartInteraction(false);
+        // persist
+        try {
+          const a = md.pointA, b = md.pointB;
+          const offset = Number((md as any).channelOffset ?? 0);
+          const cur = (linesRef.current || []).find((x) => x.id === md.id);
+          const oldP = cur ? parseChannelNote(cur.note as any) : null;
+          const note = buildChannelNote({
+            ...(oldP || {}),
+            t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
+          });
+          if (cur) {
+            cur.note = note;
+            setLines((prev) => prev.map((x) => x.id === md.id ? { ...x, note, price: a.price, start_time: a.time, end_time: b.time, end_price: b.price } : x));
+            if (!String(md.id).startsWith("local-")) {
+              await supabase.from("chart_lines").update({
+                note, price: a.price, start_time: a.time, end_time: b.time, end_price: b.price,
+              }).eq("id", md.id);
+            }
+          }
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          placeChannelHandles(vlineOverlayRef.current, {
+            t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
+          });
+          const chart = chartRef.current;
+          const ser = seriesRef.current;
+          if (chart && ser) {
+            vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+              const el = h as HTMLElement;
+              const xx = chart.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+              const yy = ser.priceToCoordinate(Number(el.getAttribute("data-p")));
+              if (xx != null && yy != null) {
+                el.style.left = `${Number(xx)}px`;
+                el.style.top = `${Number(yy)}px`;
+              }
+            });
+          }
+          setStatusMsg("Channel updated — drag more or ✓ Done");
+        } catch {}
+      };
+      window.addEventListener("pointerdown", onChPointerDown, true);
+      window.addEventListener("pointermove", onChPointerMove);
+      window.addEventListener("pointerup", onChPointerUp);
+
+container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortRef.current.signal });
 
       chart.subscribeCrosshairMove((param) => {
 
@@ -12330,16 +12620,12 @@ priced.sort((a, b) => a.price - b.price);
                 setTimeout(() => { clickLockRef.current = false; }, 300);
                 return;
               }
-              // Parallel Channel — rebuild from A/B/C
+              // Parallel Channel — rebuild from A/B + offset
               if ((md as any).isChannel && typ === "line") {
                 const cur = (linesRef.current || []).find((x) => x.id === id);
                 const oldP = cur ? parseChannelNote(cur.note as any) : null;
                 const a = md.pointA, b = md.pointB;
-                const c = md.pointC || { time: (a.time + b.time) / 2, price: a.price };
-                const span = Number(b.time) - Number(a.time) || 1;
-                const ratio = (Number(c.time) - Number(a.time)) / span;
-                const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
-                const offset = Number(c.price) - baseAt;
+                const offset = Number((md as any).channelOffset ?? 0);
                 const note = buildChannelNote({
                   ...(oldP || {}),
                   t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
@@ -12363,11 +12649,28 @@ priced.sort((a, b) => a.price - b.price);
                   )
                 );
                 md.phase = "pick";
+                (md as any).channelHandle = null;
                 lockChartInteraction(false);
                 try {
-                  positionHandles(a, b, null, c);
+                  placeChannelHandles(vlineOverlayRef.current, {
+                    t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
+                  });
+                  const chart2 = chartRef.current;
+                  const ser2 = seriesRef.current;
+                  if (chart2 && ser2) {
+                    vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                      const el = h as HTMLElement;
+                      const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                      const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                      if (x != null && y != null) {
+                        el.style.left = `${Number(x)}px`;
+                        el.style.top = `${Number(y)}px`;
+                      }
+                    });
+                  }
+                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                 } catch {}
-                setStatusMsg("Channel saved — tap handle to edit more, or ✓ Done");
+                setStatusMsg("Channel saved — drag handles or ✓ Done");
                 setSaving(false);
                 setTimeout(() => { clickLockRef.current = false; }, 300);
                 return;
@@ -21264,34 +21567,46 @@ priced.sort((a, b) => a.price - b.price);
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
-                        // Parallel Channel — 3 handles (A, B, offset C)
+                        // Parallel Channel — 6 handles (4 corners + 2 mids)
                         if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
                           try {
                             const p = parseChannelNote(l.note);
                             if (!p) { setStatusMsg("Channel parse failed"); return; }
-                            const cTime = (p.t1 + p.t2) / 2;
-                            const span = (p.t2 - p.t1) || 1;
-                            const r = (cTime - p.t1) / span;
-                            const baseMid = p.p1 + r * (p.p2 - p.p1);
-                            const cPrice = baseMid + p.offset;
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
                             moveDiagRef.current = {
                               id: l.id,
                               phase: "pick",
                               pointA: { time: p.t1, price: p.p1 },
                               pointB: { time: p.t2, price: p.p2 },
-                              pointC: { time: cTime, price: cPrice },
+                              pointC: { time: (p.t1 + p.t2) / 2, price: (p.p1 + p.p2) / 2 + p.offset },
                               color: p.color || "#787b86",
                               width: 2,
                               dash: "solid",
                               isChannel: true,
+                              channelOffset: p.offset,
+                              channelHandle: null as any,
                             } as any;
-                            positionHandles(
-                              { time: p.t1, price: p.p1 },
-                              { time: p.t2, price: p.p2 },
-                              null,
-                              { time: cTime, price: cPrice }
-                            );
-                            setStatusMsg("Channel: tap a circle (A/B/C), then new position — ✓ Done");
+                            try {
+                              placeChannelHandles(vlineOverlayRef.current, {
+                                t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+                              });
+                              // position once with current scale
+                              const chart2 = chartRef.current;
+                              const ser2 = seriesRef.current;
+                              if (chart2 && ser2) {
+                                vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                                  const el = h as HTMLElement;
+                                  const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                                  const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                                  if (x != null && y != null) {
+                                    el.style.left = `${Number(x)}px`;
+                                    el.style.top = `${Number(y)}px`;
+                                  }
+                                });
+                              }
+                            } catch {}
+                            setStatusMsg("Channel: drag a handle (4 corners / 2 mids) — ✓ Done");
                           } catch {
                             setStatusMsg("Channel move failed");
                           }
