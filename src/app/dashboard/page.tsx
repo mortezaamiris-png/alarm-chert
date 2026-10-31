@@ -6590,10 +6590,12 @@ priced.sort((a, b) => a.price - b.price);
             if (visOk && Number.isFinite(t0) && Number.isFinite(t1) && host && chart2 && ser2 && (cfg?.showProfile !== false)) {
               const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
               if (vp) {
-                const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
-                let x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+                const x0c = chart2.timeScale().timeToCoordinate(t0 as any);
+                const x1c = chart2.timeScale().timeToCoordinate(t1 as any);
+                const x0 = x0c != null ? Number(x0c) : 0;
+                let x1 = x1c != null ? Number(x1c) : (chart2.timeScale().width() || 300);
                 if (cfg?.extendRight) {
-                  x1 = chart2.timeScale().width() || x1;
+                  x1 = Number(chart2.timeScale().width()) || x1;
                 }
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-frvp-id", String(l.id));
@@ -6610,8 +6612,8 @@ priced.sort((a, b) => a.price - b.price);
                   widthPct: cfg?.widthPct ?? 30,
                   upColor: cfg?.upColor || "#2962FF",
                   downColor: cfg?.downColor || "#E91E63",
-                  x0: x0 != null ? Number(x0) : 0,
-                  x1: x1 != null ? Number(x1) : (chart2.timeScale().width() || 300),
+                  x0,
+                  x1,
                 });
                 if (cfg?.text) {
                   const lab = document.createElement("div");
