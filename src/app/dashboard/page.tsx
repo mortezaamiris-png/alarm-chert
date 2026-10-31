@@ -839,11 +839,34 @@ function parseChannelNote(note: string | null | undefined): null | {
     const k = p.slice(0, eq);
     const v = p.slice(eq + 1);
     if (k === "lv") {
-      // format: 0:1,0.5:1,1:1  or just list of active ratios
+      // format: list of active ratios
       const active = new Set(v.split(",").map((x) => Number(x)).filter(Number.isFinite));
-      o.levels = o.levels.map((l: any) => ({ ...l, on: active.has(l.v) || (l.v === 0 || l.v === 1 ? true : active.has(l.v)) }));
-      // ensure 0 and 1 always considered if empty
+      o.levels = o.levels.map((l: any) => ({ ...l, on: active.has(l.v) }));
       if (active.size === 0) o.levels = o.levels.map((l: any) => ({ ...l, on: l.v === 0 || l.v === 0.5 || l.v === 1 }));
+    } else if (k === "lvs") {
+      // full: v:on:color:width:dash,v:on:...
+      const parsed = v.split(",").map((seg) => {
+        const [vv, on, col, w, dash] = seg.split(":");
+        return {
+          v: Number(vv),
+          on: on === "1",
+          color: col || "#787b86",
+          width: Math.max(1, Math.min(4, Number(w) || 1)),
+          dash: dash === "dashed" ? "dashed" : "solid",
+        };
+      }).filter((x) => Number.isFinite(x.v));
+      if (parsed.length) {
+        // merge into default levels by value, append custom ratios
+        const byV = new Map(parsed.map((x) => [x.v, x]));
+        o.levels = o.levels.map((l: any) => {
+          const p = byV.get(l.v);
+          return p ? { ...l, ...p } : l;
+        });
+        for (const p of parsed) {
+          if (!o.levels.some((l: any) => Math.abs(l.v - p.v) < 1e-9)) o.levels.push(p);
+        }
+        o.levels.sort((a: any, b: any) => a.v - b.v);
+      }
     } else if (k === "extL") o.extendLeft = v === "1";
     else if (k === "extR") o.extendRight = v === "1";
     else if (k === "bg") o.showBg = v !== "0";
@@ -877,12 +900,20 @@ function buildChannelNote(cfg: {
   visTicks?: boolean; visSeconds?: boolean; visMinutes?: boolean; visHours?: boolean;
   visDays?: boolean; visWeeks?: boolean; visMonths?: boolean; visRanges?: boolean;
 }): string {
-  const active = (cfg.levels || [
-    { v: 0, on: true }, { v: 0.5, on: true }, { v: 1, on: true },
-  ]).filter((l) => l.on).map((l) => l.v);
+  const levelsAll = cfg.levels || [
+    { v: 0, on: true, color: "#787b86", width: 1, dash: "solid" },
+    { v: 0.5, on: true, color: "#787b86", width: 1, dash: "dashed" },
+    { v: 1, on: true, color: "#787b86", width: 1, dash: "solid" },
+  ];
+  const active = levelsAll.filter((l) => l.on).map((l) => l.v);
+  // full per-level style: v:on:color:width:dash
+  const lvs = levelsAll.map((l) =>
+    `${l.v}:${l.on ? 1 : 0}:${(l.color || "#787b86").replace(/[|:,]/g, "")}:${Math.max(1, Math.min(4, Number(l.width) || 1))}:${l.dash === "dashed" ? "dashed" : "solid"}`
+  ).join(",");
   const parts = [
     String(cfg.t1), String(cfg.p1), String(cfg.t2), String(cfg.p2), String(cfg.offset),
     `lv=${active.join(",")}`,
+    `lvs=${lvs}`,
     `extL=${cfg.extendLeft ? "1" : "0"}`,
     `extR=${cfg.extendRight ? "1" : "0"}`,
     `bg=${cfg.showBg === false ? "0" : "1"}`,
@@ -11607,10 +11638,12 @@ priced.sort((a, b) => a.price - b.price);
           t2 = tCursor;
           p2 = price - off;
         } else if (key === "m0") {
-          // mid base: translate whole channel vertically (keep offset)
-          const midP = (p1 + p2) / 2;
-          const dlt = price - midP;
+          // mid bottom: like top mid — change channel width, keep top fixed
+          const midBase = (p1 + p2) / 2;
+          const topMid = midBase + off;
+          const dlt = price - midBase;
           p1 += dlt; p2 += dlt;
+          off = topMid - (p1 + p2) / 2;
         } else if (key === "m1") {
           // mid top: change channel width (offset) only
           const midBase = (p1 + p2) / 2;
@@ -18143,6 +18176,38 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
+          {/* Channel move: only Done (hide color/width/Edit handles bar) */}
+          {mode === "move" && movingId && (() => {
+            const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+            return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__channel:"));
+          })() && (
+            <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
+              <button
+                type="button"
+                onClick={async () => {
+                  moveDiagRef.current = null;
+                  setMovingId(null);
+                  setMovingType(null);
+                  setMode("none");
+                  clearPreview();
+                  try {
+                    chartRef.current?.applyOptions({
+                      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                      handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                    });
+                    if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
+                    document.body.style.overflow = "";
+                    document.documentElement.style.overflow = "";
+                  } catch {}
+                  setStatusMsg("✓ Confirmed");
+                }}
+                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+              >
+                ✓ Done
+              </button>
+            </div>
+          )}
+
           {(mode === "draw" ||
             mode === "ray" ||
             mode === "diag" ||
@@ -18158,7 +18223,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm" ||
             mode === "alarm-ray" ||
             mode === "alarm-diag" ||
-            mode === "move") && (
+            (mode === "move" && !(movingId && (() => {
+              const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+              return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__channel:"));
+            })()))) && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {mode === "path" && (
                 <button
@@ -18850,7 +18918,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 {channelSettingsTab === "style" && (
                   <div className="px-4 py-3 space-y-2 text-xs">
                     {channelCfg.levels.map((lv, i) => (
-                      <div key={lv.v} className="flex items-center gap-2">
+                      <div key={`${lv.v}-${i}`} className="flex items-center gap-2">
                         <input type="checkbox" checked={lv.on}
                           onChange={(e) => setChannelCfg((c) => {
                             const levels = c.levels.map((x, j) => j === i ? { ...x, on: e.target.checked } : x);
@@ -18862,14 +18930,71 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             return { ...c, levels };
                           })}
                           className="w-14 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
-                        <label className="relative w-7 h-5 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: lv.color }}>
-                          <input type="color" value={lv.color}
-                            onChange={(e) => setChannelCfg((c) => {
-                              const levels = c.levels.map((x, j) => j === i ? { ...x, color: e.target.value } : x);
-                              return { ...c, levels, color: i === 1 ? e.target.value : c.color };
-                            })}
-                            className="absolute inset-0 opacity-0 cursor-pointer" />
-                        </label>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            title="Color"
+                            onClick={() => setOpenMenu((m) => (m === `__ch_lv_${i}` ? null : `__ch_lv_${i}`))}
+                            className="w-7 h-5 rounded border border-white/25 shadow-sm"
+                            style={{ background: lv.color }}
+                          />
+                          {openMenu === `__ch_lv_${i}` && (
+                            <div
+                              className="absolute z-50 left-0 bottom-full mb-2 p-3 rounded-2xl border border-white/10 shadow-2xl min-w-[180px]"
+                              style={{
+                                background: "rgba(22,22,26,0.92)",
+                                backdropFilter: "blur(28px) saturate(180%)",
+                                WebkitBackdropFilter: "blur(28px) saturate(180%)",
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
+                              <div className="grid grid-cols-5 gap-1.5 mb-3">
+                                {PRESET_COLORS.map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => {
+                                      setChannelCfg((cfg) => {
+                                        const levels = cfg.levels.map((x, j) => j === i ? { ...x, color: c } : x);
+                                        return { ...cfg, levels, color: Math.abs(lv.v) < 1e-9 ? c : cfg.color };
+                                      });
+                                      setOpenMenu(null);
+                                    }}
+                                    className="w-7 h-7 rounded-full border border-white/20 hover:scale-110 transition-transform"
+                                    style={{ background: c }}
+                                  />
+                                ))}
+                              </div>
+                              <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
+                                <span className="relative w-7 h-7 rounded-full border border-white/25 overflow-hidden" style={{ background: lv.color }}>
+                                  <input
+                                    type="color"
+                                    value={lv.color}
+                                    onChange={(e) => {
+                                      const c = e.target.value;
+                                      setChannelCfg((cfg) => {
+                                        const levels = cfg.levels.map((x, j) => j === i ? { ...x, color: c } : x);
+                                        return { ...cfg, levels, color: Math.abs(lv.v) < 1e-9 ? c : cfg.color };
+                                      });
+                                    }}
+                                    className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                  />
+                                </span>
+                                Custom color
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                        <select value={String(lv.width || 1)}
+                          onChange={(e) => setChannelCfg((c) => {
+                            const levels = c.levels.map((x, j) => j === i ? { ...x, width: Number(e.target.value) || 1 } : x);
+                            return { ...c, levels };
+                          })}
+                          className="bg-black/40 border border-white/15 rounded px-1 py-0.5 text-[10px]"
+                          title="Width">
+                          {[1, 2, 3, 4].map((w) => <option key={w} value={w}>{w}</option>)}
+                        </select>
                         <select value={lv.dash}
                           onChange={(e) => setChannelCfg((c) => {
                             const levels = c.levels.map((x, j) => j === i ? { ...x, dash: e.target.value } : x);
@@ -18904,11 +19029,49 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <input type="checkbox" checked={channelCfg.showBg}
                         onChange={(e) => setChannelCfg((c) => ({ ...c, showBg: e.target.checked }))} />
                       Background
-                      <label className="relative w-7 h-5 rounded overflow-hidden border border-white/20 cursor-pointer ml-auto" style={{ background: channelCfg.bgColor }}>
-                        <input type="color" value={channelCfg.bgColor}
-                          onChange={(e) => setChannelCfg((c) => ({ ...c, bgColor: e.target.value }))}
-                          className="absolute inset-0 opacity-0 cursor-pointer" />
-                      </label>
+                                            <div className="relative ml-auto">
+                        <button
+                          type="button"
+                          onClick={() => setOpenMenu((m) => (m === "__ch_bg__" ? null : "__ch_bg__"))}
+                          className="w-7 h-5 rounded border border-white/25 shadow-sm"
+                          style={{ background: channelCfg.bgColor }}
+                        />
+                        {openMenu === "__ch_bg__" && (
+                          <div
+                            className="absolute z-50 right-0 bottom-full mb-2 p-3 rounded-2xl border border-white/10 shadow-2xl min-w-[180px]"
+                            style={{
+                              background: "rgba(22,22,26,0.92)",
+                              backdropFilter: "blur(28px) saturate(180%)",
+                              WebkitBackdropFilter: "blur(28px) saturate(180%)",
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Colors</div>
+                            <div className="grid grid-cols-5 gap-1.5 mb-3">
+                              {PRESET_COLORS.map((c) => (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  onClick={() => { setChannelCfg((cfg) => ({ ...cfg, bgColor: c })); setOpenMenu(null); }}
+                                  className="w-7 h-7 rounded-full border border-white/20 hover:scale-110 transition-transform"
+                                  style={{ background: c }}
+                                />
+                              ))}
+                            </div>
+                            <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer">
+                              <span className="relative w-7 h-7 rounded-full border border-white/25 overflow-hidden" style={{ background: channelCfg.bgColor }}>
+                                <input
+                                  type="color"
+                                  value={channelCfg.bgColor}
+                                  onChange={(e) => setChannelCfg((cfg) => ({ ...cfg, bgColor: e.target.value }))}
+                                  className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                />
+                              </span>
+                              Custom color
+                            </label>
+                          </div>
+                        )}
+                      </div>
                       <input type="number" min={0} max={100} value={channelCfg.bgOpacity}
                         onChange={(e) => setChannelCfg((c) => ({ ...c, bgOpacity: Number(e.target.value) || 0 }))}
                         className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
@@ -19083,7 +19246,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
                       onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); setOpenMenu(null); }}>Cancel</button>
                     <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
-                      onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); setOpenMenu(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                      onClick={() => {
+                        try {
+                          if (selectedChannelId) {
+                            const note = buildChannelNote({ ...channelCfg });
+                            setLines((prev) => prev.map((x) =>
+                              String(x.id) === String(selectedChannelId)
+                                ? { ...x, note, price: channelCfg.p1, start_time: channelCfg.t1, end_time: channelCfg.t2, end_price: channelCfg.p2, color: channelCfg.color }
+                                : x
+                            ));
+                            if (!String(selectedChannelId).startsWith("local-")) {
+                              void supabase.from("chart_lines").update({
+                                note,
+                                price: channelCfg.p1,
+                                start_time: channelCfg.t1,
+                                end_time: channelCfg.t2,
+                                end_price: channelCfg.p2,
+                                color: channelCfg.color,
+                              }).eq("id", selectedChannelId);
+                            }
+                          }
+                        } catch {}
+                        setChannelSettingsOpen(false);
+                        setSelectedChannelId(null);
+                        setOpenMenu(null);
+                        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                      }}>Ok</button>
                   </div>
                 </div>
               </div>
