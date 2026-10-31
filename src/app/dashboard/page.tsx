@@ -3262,11 +3262,9 @@ export default function DashboardPage() {
       } else if (
         mode === "arrow-up" ||
         mode === "arrow-down" ||
-        mode === "arrow-marker" ||
-        mode === "avp" ||
-        mode === "avwap"
+        mode === "arrow-marker"
       ) {
-        // No crosshair lines while placing AVP / VWAP / arrow marks
+        // No crosshair lines while placing arrow marks
         chart.applyOptions({
           crosshair: {
             mode: CrosshairMode.Normal,
@@ -17631,7 +17629,7 @@ priced.sort((a, b) => a.price - b.price);
                       onClick={() => setOpenMenu(openMenu === "avp-tpl" ? null : "avp-tpl")}
                     >Template ▾</button>
                     {openMenu === "avp-tpl" && (
-                      <div className="absolute z-[80] bottom-full mb-1 left-0 min-w-[150px] rounded-xl border border-white/20 bg-[#1e222d] shadow-[0_8px_32px_rgba(0,0,0,0.6)] py-1">
+                      <div className="absolute z-50 bottom-full mb-1 left-0 min-w-[140px] rounded-xl border border-white/15 bg-[#1e222d] shadow-xl py-1">
                         <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
                           onClick={() => {
                             try { localStorage.setItem("avp_template", JSON.stringify(avpCfg)); setStatusMsg("AVP template saved"); } catch {}
@@ -17639,51 +17637,16 @@ priced.sort((a, b) => a.price - b.price);
                           }}
                         >Save as…</button>
                         <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                          onClick={() => {
                             try {
                               const raw = localStorage.getItem("avp_template");
-                              if (raw) {
-                                const tpl = JSON.parse(raw);
-                                setAvpCfg((c) => ({
-                                  ...c,
-                                  ...tpl,
-                                  anchor: c.anchor,
-                                  text: c.text,
-                                }));
-                                setStatusMsg("AVP template applied");
-                              } else {
-                                setAvpCfg((c) => ({
-                                  ...c,
-                                  bins: 24,
-                                  side: "right",
-                                  widthPct: 30,
-                                  upColor: "#2962FF",
-                                  downColor: "#E91E63",
-                                  vaUpColor: "#26a69a",
-                                  vaDownColor: "#ef5350",
-                                  showProfile: true,
-                                  showValues: false,
-                                  showPoc: true,
-                                  showVah: false,
-                                  showVal: false,
-                                  showDevelopingPoc: false,
-                                  showDevelopingVa: false,
-                                  showHistBox: true,
-                                  showLabels: true,
-                                  volumeMode: "updown",
-                                  vaPct: 70,
-                                  rowsLayout: "number",
-                                  visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
-                                  visDays: true, visWeeks: true, visMonths: true, visRanges: true,
-                                }));
-                                setStatusMsg("AVP defaults applied");
-                              }
-                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                            } catch {
-                              setStatusMsg("Apply failed");
-                            }
+                              if (raw) setAvpCfg((c) => ({ ...c, ...JSON.parse(raw), anchor: c.anchor, text: c.text }));
+                              else setAvpCfg((c) => ({
+                                ...c, bins: 24, side: "right", widthPct: 30, upColor: "#2962FF", downColor: "#E91E63",
+                                showProfile: true, showPoc: true, showHistBox: true, showValues: false, showVah: false, showVal: false,
+                              }));
+                              setStatusMsg("AVP defaults applied");
+                            } catch {}
                             setOpenMenu(null);
                           }}
                         >Apply defaults</button>
@@ -19913,7 +19876,18 @@ priced.sort((a, b) => a.price - b.price);
                               const candles = candlesRef.current || [];
                               const hit = candles.find((c) => Math.abs(Number(c.time) - anchor) < 2);
                               if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
+                              else if (candles.length) {
+                                // nearest candle
+                                let best = candles[0], bd = Math.abs(Number(candles[0].time) - anchor);
+                                for (const c of candles) {
+                                  const dd = Math.abs(Number(c.time) - anchor);
+                                  if (dd < bd) { bd = dd; best = c; }
+                                }
+                                ap = (Number(best.high) + Number(best.low)) / 2;
+                              }
                             } catch {}
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
                             moveDiagRef.current = {
                               id: l.id,
                               phase: "drag-a",
@@ -19928,14 +19902,16 @@ priced.sort((a, b) => a.price - b.price);
                             try {
                               const elB = handleBElRef.current;
                               if (elB) elB.style.display = "none";
+                              const elC = handleCElRef.current;
+                              if (elC) elC.style.display = "none";
                             } catch {}
-                            setStatusMsg("AVP: drag or tap a new candle for anchor — ✓ Done");
+                            setStatusMsg("AVP: drag blue point or tap a candle — ✓ Done");
                           } catch {
                             setStatusMsg("AVP move failed");
                           }
                           return;
                         }
-                                                if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
+                        if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
                           try {
                             const p = parseAvwapNote(l.note);
                             const anchor = p ? p.anchor : Number(l.start_time);
