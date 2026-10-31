@@ -7432,6 +7432,13 @@ priced.sort((a, b) => a.price - b.price);
         const elA0 = handleAElRef.current;
         const elB0 = handleBElRef.current;
         const elC0 = handleCElRef.current;
+        // Parallel channel uses its own 6 DOM handles — never show A/B/C ghosts
+        if (md && (md as any).isChannel) {
+          if (elA0) elA0.style.display = "none";
+          if (elB0) elB0.style.display = "none";
+          if (elC0) elC0.style.display = "none";
+          return;
+        }
         // No active move → never leave ghost circles on chart
         if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c")) {
           if (elA0) elA0.style.display = "none";
@@ -11450,17 +11457,107 @@ priced.sort((a, b) => a.price - b.price);
       // Parallel channel: drag 6 handles
       const onChPointerDown = (e: PointerEvent) => {
         const t = e.target as HTMLElement | null;
-        if (!t || !t.getAttribute || !t.getAttribute("data-ch-handle")) return;
         const md = moveDiagRef.current;
         if (!md || !(md as any).isChannel || modeRef.current !== "move") return;
+        // Handle corner/mid
+        if (t && t.getAttribute && t.getAttribute("data-ch-handle")) {
+          e.preventDefault();
+          e.stopPropagation();
+          const key = t.getAttribute("data-ch-handle") || "";
+          (md as any).channelHandle = key;
+          (md as any).bodyOrigin = null;
+          md.phase = "drag-a";
+          lockChartInteraction(true);
+          try { t.setPointerCapture(e.pointerId); } catch {}
+          setStatusMsg(`Channel: dragging ${key}`);
+          return;
+        }
+        // Body drag: click on chart while channel selected (pick phase)
+        if (md.phase !== "pick") return;
+        if (e.button != null && e.button !== 0) return;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        const cont = chartContainerRef.current;
+        if (!chart || !ser || !cont) return;
+        // only if event is roughly over chart area
+        const rect = cont.getBoundingClientRect();
+        if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+        // ignore clicks on UI buttons
+        const tag = (t && (t as HTMLElement).closest) ? (t as HTMLElement).closest("button, input, textarea, [data-ind-panel]") : null;
+        if (tag) return;
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(y);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) {
+              tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            } else if (logical < 0) {
+              tCursor = candles[0].time + Math.round(logical * barSec);
+            } else {
+              const i = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+              tCursor = candles[i].time;
+            }
+          }
+        } catch {}
+        if (tCursor == null) return;
+        // hit-test near channel body
+        const t1 = md.pointA.time, p1 = md.pointA.price, t2 = md.pointB.time, p2 = md.pointB.price;
+        const off = Number((md as any).channelOffset ?? 0);
+        const priceAt = (tt: number, level: number) => {
+          const span = (t2 - t1) || 1;
+          const r = (tt - t1) / span;
+          return p1 + r * (p2 - p1) + off * level;
+        };
+        const distSeg = (ta: number, pa: number, tb: number, pb: number) => {
+          const x0 = chart.timeScale().timeToCoordinate(ta as any);
+          const x1 = chart.timeScale().timeToCoordinate(tb as any);
+          const y0 = ser.priceToCoordinate(pa);
+          const y1 = ser.priceToCoordinate(pb);
+          if (x0 == null || x1 == null || y0 == null || y1 == null) return 9999;
+          const dx = x1 - x0, dy = y1 - y0;
+          const len2 = dx * dx + dy * dy || 1;
+          let tt = ((x - x0) * dx + (y - y0) * dy) / len2;
+          tt = Math.max(0, Math.min(1, tt));
+          return Math.hypot(x - (x0 + tt * dx), y - (y0 + tt * dy));
+        };
+        const d0 = distSeg(t1, p1, t2, p2);
+        const d1 = distSeg(t1, p1 + off, t2, p2 + off);
+        let near = Math.min(d0, d1) <= 14;
+        if (!near) {
+          const x0 = chart.timeScale().timeToCoordinate(t1 as any);
+          const x1 = chart.timeScale().timeToCoordinate(t2 as any);
+          if (x0 != null && x1 != null) {
+            const lo = Math.min(x0, x1) - 6, hi = Math.max(x0, x1) + 6;
+            if (x >= lo && x <= hi) {
+              const span = (t2 - t1) || 1;
+              const r = (x - x0) / ((x1 - x0) || 1);
+              const tt = t1 + r * span;
+              const yLo = ser.priceToCoordinate(priceAt(tt, 0));
+              const yHi = ser.priceToCoordinate(priceAt(tt, 1));
+              if (yLo != null && yHi != null) {
+                const ymin = Math.min(yLo, yHi) - 8, ymax = Math.max(yLo, yHi) + 8;
+                if (y >= ymin && y <= ymax) near = true;
+              }
+            }
+          }
+        }
+        if (!near) return;
         e.preventDefault();
         e.stopPropagation();
-        const key = t.getAttribute("data-ch-handle") || "";
-        (md as any).channelHandle = key;
-        md.phase = "drag-a"; // reuse drag phase flag
+        (md as any).channelHandle = "body";
+        (md as any).bodyOrigin = {
+          t: tCursor, p: price,
+          t1, p1, t2, p2, off,
+        };
+        md.phase = "drag-a";
         lockChartInteraction(true);
-        try { t.setPointerCapture(e.pointerId); } catch {}
-        setStatusMsg(`Channel: dragging ${key}`);
+        setStatusMsg("Channel: moving body");
       };
       const onChPointerMove = (e: PointerEvent) => {
         const md = moveDiagRef.current;
@@ -11495,24 +11592,41 @@ priced.sort((a, b) => a.price - b.price);
         const key = String((md as any).channelHandle);
         let t1 = md.pointA.time, p1 = md.pointA.price, t2 = md.pointB.time, p2 = md.pointB.price;
         let off = Number((md as any).channelOffset ?? 0);
-        if (key === "a0") { t1 = tCursor; p1 = price; }
-        else if (key === "b0") { t2 = tCursor; p2 = price; }
-        else if (key === "a1") {
-          // change offset from base at t1
+        if (key === "a0") {
+          // base start — free angle
+          t1 = tCursor; p1 = price;
+        } else if (key === "b0") {
+          // base end — free angle
+          t2 = tCursor; p2 = price;
+        } else if (key === "a1") {
+          // top-start: free time + price → sets t1 and offset so parallel stays true
           t1 = tCursor;
           off = price - p1;
         } else if (key === "b1") {
+          // top-end: free time + price → sets t2 and offset
           t2 = tCursor;
           off = price - p2;
         } else if (key === "m0") {
-          // move base line vertically by delta at mid
+          // mid base: translate whole channel vertically (keep offset)
           const midP = (p1 + p2) / 2;
           const dlt = price - midP;
           p1 += dlt; p2 += dlt;
         } else if (key === "m1") {
-          // change offset so mid of parallel matches
+          // mid top: change channel width (offset)
           const midBase = (p1 + p2) / 2;
           off = price - midBase;
+        } else if (key === "body") {
+          // translate whole channel (time + price)
+          const origin = (md as any).bodyOrigin as { t: number; p: number; t1: number; p1: number; t2: number; p2: number; off: number } | null;
+          if (origin) {
+            const dt = tCursor - origin.t;
+            const dp = price - origin.p;
+            t1 = origin.t1 + dt;
+            t2 = origin.t2 + dt;
+            p1 = origin.p1 + dp;
+            p2 = origin.p2 + dp;
+            off = origin.off;
+          }
         }
         md.pointA = { time: t1, price: p1 };
         md.pointB = { time: t2, price: p2 };
@@ -12087,7 +12201,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               n0.startsWith("__avp:") ||
               n0.startsWith("__avwap:") ||
               n0.startsWith("__frvp:") ||
-              n0.startsWith("__channel:") ||
               n0.startsWith("__curve:") ||
               n0.startsWith("__fib:") ||
               n0.startsWith("__fibext:") ||
@@ -12140,6 +12253,54 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   const cx = x0 + t * dx, cy = y0 + t * dy;
                   consider(l.id, Math.hypot(px - cx, py - cy), false, false, true);
                 }
+              } else if (n0.startsWith("__channel:")) {
+                try {
+                  const cfg = parseChannelNote(n0);
+                  if (cfg) {
+                    const t1 = cfg.t1, p1 = cfg.p1, t2 = cfg.t2, p2 = cfg.p2, off = cfg.offset;
+                    const priceAt = (t: number, level: number) => {
+                      const span = (t2 - t1) || 1;
+                      const r = (t - t1) / span;
+                      return p1 + r * (p2 - p1) + off * level;
+                    };
+                    const distSeg = (ta: number, pa: number, tb: number, pb: number) => {
+                      const x0 = chart.timeScale().timeToCoordinate(ta as any);
+                      const x1 = chart.timeScale().timeToCoordinate(tb as any);
+                      const y0 = series.priceToCoordinate(pa);
+                      const y1 = series.priceToCoordinate(pb);
+                      if (x0 == null || x1 == null || y0 == null || y1 == null) return 9999;
+                      const dx = x1 - x0, dy = y1 - y0;
+                      const len2 = dx * dx + dy * dy || 1;
+                      let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+                      t = Math.max(0, Math.min(1, t));
+                      return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+                    };
+                    const d0 = distSeg(t1, p1, t2, p2);
+                    const d1 = distSeg(t1, p1 + off, t2, p2 + off);
+                    const bestD = Math.min(d0, d1);
+                    // also inside band (looser hit)
+                    let inside = 9999;
+                    {
+                      const x0 = chart.timeScale().timeToCoordinate(t1 as any);
+                      const x1 = chart.timeScale().timeToCoordinate(t2 as any);
+                      if (x0 != null && x1 != null) {
+                        const lo = Math.min(x0, x1) - 4, hi = Math.max(x0, x1) + 4;
+                        if (px >= lo && px <= hi) {
+                          const span = (t2 - t1) || 1;
+                          const r = ( ((px - x0) / ((x1 - x0) || 1)) );
+                          const tt = t1 + r * span;
+                          const yLo = series.priceToCoordinate(priceAt(tt, 0));
+                          const yHi = series.priceToCoordinate(priceAt(tt, 1));
+                          if (yLo != null && yHi != null) {
+                            const ymin = Math.min(yLo, yHi) - 6, ymax = Math.max(yLo, yHi) + 6;
+                            if (py >= ymin && py <= ymax) inside = 3;
+                          }
+                        }
+                      }
+                    }
+                    consider(l.id, Math.min(bestD, inside), false, false, true);
+                  }
+                } catch {}
               } else if (isArrow && l.start_time != null) {
                 const x = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
                 const y = series.priceToCoordinate(Number(l.price));
@@ -12307,7 +12468,51 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 movingRayRef.current = true;
                 movingVLineRef.current = false;
               }
-              if (l && best.isDiag) {
+              if (l && typeof l.note === "string" && l.note.startsWith("__channel:")) {
+                try {
+                  const p = parseChannelNote(l.note);
+                  if (p) {
+                    movingVLineRef.current = false;
+                    movingRayRef.current = false;
+                    moveDiagRef.current = {
+                      id: l.id,
+                      phase: "pick",
+                      pointA: { time: p.t1, price: p.p1 },
+                      pointB: { time: p.t2, price: p.p2 },
+                      color: p.color || "#787b86",
+                      width: 2,
+                      dash: "solid",
+                      isChannel: true,
+                      channelOffset: p.offset,
+                      channelHandle: null as any,
+                    } as any;
+                    try {
+                      if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                      if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                      if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                    } catch {}
+                    placeChannelHandles(vlineOverlayRef.current, {
+                      t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+                    });
+                    const chart2 = chartRef.current;
+                    const ser2 = seriesRef.current;
+                    if (chart2 && ser2) {
+                      vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                        const el = h as HTMLElement;
+                        const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                        const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                        if (x != null && y != null) {
+                          el.style.left = `${Number(x)}px`;
+                          el.style.top = `${Number(y)}px`;
+                        }
+                      });
+                    }
+                    setStatusMsg("Channel: drag corners / mids / body — ✓ Done");
+                  }
+                } catch {
+                  setStatusMsg("Channel select failed");
+                }
+              } else if (l && best.isDiag) {
                 moveDiagRef.current = {
                   id: l.id,
                   phase: "pick",
@@ -21579,7 +21784,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               phase: "pick",
                               pointA: { time: p.t1, price: p.p1 },
                               pointB: { time: p.t2, price: p.p2 },
-                              pointC: { time: (p.t1 + p.t2) / 2, price: (p.p1 + p.p2) / 2 + p.offset },
                               color: p.color || "#787b86",
                               width: 2,
                               dash: "solid",
@@ -21587,6 +21791,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               channelOffset: p.offset,
                               channelHandle: null as any,
                             } as any;
+                            try {
+                              if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                              if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                              if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                            } catch {}
                             try {
                               placeChannelHandles(vlineOverlayRef.current, {
                                 t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
