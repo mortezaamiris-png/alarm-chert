@@ -11736,10 +11736,16 @@ priced.sort((a, b) => a.price - b.price);
                 const yC = md.pointC ? series.priceToCoordinate(md.pointC.price) : null;
                 const px = param.point.x;
                 const py = param.point.y;
-                const distA = (xA != null && yA != null) ? Math.hypot(px - xA, py - yA) : 1e9;
-                const distB = (xB != null && yB != null) ? Math.hypot(px - xB, py - yB) : 1e9;
+                // FRVP: only time (X) matters — large hit radius so handles are easy to grab
+                const isFrvpMove = !!(md as any).isFrvp;
+                const distA = isFrvpMove
+                  ? (xA != null ? Math.abs(px - xA) : 1e9)
+                  : ((xA != null && yA != null) ? Math.hypot(px - xA, py - yA) : 1e9);
+                const distB = isFrvpMove
+                  ? (xB != null ? Math.abs(px - xB) : 1e9)
+                  : ((xB != null && yB != null) ? Math.hypot(px - xB, py - yB) : 1e9);
                 const distC = (xC != null && yC != null) ? Math.hypot(px - xC, py - yC) : 1e9;
-                const HIT = 36;
+                const HIT = isFrvpMove ? 48 : 36;
                 if (distA > HIT && distB > HIT && distC > HIT) {
                   moveDiagRef.current = null;
                   setMovingId(null);
@@ -11783,11 +11789,12 @@ priced.sort((a, b) => a.price - b.price);
               return;
             }
             if (md.phase === "drag-a") {
-              md.pointA = { time: t, price: fp };
+              // FRVP: keep vertical position (mid); only time moves
+              md.pointA = { time: t, price: (md as any).isFrvp ? md.pointA.price : fp };
             } else if (md.phase === "drag-c" && md.pointC) {
               md.pointC = { time: t, price: fp };
             } else {
-              md.pointB = { time: t, price: fp };
+              md.pointB = { time: t, price: (md as any).isFrvp ? md.pointB.price : fp };
             }
             // Ensure endpoints differ in time
             if (Math.abs(md.pointA.time - md.pointB.time) < 1) {
@@ -11976,10 +11983,13 @@ priced.sort((a, b) => a.price - b.price);
                       : a
                   )
                 );
+                const mid = (md.pointA.price + md.pointB.price) / 2;
+                md.pointA = { time: t0, price: mid };
+                md.pointB = { time: t1, price: mid };
                 md.phase = "pick";
                 lockChartInteraction(false);
                 refreshHandles();
-                setStatusMsg("FRVP saved — tap handle to edit more, or ✓ Done");
+                setStatusMsg("FRVP saved — tap left/right circle to move again, or ✓ Done");
                 setSaving(false);
                 setTimeout(() => { clickLockRef.current = false; }, 300);
                 return;
@@ -13103,18 +13113,23 @@ priced.sort((a, b) => a.price - b.price);
                 setMode("move");
                 setMovingId(row.id);
                 setMovingType("line");
+                let midP = start.price;
+                try {
+                  const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, 48);
+                  if (vp && Number.isFinite(vp.poc)) midP = vp.poc;
+                } catch {}
                 moveDiagRef.current = {
                   id: row.id,
                   phase: "pick",
-                  pointA: { time: t0, price: start.price },
-                  pointB: { time: t1, price: fp },
+                  pointA: { time: t0, price: midP },
+                  pointB: { time: t1, price: midP },
                   color: "#2962FF",
-                  width: 1,
+                  width: 2,
                   dash: "solid",
                   isFrvp: true,
                   binsN: 48,
                 } as any;
-                positionHandles({ time: t0, price: start.price }, { time: t1, price: fp }, null);
+                positionHandles({ time: t0, price: midP }, { time: t1, price: midP }, null);
               } catch {}
             } else setStatusMsg("FRVP save failed");
           } catch { setStatusMsg("FRVP save failed"); }
@@ -20402,43 +20417,48 @@ priced.sort((a, b) => a.price - b.price);
                         // Fixed Range VP — two time handles
                         if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
                           try {
-                            const body = l.note.replace(/^__frvp:/, "");
-                            const parts = body.split("|");
-                            const t0 = Number(parts[0]);
-                            const t1 = Number(parts[1]);
-                            let binsN = 48;
-                            for (const p of parts.slice(2)) {
-                              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
+                            const p = parseFrvpNote(l.note);
+                            const t0 = p ? p.t0 : Number(String(l.note).replace(/^__frvp:/, "").split("|")[0]);
+                            const t1 = p ? p.t1 : Number(String(l.note).replace(/^__frvp:/, "").split("|")[1]);
+                            const binsN = p?.bins ?? 48;
+                            if (!Number.isFinite(t0) || !Number.isFinite(t1)) {
+                              setStatusMsg("FRVP: invalid range");
+                              return;
                             }
-                            const midP = Number(l.price) || Number(l.end_price) || 0;
-                            // fallback mid from candles if needed
-                            let pA = midP, pB = midP;
+                            // Mid price so both handles sit in the middle of the box (easy to grab)
+                            let midP = Number(l.price) || 0;
                             try {
                               const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
-                              if (vp) {
-                                pA = vp.bins.length ? vp.bins[vp.bins.length - 1].hi : vp.poc;
-                                pB = vp.bins.length ? vp.bins[0].lo : vp.poc;
+                              if (vp && Number.isFinite(vp.poc)) midP = vp.poc;
+                              else {
+                                const candles = candlesRef.current || [];
+                                const slice = candles.filter((c) => Number(c.time) >= Math.min(t0, t1) && Number(c.time) <= Math.max(t0, t1));
+                                if (slice.length) {
+                                  midP = slice.reduce((s, c) => s + (Number(c.high) + Number(c.low)) / 2, 0) / slice.length;
+                                }
                               }
                             } catch {}
                             movingVLineRef.current = false;
                             movingRayRef.current = false;
+                            const ta = Math.min(t0, t1);
+                            const tb = Math.max(t0, t1);
                             moveDiagRef.current = {
                               id: l.id,
                               phase: "pick",
-                              pointA: { time: Math.min(t0, t1), price: pA },
-                              pointB: { time: Math.max(t0, t1), price: pB },
-                              color: l.color || "#2962FF",
-                              width: 1,
+                              pointA: { time: ta, price: midP },
+                              pointB: { time: tb, price: midP },
+                              color: (p && p.upColor) || l.color || "#2962FF",
+                              width: 2,
                               dash: "solid",
                               isFrvp: true,
                               binsN,
                             } as any;
                             positionHandles(
-                              { time: Math.min(t0, t1), price: pA },
-                              { time: Math.max(t0, t1), price: pB },
+                              { time: ta, price: midP },
+                              { time: tb, price: midP },
                               null
                             );
-                            setStatusMsg("FRVP: tap a circle to move start/end — ✓ Done");
+                            setStatusMsg("FRVP: tap left/right circle, then a candle — ✓ Done");
                           } catch {
                             setStatusMsg("FRVP move failed");
                           }
