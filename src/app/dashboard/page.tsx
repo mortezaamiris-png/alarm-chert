@@ -230,6 +230,118 @@ function computeAnchoredVWAP(
   return { vwap, upper1, lower1, upper2, lower2, upper3, lower3 };
 }
 
+/** Parse Anchored VWAP note: __avwap:anchor|k=v|...|txt=... */
+function parseAvwapNote(note: string | null | undefined): null | {
+  anchor: number;
+  vwapColor: string;
+  band1Color: string;
+  band2Color: string;
+  band3Color: string;
+  bgColor: string;
+  bgOpacity: number;
+  showBand1: boolean;
+  showBand2: boolean;
+  showBand3: boolean;
+  showBg: boolean;
+  showLabel: boolean;
+  mult1: number;
+  mult2: number;
+  mult3: number;
+  width: number;
+  text: string;
+} {
+  if (!note || typeof note !== "string" || !note.startsWith("__avwap:")) return null;
+  const body = note.replace(/^__avwap:/, "");
+  const parts = body.split("|");
+  const anchor = Number(parts[0]);
+  if (!Number.isFinite(anchor)) return null;
+  const o: any = {
+    anchor,
+    vwapColor: "#2962FF",
+    band1Color: "#26a69a",
+    band2Color: "#8d6e63",
+    band3Color: "#26a69a",
+    bgColor: "#26a69a",
+    bgOpacity: 12,
+    showBand1: true,
+    showBand2: false,
+    showBand3: false,
+    showBg: true,
+    showLabel: true,
+    mult1: 1,
+    mult2: 2,
+    mult3: 3,
+    width: 2,
+    text: "",
+  };
+  for (const p of parts.slice(1)) {
+    if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    const k = p.slice(0, eq);
+    const v = p.slice(eq + 1);
+    if (k === "vwap") o.vwapColor = v;
+    else if (k === "b1") o.band1Color = v;
+    else if (k === "b2") o.band2Color = v;
+    else if (k === "b3") o.band3Color = v;
+    else if (k === "bgc") o.bgColor = v;
+    else if (k === "bgo") o.bgOpacity = Math.max(0, Math.min(100, Number(v) || 12));
+    else if (k === "bg") o.showBg = v !== "0";
+    else if (k === "s1") o.showBand1 = v !== "0";
+    else if (k === "s2") o.showBand2 = v !== "0";
+    else if (k === "s3") o.showBand3 = v !== "0";
+    else if (k === "lbl") o.showLabel = v !== "0";
+    else if (k === "m1") o.mult1 = Number(v) || 1;
+    else if (k === "m2") o.mult2 = Number(v) || 2;
+    else if (k === "m3") o.mult3 = Number(v) || 3;
+    else if (k === "w") o.width = Math.max(1, Math.min(4, Number(v) || 2));
+  }
+  return o;
+}
+
+function buildAvwapNote(cfg: {
+  anchor: number;
+  vwapColor?: string;
+  band1Color?: string;
+  band2Color?: string;
+  band3Color?: string;
+  bgColor?: string;
+  bgOpacity?: number;
+  showBand1?: boolean;
+  showBand2?: boolean;
+  showBand3?: boolean;
+  showBg?: boolean;
+  showLabel?: boolean;
+  mult1?: number;
+  mult2?: number;
+  mult3?: number;
+  width?: number;
+  text?: string;
+}): string {
+  const parts = [
+    String(cfg.anchor),
+    `vwap=${cfg.vwapColor || "#2962FF"}`,
+    `b1=${cfg.band1Color || "#26a69a"}`,
+    `b2=${cfg.band2Color || "#8d6e63"}`,
+    `b3=${cfg.band3Color || "#26a69a"}`,
+    `bgc=${cfg.bgColor || "#26a69a"}`,
+    `bgo=${cfg.bgOpacity ?? 12}`,
+    `bg=${cfg.showBg === false ? "0" : "1"}`,
+    `s1=${cfg.showBand1 === false ? "0" : "1"}`,
+    `s2=${cfg.showBand2 ? "1" : "0"}`,
+    `s3=${cfg.showBand3 ? "1" : "0"}`,
+    `lbl=${cfg.showLabel === false ? "0" : "1"}`,
+    `m1=${cfg.mult1 ?? 1}`,
+    `m2=${cfg.mult2 ?? 2}`,
+    `m3=${cfg.mult3 ?? 3}`,
+    `w=${cfg.width ?? 2}`,
+  ];
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
+  return `__avwap:${parts.join("|")}`;
+}
+
+
+
 /**
  * Paint volume profile histogram.
  * layout "range": bars fill between x0..x1 (FRVP / AVP box)
@@ -1254,7 +1366,11 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
   if (s.startsWith("__avp:")) return "Anchored VP";
-  if (s.startsWith("__avwap:")) return "Anchored VWAP";
+  if (s.startsWith("__avwap:")) {
+    const p = parseAvwapNote(s);
+    if (p && p.text) return p.text;
+    return "";
+  }
   if (s.startsWith("__frvp:")) return "Fixed Range VP";
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
@@ -2069,6 +2185,8 @@ export default function DashboardPage() {
     width: number;
     dash: string;
     isFib?: boolean;
+    isAvwap?: boolean;
+    isFrvp?: boolean;
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
   const movingRayRef = useRef(false);
@@ -2491,6 +2609,28 @@ export default function DashboardPage() {
   const [fibTemplateOpen, setFibTemplateOpen] = useState(false);
   const [fibSettingsOpen, setFibSettingsOpen] = useState(false);
   const [selectedFibId, setSelectedFibId] = useState<string | null>(null);
+  const [avwapSettingsOpen, setAvwapSettingsOpen] = useState(false);
+  const [selectedAvwapId, setSelectedAvwapId] = useState<string | null>(null);
+  const [avwapSettingsTab, setAvwapSettingsTab] = useState<"style" | "inputs" | "visibility">("style");
+  const [avwapCfg, setAvwapCfg] = useState(() => ({
+    vwapColor: "#2962FF",
+    band1Color: "#26a69a",
+    band2Color: "#8d6e63",
+    band3Color: "#26a69a",
+    bgColor: "#26a69a",
+    bgOpacity: 12,
+    showBand1: true,
+    showBand2: false,
+    showBand3: false,
+    showBg: true,
+    showLabel: true,
+    mult1: 1,
+    mult2: 2,
+    mult3: 3,
+    width: 2,
+    text: "",
+    anchor: 0,
+  }));
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
   useEffect(() => {
     (window as any).__selectedPosId = selectedPosId;
@@ -2835,6 +2975,44 @@ export default function DashboardPage() {
   useEffect(() => { saveLS("fib_bg_opacity", fibBgOpacity); }, [fibBgOpacity]);
   useEffect(() => { saveLS("fib_label_h", fibLabelH); }, [fibLabelH]);
   useEffect(() => { saveLS("fib_label_v", fibLabelV); }, [fibLabelV]);
+
+  // Persist Anchored VWAP settings while modal is open
+  useEffect(() => {
+    if (!selectedAvwapId || !avwapSettingsOpen) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedAvwapId));
+    if (!line) return;
+    const note = buildAvwapNote({
+      anchor: avwapCfg.anchor || Number(line.start_time) || 0,
+      vwapColor: avwapCfg.vwapColor,
+      band1Color: avwapCfg.band1Color,
+      band2Color: avwapCfg.band2Color,
+      band3Color: avwapCfg.band3Color,
+      bgColor: avwapCfg.bgColor,
+      bgOpacity: avwapCfg.bgOpacity,
+      showBand1: avwapCfg.showBand1,
+      showBand2: avwapCfg.showBand2,
+      showBand3: avwapCfg.showBand3,
+      showBg: avwapCfg.showBg,
+      showLabel: avwapCfg.showLabel,
+      mult1: avwapCfg.mult1,
+      mult2: avwapCfg.mult2,
+      mult3: avwapCfg.mult3,
+      width: avwapCfg.width,
+      text: avwapCfg.text,
+    });
+    setLines((prev) => prev.map((x) => (String(x.id) === String(selectedAvwapId) ? { ...x, note, color: avwapCfg.vwapColor, width: avwapCfg.width } : x)));
+    const t = window.setTimeout(async () => {
+      try {
+        if (!String(selectedAvwapId).startsWith("local-")) {
+          await supabase.from("chart_lines").update({ note, color: avwapCfg.vwapColor, width: avwapCfg.width }).eq("id", selectedAvwapId);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 180);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAvwapId, avwapSettingsOpen, avwapCfg]);
+
   // Prevent chart pan/zoom while Fib settings modal is open (iPad slider fix)
   useEffect(() => {
     const chart = chartRef.current;
@@ -5786,12 +5964,33 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
           try {
-            const anchor = Number(l.note.replace(/^__avwap:/, "").split("|")[0]);
+            const cfg = parseAvwapNote(l.note);
+            const anchor = cfg ? cfg.anchor : Number(l.note.replace(/^__avwap:/, "").split("|")[0]);
             if (Number.isFinite(anchor)) {
               const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
               if (pack.vwap.length >= 1) {
                 const toData = (pts: { time: number; value: number }[]) =>
                   pts.map((p) => ({ time: p.time as any, value: p.value }));
+
+                // Apply band multipliers relative to ±1σ
+                const scaleBand = (
+                  baseUp: { time: number; value: number }[],
+                  baseLo: { time: number; value: number }[],
+                  mult: number
+                ) => {
+                  const up: { time: number; value: number }[] = [];
+                  const lo: { time: number; value: number }[] = [];
+                  for (let i = 0; i < pack.vwap.length; i++) {
+                    const vw = pack.vwap[i].value;
+                    const sigma = Math.abs(baseUp[i].value - vw); // 1σ
+                    up.push({ time: pack.vwap[i].time, value: vw + sigma * mult });
+                    lo.push({ time: pack.vwap[i].time, value: vw - sigma * mult });
+                  }
+                  return { up, lo };
+                };
+                const b1 = scaleBand(pack.upper1, pack.lower1, cfg?.mult1 ?? 1);
+                const b2 = scaleBand(pack.upper1, pack.lower1, cfg?.mult2 ?? 2);
+                const b3 = scaleBand(pack.upper1, pack.lower1, cfg?.mult3 ?? 3);
 
                 const mkLine = (
                   pts: { time: number; value: number }[],
@@ -5812,12 +6011,30 @@ priced.sort((a, b) => a.price - b.price);
                   return ls;
                 };
 
-                // TV default look: VWAP (blue) + band #1 only (±1σ teal).
-                // No ±2/±3 (extra lines) and no DOM fill (lags on pan).
-                const colMain = l.color || "#2962FF";
-                const main = mkLine(pack.vwap, colMain, Math.max(2, Number(l.width) || 2), true);
-                const u1 = mkLine(pack.upper1, "#26a69a", 1, false);
-                const lo1 = mkLine(pack.lower1, "#26a69a", 1, false);
+                const colMain = (cfg?.vwapColor) || l.color || "#2962FF";
+                const wMain = Math.max(1, Number(cfg?.width ?? l.width) || 2);
+                const main = mkLine(pack.vwap, colMain, wMain, !!(cfg?.showLabel !== false));
+                const all: any[] = [];
+                if (main) all.push(main);
+
+                if (cfg?.showBand1 !== false) {
+                  const u = mkLine(b1.up, cfg?.band1Color || "#26a69a", 1, false);
+                  const lo = mkLine(b1.lo, cfg?.band1Color || "#26a69a", 1, false);
+                  if (u) all.push(u);
+                  if (lo) all.push(lo);
+                }
+                if (cfg?.showBand2) {
+                  const u = mkLine(b2.up, cfg?.band2Color || "#8d6e63", 1, false);
+                  const lo = mkLine(b2.lo, cfg?.band2Color || "#8d6e63", 1, false);
+                  if (u) all.push(u);
+                  if (lo) all.push(lo);
+                }
+                if (cfg?.showBand3) {
+                  const u = mkLine(b3.up, cfg?.band3Color || "#26a69a", 1, false);
+                  const lo = mkLine(b3.lo, cfg?.band3Color || "#26a69a", 1, false);
+                  if (u) all.push(u);
+                  if (lo) all.push(lo);
+                }
 
                 if (main && pack.vwap[0]) {
                   try {
@@ -5833,8 +6050,75 @@ priced.sort((a, b) => a.price - b.price);
                   } catch {}
                 }
 
-                const all: any[] = [];
-                for (const s of [main, u1, lo1]) if (s) all.push(s);
+                // Channel fill + note label at anchor (DOM, cleaned each render)
+                try {
+                  const host = vlineOverlayRef.current;
+                  const ser2 = seriesRef.current;
+                  const chart2 = chartRef.current;
+                  if (host && ser2 && chart2) {
+                    const wrap = document.createElement("div");
+                    wrap.setAttribute("data-avwap-fill", String(l.id));
+                    wrap.style.cssText =
+                      "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:5;overflow:hidden;";
+
+                    // Background between band1 upper/lower
+                    if (cfg?.showBg !== false && cfg?.showBand1 !== false && b1.up.length >= 2) {
+                      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                      svg.style.cssText =
+                        "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
+                      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+                      const pts: string[] = [];
+                      for (const p of b1.up) {
+                        const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                        const y = ser2.priceToCoordinate(p.value);
+                        if (x == null || y == null) continue;
+                        pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                      }
+                      for (let i = b1.lo.length - 1; i >= 0; i--) {
+                        const p = b1.lo[i];
+                        const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                        const y = ser2.priceToCoordinate(p.value);
+                        if (x == null || y == null) continue;
+                        pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                      }
+                      if (pts.length >= 4) {
+                        const op = Math.max(0, Math.min(100, cfg?.bgOpacity ?? 12)) / 100;
+                        // parse bgColor hex to rgba
+                        let fill = `rgba(38,166,154,${op})`;
+                        const hex = (cfg?.bgColor || "#26a69a").replace("#", "");
+                        if (hex.length === 6) {
+                          const r = parseInt(hex.slice(0, 2), 16);
+                          const g = parseInt(hex.slice(2, 4), 16);
+                          const b = parseInt(hex.slice(4, 6), 16);
+                          fill = `rgba(${r},${g},${b},${op})`;
+                        }
+                        poly.setAttribute("points", pts.join(" "));
+                        poly.setAttribute("fill", fill);
+                        poly.setAttribute("stroke", "none");
+                        svg.appendChild(poly);
+                        wrap.appendChild(svg);
+                      }
+                    }
+
+                    // Note text at first anchor point
+                    if (cfg?.text && pack.vwap[0]) {
+                      const x = chart2.timeScale().timeToCoordinate(pack.vwap[0].time as any);
+                      const y = ser2.priceToCoordinate(pack.vwap[0].value);
+                      if (x != null && y != null) {
+                        const lab = document.createElement("div");
+                        lab.textContent = cfg.text;
+                        lab.style.cssText =
+                          `position:absolute;left:${Number(x) + 10}px;top:${Number(y) - 18}px;` +
+                          `transform:translateY(-50%);font-size:11px;font-weight:600;color:${colMain};` +
+                          `text-shadow:0 1px 2px rgba(0,0,0,0.85);white-space:nowrap;pointer-events:none;z-index:8;`;
+                        wrap.appendChild(lab);
+                      }
+                    }
+
+                    if (wrap.childNodes.length) host.appendChild(wrap);
+                  }
+                } catch {}
+
                 if (all.length) chartLinesRef.current.set(l.id, all as any);
               }
             }
@@ -10795,6 +11079,72 @@ priced.sort((a, b) => a.price - b.price);
                 width: md.width,
                 dash: md.dash,
               };
+              // Anchored VWAP — move anchor time
+              if ((md as any).isAvwap && typ === "line") {
+                const cur = (linesRef.current || []).find((x) => x.id === id);
+                const oldP = cur ? parseAvwapNote(cur.note as any) : null;
+                const newAnchor = Number(md.pointA.time);
+                const note = buildAvwapNote({
+                  ...(oldP || {
+                    vwapColor: md.color || "#2962FF",
+                    band1Color: "#26a69a",
+                    band2Color: "#8d6e63",
+                    band3Color: "#26a69a",
+                    bgColor: "#26a69a",
+                    bgOpacity: 12,
+                    showBand1: true,
+                    showBand2: false,
+                    showBand3: false,
+                    showBg: true,
+                    showLabel: true,
+                    mult1: 1,
+                    mult2: 2,
+                    mult3: 3,
+                    width: md.width || 2,
+                    text: "",
+                  }),
+                  anchor: newAnchor,
+                  vwapColor: (oldP && oldP.vwapColor) || md.color || "#2962FF",
+                  width: (oldP && oldP.width) || md.width || 2,
+                  text: (oldP && oldP.text) || "",
+                });
+                let ap = md.pointA.price;
+                try {
+                  const pack = computeAnchoredVWAP(candlesRef.current || [], newAnchor);
+                  if (pack.vwap.length) ap = pack.vwap[0].value;
+                } catch {}
+                patch.note = note;
+                patch.start_time = newAnchor;
+                patch.end_time = null;
+                patch.end_price = null;
+                patch.price = ap;
+                patch.color = (oldP && oldP.vwapColor) || md.color || "#2962FF";
+                await supabase.from("chart_lines").update(patch).eq("id", id);
+                setLines((prev) =>
+                  prev.map((a) =>
+                    a.id === id
+                      ? {
+                          ...a,
+                          note,
+                          price: ap,
+                          start_time: newAnchor,
+                          end_time: null,
+                          end_price: null,
+                          color: patch.color,
+                        }
+                      : a
+                  )
+                );
+                md.pointA = { time: newAnchor, price: ap };
+                md.pointB = { time: newAnchor, price: ap };
+                md.phase = "pick";
+                lockChartInteraction(false);
+                refreshHandles();
+                setStatusMsg("VWAP anchor saved — drag again or ✓ Done");
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 300);
+                return;
+              }
               // Fixed Range VP — only time range matters
               if ((md as any).isFrvp && typ === "line") {
                 const t0 = Math.min(md.pointA.time, md.pointB.time);
@@ -11791,7 +12141,25 @@ priced.sort((a, b) => a.price - b.price);
               setTimeout(() => { clickLockRef.current = false; }, 250);
               return;
             }
-            const note = `__avwap:${t}`;
+            const note = buildAvwapNote({
+              anchor: Number(t),
+              vwapColor: "#2962FF",
+              band1Color: "#26a69a",
+              band2Color: "#8d6e63",
+              band3Color: "#26a69a",
+              bgColor: "#26a69a",
+              bgOpacity: 12,
+              showBand1: true,
+              showBand2: false,
+              showBand3: false,
+              showBg: true,
+              showLabel: true,
+              mult1: 1,
+              mult2: 2,
+              mult3: 3,
+              width: 2,
+              text: "",
+            });
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: fp,
@@ -14065,6 +14433,11 @@ priced.sort((a, b) => a.price - b.price);
           const rp = parseRectNote(s);
           if (rp) {
             noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
+          }
+        } else if (s.startsWith("__avwap:")) {
+          const p = parseAvwapNote(s);
+          if (p) {
+            noteToSave = buildAvwapNote({ ...p, text: noteDraft.trim() });
           }
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
           noteToSave = s; // vertical lines have no user note slot
@@ -16534,7 +16907,158 @@ priced.sort((a, b) => a.price - b.price);
             );
           })()}
 
-          {fibSettingsOpen && (
+          
+          {/* Anchored VWAP settings modal (TradingView-style) */}
+          {avwapSettingsOpen && (
+            <div
+              className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); }}
+            >
+              <div
+                className="w-[min(360px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                  <div className="flex items-center gap-2 font-semibold text-white">
+                    <span>Anchored VWAP</span>
+                    <span className="text-gray-500 text-xs">✎</span>
+                  </div>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); }}>×</button>
+                </div>
+                <div className="flex gap-4 px-4 pt-2 text-xs border-b border-white/10">
+                  {(["inputs", "style", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-1.5 px-1 capitalize ${avwapSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                      onClick={() => setAvwapSettingsTab(tab)}
+                    >{tab}</button>
+                  ))}
+                </div>
+
+                {avwapSettingsTab === "style" && (
+                  <div className="px-4 py-3 space-y-3">
+                    {[
+                      { key: "vwapColor", label: "VWAP", colorOnly: true },
+                    ].map((row) => (
+                      <div key={row.key} className="flex items-center justify-between gap-2">
+                        <span className="text-gray-300">{row.label}</span>
+                        <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: (avwapCfg as any)[row.key] }}>
+                          <input type="color" value={(avwapCfg as any)[row.key]}
+                            onChange={(e) => setAvwapCfg((c) => ({ ...c, [row.key]: e.target.value }))}
+                            className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </label>
+                      </div>
+                    ))}
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand1} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand1: e.target.checked }))} />
+                        Lower / Upper band #1
+                      </span>
+                      <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: avwapCfg.band1Color }}>
+                        <input type="color" value={avwapCfg.band1Color} onChange={(e) => setAvwapCfg((c) => ({ ...c, band1Color: e.target.value }))} className="absolute inset-0 opacity-0 cursor-pointer" />
+                      </label>
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBg} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBg: e.target.checked }))} />
+                        Background #1
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: avwapCfg.bgColor }}>
+                          <input type="color" value={avwapCfg.bgColor} onChange={(e) => setAvwapCfg((c) => ({ ...c, bgColor: e.target.value }))} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </label>
+                        <input type="range" min={0} max={40} value={avwapCfg.bgOpacity}
+                          onChange={(e) => setAvwapCfg((c) => ({ ...c, bgOpacity: Number(e.target.value) }))}
+                          className="w-16 accent-orange-500" title="Opacity" />
+                      </div>
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand2} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand2: e.target.checked }))} />
+                        Lower / Upper band #2
+                      </span>
+                      <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: avwapCfg.band2Color }}>
+                        <input type="color" value={avwapCfg.band2Color} onChange={(e) => setAvwapCfg((c) => ({ ...c, band2Color: e.target.value }))} className="absolute inset-0 opacity-0 cursor-pointer" />
+                      </label>
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand3} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand3: e.target.checked }))} />
+                        Lower / Upper band #3
+                      </span>
+                      <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: avwapCfg.band3Color }}>
+                        <input type="color" value={avwapCfg.band3Color} onChange={(e) => setAvwapCfg((c) => ({ ...c, band3Color: e.target.value }))} className="absolute inset-0 opacity-0 cursor-pointer" />
+                      </label>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avwapCfg.showLabel} onChange={(e) => setAvwapCfg((c) => ({ ...c, showLabel: e.target.checked }))} />
+                      Price label
+                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Line width</span>
+                      <div className="flex gap-1">
+                        {([1, 2, 3] as const).map((w) => (
+                          <button key={w} type="button"
+                            onClick={() => setAvwapCfg((c) => ({ ...c, width: w }))}
+                            className={`px-2 py-0.5 rounded border text-xs ${avwapCfg.width === w ? "border-orange-400 text-orange-300" : "border-white/15 text-gray-400"}`}
+                          >W{w}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {avwapSettingsTab === "inputs" && (
+                  <div className="px-4 py-3 space-y-3">
+                    <div className="text-[10px] uppercase tracking-wide text-gray-500">Bands settings</div>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand1} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand1: e.target.checked }))} />
+                        Bands Multiplier #1
+                      </span>
+                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult1}
+                        onChange={(e) => setAvwapCfg((c) => ({ ...c, mult1: Number(e.target.value) || 1 }))}
+                        className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand2} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand2: e.target.checked }))} />
+                        Bands Multiplier #2
+                      </span>
+                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult2}
+                        onChange={(e) => setAvwapCfg((c) => ({ ...c, mult2: Number(e.target.value) || 2 }))}
+                        className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <input type="checkbox" checked={avwapCfg.showBand3} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand3: e.target.checked }))} />
+                        Bands Multiplier #3
+                      </span>
+                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult3}
+                        onChange={(e) => setAvwapCfg((c) => ({ ...c, mult3: Number(e.target.value) || 3 }))}
+                        className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
+                    </label>
+                    <div className="text-[11px] text-gray-500">Source: (H+L+C)/3 · Volume weighted</div>
+                  </div>
+                )}
+
+                {avwapSettingsTab === "visibility" && (
+                  <div className="px-4 py-3 space-y-2 text-xs text-gray-400">
+                    <p>VWAP is always drawn on the current chart timeframe. Visibility filters by timeframe can be added later — currently visible on all intervals.</p>
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 px-4 py-3 border-t border-white/10">
+                  <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                    onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); }}>Cancel</button>
+                  <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                    onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+{fibSettingsOpen && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto" onClick={() => { setFibSettingsOpen(false); setSelectedFibId(null); setFibTemplateOpen(false); }}>
               <div
                 className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,380px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
@@ -17757,7 +18281,8 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {/* Color — palette popup (desktop) + native picker */}
+                    {/* Color — hidden for AVWAP (uses Settings) */}
+                    {!(typeof l.note === "string" && l.note.startsWith("__avwap:")) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -18007,7 +18532,49 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
+                    {typeof l.note === "string" && l.note.startsWith("__avwap:") ? (
+                      <button
+                        type="button"
+                        title="VWAP settings"
+                        onClick={() => {
+                          const p = parseAvwapNote(l.note);
+                          if (p) {
+                            setAvwapCfg({
+                              vwapColor: p.vwapColor,
+                              band1Color: p.band1Color,
+                              band2Color: p.band2Color,
+                              band3Color: p.band3Color,
+                              bgColor: p.bgColor,
+                              bgOpacity: p.bgOpacity,
+                              showBand1: p.showBand1,
+                              showBand2: p.showBand2,
+                              showBand3: p.showBand3,
+                              showBg: p.showBg,
+                              showLabel: p.showLabel,
+                              mult1: p.mult1,
+                              mult2: p.mult2,
+                              mult3: p.mult3,
+                              width: p.width,
+                              text: p.text,
+                              anchor: p.anchor,
+                            });
+                          } else {
+                            setAvwapCfg((c) => ({
+                              ...c,
+                              anchor: Number(l.start_time) || 0,
+                              vwapColor: l.color || "#2962FF",
+                              width: Number(l.width) || 2,
+                            }));
+                          }
+                          setSelectedAvwapId(String(l.id));
+                          setAvwapSettingsOpen(true);
+                          setAvwapSettingsTab("style");
+                        }}
+                        className="text-xs px-2 py-0.5 rounded border border-white/20 text-gray-200 hover:bg-white/10"
+                      >
+                        Settings
+                      </button>
+                    ) : typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
                       <button
                         type="button"
                         title="Fib settings"
@@ -18258,6 +18825,7 @@ priced.sort((a, b) => a.price - b.price);
                         </div>
                       )}
                     </div>
+                    )}
                     {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
                       <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     )}
@@ -18320,6 +18888,38 @@ priced.sort((a, b) => a.price - b.price);
                             setStatusMsg("FRVP: tap a circle to move start/end — ✓ Done");
                           } catch {
                             setStatusMsg("FRVP move failed");
+                          }
+                          return;
+                        }
+                        
+                        if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
+                          try {
+                            const p = parseAvwapNote(l.note);
+                            const anchor = p ? p.anchor : Number(l.start_time);
+                            if (!Number.isFinite(anchor)) {
+                              setStatusMsg("VWAP: no anchor");
+                              return;
+                            }
+                            // price at anchor from pack
+                            let ap = Number(l.price) || 0;
+                            try {
+                              const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
+                              if (pack.vwap.length) ap = pack.vwap[0].value;
+                            } catch {}
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: anchor, price: ap },
+                              pointB: { time: anchor, price: ap },
+                              color: (p && p.vwapColor) || l.color || "#2962FF",
+                              width: (p && p.width) || 2,
+                              dash: "solid",
+                              isAvwap: true,
+                            } as any;
+                            positionHandles({ time: anchor, price: ap }, null, null);
+                            setStatusMsg("VWAP: drag the circle to move anchor — ✓ Done");
+                          } catch {
+                            setStatusMsg("VWAP move failed");
                           }
                           return;
                         }
