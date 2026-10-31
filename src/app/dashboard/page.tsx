@@ -5389,6 +5389,14 @@ export default function DashboardPage() {
       try { chartRef.current.removeSeries(previewDiagSeriesRef.current); } catch {}
       previewDiagSeriesRef.current = null;
     }
+    try {
+      const ch2 = (previewDiagSeriesRef as any)._ch2;
+      const ch3 = (previewDiagSeriesRef as any)._ch3;
+      if (ch2 && chartRef.current) { try { chartRef.current.removeSeries(ch2); } catch {} }
+      if (ch3 && chartRef.current) { try { chartRef.current.removeSeries(ch3); } catch {} }
+      (previewDiagSeriesRef as any)._ch2 = null;
+      (previewDiagSeriesRef as any)._ch3 = null;
+    } catch {}
     if (previewFibSeriesRef.current.length && seriesRef.current) {
       for (const pl of previewFibSeriesRef.current) {
         try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -5512,6 +5520,17 @@ export default function DashboardPage() {
         chart.removeSeries(previewDiagSeriesRef.current);
         previewDiagSeriesRef.current = null;
       }
+    } catch {}
+    try {
+      const ch2 = (previewDiagSeriesRef as any)._ch2;
+      const ch3 = (previewDiagSeriesRef as any)._ch3;
+      if (ch2) { try { chart.removeSeries(ch2); } catch {} }
+      if (ch3) { try { chart.removeSeries(ch3); } catch {} }
+      (previewDiagSeriesRef as any)._ch2 = null;
+      (previewDiagSeriesRef as any)._ch3 = null;
+    } catch {}
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
     } catch {}
 
     // Freeze visible window — adding line series with future times must not scroll the chart
@@ -6738,8 +6757,7 @@ priced.sort((a, b) => a.price - b.price);
         } else if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
           try {
             const cfg = parseChannelNote(l.note);
-            if (!cfg) { /* fallthrough skip */ }
-            else {
+            if (cfg) {
               let visOk = true;
               const iv = String(intervalRef.current || "15");
               const ivNum = Number(iv);
@@ -6755,32 +6773,30 @@ priced.sort((a, b) => a.price - b.price);
                 const chart2 = chartRef.current;
                 if (chart2) {
                   const t1 = cfg.t1, p1 = cfg.p1, t2 = cfg.t2, p2 = cfg.p2, off = cfg.offset;
-                  const tMin = Math.min(t1, t2), tMax = Math.max(t1, t2);
-                  // extend times
-                  let ta = t1, tb = t2;
                   const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
+                  let ta = t1, tb = t2;
                   if (cfg.extendLeft) {
                     const span = Math.abs(t2 - t1) || barSec * 20;
-                    if (t1 <= t2) ta = t1 - span * 5; else ta = t1 + span * 5;
+                    ta = t1 <= t2 ? t1 - span * 8 : t1 + span * 8;
                   }
                   if (cfg.extendRight) {
                     const span = Math.abs(t2 - t1) || barSec * 20;
-                    if (t2 >= t1) tb = t2 + span * 5; else tb = t2 - span * 5;
+                    tb = t2 >= t1 ? t2 + span * 8 : t2 - span * 8;
                   }
-                  // price at time along base
                   const priceAt = (t: number, level: number) => {
                     const span = (t2 - t1) || 1;
                     const r = (t - t1) / span;
-                    const base = p1 + r * (p2 - p1);
-                    return base + off * level;
+                    return p1 + r * (p2 - p1) + off * level;
                   };
-                  const levels = (cfg.levels || []).filter((lv) => lv.on);
-                  if (!levels.some((lv) => lv.v === 0)) levels.unshift({ v: 0, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash });
-                  if (!levels.some((lv) => lv.v === 1)) levels.push({ v: 1, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash });
+                  let levels = (cfg.levels || []).filter((lv) => lv.on);
+                  if (!levels.some((lv) => Math.abs(lv.v - 0) < 1e-9))
+                    levels = [{ v: 0, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash }, ...levels];
+                  if (!levels.some((lv) => Math.abs(lv.v - 1) < 1e-9))
+                    levels = [...levels, { v: 1, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash }];
                   const seriesList: any[] = [];
                   for (const lv of levels) {
                     const col = lv.color || cfg.color || "#787b86";
-                    const w = (lv.width || cfg.width || 1) as 1 | 2 | 3 | 4;
+                    const w = Math.max(1, Math.min(4, lv.width || cfg.width || 1)) as 1 | 2 | 3 | 4;
                     const dash = (lv.dash || cfg.dash) === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
                     const s = chart2.addLineSeries({
                       color: col,
@@ -6791,35 +6807,35 @@ priced.sort((a, b) => a.price - b.price);
                       crosshairMarkerVisible: false,
                       autoscaleInfoProvider: () => null as any,
                     });
-                    const pts = [
+                    s.setData([
                       { time: ta as any, value: priceAt(ta, lv.v) },
                       { time: tb as any, value: priceAt(tb, lv.v) },
-                    ].sort((a, b) => Number(a.time) - Number(b.time));
-                    s.setData(pts);
+                    ].sort((a, b) => Number(a.time) - Number(b.time)));
                     seriesList.push(s);
                   }
-                  // background between 0 and 1
+                  // Background: DOM polygon, always refreshed with current coordinates
                   if (cfg.showBg) {
                     try {
                       const host = vlineOverlayRef.current;
                       if (host) {
                         const xA = chart2.timeScale().timeToCoordinate(ta as any);
                         const xB = chart2.timeScale().timeToCoordinate(tb as any);
-                        const y0a = seriesRef.current?.priceToCoordinate(priceAt(ta, 0));
-                        const y0b = seriesRef.current?.priceToCoordinate(priceAt(tb, 0));
-                        const y1a = seriesRef.current?.priceToCoordinate(priceAt(ta, 1));
-                        const y1b = seriesRef.current?.priceToCoordinate(priceAt(tb, 1));
+                        const ser = seriesRef.current;
+                        const y0a = ser?.priceToCoordinate(priceAt(ta, 0));
+                        const y0b = ser?.priceToCoordinate(priceAt(tb, 0));
+                        const y1a = ser?.priceToCoordinate(priceAt(ta, 1));
+                        const y1b = ser?.priceToCoordinate(priceAt(tb, 1));
                         if (xA != null && xB != null && y0a != null && y0b != null && y1a != null && y1b != null) {
                           const hex = (cfg.bgColor || "#2962FF").replace("#", "");
-                          const r = parseInt(hex.slice(0, 2), 16) || 41;
-                          const g = parseInt(hex.slice(2, 4), 16) || 98;
-                          const b = parseInt(hex.slice(4, 6), 16) || 255;
-                          const a = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
+                          const rr = parseInt(hex.slice(0, 2), 16) || 41;
+                          const gg = parseInt(hex.slice(2, 4), 16) || 98;
+                          const bb = parseInt(hex.slice(4, 6), 16) || 255;
+                          const aa = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
                           const poly = document.createElementNS("http://www.w3.org/2000/svg", "svg");
                           poly.setAttribute("data-channel-id", String(l.id));
                           poly.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;";
                           const pts = `${Number(xA)},${Number(y0a)} ${Number(xB)},${Number(y0b)} ${Number(xB)},${Number(y1b)} ${Number(xA)},${Number(y1a)}`;
-                          poly.innerHTML = `<polygon points="${pts}" fill="rgba(${r},${g},${b},${a})" />`;
+                          poly.innerHTML = `<polygon points="${pts}" fill="rgba(${rr},${gg},${bb},${aa})" />`;
                           host.appendChild(poly);
                         }
                       }
@@ -6828,20 +6844,18 @@ priced.sort((a, b) => a.price - b.price);
                   if (cfg.text) {
                     try {
                       const host = vlineOverlayRef.current;
-                      if (host) {
-                        const x = chart2.timeScale().timeToCoordinate(tMin as any);
-                        const y = seriesRef.current?.priceToCoordinate(priceAt(tMin, 0.5));
-                        if (x != null && y != null) {
-                          const lab = document.createElement("div");
-                          lab.setAttribute("data-channel-id", String(l.id));
-                          lab.textContent = cfg.text;
-                          lab.style.cssText = `position:absolute;left:${Number(x) + 6}px;top:${Number(y)}px;font-size:${cfg.textSize || 14}px;color:${cfg.color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;`;
-                          host.appendChild(lab);
-                        }
+                      const x = chart2.timeScale().timeToCoordinate(Math.min(t1, t2) as any);
+                      const y = seriesRef.current?.priceToCoordinate(priceAt(Math.min(t1, t2), 0.5));
+                      if (host && x != null && y != null) {
+                        const lab = document.createElement("div");
+                        lab.setAttribute("data-channel-id", String(l.id));
+                        lab.textContent = cfg.text;
+                        lab.style.cssText = `position:absolute;left:${Number(x) + 6}px;top:${Number(y)}px;font-size:${cfg.textSize || 14}px;color:${cfg.color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;`;
+                        host.appendChild(lab);
                       }
                     } catch {}
                   }
-                  chartLinesRef.current.set(l.id, seriesList.length === 1 ? seriesList[0] : seriesList);
+                  chartLinesRef.current.set(l.id, seriesList);
                 }
               }
             }
@@ -10934,8 +10948,9 @@ priced.sort((a, b) => a.price - b.price);
         const isMeasure =
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
         const isRectDraw = (m0 === "rect" || m0 === "frvp") && !!diagStartRef.current;
+        const isChannelDraw = m0 === "channel" && !!(channelDraftRef.current && channelDraftRef.current.a);
         // measureEnd is state — use measureStartRef only for live drag
-        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !(m0 === "measure" && measureStartRef.current)) return;
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -10956,7 +10971,8 @@ priced.sort((a, b) => a.price - b.price);
             modeNow !== "move" &&
             modeNow !== "rect" &&
             modeNow !== "arrow" &&
-            modeNow !== "frvp"
+            modeNow !== "frvp" &&
+            modeNow !== "channel"
           ) {
             return;
           }
@@ -11022,6 +11038,98 @@ priced.sort((a, b) => a.price - b.price);
                     handleAElRef.current.style.borderColor = col;
                   }
                 }
+              }
+            } catch {}
+            return;
+          }
+
+          // Parallel channel live preview (points + lines)
+          if (modeNow === "channel" && channelDraftRef.current?.a) {
+            const draft = channelDraftRef.current;
+            const a = draft.a!;
+            const b = draft.b;
+            try {
+              if (!previewDiagSeriesRef.current) {
+                previewDiagSeriesRef.current = chart.addLineSeries({
+                  color: "#787b86",
+                  lineWidth: 1,
+                  lineStyle: LineStyle.Solid,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                });
+              }
+              if (!b) {
+                // only A placed — rubber-band base
+                previewDiagSeriesRef.current.setData([
+                  { time: Math.min(a.time, tCursor) as any, value: a.time <= tCursor ? a.price : price },
+                  { time: Math.max(a.time, tCursor) as any, value: a.time <= tCursor ? price : a.price },
+                ]);
+                positionHandles(a, { time: tCursor, price }, "b");
+              } else {
+                // A+B placed — show base + parallel toward cursor
+                const span = Number(b.time) - Number(a.time) || 1;
+                const ratio = (Number(tCursor) - Number(a.time)) / span;
+                const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
+                const off = Number(price) - baseAt;
+                const pA2 = a.price + off;
+                const pB2 = b.price + off;
+                // base
+                previewDiagSeriesRef.current.setData([
+                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? a.price : b.price },
+                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? b.price : a.price },
+                ]);
+                // second line via temporary extra series stored on ref object
+                let s2 = (previewDiagSeriesRef as any)._ch2;
+                if (!s2) {
+                  s2 = chart.addLineSeries({
+                    color: "#787b86",
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Solid,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                  (previewDiagSeriesRef as any)._ch2 = s2;
+                }
+                s2.setData([
+                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? pA2 : pB2 },
+                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? pB2 : pA2 },
+                ]);
+                // mid dashed
+                let s3 = (previewDiagSeriesRef as any)._ch3;
+                if (!s3) {
+                  s3 = chart.addLineSeries({
+                    color: "#787b86",
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                  (previewDiagSeriesRef as any)._ch3 = s3;
+                }
+                s3.setData([
+                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? (a.price + pA2) / 2 : (b.price + pB2) / 2 },
+                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? (b.price + pB2) / 2 : (a.price + pA2) / 2 },
+                ]);
+                positionHandles(a, b, null);
+                try {
+                  const elC = handleCElRef.current;
+                  if (elC) {
+                    const x = chart.timeScale().timeToCoordinate(tCursor as any);
+                    const y = series.priceToCoordinate(price);
+                    if (x != null && y != null) {
+                      elC.style.display = "block";
+                      elC.style.left = `${x}px`;
+                      elC.style.top = `${y}px`;
+                      elC.style.borderColor = "#2962FF";
+                    }
+                  }
+                } catch {}
               }
             } catch {}
             return;
@@ -12222,6 +12330,48 @@ priced.sort((a, b) => a.price - b.price);
                 setTimeout(() => { clickLockRef.current = false; }, 300);
                 return;
               }
+              // Parallel Channel — rebuild from A/B/C
+              if ((md as any).isChannel && typ === "line") {
+                const cur = (linesRef.current || []).find((x) => x.id === id);
+                const oldP = cur ? parseChannelNote(cur.note as any) : null;
+                const a = md.pointA, b = md.pointB;
+                const c = md.pointC || { time: (a.time + b.time) / 2, price: a.price };
+                const span = Number(b.time) - Number(a.time) || 1;
+                const ratio = (Number(c.time) - Number(a.time)) / span;
+                const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
+                const offset = Number(c.price) - baseAt;
+                const note = buildChannelNote({
+                  ...(oldP || {}),
+                  t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
+                  levels: oldP?.levels,
+                  extendLeft: oldP?.extendLeft, extendRight: oldP?.extendRight,
+                  showBg: oldP?.showBg, bgColor: oldP?.bgColor, bgOpacity: oldP?.bgOpacity,
+                  color: oldP?.color || md.color, width: oldP?.width, dash: oldP?.dash,
+                  text: oldP?.text,
+                });
+                patch.note = note;
+                patch.start_time = a.time;
+                patch.end_time = b.time;
+                patch.price = a.price;
+                patch.end_price = b.price;
+                await supabase.from("chart_lines").update(patch).eq("id", id);
+                setLines((prev) =>
+                  prev.map((x) =>
+                    x.id === id
+                      ? { ...x, note, price: a.price, start_time: a.time, end_time: b.time, end_price: b.price }
+                      : x
+                  )
+                );
+                md.phase = "pick";
+                lockChartInteraction(false);
+                try {
+                  positionHandles(a, b, null, c);
+                } catch {}
+                setStatusMsg("Channel saved — tap handle to edit more, or ✓ Done");
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 300);
+                return;
+              }
               // Fixed Range VP — only time range matters
               if ((md as any).isFrvp && typ === "line") {
                 const t0 = Math.min(md.pointA.time, md.pointB.time);
@@ -13183,7 +13333,7 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
-        // Parallel Channel — 3 clicks: A (base start), B (base end), C (offset)
+        // Parallel Channel — 3 clicks with live preview
         if (m === "channel") {
           const t = resolveTime(param);
           if (t == null) return;
@@ -13194,41 +13344,37 @@ priced.sort((a, b) => a.price - b.price);
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
             try {
-              const elA = handleAElRef.current;
-              if (elA) {
-                const x = chart.timeScale().timeToCoordinate(t as any);
-                const y = series.priceToCoordinate(fp);
-                if (x != null && y != null) {
-                  elA.style.display = "block";
-                  elA.style.left = `${x}px`;
-                  elA.style.top = `${y}px`;
-                  elA.style.borderColor = "#787b86";
-                }
-              }
+              positionHandles({ time: t, price: fp }, { time: t, price: fp }, "a");
             } catch {}
-            setStatusMsg("Channel: tap point 2 (base end)");
+            setStatusMsg("Channel: point 2 — base end");
             return;
           }
           if (!draft.b) {
             draft.b = { time: t, price: fp };
             channelDraftRef.current = draft;
             try {
-              const elB = handleBElRef.current;
-              if (elB) {
-                const x = chart.timeScale().timeToCoordinate(t as any);
-                const y = series.priceToCoordinate(fp);
-                if (x != null && y != null) {
-                  elB.style.display = "block";
-                  elB.style.left = `${x}px`;
-                  elB.style.top = `${y}px`;
-                  elB.style.borderColor = "#787b86";
-                }
+              positionHandles(draft.a, draft.b, "b");
+              // base line preview
+              if (!previewDiagSeriesRef.current) {
+                previewDiagSeriesRef.current = chart.addLineSeries({
+                  color: "#787b86",
+                  lineWidth: 1,
+                  lineStyle: LineStyle.Solid,
+                  priceLineVisible: false,
+                  lastValueVisible: false,
+                  crosshairMarkerVisible: false,
+                  autoscaleInfoProvider: () => null as any,
+                });
               }
+              previewDiagSeriesRef.current.setData([
+                { time: Math.min(draft.a.time, draft.b.time) as any, value: draft.a.time <= draft.b.time ? draft.a.price : draft.b.price },
+                { time: Math.max(draft.a.time, draft.b.time) as any, value: draft.a.time <= draft.b.time ? draft.b.price : draft.a.price },
+              ]);
             } catch {}
-            setStatusMsg("Channel: tap point 3 (parallel / offset)");
+            setStatusMsg("Channel: point 3 — parallel offset");
             return;
           }
-          // third point → offset = price difference from interpolated base at same time
+          // third point
           const a = draft.a, b = draft.b;
           const span = Number(b.time) - Number(a.time) || 1;
           const ratio = (Number(t) - Number(a.time)) / span;
@@ -13268,15 +13414,17 @@ priced.sort((a, b) => a.price - b.price);
             if (!error && data) {
               pushUndo();
               setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg("Parallel channel placed");
+              setStatusMsg("Parallel channel placed — Move to adjust");
             } else setStatusMsg("Channel save failed");
           } catch { setStatusMsg("Channel save failed"); }
           channelDraftRef.current = null;
           diagStartRef.current = null;
           setDiagStart(null);
+          clearPreview();
           try {
             if (handleAElRef.current) handleAElRef.current.style.display = "none";
             if (handleBElRef.current) handleBElRef.current.style.display = "none";
+            if (handleCElRef.current) handleCElRef.current.style.display = "none";
           } catch {}
           setMode("none");
           modeRef.current = "none";
@@ -18334,26 +18482,101 @@ priced.sort((a, b) => a.price - b.price);
                 )}
 
                 {channelSettingsTab === "visibility" && (
-                  <div className="px-4 py-3 space-y-2 text-xs">
+                  <div className="px-4 py-3 space-y-2.5 text-xs">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={channelCfg.visTicks}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, visTicks: e.target.checked }))} />
+                      Ticks
+                    </label>
                     {[
-                      ["visTicks", "Ticks"], ["visSeconds", "Seconds"], ["visMinutes", "Minutes"],
-                      ["visHours", "Hours"], ["visDays", "Days"], ["visWeeks", "Weeks"],
-                      ["visMonths", "Months"], ["visRanges", "Ranges"],
-                    ].map(([k, lab]) => (
-                      <label key={k} className="flex items-center gap-2">
+                      ["visSeconds", "Seconds", 1, 59],
+                      ["visMinutes", "Minutes", 1, 59],
+                      ["visHours", "Hours", 1, 24],
+                      ["visDays", "Days", 1, 366],
+                      ["visWeeks", "Weeks", 1, 52],
+                      ["visMonths", "Months", 1, 12],
+                    ].map(([k, lab, mn, mx]) => (
+                      <div key={String(k)} className="flex items-center gap-2">
                         <input type="checkbox" checked={(channelCfg as any)[k]}
-                          onChange={(e) => setChannelCfg((c) => ({ ...c, [k]: e.target.checked }))} />
-                        {lab}
-                      </label>
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, [k as string]: e.target.checked }))} />
+                        <span className="w-16">{lab}</span>
+                        <input type="number" min={Number(mn)} max={Number(mx)} defaultValue={Number(mn)}
+                          disabled={!(channelCfg as any)[k]}
+                          className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5 disabled:opacity-40" />
+                        <input type="range" min={Number(mn)} max={Number(mx)} defaultValue={Number(mx)}
+                          disabled={!(channelCfg as any)[k]}
+                          className="flex-1 accent-orange-500 disabled:opacity-40" />
+                        <input type="number" min={Number(mn)} max={Number(mx)} defaultValue={Number(mx)}
+                          disabled={!(channelCfg as any)[k]}
+                          className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5 disabled:opacity-40" />
+                      </div>
                     ))}
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={channelCfg.visRanges}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, visRanges: e.target.checked }))} />
+                      Ranges
+                    </label>
                   </div>
                 )}
 
-                <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/10">
-                  <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
-                    onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); }}>Cancel</button>
-                  <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
-                    onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10 relative">
+                  <div className="relative">
+                    <button type="button"
+                      className="px-3 py-1.5 rounded border border-white/20 text-gray-200 hover:bg-white/5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenu(openMenu === "channel-template" ? null : "channel-template");
+                      }}>
+                      Template ▾
+                    </button>
+                    {openMenu === "channel-template" && (
+                      <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] rounded-lg border border-white/15 bg-[#1e222d] shadow-xl py-1 text-xs">
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              localStorage.setItem("channel-template-default", JSON.stringify(channelCfg));
+                              setStatusMsg("Channel template saved");
+                            } catch {}
+                            setOpenMenu(null);
+                          }}>Save as…</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("channel-template-default");
+                              if (raw) {
+                                const o = JSON.parse(raw);
+                                setChannelCfg((c) => ({ ...c, ...o }));
+                                setStatusMsg("Defaults applied");
+                              } else {
+                                setChannelCfg((c) => ({
+                                  ...c,
+                                  levels: [
+                                    { v: -0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+                                    { v: 0, on: true, color: "#787b86", width: 1, dash: "solid" },
+                                    { v: 0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+                                    { v: 0.5, on: true, color: "#787b86", width: 1, dash: "dashed" },
+                                    { v: 0.75, on: false, color: "#787b86", width: 1, dash: "solid" },
+                                    { v: 1, on: true, color: "#787b86", width: 1, dash: "solid" },
+                                    { v: 1.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+                                  ],
+                                  extendLeft: false, extendRight: false,
+                                  showBg: true, bgColor: "#2962FF", bgOpacity: 12,
+                                  color: "#787b86", width: 1, dash: "solid",
+                                }));
+                                setStatusMsg("Defaults applied");
+                              }
+                            } catch {}
+                            setOpenMenu(null);
+                          }}>Apply defaults</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                      onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); setOpenMenu(null); }}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                      onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); setOpenMenu(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -21041,6 +21264,39 @@ priced.sort((a, b) => a.price - b.price);
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Parallel Channel — 3 handles (A, B, offset C)
+                        if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+                          try {
+                            const p = parseChannelNote(l.note);
+                            if (!p) { setStatusMsg("Channel parse failed"); return; }
+                            const cTime = (p.t1 + p.t2) / 2;
+                            const span = (p.t2 - p.t1) || 1;
+                            const r = (cTime - p.t1) / span;
+                            const baseMid = p.p1 + r * (p.p2 - p.p1);
+                            const cPrice = baseMid + p.offset;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: p.t1, price: p.p1 },
+                              pointB: { time: p.t2, price: p.p2 },
+                              pointC: { time: cTime, price: cPrice },
+                              color: p.color || "#787b86",
+                              width: 2,
+                              dash: "solid",
+                              isChannel: true,
+                            } as any;
+                            positionHandles(
+                              { time: p.t1, price: p.p1 },
+                              { time: p.t2, price: p.p2 },
+                              null,
+                              { time: cTime, price: cPrice }
+                            );
+                            setStatusMsg("Channel: tap a circle (A/B/C), then new position — ✓ Done");
+                          } catch {
+                            setStatusMsg("Channel move failed");
+                          }
+                          return;
+                        }
                         // Fixed Range VP — two time handles
                         if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
                           try {
