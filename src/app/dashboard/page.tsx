@@ -470,6 +470,165 @@ function buildAvwapNote(cfg: {
   return `__avwap:${parts.join("|")}`;
 }
 
+/** Parse Anchored Volume Profile note */
+function parseAvpNote(note: string | null | undefined): null | {
+  anchor: number;
+  bins: number;
+  side: "right" | "left";
+  widthPct: number;
+  upColor: string;
+  downColor: string;
+  vaUpColor: string;
+  vaDownColor: string;
+  showProfile: boolean;
+  showValues: boolean;
+  showPoc: boolean;
+  showVah: boolean;
+  showVal: boolean;
+  showDevelopingPoc: boolean;
+  showDevelopingVa: boolean;
+  showHistBox: boolean;
+  showLabels: boolean;
+  volumeMode: "updown" | "total";
+  vaPct: number;
+  rowsLayout: "number" | "height";
+  text: string;
+  visTicks: boolean;
+  visSeconds: boolean;
+  visMinutes: boolean;
+  visHours: boolean;
+  visDays: boolean;
+  visWeeks: boolean;
+  visMonths: boolean;
+  visRanges: boolean;
+} {
+  if (!note || typeof note !== "string" || !note.startsWith("__avp:")) return null;
+  const body = note.replace(/^__avp:/, "");
+  const parts = body.split("|");
+  const anchor = Number(parts[0]);
+  if (!Number.isFinite(anchor)) return null;
+  const o: any = {
+    anchor,
+    bins: 24,
+    side: "right",
+    widthPct: 30,
+    upColor: "#2962FF",
+    downColor: "#E91E63",
+    vaUpColor: "#26a69a",
+    vaDownColor: "#ef5350",
+    showProfile: true,
+    showValues: false,
+    showPoc: true,
+    showVah: false,
+    showVal: false,
+    showDevelopingPoc: false,
+    showDevelopingVa: false,
+    showHistBox: true,
+    showLabels: true,
+    volumeMode: "updown",
+    vaPct: 70,
+    rowsLayout: "number",
+    text: "",
+    visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+    visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+  };
+  for (const p of parts.slice(1)) {
+    if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    const k = p.slice(0, eq);
+    const v = p.slice(eq + 1);
+    if (k === "bins") o.bins = Math.max(8, Math.min(72, parseInt(v, 10) || 24));
+    else if (k === "side") o.side = v === "left" ? "left" : "right";
+    else if (k === "wp") o.widthPct = Math.max(5, Math.min(80, Number(v) || 30));
+    else if (k === "up") o.upColor = v;
+    else if (k === "dn") o.downColor = v;
+    else if (k === "vau") o.vaUpColor = v;
+    else if (k === "vad") o.vaDownColor = v;
+    else if (k === "prof") o.showProfile = v !== "0";
+    else if (k === "vals") o.showValues = v === "1";
+    else if (k === "poc") o.showPoc = v !== "0";
+    else if (k === "vah") o.showVah = v === "1";
+    else if (k === "val") o.showVal = v === "1";
+    else if (k === "dpoc") o.showDevelopingPoc = v === "1";
+    else if (k === "dva") o.showDevelopingVa = v === "1";
+    else if (k === "hbox") o.showHistBox = v !== "0";
+    else if (k === "lbl") o.showLabels = v !== "0";
+    else if (k === "vol") o.volumeMode = v === "total" ? "total" : "updown";
+    else if (k === "va") o.vaPct = Math.max(10, Math.min(100, Number(v) || 70));
+    else if (k === "rows") o.rowsLayout = v === "height" ? "height" : "number";
+    else if (k === "vt") o.visTicks = v !== "0";
+    else if (k === "vs") o.visSeconds = v !== "0";
+    else if (k === "vm") o.visMinutes = v !== "0";
+    else if (k === "vh") o.visHours = v !== "0";
+    else if (k === "vd") o.visDays = v !== "0";
+    else if (k === "vw") o.visWeeks = v !== "0";
+    else if (k === "vmo") o.visMonths = v !== "0";
+    else if (k === "vr") o.visRanges = v !== "0";
+  }
+  return o;
+}
+
+function buildAvpNote(cfg: {
+  anchor: number;
+  bins?: number;
+  side?: "right" | "left";
+  widthPct?: number;
+  upColor?: string;
+  downColor?: string;
+  vaUpColor?: string;
+  vaDownColor?: string;
+  showProfile?: boolean;
+  showValues?: boolean;
+  showPoc?: boolean;
+  showVah?: boolean;
+  showVal?: boolean;
+  showDevelopingPoc?: boolean;
+  showDevelopingVa?: boolean;
+  showHistBox?: boolean;
+  showLabels?: boolean;
+  volumeMode?: "updown" | "total";
+  vaPct?: number;
+  rowsLayout?: "number" | "height";
+  text?: string;
+  visTicks?: boolean; visSeconds?: boolean; visMinutes?: boolean; visHours?: boolean;
+  visDays?: boolean; visWeeks?: boolean; visMonths?: boolean; visRanges?: boolean;
+}): string {
+  const parts = [
+    String(cfg.anchor),
+    `bins=${cfg.bins ?? 24}`,
+    `side=${cfg.side || "right"}`,
+    `wp=${cfg.widthPct ?? 30}`,
+    `up=${cfg.upColor || "#2962FF"}`,
+    `dn=${cfg.downColor || "#E91E63"}`,
+    `vau=${cfg.vaUpColor || "#26a69a"}`,
+    `vad=${cfg.vaDownColor || "#ef5350"}`,
+    `prof=${cfg.showProfile === false ? "0" : "1"}`,
+    `vals=${cfg.showValues ? "1" : "0"}`,
+    `poc=${cfg.showPoc === false ? "0" : "1"}`,
+    `vah=${cfg.showVah ? "1" : "0"}`,
+    `val=${cfg.showVal ? "1" : "0"}`,
+    `dpoc=${cfg.showDevelopingPoc ? "1" : "0"}`,
+    `dva=${cfg.showDevelopingVa ? "1" : "0"}`,
+    `hbox=${cfg.showHistBox === false ? "0" : "1"}`,
+    `lbl=${cfg.showLabels === false ? "0" : "1"}`,
+    `vol=${cfg.volumeMode === "total" ? "total" : "updown"}`,
+    `va=${cfg.vaPct ?? 70}`,
+    `rows=${cfg.rowsLayout === "height" ? "height" : "number"}`,
+    `vt=${cfg.visTicks === false ? "0" : "1"}`,
+    `vs=${cfg.visSeconds === false ? "0" : "1"}`,
+    `vm=${cfg.visMinutes === false ? "0" : "1"}`,
+    `vh=${cfg.visHours === false ? "0" : "1"}`,
+    `vd=${cfg.visDays === false ? "0" : "1"}`,
+    `vw=${cfg.visWeeks === false ? "0" : "1"}`,
+    `vmo=${cfg.visMonths === false ? "0" : "1"}`,
+    `vr=${cfg.visRanges === false ? "0" : "1"}`,
+  ];
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
+  return `__avp:${parts.join("|")}`;
+}
+
+
 /**
  * Paint volume profile histogram.
  * layout "range": bars fill between x0..x1 (FRVP / AVP box)
@@ -486,12 +645,17 @@ function paintVolumeProfileDOM(
   chart: any,
   opts: {
     color?: string;
-    layout?: "range" | "right";
+    layout?: "range" | "right" | "left";
     x0?: number | null;
     x1?: number | null;
     anchorTime?: number;
     endTime?: number;
     showBox?: boolean;
+    showAnchorLine?: boolean;
+    showPoc?: boolean;
+    widthPct?: number;
+    upColor?: string;
+    downColor?: string;
   }
 ) {
   const layout = opts.layout || "right";
@@ -548,10 +712,11 @@ function paintVolumeProfileDOM(
 
   // TV Fixed Range: histogram sits on the LEFT ~35% of the box, grows rightward
   // Anchored (right layout): bars hug the right price scale
+  const widthFrac = Math.max(0.05, Math.min(0.8, (opts.widthPct ?? 30) / 100));
   const maxBarW =
     layout === "range"
-      ? Math.max(28, rangeW * 0.36)
-      : Math.min(200, Math.max(90, (chart.timeScale().width() || 400) * 0.28));
+      ? Math.max(28, rangeW * Math.min(0.5, widthFrac + 0.06))
+      : Math.min(220, Math.max(60, (chart.timeScale().width() || 400) * widthFrac));
 
   // Value-area estimate: bins covering ~70% of total volume around POC
   const totalVol = vp.bins.reduce((s, b) => s + b.vol, 0);
@@ -601,9 +766,17 @@ function paintVolumeProfileDOM(
     const sell = Number(b.sell) || 0;
     const buyRatio = buy + sell > 0 ? buy / (buy + sell) : 0.5;
 
-    // TV-like colors: up = blue/cyan, down = yellow/gold (classic VP palette)
-    const buyCol = isPoc ? "rgba(41,98,255,0.85)" : "rgba(41,98,255,0.55)";
-    const sellCol = isPoc ? "rgba(255,193,7,0.85)" : "rgba(255,193,7,0.5)";
+    // TV-like colors: up / down from opts
+    const upHex = opts.upColor || "#2962FF";
+    const dnHex = opts.downColor || "#E91E63";
+    const hexA = (hex: string, a: number) => {
+      const h = hex.replace("#", "");
+      if (h.length !== 6) return hex;
+      const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
+    const buyCol = isPoc ? hexA(upHex, 0.9) : hexA(upHex, 0.55);
+    const sellCol = isPoc ? hexA(dnHex, 0.9) : hexA(dnHex, 0.5);
 
     const bar = document.createElement("div");
     const buyW = Math.max(0, w * buyRatio);
@@ -634,7 +807,7 @@ function paintVolumeProfileDOM(
   }
 
   // POC horizontal line — TV: solid line across FULL width of the range box
-  const yPoc = ser.priceToCoordinate(vp.poc);
+  const yPoc = opts.showPoc === false ? null : ser.priceToCoordinate(vp.poc);
   if (yPoc != null) {
     const pocEl = document.createElement("div");
     if (layout === "range") {
@@ -667,7 +840,7 @@ function paintVolumeProfileDOM(
         `border-left:1px solid rgba(41,98,255,${strong ? "0.95" : "0.6"});z-index:4;`
       : `position:absolute;left:${x}px;top:0;bottom:0;width:0;` +
         `border-left:1px solid rgba(41,98,255,${strong ? "0.95" : "0.6"});z-index:4;`;
-  if (opts.anchorTime != null) {
+  if (opts.anchorTime != null && opts.showAnchorLine !== false) {
     const xA = chart.timeScale().timeToCoordinate(opts.anchorTime as any);
     if (xA != null) {
       const vline = document.createElement("div");
@@ -1493,7 +1666,11 @@ function userFacingNote(note?: string | null): string {
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
-  if (s.startsWith("__avp:")) return "Anchored VP";
+  if (s.startsWith("__avp:")) {
+    const p = parseAvpNote(s);
+    if (p && p.text) return p.text;
+    return "";
+  }
   if (s.startsWith("__avwap:")) {
     const p = parseAvwapNote(s);
     if (p && p.text) return p.text;
@@ -2740,6 +2917,34 @@ export default function DashboardPage() {
   const [avwapSettingsOpen, setAvwapSettingsOpen] = useState(false);
   const [selectedAvwapId, setSelectedAvwapId] = useState<string | null>(null);
   const [avwapSettingsTab, setAvwapSettingsTab] = useState<"style" | "inputs" | "visibility">("style");
+  const [avpSettingsOpen, setAvpSettingsOpen] = useState(false);
+  const [selectedAvpId, setSelectedAvpId] = useState<string | null>(null);
+  const [avpSettingsTab, setAvpSettingsTab] = useState<"inputs" | "style" | "coordinates" | "visibility">("style");
+  const [avpCfg, setAvpCfg] = useState(() => ({
+    anchor: 0,
+    bins: 24,
+    side: "right" as "right" | "left",
+    widthPct: 30,
+    upColor: "#2962FF",
+    downColor: "#E91E63",
+    vaUpColor: "#26a69a",
+    vaDownColor: "#ef5350",
+    showProfile: true,
+    showValues: false,
+    showPoc: true,
+    showVah: false,
+    showVal: false,
+    showDevelopingPoc: false,
+    showDevelopingVa: false,
+    showHistBox: true,
+    showLabels: true,
+    volumeMode: "updown" as "updown" | "total",
+    vaPct: 70,
+    rowsLayout: "number" as "number" | "height",
+    text: "",
+    visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+    visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+  }));
   const [avwapCfg, setAvwapCfg] = useState(() => ({
     vwapColor: "#2962FF",
     band1Color: "#26a69a",
@@ -3172,6 +3377,29 @@ export default function DashboardPage() {
     return () => window.clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAvwapId, avwapSettingsOpen, avwapCfg]);
+
+
+  // Persist AVP settings while modal open
+  useEffect(() => {
+    if (!selectedAvpId || !avpSettingsOpen) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedAvpId));
+    if (!line) return;
+    const note = buildAvpNote({
+      ...avpCfg,
+      anchor: avpCfg.anchor || Number(line.start_time) || 0,
+    });
+    setLines((prev) => prev.map((x) => (String(x.id) === String(selectedAvpId) ? { ...x, note } : x)));
+    const t = window.setTimeout(async () => {
+      try {
+        if (!String(selectedAvpId).startsWith("local-")) {
+          await supabase.from("chart_lines").update({ note }).eq("id", selectedAvpId);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 180);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAvpId, avpSettingsOpen, avpCfg]);
 
   // Prevent chart pan/zoom while Fib settings modal is open (iPad slider fix)
   useEffect(() => {
@@ -6043,17 +6271,27 @@ priced.sort((a, b) => a.price - b.price);
           }
         } else if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
           try {
-            const body = l.note.replace(/^__avp:/, "");
-            const parts = body.split("|");
-            const anchor = Number(parts[0]);
-            let binsN = 32;
-            for (const p of parts.slice(1)) {
-              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
+            const cfg = parseAvpNote(l.note);
+            const anchor = cfg ? cfg.anchor : Number(l.note.replace(/^__avp:/, "").split("|")[0]);
+            const binsN = cfg?.bins ?? 24;
+            // visibility by TF
+            let visOk = true;
+            if (cfg) {
+              const iv = String(intervalRef.current || "15");
+              const ivNum = Number(iv);
+              if (iv === "D" || iv === "1D") visOk = cfg.visDays !== false;
+              else if (iv === "W" || iv === "1W") visOk = cfg.visWeeks !== false;
+              else if (iv === "M" || iv === "1M") visOk = cfg.visMonths !== false;
+              else if (Number.isFinite(ivNum)) {
+                if (ivNum < 1) visOk = cfg.visSeconds !== false;
+                else if (ivNum < 60) visOk = cfg.visMinutes !== false;
+                else visOk = cfg.visHours !== false;
+              }
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
-            if (Number.isFinite(anchor) && host && chart2 && ser2) {
+            if (visOk && Number.isFinite(anchor) && host && chart2 && ser2 && (cfg?.showProfile !== false)) {
               const candles = candlesRef.current || [];
               const lastT = candles.length ? Number(candles[candles.length - 1].time) : anchor;
               const vp = computeVolumeProfile(candles, anchor, undefined, binsN);
@@ -6064,21 +6302,34 @@ priced.sort((a, b) => a.price - b.price);
                 wrap.setAttribute("data-avp-id", String(l.id));
                 wrap.setAttribute("data-avp-anchor", String(anchor));
                 wrap.setAttribute("data-avp-bins", String(binsN));
-                // TV style: profile on the RIGHT of the chart + dimmed zone from anchor
+                const side = cfg?.side === "left" ? "left" : "right";
                 paintVolumeProfileDOM(wrap, vp, ser2, chart2, {
-                  layout: "right",
-                  showBox: true,
+                  layout: side === "left" ? "range" : "right",
+                  showBox: cfg?.showHistBox !== false,
                   anchorTime: anchor,
+                  showAnchorLine: false, // no vertical line (TV default look without sticky ray)
+                  showPoc: cfg?.showPoc !== false,
+                  widthPct: cfg?.widthPct ?? 30,
+                  upColor: cfg?.upColor || "#2962FF",
+                  downColor: cfg?.downColor || "#E91E63",
                   x0: x0 != null ? Number(x0) : undefined,
                   x1: x1 != null ? Number(x1) : undefined,
                 });
-                // add dimmed zone from anchor → right
-                if (x0 != null) {
+                // subtle dimmed zone from anchor → right (no hard vertical)
+                if (x0 != null && cfg?.showHistBox !== false) {
                   const zone = document.createElement("div");
                   zone.style.cssText =
-                    `position:absolute;left:${Number(x0)}px;right:0;top:0;bottom:0;` +
-                    `background:rgba(41,98,255,0.06);pointer-events:none;z-index:0;`;
+                    `position:absolute;left:${Number(x0)}px;right:48px;top:0;bottom:0;` +
+                    `background:rgba(41,98,255,0.04);pointer-events:none;z-index:0;`;
                   wrap.insertBefore(zone, wrap.firstChild);
+                }
+                if (cfg?.text) {
+                  const lab = document.createElement("div");
+                  lab.textContent = cfg.text;
+                  lab.style.cssText =
+                    "position:absolute;right:52px;top:8px;font-size:11px;font-weight:600;color:#94a3b8;" +
+                    "text-shadow:0 1px 2px rgba(0,0,0,0.8);pointer-events:none;z-index:8;";
+                  wrap.appendChild(lab);
                 }
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __avpDom: true } as any);
@@ -12318,7 +12569,17 @@ priced.sort((a, b) => a.price - b.price);
           clickLockRef.current = true;
           setSaving(true);
           try {
-            const note = `__avp:${t}|bins=28|side=right`;
+            const note = buildAvpNote({
+              anchor: Number(t),
+              bins: 24,
+              side: "right",
+              widthPct: 30,
+              upColor: "#2962FF",
+              downColor: "#E91E63",
+              showProfile: true,
+              showPoc: true,
+              showHistBox: true,
+            });
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: fp,
@@ -12326,8 +12587,9 @@ priced.sort((a, b) => a.price - b.price);
               width: 1,
               dash: "solid",
               start_time: t,
-              end_time: t,
-              end_price: fp,
+              // do NOT set end_time === start_time (that draws a vertical line)
+              end_time: null,
+              end_price: null,
               note,
             };
             const uid = (await supabase.auth.getSession()).data.session?.user?.id;
@@ -12344,6 +12606,9 @@ priced.sort((a, b) => a.price - b.price);
               setStatusMsg("Anchored VP placed");
             } else setStatusMsg("AVP save failed");
           } catch { setStatusMsg("AVP save failed"); }
+          // one-shot tool — exit mode after place
+          setMode("none");
+          modeRef.current = "none";
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 250);
           return;
@@ -14656,6 +14921,11 @@ priced.sort((a, b) => a.price - b.price);
           const rp = parseRectNote(s);
           if (rp) {
             noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
+          }
+        } else if (s.startsWith("__avp:")) {
+          const p = parseAvpNote(s);
+          if (p) {
+            noteToSave = buildAvpNote({ ...p, text: noteDraft.trim() });
           }
         } else if (s.startsWith("__avwap:")) {
           const p = parseAvwapNote(s);
@@ -17131,6 +17401,209 @@ priced.sort((a, b) => a.price - b.price);
           })()}
 
           
+
+          {/* Anchored Volume Profile settings modal */}
+          {avpSettingsOpen && (
+            <div
+              className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setAvpSettingsOpen(false); setSelectedAvpId(null); }}
+            >
+              <div
+                className="w-[min(360px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                  <div className="font-semibold text-white">AVP</div>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setAvpSettingsOpen(false); setSelectedAvpId(null); }}>×</button>
+                </div>
+                <div className="flex gap-3 px-4 pt-2 text-xs border-b border-white/10 flex-wrap">
+                  {(["inputs", "style", "coordinates", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-1.5 px-1 capitalize ${avpSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                      onClick={() => setAvpSettingsTab(tab)}
+                    >{tab}</button>
+                  ))}
+                </div>
+
+                {avpSettingsTab === "inputs" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Rows Layout</span>
+                      <select value={avpCfg.rowsLayout} onChange={(e) => setAvpCfg((c) => ({ ...c, rowsLayout: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="number">Number of rows</option>
+                        <option value="height">Ticks per row</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Row Size</span>
+                      <input type="number" min={8} max={72} value={avpCfg.bins}
+                        onChange={(e) => setAvpCfg((c) => ({ ...c, bins: Math.max(8, Math.min(72, Number(e.target.value) || 24)) }))}
+                        className="w-20 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Volume</span>
+                      <select value={avpCfg.volumeMode} onChange={(e) => setAvpCfg((c) => ({ ...c, volumeMode: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="updown">Up/Down</option>
+                        <option value="total">Total</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Value Area Volume</span>
+                      <input type="number" min={10} max={100} value={avpCfg.vaPct}
+                        onChange={(e) => setAvpCfg((c) => ({ ...c, vaPct: Number(e.target.value) || 70 }))}
+                        className="w-20 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                  </div>
+                )}
+
+                {avpSettingsTab === "style" && (
+                  <div className="px-4 py-3 space-y-2.5 text-xs">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showProfile} onChange={(e) => setAvpCfg((c) => ({ ...c, showProfile: e.target.checked }))} />
+                      Volume profile
+                    </label>
+                    <label className="flex items-center gap-2 pl-4">
+                      <input type="checkbox" checked={avpCfg.showValues} onChange={(e) => setAvpCfg((c) => ({ ...c, showValues: e.target.checked }))} />
+                      Values
+                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Width (% of box)</span>
+                      <input type="number" min={5} max={80} value={avpCfg.widthPct}
+                        onChange={(e) => setAvpCfg((c) => ({ ...c, widthPct: Number(e.target.value) || 30 }))}
+                        className="w-16 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Placement</span>
+                      <select value={avpCfg.side} onChange={(e) => setAvpCfg((c) => ({ ...c, side: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="right">Right</option>
+                        <option value="left">Left</option>
+                      </select>
+                    </div>
+                    {[
+                      ["upColor", "Up Volume"],
+                      ["downColor", "Down Volume"],
+                      ["vaUpColor", "Value Area Up"],
+                      ["vaDownColor", "Value Area Down"],
+                    ].map(([key, label]) => (
+                      <div key={key} className="flex items-center justify-between gap-2">
+                        <span>{label}</span>
+                        <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: (avpCfg as any)[key] }}>
+                          <input type="color" value={(avpCfg as any)[key]}
+                            onChange={(e) => setAvpCfg((c) => ({ ...c, [key]: e.target.value }))}
+                            className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </label>
+                      </div>
+                    ))}
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showVah} onChange={(e) => setAvpCfg((c) => ({ ...c, showVah: e.target.checked }))} />
+                      VAH
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showVal} onChange={(e) => setAvpCfg((c) => ({ ...c, showVal: e.target.checked }))} />
+                      VAL
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showPoc} onChange={(e) => setAvpCfg((c) => ({ ...c, showPoc: e.target.checked }))} />
+                      POC
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showDevelopingPoc} onChange={(e) => setAvpCfg((c) => ({ ...c, showDevelopingPoc: e.target.checked }))} />
+                      Developing POC
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showDevelopingVa} onChange={(e) => setAvpCfg((c) => ({ ...c, showDevelopingVa: e.target.checked }))} />
+                      Developing VA
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showHistBox} onChange={(e) => setAvpCfg((c) => ({ ...c, showHistBox: e.target.checked }))} />
+                      Histogram Box
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avpCfg.showLabels} onChange={(e) => setAvpCfg((c) => ({ ...c, showLabels: e.target.checked }))} />
+                      Labels on price scale
+                    </label>
+                  </div>
+                )}
+
+                {avpSettingsTab === "coordinates" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>#1 (bar time)</span>
+                      <input type="number" value={avpCfg.anchor}
+                        onChange={(e) => setAvpCfg((c) => ({ ...c, anchor: Number(e.target.value) || 0 }))}
+                        className="w-36 bg-black/40 border border-white/15 rounded px-2 py-1 font-mono text-[11px]" />
+                    </div>
+                    <p className="text-gray-500">Unix seconds of the anchor bar. Prefer Move on chart to change.</p>
+                  </div>
+                )}
+
+                {avpSettingsTab === "visibility" && (
+                  <div className="px-4 py-3 space-y-2 text-xs">
+                    {[
+                      ["visTicks", "Ticks"],
+                      ["visSeconds", "Seconds"],
+                      ["visMinutes", "Minutes"],
+                      ["visHours", "Hours"],
+                      ["visDays", "Days"],
+                      ["visWeeks", "Weeks"],
+                      ["visMonths", "Months"],
+                      ["visRanges", "Ranges"],
+                    ].map(([k, lab]) => (
+                      <label key={k} className="flex items-center gap-2">
+                        <input type="checkbox" checked={(avpCfg as any)[k]}
+                          onChange={(e) => setAvpCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                        {lab}
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10">
+                  <div className="relative" data-menu>
+                    <button type="button"
+                      className="px-2.5 py-1.5 rounded border border-white/15 text-gray-300 hover:bg-white/5 text-xs"
+                      onClick={() => setOpenMenu(openMenu === "avp-tpl" ? null : "avp-tpl")}
+                    >Template ▾</button>
+                    {openMenu === "avp-tpl" && (
+                      <div className="absolute z-50 bottom-full mb-1 left-0 min-w-[140px] rounded-xl border border-white/15 bg-[#1e222d] shadow-xl py-1">
+                        <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
+                          onClick={() => {
+                            try { localStorage.setItem("avp_template", JSON.stringify(avpCfg)); setStatusMsg("AVP template saved"); } catch {}
+                            setOpenMenu(null);
+                          }}
+                        >Save as…</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("avp_template");
+                              if (raw) setAvpCfg((c) => ({ ...c, ...JSON.parse(raw), anchor: c.anchor, text: c.text }));
+                              else setAvpCfg((c) => ({
+                                ...c, bins: 24, side: "right", widthPct: 30, upColor: "#2962FF", downColor: "#E91E63",
+                                showProfile: true, showPoc: true, showHistBox: true, showValues: false, showVah: false, showVal: false,
+                              }));
+                              setStatusMsg("AVP defaults applied");
+                            } catch {}
+                            setOpenMenu(null);
+                          }}
+                        >Apply defaults</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                      onClick={() => { setAvpSettingsOpen(false); setSelectedAvpId(null); }}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                      onClick={() => { setAvpSettingsOpen(false); setSelectedAvpId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Anchored VWAP settings modal (TradingView-style) */}
           {avwapSettingsOpen && (
             <div
@@ -18906,7 +19379,53 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {typeof l.note === "string" && l.note.startsWith("__avwap:") ? (
+                    {typeof l.note === "string" && l.note.startsWith("__avp:") ? (
+                      <button
+                        type="button"
+                        title="AVP settings"
+                        onClick={() => {
+                          const p = parseAvpNote(l.note);
+                          if (p) {
+                            setAvpCfg({
+                              anchor: p.anchor,
+                              bins: p.bins,
+                              side: p.side,
+                              widthPct: p.widthPct,
+                              upColor: p.upColor,
+                              downColor: p.downColor,
+                              vaUpColor: p.vaUpColor,
+                              vaDownColor: p.vaDownColor,
+                              showProfile: p.showProfile,
+                              showValues: p.showValues,
+                              showPoc: p.showPoc,
+                              showVah: p.showVah,
+                              showVal: p.showVal,
+                              showDevelopingPoc: p.showDevelopingPoc,
+                              showDevelopingVa: p.showDevelopingVa,
+                              showHistBox: p.showHistBox,
+                              showLabels: p.showLabels,
+                              volumeMode: p.volumeMode,
+                              vaPct: p.vaPct,
+                              rowsLayout: p.rowsLayout,
+                              text: p.text,
+                              visTicks: p.visTicks, visSeconds: p.visSeconds, visMinutes: p.visMinutes, visHours: p.visHours,
+                              visDays: p.visDays, visWeeks: p.visWeeks, visMonths: p.visMonths, visRanges: p.visRanges,
+                            });
+                          } else {
+                            setAvpCfg((c) => ({ ...c, anchor: Number(l.start_time) || 0 }));
+                          }
+                          setSelectedAvpId(String(l.id));
+                          setAvpSettingsOpen(true);
+                          setAvpSettingsTab("style");
+                        }}
+                        className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    ) : typeof l.note === "string" && l.note.startsWith("__avwap:") ? (
                       <button
                         type="button"
                         title="VWAP settings"
