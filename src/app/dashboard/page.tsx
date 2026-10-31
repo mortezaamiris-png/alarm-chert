@@ -628,6 +628,174 @@ function buildAvpNote(cfg: {
   return `__avp:${parts.join("|")}`;
 }
 
+/** Parse Fixed Range Volume Profile note */
+function parseFrvpNote(note: string | null | undefined): null | {
+  t0: number;
+  t1: number;
+  bins: number;
+  side: "left" | "right";
+  widthPct: number;
+  upColor: string;
+  downColor: string;
+  vaUpColor: string;
+  vaDownColor: string;
+  showProfile: boolean;
+  showValues: boolean;
+  showPoc: boolean;
+  showVah: boolean;
+  showVal: boolean;
+  showDevelopingPoc: boolean;
+  showDevelopingVa: boolean;
+  showHistBox: boolean;
+  showLabels: boolean;
+  volumeMode: "updown" | "total";
+  vaPct: number;
+  rowsLayout: "number" | "height";
+  extendRight: boolean;
+  text: string;
+  visTicks: boolean;
+  visSeconds: boolean;
+  visMinutes: boolean;
+  visHours: boolean;
+  visDays: boolean;
+  visWeeks: boolean;
+  visMonths: boolean;
+  visRanges: boolean;
+} {
+  if (!note || typeof note !== "string" || !note.startsWith("__frvp:")) return null;
+  const body = note.replace(/^__frvp:/, "");
+  const parts = body.split("|");
+  const t0 = Number(parts[0]);
+  const t1 = Number(parts[1]);
+  if (!Number.isFinite(t0) || !Number.isFinite(t1)) return null;
+  const o: any = {
+    t0, t1,
+    bins: 48,
+    side: "left",
+    widthPct: 30,
+    upColor: "#2962FF",
+    downColor: "#E91E63",
+    vaUpColor: "#26a69a",
+    vaDownColor: "#ef5350",
+    showProfile: true,
+    showValues: false,
+    showPoc: true,
+    showVah: false,
+    showVal: false,
+    showDevelopingPoc: false,
+    showDevelopingVa: false,
+    showHistBox: true,
+    showLabels: true,
+    volumeMode: "updown",
+    vaPct: 70,
+    rowsLayout: "number",
+    extendRight: false,
+    text: "",
+    visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+    visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+  };
+  for (const p of parts.slice(2)) {
+    if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    const k = p.slice(0, eq);
+    const v = p.slice(eq + 1);
+    if (k === "bins") o.bins = Math.max(8, Math.min(100, parseInt(v, 10) || 48));
+    else if (k === "side") o.side = v === "right" ? "right" : "left";
+    else if (k === "wp") o.widthPct = Math.max(5, Math.min(80, Number(v) || 30));
+    else if (k === "up") o.upColor = v;
+    else if (k === "dn") o.downColor = v;
+    else if (k === "vau") o.vaUpColor = v;
+    else if (k === "vad") o.vaDownColor = v;
+    else if (k === "prof") o.showProfile = v !== "0";
+    else if (k === "vals") o.showValues = v === "1";
+    else if (k === "poc") o.showPoc = v !== "0";
+    else if (k === "vah") o.showVah = v === "1";
+    else if (k === "val") o.showVal = v === "1";
+    else if (k === "dpoc") o.showDevelopingPoc = v === "1";
+    else if (k === "dva") o.showDevelopingVa = v === "1";
+    else if (k === "hbox") o.showHistBox = v !== "0";
+    else if (k === "lbl") o.showLabels = v !== "0";
+    else if (k === "vol") o.volumeMode = v === "total" ? "total" : "updown";
+    else if (k === "va") o.vaPct = Math.max(10, Math.min(100, Number(v) || 70));
+    else if (k === "rows") o.rowsLayout = v === "height" ? "height" : "number";
+    else if (k === "ext") o.extendRight = v === "1";
+    else if (k === "vt") o.visTicks = v !== "0";
+    else if (k === "vs") o.visSeconds = v !== "0";
+    else if (k === "vm") o.visMinutes = v !== "0";
+    else if (k === "vh") o.visHours = v !== "0";
+    else if (k === "vd") o.visDays = v !== "0";
+    else if (k === "vw") o.visWeeks = v !== "0";
+    else if (k === "vmo") o.visMonths = v !== "0";
+    else if (k === "vr") o.visRanges = v !== "0";
+  }
+  return o;
+}
+
+function buildFrvpNote(cfg: {
+  t0: number;
+  t1: number;
+  bins?: number;
+  side?: "left" | "right";
+  widthPct?: number;
+  upColor?: string;
+  downColor?: string;
+  vaUpColor?: string;
+  vaDownColor?: string;
+  showProfile?: boolean;
+  showValues?: boolean;
+  showPoc?: boolean;
+  showVah?: boolean;
+  showVal?: boolean;
+  showDevelopingPoc?: boolean;
+  showDevelopingVa?: boolean;
+  showHistBox?: boolean;
+  showLabels?: boolean;
+  volumeMode?: "updown" | "total";
+  vaPct?: number;
+  rowsLayout?: "number" | "height";
+  extendRight?: boolean;
+  text?: string;
+  visTicks?: boolean; visSeconds?: boolean; visMinutes?: boolean; visHours?: boolean;
+  visDays?: boolean; visWeeks?: boolean; visMonths?: boolean; visRanges?: boolean;
+}): string {
+  const parts = [
+    String(cfg.t0),
+    String(cfg.t1),
+    `bins=${cfg.bins ?? 48}`,
+    `side=${cfg.side || "left"}`,
+    `wp=${cfg.widthPct ?? 30}`,
+    `up=${cfg.upColor || "#2962FF"}`,
+    `dn=${cfg.downColor || "#E91E63"}`,
+    `vau=${cfg.vaUpColor || "#26a69a"}`,
+    `vad=${cfg.vaDownColor || "#ef5350"}`,
+    `prof=${cfg.showProfile === false ? "0" : "1"}`,
+    `vals=${cfg.showValues ? "1" : "0"}`,
+    `poc=${cfg.showPoc === false ? "0" : "1"}`,
+    `vah=${cfg.showVah ? "1" : "0"}`,
+    `val=${cfg.showVal ? "1" : "0"}`,
+    `dpoc=${cfg.showDevelopingPoc ? "1" : "0"}`,
+    `dva=${cfg.showDevelopingVa ? "1" : "0"}`,
+    `hbox=${cfg.showHistBox === false ? "0" : "1"}`,
+    `lbl=${cfg.showLabels === false ? "0" : "1"}`,
+    `vol=${cfg.volumeMode === "total" ? "total" : "updown"}`,
+    `va=${cfg.vaPct ?? 70}`,
+    `rows=${cfg.rowsLayout === "height" ? "height" : "number"}`,
+    `ext=${cfg.extendRight ? "1" : "0"}`,
+    `vt=${cfg.visTicks === false ? "0" : "1"}`,
+    `vs=${cfg.visSeconds === false ? "0" : "1"}`,
+    `vm=${cfg.visMinutes === false ? "0" : "1"}`,
+    `vh=${cfg.visHours === false ? "0" : "1"}`,
+    `vd=${cfg.visDays === false ? "0" : "1"}`,
+    `vw=${cfg.visWeeks === false ? "0" : "1"}`,
+    `vmo=${cfg.visMonths === false ? "0" : "1"}`,
+    `vr=${cfg.visRanges === false ? "0" : "1"}`,
+  ];
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
+  return `__frvp:${parts.join("|")}`;
+}
+
+
 
 /**
  * Paint volume profile histogram.
@@ -1676,7 +1844,11 @@ function userFacingNote(note?: string | null): string {
     if (p && p.text) return p.text;
     return "";
   }
-  if (s.startsWith("__frvp:")) return "Fixed Range VP";
+  if (s.startsWith("__frvp:")) {
+    const p = parseFrvpNote(s);
+    if (p && p.text) return p.text;
+    return "";
+  }
   if (s.startsWith("__curve:")) return "Curve";
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -2946,6 +3118,36 @@ export default function DashboardPage() {
     visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
     visDays: true, visWeeks: true, visMonths: true, visRanges: true,
   }));
+  const [frvpSettingsOpen, setFrvpSettingsOpen] = useState(false);
+  const [selectedFrvpId, setSelectedFrvpId] = useState<string | null>(null);
+  const [frvpSettingsTab, setFrvpSettingsTab] = useState<"inputs" | "style" | "coordinates" | "visibility">("style");
+  const [frvpCfg, setFrvpCfg] = useState(() => ({
+    t0: 0,
+    t1: 0,
+    bins: 48,
+    side: "left" as "left" | "right",
+    widthPct: 30,
+    upColor: "#2962FF",
+    downColor: "#E91E63",
+    vaUpColor: "#26a69a",
+    vaDownColor: "#ef5350",
+    showProfile: true,
+    showValues: false,
+    showPoc: true,
+    showVah: false,
+    showVal: false,
+    showDevelopingPoc: false,
+    showDevelopingVa: false,
+    showHistBox: true,
+    showLabels: true,
+    volumeMode: "updown" as "updown" | "total",
+    vaPct: 70,
+    rowsLayout: "number" as "number" | "height",
+    extendRight: false,
+    text: "",
+    visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+    visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+  }));
   const [avwapCfg, setAvwapCfg] = useState(() => ({
     vwapColor: "#2962FF",
     band1Color: "#26a69a",
@@ -3403,6 +3605,30 @@ export default function DashboardPage() {
     return () => window.clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAvpId, avpSettingsOpen, avpCfg]);
+
+
+  // Persist FRVP settings while modal open
+  useEffect(() => {
+    if (!selectedFrvpId || !frvpSettingsOpen) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedFrvpId));
+    if (!line) return;
+    const note = buildFrvpNote({
+      ...frvpCfg,
+      t0: frvpCfg.t0 || Number(line.start_time) || 0,
+      t1: frvpCfg.t1 || Number(line.end_time) || 0,
+    });
+    setLines((prev) => prev.map((x) => (String(x.id) === String(selectedFrvpId) ? { ...x, note } : x)));
+    const t = window.setTimeout(async () => {
+      try {
+        if (!String(selectedFrvpId).startsWith("local-")) {
+          await supabase.from("chart_lines").update({ note }).eq("id", selectedFrvpId);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 180);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFrvpId, frvpSettingsOpen, frvpCfg]);
 
   // Prevent chart pan/zoom while Fib settings modal is open (iPad slider fix)
   useEffect(() => {
@@ -6341,36 +6567,60 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
           try {
-            const body = l.note.replace(/^__frvp:/, "");
-            const parts = body.split("|");
-            const t0 = Number(parts[0]);
-            const t1 = Number(parts[1]);
-            let binsN = 48;
-            for (const p of parts.slice(2)) {
-              if (p.startsWith("bins=")) binsN = Math.max(16, Math.min(72, parseInt(p.slice(5), 10) || 48));
+            const cfg = parseFrvpNote(l.note);
+            const t0 = cfg ? cfg.t0 : Number(l.note.replace(/^__frvp:/, "").split("|")[0]);
+            const t1 = cfg ? cfg.t1 : Number(l.note.replace(/^__frvp:/, "").split("|")[1]);
+            const binsN = cfg?.bins ?? 48;
+            let visOk = true;
+            if (cfg) {
+              const iv = String(intervalRef.current || "15");
+              const ivNum = Number(iv);
+              if (iv === "D" || iv === "1D") visOk = cfg.visDays !== false;
+              else if (iv === "W" || iv === "1W") visOk = cfg.visWeeks !== false;
+              else if (iv === "M" || iv === "1M") visOk = cfg.visMonths !== false;
+              else if (Number.isFinite(ivNum)) {
+                if (ivNum < 1) visOk = cfg.visSeconds !== false;
+                else if (ivNum < 60) visOk = cfg.visMinutes !== false;
+                else visOk = cfg.visHours !== false;
+              }
             }
             const host = vlineOverlayRef.current;
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
-            if (Number.isFinite(t0) && Number.isFinite(t1) && host && chart2 && ser2) {
+            if (visOk && Number.isFinite(t0) && Number.isFinite(t1) && host && chart2 && ser2 && (cfg?.showProfile !== false)) {
               const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
               if (vp) {
                 const x0 = chart2.timeScale().timeToCoordinate(t0 as any);
-                const x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+                let x1 = chart2.timeScale().timeToCoordinate(t1 as any);
+                if (cfg?.extendRight) {
+                  x1 = chart2.timeScale().width() || x1;
+                }
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-frvp-id", String(l.id));
                 wrap.setAttribute("data-frvp-t0", String(t0));
                 wrap.setAttribute("data-frvp-t1", String(t1));
                 wrap.setAttribute("data-frvp-bins", String(binsN));
-                // TV style: histogram INSIDE the selected time range
                 paintVolumeProfileDOM(wrap, vp, ser2, chart2, {
                   layout: "range",
-                  showBox: true,
+                  showBox: cfg?.showHistBox !== false,
                   anchorTime: t0,
                   endTime: t1,
+                  showAnchorLine: true,
+                  showPoc: cfg?.showPoc !== false,
+                  widthPct: cfg?.widthPct ?? 30,
+                  upColor: cfg?.upColor || "#2962FF",
+                  downColor: cfg?.downColor || "#E91E63",
                   x0: x0 != null ? Number(x0) : 0,
                   x1: x1 != null ? Number(x1) : (chart2.timeScale().width() || 300),
                 });
+                if (cfg?.text) {
+                  const lab = document.createElement("div");
+                  lab.textContent = cfg.text;
+                  lab.style.cssText =
+                    "position:absolute;left:8px;top:8px;font-size:11px;font-weight:600;color:#94a3b8;" +
+                    "text-shadow:0 1px 2px rgba(0,0,0,0.8);pointer-events:none;z-index:8;";
+                  wrap.appendChild(lab);
+                }
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __frvpDom: true } as any);
               }
@@ -11685,8 +11935,24 @@ priced.sort((a, b) => a.price - b.price);
               if ((md as any).isFrvp && typ === "line") {
                 const t0 = Math.min(md.pointA.time, md.pointB.time);
                 const t1 = Math.max(md.pointA.time, md.pointB.time);
-                const binsN = Number((md as any).binsN) || 48;
-                const note = `__frvp:${t0}|${t1}|bins=${binsN}`;
+                const cur = (linesRef.current || []).find((x) => x.id === id);
+                const oldP = cur ? parseFrvpNote(cur.note as any) : null;
+                const binsN = Number((md as any).binsN) || (oldP && oldP.bins) || 48;
+                const note = buildFrvpNote({
+                  ...(oldP || {
+                    bins: binsN,
+                    side: "left" as const,
+                    widthPct: 30,
+                    upColor: "#2962FF",
+                    downColor: "#E91E63",
+                    showProfile: true,
+                    showPoc: true,
+                    showHistBox: true,
+                  }),
+                  t0, t1,
+                  bins: binsN,
+                  text: (oldP && oldP.text) || "",
+                });
                 patch.note = note;
                 patch.start_time = t0;
                 patch.end_time = t1;
@@ -12795,7 +13061,17 @@ priced.sort((a, b) => a.price - b.price);
           clickLockRef.current = true;
           setSaving(true);
           try {
-            const note = `__frvp:${t0}|${t1}|bins=48`;
+            const note = buildFrvpNote({
+              t0, t1,
+              bins: 48,
+              side: "left",
+              widthPct: 30,
+              upColor: "#2962FF",
+              downColor: "#E91E63",
+              showProfile: true,
+              showPoc: true,
+              showHistBox: true,
+            });
             const base: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: start.price,
@@ -14983,6 +15259,11 @@ priced.sort((a, b) => a.price - b.price);
           const rp = parseRectNote(s);
           if (rp) {
             noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
+          }
+        } else if (s.startsWith("__frvp:")) {
+          const p = parseFrvpNote(s);
+          if (p) {
+            noteToSave = buildFrvpNote({ ...p, text: noteDraft.trim() });
           }
         } else if (s.startsWith("__avp:")) {
           const p = parseAvpNote(s);
@@ -17464,6 +17745,229 @@ priced.sort((a, b) => a.price - b.price);
 
           
 
+
+          {/* Fixed Range Volume Profile settings modal */}
+          {frvpSettingsOpen && (
+            <div
+              className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setFrvpSettingsOpen(false); setSelectedFrvpId(null); }}
+            >
+              <div
+                className="w-[min(360px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                  <div className="font-semibold text-white">FRVP</div>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setFrvpSettingsOpen(false); setSelectedFrvpId(null); }}>×</button>
+                </div>
+                <div className="flex gap-3 px-4 pt-2 text-xs border-b border-white/10 flex-wrap">
+                  {(["inputs", "style", "coordinates", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-1.5 px-1 capitalize ${frvpSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                      onClick={() => setFrvpSettingsTab(tab)}
+                    >{tab}</button>
+                  ))}
+                </div>
+
+                {frvpSettingsTab === "inputs" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Rows Layout</span>
+                      <select value={frvpCfg.rowsLayout} onChange={(e) => setFrvpCfg((c) => ({ ...c, rowsLayout: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="number">Number of rows</option>
+                        <option value="height">Ticks per row</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Row Size</span>
+                      <input type="number" min={8} max={100} value={frvpCfg.bins}
+                        onChange={(e) => setFrvpCfg((c) => ({ ...c, bins: Math.max(8, Math.min(100, Number(e.target.value) || 48)) }))}
+                        className="w-20 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Volume</span>
+                      <select value={frvpCfg.volumeMode} onChange={(e) => setFrvpCfg((c) => ({ ...c, volumeMode: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="updown">Up/Down</option>
+                        <option value="total">Total</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Value Area Volume</span>
+                      <input type="number" min={10} max={100} value={frvpCfg.vaPct}
+                        onChange={(e) => setFrvpCfg((c) => ({ ...c, vaPct: Number(e.target.value) || 70 }))}
+                        className="w-20 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.extendRight} onChange={(e) => setFrvpCfg((c) => ({ ...c, extendRight: e.target.checked }))} />
+                      Extend Right
+                    </label>
+                  </div>
+                )}
+
+                {frvpSettingsTab === "style" && (
+                  <div className="px-4 py-3 space-y-2.5 text-xs">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showProfile} onChange={(e) => setFrvpCfg((c) => ({ ...c, showProfile: e.target.checked }))} />
+                      Volume profile
+                    </label>
+                    <label className="flex items-center gap-2 pl-4">
+                      <input type="checkbox" checked={frvpCfg.showValues} onChange={(e) => setFrvpCfg((c) => ({ ...c, showValues: e.target.checked }))} />
+                      Values
+                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Width (% of box)</span>
+                      <input type="number" min={5} max={80} value={frvpCfg.widthPct}
+                        onChange={(e) => setFrvpCfg((c) => ({ ...c, widthPct: Number(e.target.value) || 30 }))}
+                        className="w-16 bg-black/40 border border-white/15 rounded px-2 py-1" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Placement</span>
+                      <select value={frvpCfg.side} onChange={(e) => setFrvpCfg((c) => ({ ...c, side: e.target.value as any }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </div>
+                    {[
+                      ["upColor", "Up Volume"],
+                      ["downColor", "Down Volume"],
+                      ["vaUpColor", "Value Area Up"],
+                      ["vaDownColor", "Value Area Down"],
+                    ].map(([key, label]) => (
+                      <div key={key} className="flex items-center justify-between gap-2">
+                        <span>{label}</span>
+                        <label className="relative w-8 h-6 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: (frvpCfg as any)[key] }}>
+                          <input type="color" value={(frvpCfg as any)[key]}
+                            onChange={(e) => setFrvpCfg((c) => ({ ...c, [key]: e.target.value }))}
+                            className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </label>
+                      </div>
+                    ))}
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showVah} onChange={(e) => setFrvpCfg((c) => ({ ...c, showVah: e.target.checked }))} />
+                      VAH
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showVal} onChange={(e) => setFrvpCfg((c) => ({ ...c, showVal: e.target.checked }))} />
+                      VAL
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showPoc} onChange={(e) => setFrvpCfg((c) => ({ ...c, showPoc: e.target.checked }))} />
+                      POC
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showDevelopingPoc} onChange={(e) => setFrvpCfg((c) => ({ ...c, showDevelopingPoc: e.target.checked }))} />
+                      Developing POC
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showDevelopingVa} onChange={(e) => setFrvpCfg((c) => ({ ...c, showDevelopingVa: e.target.checked }))} />
+                      Developing VA
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showHistBox} onChange={(e) => setFrvpCfg((c) => ({ ...c, showHistBox: e.target.checked }))} />
+                      Histogram Box
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={frvpCfg.showLabels} onChange={(e) => setFrvpCfg((c) => ({ ...c, showLabels: e.target.checked }))} />
+                      Labels on price scale
+                    </label>
+                  </div>
+                )}
+
+                {frvpSettingsTab === "coordinates" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>#1 (bar time)</span>
+                      <input type="number" value={frvpCfg.t0}
+                        onChange={(e) => setFrvpCfg((c) => ({ ...c, t0: Number(e.target.value) || 0 }))}
+                        className="w-36 bg-black/40 border border-white/15 rounded px-2 py-1 font-mono text-[11px]" />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>#2 (bar time)</span>
+                      <input type="number" value={frvpCfg.t1}
+                        onChange={(e) => setFrvpCfg((c) => ({ ...c, t1: Number(e.target.value) || 0 }))}
+                        className="w-36 bg-black/40 border border-white/15 rounded px-2 py-1 font-mono text-[11px]" />
+                    </div>
+                    <p className="text-gray-500">Unix seconds of range ends. Prefer Move on chart to change.</p>
+                  </div>
+                )}
+
+                {frvpSettingsTab === "visibility" && (
+                  <div className="px-4 py-3 space-y-2 text-xs">
+                    {[
+                      ["visTicks", "Ticks"],
+                      ["visSeconds", "Seconds"],
+                      ["visMinutes", "Minutes"],
+                      ["visHours", "Hours"],
+                      ["visDays", "Days"],
+                      ["visWeeks", "Weeks"],
+                      ["visMonths", "Months"],
+                      ["visRanges", "Ranges"],
+                    ].map(([k, lab]) => (
+                      <label key={k} className="flex items-center gap-2">
+                        <input type="checkbox" checked={(frvpCfg as any)[k]}
+                          onChange={(e) => setFrvpCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                        {lab}
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10">
+                  <div className="relative" data-menu>
+                    <button type="button"
+                      className="px-2.5 py-1.5 rounded border border-white/15 text-gray-300 hover:bg-white/5 text-xs"
+                      onClick={() => setOpenMenu(openMenu === "frvp-tpl" ? null : "frvp-tpl")}
+                    >Template ▾</button>
+                    {openMenu === "frvp-tpl" && (
+                      <div className="absolute z-[80] bottom-full mb-1 left-0 min-w-[150px] rounded-xl border border-white/20 bg-[#1e222d] shadow-[0_8px_32px_rgba(0,0,0,0.6)] py-1">
+                        <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
+                          onClick={() => {
+                            try { localStorage.setItem("frvp_template", JSON.stringify(frvpCfg)); setStatusMsg("FRVP template saved"); } catch {}
+                            setOpenMenu(null);
+                          }}
+                        >Save as…</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("frvp_template");
+                              if (raw) {
+                                const tpl = JSON.parse(raw);
+                                setFrvpCfg((c) => ({ ...c, ...tpl, t0: c.t0, t1: c.t1, text: c.text }));
+                                setStatusMsg("FRVP template applied");
+                              } else {
+                                setFrvpCfg((c) => ({
+                                  ...c,
+                                  bins: 48, side: "left", widthPct: 30,
+                                  upColor: "#2962FF", downColor: "#E91E63",
+                                  showProfile: true, showPoc: true, showHistBox: true,
+                                  showValues: false, showVah: false, showVal: false,
+                                  extendRight: false, volumeMode: "updown", vaPct: 70,
+                                }));
+                                setStatusMsg("FRVP defaults applied");
+                              }
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            } catch {}
+                            setOpenMenu(null);
+                          }}
+                        >Apply defaults</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                      onClick={() => { setFrvpSettingsOpen(false); setSelectedFrvpId(null); }}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                      onClick={() => { setFrvpSettingsOpen(false); setSelectedFrvpId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Anchored Volume Profile settings modal */}
           {avpSettingsOpen && (
             <div
@@ -19476,7 +19980,46 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {typeof l.note === "string" && l.note.startsWith("__avp:") ? (
+                    {typeof l.note === "string" && l.note.startsWith("__frvp:") ? (
+                      <button
+                        type="button"
+                        title="FRVP settings"
+                        onClick={() => {
+                          const p = parseFrvpNote(l.note);
+                          if (p) {
+                            setFrvpCfg({
+                              t0: p.t0, t1: p.t1,
+                              bins: p.bins, side: p.side, widthPct: p.widthPct,
+                              upColor: p.upColor, downColor: p.downColor,
+                              vaUpColor: p.vaUpColor, vaDownColor: p.vaDownColor,
+                              showProfile: p.showProfile, showValues: p.showValues,
+                              showPoc: p.showPoc, showVah: p.showVah, showVal: p.showVal,
+                              showDevelopingPoc: p.showDevelopingPoc, showDevelopingVa: p.showDevelopingVa,
+                              showHistBox: p.showHistBox, showLabels: p.showLabels,
+                              volumeMode: p.volumeMode, vaPct: p.vaPct, rowsLayout: p.rowsLayout,
+                              extendRight: p.extendRight, text: p.text,
+                              visTicks: p.visTicks, visSeconds: p.visSeconds, visMinutes: p.visMinutes, visHours: p.visHours,
+                              visDays: p.visDays, visWeeks: p.visWeeks, visMonths: p.visMonths, visRanges: p.visRanges,
+                            });
+                          } else {
+                            setFrvpCfg((c) => ({
+                              ...c,
+                              t0: Number(l.start_time) || 0,
+                              t1: Number(l.end_time) || 0,
+                            }));
+                          }
+                          setSelectedFrvpId(String(l.id));
+                          setFrvpSettingsOpen(true);
+                          setFrvpSettingsTab("style");
+                        }}
+                        className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    ) : typeof l.note === "string" && l.note.startsWith("__avp:") ? (
                       <button
                         type="button"
                         title="AVP settings"
