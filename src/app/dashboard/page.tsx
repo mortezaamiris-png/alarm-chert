@@ -2491,6 +2491,7 @@ export default function DashboardPage() {
     dash: string;
     isFib?: boolean;
     isAvwap?: boolean;
+    isAvp?: boolean;
     isFrvp?: boolean;
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
@@ -3261,9 +3262,11 @@ export default function DashboardPage() {
       } else if (
         mode === "arrow-up" ||
         mode === "arrow-down" ||
-        mode === "arrow-marker"
+        mode === "arrow-marker" ||
+        mode === "avp" ||
+        mode === "avwap"
       ) {
-        // No crosshair lines while placing arrow marks
+        // No crosshair lines while placing AVP / VWAP / arrow marks
         chart.applyOptions({
           crosshair: {
             mode: CrosshairMode.Normal,
@@ -11553,6 +11556,65 @@ priced.sort((a, b) => a.price - b.price);
                 width: md.width,
                 dash: md.dash,
               };
+              // Anchored Volume Profile — move anchor time
+              if ((md as any).isAvp && typ === "line") {
+                const cur = (linesRef.current || []).find((x) => x.id === id);
+                const oldP = cur ? parseAvpNote(cur.note as any) : null;
+                const newAnchor = Number(md.pointA.time);
+                const note = buildAvpNote({
+                  ...(oldP || {
+                    bins: 24,
+                    side: "right" as const,
+                    widthPct: 30,
+                    upColor: "#2962FF",
+                    downColor: "#E91E63",
+                    showProfile: true,
+                    showPoc: true,
+                    showHistBox: true,
+                  }),
+                  anchor: newAnchor,
+                  text: (oldP && oldP.text) || "",
+                });
+                let ap = md.pointA.price;
+                try {
+                  const candles = candlesRef.current || [];
+                  const hit = candles.find((c) => Math.abs(Number(c.time) - newAnchor) < 2);
+                  if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
+                } catch {}
+                patch.note = note;
+                patch.start_time = newAnchor;
+                patch.end_time = null;
+                patch.end_price = null;
+                patch.price = ap;
+                await supabase.from("chart_lines").update(patch).eq("id", id);
+                setLines((prev) =>
+                  prev.map((a) =>
+                    a.id === id
+                      ? {
+                          ...a,
+                          note,
+                          price: ap,
+                          start_time: newAnchor,
+                          end_time: null,
+                          end_price: null,
+                        }
+                      : a
+                  )
+                );
+                md.pointA = { time: newAnchor, price: ap };
+                md.pointB = { time: newAnchor, price: ap };
+                md.phase = "drag-a";
+                lockChartInteraction(false);
+                refreshHandles();
+                try {
+                  const elB = handleBElRef.current;
+                  if (elB) elB.style.display = "none";
+                } catch {}
+                setStatusMsg("AVP anchor saved — drag again or ✓ Done");
+                setSaving(false);
+                setTimeout(() => { clickLockRef.current = false; }, 300);
+                return;
+              }
               // Anchored VWAP — move anchor time
               if ((md as any).isAvwap && typ === "line") {
                 const cur = (linesRef.current || []).find((x) => x.id === id);
@@ -17569,7 +17631,7 @@ priced.sort((a, b) => a.price - b.price);
                       onClick={() => setOpenMenu(openMenu === "avp-tpl" ? null : "avp-tpl")}
                     >Template ▾</button>
                     {openMenu === "avp-tpl" && (
-                      <div className="absolute z-50 bottom-full mb-1 left-0 min-w-[140px] rounded-xl border border-white/15 bg-[#1e222d] shadow-xl py-1">
+                      <div className="absolute z-[80] bottom-full mb-1 left-0 min-w-[150px] rounded-xl border border-white/20 bg-[#1e222d] shadow-[0_8px_32px_rgba(0,0,0,0.6)] py-1">
                         <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
                           onClick={() => {
                             try { localStorage.setItem("avp_template", JSON.stringify(avpCfg)); setStatusMsg("AVP template saved"); } catch {}
@@ -17577,16 +17639,51 @@ priced.sort((a, b) => a.price - b.price);
                           }}
                         >Save as…</button>
                         <button type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/10"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
                             try {
                               const raw = localStorage.getItem("avp_template");
-                              if (raw) setAvpCfg((c) => ({ ...c, ...JSON.parse(raw), anchor: c.anchor, text: c.text }));
-                              else setAvpCfg((c) => ({
-                                ...c, bins: 24, side: "right", widthPct: 30, upColor: "#2962FF", downColor: "#E91E63",
-                                showProfile: true, showPoc: true, showHistBox: true, showValues: false, showVah: false, showVal: false,
-                              }));
-                              setStatusMsg("AVP defaults applied");
-                            } catch {}
+                              if (raw) {
+                                const tpl = JSON.parse(raw);
+                                setAvpCfg((c) => ({
+                                  ...c,
+                                  ...tpl,
+                                  anchor: c.anchor,
+                                  text: c.text,
+                                }));
+                                setStatusMsg("AVP template applied");
+                              } else {
+                                setAvpCfg((c) => ({
+                                  ...c,
+                                  bins: 24,
+                                  side: "right",
+                                  widthPct: 30,
+                                  upColor: "#2962FF",
+                                  downColor: "#E91E63",
+                                  vaUpColor: "#26a69a",
+                                  vaDownColor: "#ef5350",
+                                  showProfile: true,
+                                  showValues: false,
+                                  showPoc: true,
+                                  showVah: false,
+                                  showVal: false,
+                                  showDevelopingPoc: false,
+                                  showDevelopingVa: false,
+                                  showHistBox: true,
+                                  showLabels: true,
+                                  volumeMode: "updown",
+                                  vaPct: 70,
+                                  rowsLayout: "number",
+                                  visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+                                  visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+                                }));
+                                setStatusMsg("AVP defaults applied");
+                              }
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            } catch {
+                              setStatusMsg("Apply failed");
+                            }
                             setOpenMenu(null);
                           }}
                         >Apply defaults</button>
@@ -19803,7 +19900,42 @@ priced.sort((a, b) => a.price - b.price);
                           return;
                         }
                         
-                        if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
+                        if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
+                          try {
+                            const p = parseAvpNote(l.note);
+                            const anchor = p ? p.anchor : Number(l.start_time);
+                            if (!Number.isFinite(anchor)) {
+                              setStatusMsg("AVP: no anchor");
+                              return;
+                            }
+                            let ap = Number(l.price) || 0;
+                            try {
+                              const candles = candlesRef.current || [];
+                              const hit = candles.find((c) => Math.abs(Number(c.time) - anchor) < 2);
+                              if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
+                            } catch {}
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "drag-a",
+                              pointA: { time: anchor, price: ap },
+                              pointB: { time: anchor, price: ap },
+                              color: (p && p.upColor) || l.color || "#2962FF",
+                              width: 2,
+                              dash: "solid",
+                              isAvp: true,
+                            } as any;
+                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, "a");
+                            try {
+                              const elB = handleBElRef.current;
+                              if (elB) elB.style.display = "none";
+                            } catch {}
+                            setStatusMsg("AVP: drag or tap a new candle for anchor — ✓ Done");
+                          } catch {
+                            setStatusMsg("AVP move failed");
+                          }
+                          return;
+                        }
+                                                if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
                           try {
                             const p = parseAvwapNote(l.note);
                             const anchor = p ? p.anchor : Number(l.start_time);
