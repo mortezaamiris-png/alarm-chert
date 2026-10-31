@@ -1314,34 +1314,47 @@ const DEFAULT_FIB_LEVELS: { v: number; on: boolean; color: string }[] = [
 /** Fibonacci Time Zone levels (bar multiples from anchor) */
 const DEFAULT_FIB_TZ_LEVELS: { v: number; on: boolean; color: string }[] = [
   { v: 0, on: true, color: "#787B86" },
-  { v: 1, on: true, color: "#F23645" },
-  { v: 2, on: true, color: "#FF9800" },
-  { v: 3, on: true, color: "#4CAF50" },
-  { v: 5, on: true, color: "#089981" },
-  { v: 8, on: true, color: "#00BCD4" },
+  { v: 1, on: true, color: "#2962FF" },
+  { v: 2, on: true, color: "#2962FF" },
+  { v: 3, on: true, color: "#2962FF" },
+  { v: 5, on: true, color: "#2962FF" },
+  { v: 8, on: true, color: "#2962FF" },
   { v: 13, on: true, color: "#2962FF" },
-  { v: 21, on: true, color: "#9C27B0" },
-  { v: 34, on: true, color: "#E91E63" },
-  { v: 55, on: true, color: "#787B86" },
-  { v: 89, on: false, color: "#F23645" },
-  { v: 144, on: false, color: "#FF9800" },
+  { v: 21, on: true, color: "#2962FF" },
+  { v: 34, on: true, color: "#2962FF" },
+  { v: 55, on: true, color: "#2962FF" },
+  { v: 89, on: true, color: "#2962FF" },
+  { v: 144, on: false, color: "#2962FF" },
+  { v: 233, on: false, color: "#2962FF" },
 ];
 
+/** Fib Time Zone note: __fibtz:t1,p1,t2,p2|levels|lc=...|... */
 function parseFibTzNote(note: string | null | undefined): null | {
-  t0: number;
+  t1: number; p1: number; t2: number; p2: number;
   levels: number[];
   colors: string[];
   lineWidth: 1 | 2 | 3;
   lineStyle: "solid" | "dashed" | "dotted";
   showLabels: boolean;
+  labelH: "left" | "center" | "right";
+  labelV: "top" | "middle" | "bottom";
+  oneColor: string | null;
+  background: boolean;
+  bgOpacity: number;
   text: string;
 } {
   if (!note || typeof note !== "string" || !note.startsWith("__fibtz:")) return null;
   const body = note.replace(/^__fibtz:/, "");
   const parts = body.split("|");
-  const t0 = Number(parts[0]);
-  if (!Number.isFinite(t0)) return null;
-  const levels = (parts[1] || "0,1,2,3,5,8,13,21,34,55")
+  const coords = parts[0].split(",").map(Number);
+  // backward compat: single t0
+  let t1: number, p1: number, t2: number, p2: number;
+  if (coords.length >= 4 && coords.every((n) => Number.isFinite(n))) {
+    t1 = coords[0]; p1 = coords[1]; t2 = coords[2]; p2 = coords[3];
+  } else if (coords.length >= 1 && Number.isFinite(coords[0])) {
+    t1 = coords[0]; p1 = 0; t2 = coords[0]; p2 = 0;
+  } else return null;
+  const levels = (parts[1] || "0,1,2,3,5,8,13,21,34,55,89")
     .split(",")
     .map(Number)
     .filter((n) => Number.isFinite(n));
@@ -1349,6 +1362,11 @@ function parseFibTzNote(note: string | null | undefined): null | {
   let lineWidth: 1 | 2 | 3 = 1;
   let lineStyle: "solid" | "dashed" | "dotted" = "solid";
   let showLabels = true;
+  let labelH: "left" | "center" | "right" = "right";
+  let labelV: "top" | "middle" | "bottom" = "bottom";
+  let oneColor: string | null = null;
+  let background = false;
+  let bgOpacity = 20;
   let text = "";
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
@@ -1361,20 +1379,48 @@ function parseFibTzNote(note: string | null | undefined): null | {
       if (e === "solid" || e === "dashed" || e === "dotted") lineStyle = e;
     } else if (p === "lbl=0") showLabels = false;
     else if (p === "lbl=1") showLabels = true;
-    else if (p.startsWith("txt=")) text = p.slice(4);
+    else if (p.startsWith("lh=")) {
+      const e = p.slice(3);
+      if (e === "left" || e === "center" || e === "right") labelH = e;
+    } else if (p.startsWith("lv=")) {
+      const e = p.slice(3);
+      if (e === "top" || e === "middle" || e === "bottom") labelV = e;
+    } else if (p.startsWith("one=")) oneColor = decodeURIComponent(p.slice(4)) || null;
+    else if (p === "bg=1") background = true;
+    else if (p === "bg=0") background = false;
+    else if (p.startsWith("bgo=")) {
+      const n = parseInt(p.slice(4), 10);
+      if (!Number.isNaN(n)) bgOpacity = Math.max(0, Math.min(100, n));
+    } else if (p.startsWith("txt=")) text = p.slice(4);
   }
-  return { t0, levels, colors, lineWidth, lineStyle, showLabels, text };
+  return { t1, p1, t2, p2, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, text };
 }
 
 function buildFibTzNote(
-  t0: number,
+  coords: { t1: number; p1: number; t2: number; p2: number },
   levels: { v: number; on: boolean; color: string }[],
-  opts?: { lineWidth?: number; lineStyle?: string; showLabels?: boolean; text?: string }
+  opts?: {
+    lineWidth?: number;
+    lineStyle?: string;
+    showLabels?: boolean;
+    labelH?: string;
+    labelV?: string;
+    oneColor?: string | null;
+    background?: boolean;
+    bgOpacity?: number;
+    text?: string;
+  }
 ) {
   const onLevels = levels.filter((x) => x.on);
   const levelsOn = onLevels.map((x) => x.v).join(",");
-  const lc = onLevels.map((x) => encodeURIComponent(x.color || "#787B86")).join(",");
-  let s = `__fibtz:${t0}|${levelsOn}|lc=${lc}|lw=${opts?.lineWidth ?? 1}|ls=${opts?.lineStyle || "solid"}|lbl=${opts?.showLabels === false ? 0 : 1}`;
+  const lc = onLevels.map((x) => encodeURIComponent(x.color || "#2962FF")).join(",");
+  let s =
+    `__fibtz:${coords.t1},${coords.p1},${coords.t2},${coords.p2}|${levelsOn}` +
+    `|lc=${lc}|lw=${opts?.lineWidth ?? 1}|ls=${opts?.lineStyle || "solid"}` +
+    `|lbl=${opts?.showLabels === false ? 0 : 1}` +
+    `|lh=${opts?.labelH || "right"}|lv=${opts?.labelV || "bottom"}` +
+    `|bg=${opts?.background ? 1 : 0}|bgo=${opts?.bgOpacity ?? 20}`;
+  if (opts?.oneColor) s += `|one=${encodeURIComponent(opts.oneColor)}`;
   if (opts?.text && String(opts.text).trim()) s += `|txt=${String(opts.text).trim()}`;
   return s;
 }
@@ -3315,6 +3361,11 @@ export default function DashboardPage() {
   });
   const [fibTzSettingsOpen, setFibTzSettingsOpen] = useState(false);
   const [selectedFibTzId, setSelectedFibTzId] = useState<string | null>(null);
+  const [fibTzSettingsTab, setFibTzSettingsTab] = useState<"style" | "coords" | "visibility">("style");
+  const [fibTzShowLabels, setFibTzShowLabels] = useState(true);
+  const [fibTzLabelH, setFibTzLabelH] = useState<"left" | "center" | "right">("right");
+  const [fibTzLabelV, setFibTzLabelV] = useState<"top" | "middle" | "bottom">("bottom");
+  const [fibTzOneColor, setFibTzOneColor] = useState<string | null>(null);
   const [fibLevels, setFibLevels] = useState(() => {
     const saved = loadLS("fib_levels", null as any);
     if (!Array.isArray(saved) || !saved.length) return DEFAULT_FIB_LEVELS.map((x) => ({ ...x }));
@@ -6389,52 +6440,73 @@ priced.sort((a, b) => a.price - b.price);
             } // end visOk
           }
         } else if (typeof l.note === "string" && l.note.startsWith("__fibtz:")) {
-          // Fibonacci Time Zone — vertical lines at fib bar multiples from anchor
+          // Fibonacci Time Zone — 2 anchors + vertical lines at fib * unit
           try {
             const tz = parseFibTzNote(l.note);
-            if (tz && chart) {
-              const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+            if (tz && chart && series) {
               const host = vlineOverlayRef.current;
               const isSel = String((window as any).__selectedFibTzId || selectedFibTzId || "") === String(l.id);
-              // clear old
               try {
                 host?.querySelectorAll?.(`[data-fibtz-id="${l.id}"]`).forEach((el: Element) => el.remove());
               } catch {}
-              const lsStyle =
-                tz.lineStyle === "dashed" ? "2,4" :
-                tz.lineStyle === "dotted" ? "1,3" : "none";
+              const dt = tz.t2 - tz.t1;
+              // if same time, fall back to 1 bar unit
+              const unit = Math.abs(dt) > 0.5 ? dt : Math.max(1, intervalToSeconds(String(intervalRef.current)));
               const lw = tz.lineWidth || 1;
+              const oneCol = tz.oneColor;
+
+              // dashed connector between point 1 and 2 (TV style)
+              try {
+                const x1 = chart.timeScale().timeToCoordinate(tz.t1 as any);
+                const x2 = chart.timeScale().timeToCoordinate(tz.t2 as any);
+                const y1 = series.priceToCoordinate(tz.p1);
+                const y2 = series.priceToCoordinate(tz.p2);
+                if (host && x1 != null && x2 != null && y1 != null && y2 != null) {
+                  const left = Math.min(Number(x1), Number(x2));
+                  const right = Math.max(Number(x1), Number(x2));
+                  const top = Math.min(Number(y1), Number(y2));
+                  const bot = Math.max(Number(y1), Number(y2));
+                  const conn = document.createElement("div");
+                  conn.dataset.fibtzId = String(l.id);
+                  conn.dataset.fibtzConn = "1";
+                  // horizontal dashed at mid of the two prices (or along p1)
+                  const yMid = Number(y1);
+                  conn.style.cssText = [
+                    `position:absolute;left:${left}px;top:${yMid}px;width:${Math.max(2, right - left)}px;height:0;`,
+                    `border-top:1.5px dashed rgba(148,163,184,0.85);pointer-events:none;z-index:17;`,
+                  ].join("");
+                  host.appendChild(conn);
+                }
+              } catch {}
+
               tz.levels.forEach((lv, i) => {
-                const t = tz.t0 + lv * barSec;
+                const t = tz.t1 + lv * unit;
                 const x = chart.timeScale().timeToCoordinate(t as any);
                 if (x == null || !Number.isFinite(Number(x))) return;
-                const col = (tz.colors && tz.colors[i]) || DEFAULT_FIB_TZ_LEVELS.find((d) => d.v === lv)?.color || "#787B86";
+                const col = oneCol || (tz.colors && tz.colors[i]) || DEFAULT_FIB_TZ_LEVELS.find((d) => d.v === lv)?.color || "#2962FF";
                 if (host) {
                   const line = document.createElement("div");
                   line.dataset.fibtzId = String(l.id);
                   line.dataset.fibtzLevel = String(lv);
-                  line.dataset.posId = String(l.id);
                   line.style.cssText = [
                     `position:absolute;left:${Number(x)}px;top:0;bottom:28px;width:${lw}px;`,
-                    `background:${col};opacity:0.85;pointer-events:auto;z-index:18;`,
-                    lsStyle !== "none" ? `background:repeating-linear-gradient(to bottom,${col} 0 2px,transparent 2px 6px);width:${Math.max(2, lw)}px;` : "",
-                    isSel ? "outline:1px dashed rgba(255,255,255,0.35);" : "",
+                    `background:${col};opacity:0.9;pointer-events:none;z-index:18;`,
+                    isSel ? "outline:1px dashed rgba(255,255,255,0.25);" : "",
                   ].filter(Boolean).join("");
-                  line.title = `Fib TZ ${lv}`;
-                  line.addEventListener("pointerdown", (ev) => {
-                    ev.stopPropagation();
-                    try {
-                      (window as any).__selectedFibTzId = String(l.id);
-                      setSelectedFibTzId(String(l.id));
-                    } catch {}
-                  });
                   host.appendChild(line);
                   if (tz.showLabels !== false) {
                     const lab = document.createElement("div");
                     lab.dataset.fibtzId = String(l.id);
                     lab.dataset.fibtzLevel = String(lv);
+                    const hAlign = tz.labelH === "left" ? "translateX(4px)" : tz.labelH === "center" ? "translateX(-50%)" : "translateX(calc(-100% - 4px))";
+                    const vPos = tz.labelV === "top" ? "top:4px" : tz.labelV === "middle" ? "top:50%;transform:translateY(-50%)" : "bottom:32px";
+                    // combine transforms carefully
+                    let transform = hAlign;
+                    let topCss = "top:4px";
+                    if (tz.labelV === "middle") { topCss = "top:50%"; transform = `${hAlign} translateY(-50%)`; }
+                    else if (tz.labelV === "bottom") { topCss = "bottom:32px"; transform = hAlign; }
                     lab.style.cssText = [
-                      `position:absolute;left:${Number(x)}px;top:4px;transform:translateX(-50%);`,
+                      `position:absolute;left:${Number(x)}px;${topCss};transform:${transform};`,
                       `color:${col};font-size:10px;font-weight:600;pointer-events:none;z-index:19;`,
                       `text-shadow:0 1px 2px #000;white-space:nowrap;`,
                     ].join("");
@@ -6443,27 +6515,31 @@ priced.sort((a, b) => a.price - b.price);
                   }
                 }
               });
-              // drag handle at anchor (level 0)
+
+              // 2 draggable handles at anchors (when selected)
               if (host && isSel) {
-                const x0 = chart.timeScale().timeToCoordinate(tz.t0 as any);
-                if (x0 != null) {
+                const mkHandle = (which: "a" | "b", tt: number, pp: number) => {
+                  const xx = chart.timeScale().timeToCoordinate(tt as any);
+                  const yy = series.priceToCoordinate(pp);
+                  if (xx == null || yy == null) return;
                   const h = document.createElement("div");
                   h.dataset.fibtzId = String(l.id);
-                  h.dataset.fibtzHandle = "1";
+                  h.dataset.fibtzHandle = which;
                   h.style.cssText = [
-                    `position:absolute;left:${Number(x0)}px;top:50%;transform:translate(-50%,-50%);`,
+                    `position:absolute;left:${Number(xx)}px;top:${Number(yy)}px;transform:translate(-50%,-50%);`,
                     `width:12px;height:12px;border-radius:50%;background:#2962FF;border:2px solid #fff;`,
-                    `cursor:ew-resize;z-index:25;pointer-events:auto;`,
+                    `cursor:move;z-index:25;pointer-events:auto;box-shadow:0 0 0 1px rgba(0,0,0,0.4);`,
                   ].join("");
                   h.addEventListener("pointerdown", (ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    const startX = ev.clientX;
-                    const startT = tz.t0;
+                    (window as any).__selectedFibTzId = String(l.id);
+                    try { setSelectedFibTzId(String(l.id)); } catch {}
                     const onMove = (e2: PointerEvent) => {
                       const chart2 = chartRef.current;
+                      const ser2 = seriesRef.current;
                       const rect = chartContainerRef.current?.getBoundingClientRect();
-                      if (!chart2 || !rect) return;
+                      if (!chart2 || !ser2 || !rect) return;
                       const logical = chart2.timeScale().coordinateToLogical(e2.clientX - rect.left);
                       const candles = candlesRef.current || [];
                       if (logical == null || !candles.length) return;
@@ -6473,27 +6549,40 @@ priced.sort((a, b) => a.price - b.price);
                       if (logical > lastIdx) newT = candles[lastIdx].time + Math.round(logical - lastIdx) * barSec2;
                       else if (logical < 0) newT = candles[0].time + Math.round(logical) * barSec2;
                       else newT = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+                      const pr = ser2.coordinateToPrice(e2.clientY - rect.top);
+                      const newP = pr != null && Number.isFinite(pr) ? Number(pr) : (which === "a" ? tz.p1 : tz.p2);
                       const levelsUi = DEFAULT_FIB_TZ_LEVELS.map((d) => {
                         const on = tz.levels.includes(d.v);
                         const ci = tz.levels.indexOf(d.v);
                         return { ...d, on, color: (ci >= 0 && tz.colors[ci]) ? tz.colors[ci] : d.color };
                       });
-                      // keep only existing levels
-                      for (const d of levelsUi) {
-                        if (!tz.levels.includes(d.v)) d.on = false;
-                      }
                       for (const lv of tz.levels) {
                         if (!levelsUi.find((x) => x.v === lv)) {
-                          levelsUi.push({ v: lv, on: true, color: tz.colors[tz.levels.indexOf(lv)] || "#787B86" });
+                          levelsUi.push({ v: lv, on: true, color: tz.colors[tz.levels.indexOf(lv)] || "#2962FF" });
                         }
                       }
-                      const newNote = buildFibTzNote(newT, levelsUi.filter((x) => x.on).map((x) => ({ ...x, on: true })), {
+                      const coords = which === "a"
+                        ? { t1: newT, p1: newP, t2: tz.t2, p2: tz.p2 }
+                        : { t1: tz.t1, p1: tz.p1, t2: newT, p2: newP };
+                      const newNote = buildFibTzNote(coords, levelsUi, {
                         lineWidth: tz.lineWidth,
                         lineStyle: tz.lineStyle,
                         showLabels: tz.showLabels,
+                        labelH: tz.labelH,
+                        labelV: tz.labelV,
+                        oneColor: tz.oneColor,
+                        background: tz.background,
+                        bgOpacity: tz.bgOpacity,
                         text: tz.text,
                       });
-                      setLines((prev) => prev.map((x) => x.id === l.id ? { ...x, note: newNote, start_time: newT, price: x.price } : x));
+                      setLines((prev) => prev.map((x) => x.id === l.id ? {
+                        ...x,
+                        note: newNote,
+                        start_time: coords.t1,
+                        end_time: coords.t2,
+                        price: coords.p1,
+                        end_price: coords.p2,
+                      } : x));
                     };
                     const onUp = () => {
                       document.removeEventListener("pointermove", onMove);
@@ -6504,7 +6593,23 @@ priced.sort((a, b) => a.price - b.price);
                     document.addEventListener("pointerup", onUp);
                   });
                   host.appendChild(h);
-                }
+                };
+                mkHandle("a", tz.t1, tz.p1);
+                mkHandle("b", tz.t2, tz.p2);
+              }
+              // click body of any line selects
+              if (host) {
+                host.querySelectorAll(`[data-fibtz-id="${l.id}"]`).forEach((el) => {
+                  (el as HTMLElement).addEventListener("pointerdown", (ev) => {
+                    if ((ev.target as HTMLElement).dataset.fibtzHandle) return;
+                    ev.stopPropagation();
+                    try {
+                      (window as any).__selectedFibTzId = String(l.id);
+                      setSelectedFibTzId(String(l.id));
+                      renderAllLinesAndAlarmsRef.current?.();
+                    } catch {}
+                  });
+                });
               }
             }
           } catch {}
@@ -10947,24 +11052,47 @@ priced.sort((a, b) => a.price - b.price);
                   const line = (linesRef.current || []).find((x) => String(x.id) === String(pid));
                   const tz = line?.note ? parseFibTzNote(String(line.note)) : null;
                   if (!tz) continue;
-                  const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
-                  if (child.dataset.fibtzHandle) {
-                    const x0 = chart2.timeScale().timeToCoordinate(tz.t0 as any);
+                  const dt = tz.t2 - tz.t1;
+                  const unit = Math.abs(dt) > 0.5 ? dt : Math.max(1, intervalToSeconds(String(intervalRef.current)));
+                  if (child.dataset.fibtzHandle === "a") {
+                    const x0 = chart2.timeScale().timeToCoordinate(tz.t1 as any);
+                    const y0 = ser?.priceToCoordinate?.(tz.p1);
                     if (x0 == null || Number.isNaN(Number(x0))) child.style.visibility = "hidden";
-                    else { child.style.visibility = "visible"; child.style.left = `${Number(x0)}px`; }
+                    else {
+                      child.style.visibility = "visible";
+                      child.style.left = `${Number(x0)}px`;
+                      if (y0 != null) child.style.top = `${Number(y0)}px`;
+                    }
                     continue;
                   }
-                  // Match which level by title or by approximate previous left — use text label content
-                  const labelText = child.textContent?.trim();
-                  let lv: number | null = null;
-                  if (labelText != null && labelText !== "" && !child.style.background) {
-                    const n = Number(labelText);
-                    if (Number.isFinite(n)) lv = n;
+                  if (child.dataset.fibtzHandle === "b") {
+                    const x0 = chart2.timeScale().timeToCoordinate(tz.t2 as any);
+                    const y0 = ser?.priceToCoordinate?.(tz.p2);
+                    if (x0 == null || Number.isNaN(Number(x0))) child.style.visibility = "hidden";
+                    else {
+                      child.style.visibility = "visible";
+                      child.style.left = `${Number(x0)}px`;
+                      if (y0 != null) child.style.top = `${Number(y0)}px`;
+                    }
+                    continue;
                   }
-                  // For line divs (no text), recover level from stored data attribute if we set it
-                  if (lv == null && child.dataset.fibtzLevel != null) lv = Number(child.dataset.fibtzLevel);
+                  if (child.dataset.fibtzConn === "1") {
+                    const x1 = chart2.timeScale().timeToCoordinate(tz.t1 as any);
+                    const x2 = chart2.timeScale().timeToCoordinate(tz.t2 as any);
+                    const y1 = ser?.priceToCoordinate?.(tz.p1);
+                    if (x1 == null || x2 == null || y1 == null) { child.style.visibility = "hidden"; continue; }
+                    const left = Math.min(Number(x1), Number(x2));
+                    const right = Math.max(Number(x1), Number(x2));
+                    child.style.visibility = "visible";
+                    child.style.left = `${left}px`;
+                    child.style.top = `${Number(y1)}px`;
+                    child.style.width = `${Math.max(2, right - left)}px`;
+                    continue;
+                  }
+                  let lv: number | null = null;
+                  if (child.dataset.fibtzLevel != null) lv = Number(child.dataset.fibtzLevel);
                   if (lv == null || !Number.isFinite(lv)) continue;
-                  const t = tz.t0 + lv * barSec;
+                  const t = tz.t1 + lv * unit;
                   const x = chart2.timeScale().timeToCoordinate(t as any);
                   if (x == null || Number.isNaN(Number(x))) child.style.visibility = "hidden";
                   else {
@@ -14453,21 +14581,49 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
 
         if (m === "fib-tz") {
-          // Fibonacci Time Zone: one click places vertical fib lines
+          // Fib Time Zone: 2 clicks — point A then B (dashed connector, unit = |t2-t1|)
           const t = resolveTime(param);
           if (t == null) return;
+          const start = diagStartRef.current;
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            try {
+              const elA = handleAElRef.current;
+              if (elA) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
+                  elA.style.display = "block";
+                  elA.style.left = `${x}px`;
+                  elA.style.top = `${y}px`;
+                  elA.style.borderColor = "#2962FF";
+                  elA.style.width = "14px";
+                  elA.style.height = "14px";
+                }
+              }
+              if (handleBElRef.current) handleBElRef.current.style.display = "none";
+            } catch {}
+            setStatusMsg("Fib time zone: tap second point (horizontal unit)");
+            return;
+          }
           clickLockRef.current = true;
           setSaving(true);
           const levelsNow = (loadLS("fib_tz_levels", DEFAULT_FIB_TZ_LEVELS) as typeof DEFAULT_FIB_TZ_LEVELS) || DEFAULT_FIB_TZ_LEVELS;
-          const note = buildFibTzNote(t, levelsNow, { lineWidth: 1, lineStyle: "solid", showLabels: true });
+          const note = buildFibTzNote(
+            { t1: start.time, p1: start.price, t2: t, p2: fp },
+            levelsNow,
+            { lineWidth: 1, lineStyle: "solid", showLabels: true, labelH: "right", labelV: "bottom" }
+          );
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
-            price: fp,
-            start_time: t,
+            price: start.price,
+            end_price: fp,
+            start_time: start.time,
             end_time: t,
             color: "#2962FF",
             width: 1,
-            dash: "solid",
+            dash: "dashed",
             note,
           };
           try {
@@ -14487,8 +14643,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               const local: ChartLine = {
                 id: `local-fibtz-${Date.now()}`,
                 symbol: symbolRef.current.toUpperCase(),
-                price: fp,
-                start_time: t,
+                price: start.price,
+                end_price: fp,
+                start_time: start.time,
                 end_time: t,
                 color: base.color,
                 width: 1,
@@ -14501,6 +14658,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           } catch {
             setStatusMsg("Fib time zone save failed");
           }
+          diagStartRef.current = null;
+          setDiagStart(null);
+          try {
+            if (handleAElRef.current) handleAElRef.current.style.display = "none";
+            if (handleBElRef.current) handleBElRef.current.style.display = "none";
+          } catch {}
           clearPreview();
           setMode("none");
           modeRef.current = "none";
@@ -17561,7 +17724,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setMovingId(null);
                       setMode("fib-tz");
                       modeRef.current = "fib-tz";
-                      setStatusMsg("Fib time zone: tap chart to place");
+                      setStatusMsg("Fib time zone: tap point 1, then point 2");
                     }}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0">
@@ -20354,49 +20517,102 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
               onClick={() => { setFibTzSettingsOpen(false); setSelectedFibTzId(null); }}>
               <div
-                className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,360px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
+                className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,340px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-white">Fib time zone</h3>
-                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none" onClick={() => { setFibTzSettingsOpen(false); setSelectedFibTzId(null); }}>×</button>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setFibTzSettingsOpen(false); setSelectedFibTzId(null); }}>×</button>
                 </div>
-                <div className="text-[10px] text-gray-500 uppercase mb-2">Levels</div>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto mb-3">
-                  {fibTzLevels.map((lv, i) => (
-                    <div key={lv.v} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={!!lv.on}
-                        onChange={(e) => {
-                          const next = fibTzLevels.map((x, j) => j === i ? { ...x, on: e.target.checked } : x);
-                          setFibTzLevels(next);
-                        }}
-                        className="accent-orange-500"
-                      />
-                      <span className="w-10 tabular-nums text-gray-300">{lv.v}</span>
-                      <input
-                        type="color"
-                        value={lv.color}
-                        onChange={(e) => {
-                          const next = fibTzLevels.map((x, j) => j === i ? { ...x, color: e.target.value } : x);
-                          setFibTzLevels(next);
-                        }}
-                        className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer"
-                      />
-                    </div>
+                <div className="flex gap-3 border-b border-gray-800 mb-3 text-[11px]">
+                  {(["style", "coords", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-2 px-1 capitalize ${fibTzSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500"}`}
+                      onClick={() => setFibTzSettingsTab(tab)}
+                    >{tab === "coords" ? "Coordinates" : tab === "style" ? "Style" : "Visibility"}</button>
                   ))}
                 </div>
-                <div className="flex gap-2 justify-end pt-2 border-t border-gray-800">
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300 hover:bg-white/5"
-                    onClick={() => {
-                      setFibTzLevels(DEFAULT_FIB_TZ_LEVELS.map((x) => ({ ...x })));
-                    }}
-                  >
-                    Reset
-                  </button>
+
+                {fibTzSettingsTab === "style" && (
+                  <>
+                    <div className="space-y-1.5 max-h-56 overflow-y-auto mb-3">
+                      {fibTzLevels.map((lv, i) => (
+                        <div key={lv.v} className="flex items-center gap-2">
+                          <input type="checkbox" checked={!!lv.on} className="accent-orange-500"
+                            onChange={(e) => setFibTzLevels(fibTzLevels.map((x, j) => j === i ? { ...x, on: e.target.checked } : x))} />
+                          <input type="number" step="1" value={lv.v}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              if (!Number.isFinite(n)) return;
+                              setFibTzLevels(fibTzLevels.map((x, j) => j === i ? { ...x, v: n } : x));
+                            }}
+                            className="w-14 bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 tabular-nums" />
+                          <input type="color" value={lv.color}
+                            onChange={(e) => setFibTzLevels(fibTzLevels.map((x, j) => j === i ? { ...x, color: e.target.value } : x))}
+                            className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer" />
+                          <span className="w-6 h-0.5 rounded" style={{ background: lv.color }} />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-gray-400">Use one color</span>
+                      <input type="color" value={fibTzOneColor || "#2962FF"}
+                        onChange={(e) => setFibTzOneColor(e.target.value)}
+                        className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer" />
+                      <button type="button" className="text-[10px] text-gray-500 hover:text-gray-300"
+                        onClick={() => setFibTzOneColor(null)}>Clear</button>
+                    </div>
+                    <label className="flex items-center gap-2 mb-2 text-gray-300">
+                      <input type="checkbox" checked={fibTzShowLabels} onChange={(e) => setFibTzShowLabels(e.target.checked)} className="accent-orange-500" />
+                      Labels
+                      <select value={fibTzLabelH} onChange={(e) => setFibTzLabelH(e.target.value as any)}
+                        className="ml-auto bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5">
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                      </select>
+                      <select value={fibTzLabelV} onChange={(e) => setFibTzLabelV(e.target.value as any)}
+                        className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5">
+                        <option value="top">Top</option>
+                        <option value="middle">Middle</option>
+                        <option value="bottom">Bottom</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+
+                {fibTzSettingsTab === "coords" && (() => {
+                  const line = lines.find((x) => String(x.id) === String(selectedFibTzId));
+                  const tz = line ? parseFibTzNote(line.note) : null;
+                  if (!tz) return <p className="text-gray-500">No data</p>;
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400 w-24">#1 (price, bar)</span>
+                        <input type="number" step="any" defaultValue={tz.p1} id="fibtz-p1"
+                          className="w-24 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                        <input type="number" step="1" defaultValue={Math.round(tz.t1)} id="fibtz-t1"
+                          className="w-28 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400 w-24">#2 (price, bar)</span>
+                        <input type="number" step="any" defaultValue={tz.p2} id="fibtz-p2"
+                          className="w-24 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                        <input type="number" step="1" defaultValue={Math.round(tz.t2)} id="fibtz-t2"
+                          className="w-28 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {fibTzSettingsTab === "visibility" && (
+                  <p className="text-gray-500 text-[11px]">Visibility filters use the same timeframe rules as other drawings. Levels stay visible on all chart intervals by default.</p>
+                )}
+
+                <div className="flex gap-2 justify-end pt-3 border-t border-gray-800 mt-3">
+                  <button type="button" className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300 hover:bg-white/5"
+                    onClick={() => setFibTzSettingsOpen(false)}>Cancel</button>
                   <button
                     type="button"
                     className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
@@ -20405,26 +20621,47 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       const line = lines.find((x) => String(x.id) === String(id));
                       if (!line) { setFibTzSettingsOpen(false); return; }
                       const tz = parseFibTzNote(line.note);
-                      const t0 = tz?.t0 ?? Number(line.start_time) ?? 0;
-                      const newNote = buildFibTzNote(t0, fibTzLevels, {
-                        lineWidth: tz?.lineWidth ?? 1,
-                        lineStyle: tz?.lineStyle ?? "solid",
-                        showLabels: tz?.showLabels !== false,
-                        text: tz?.text || "",
-                      });
+                      let t1 = tz?.t1 ?? Number(line.start_time) ?? 0;
+                      let p1 = tz?.p1 ?? Number(line.price) ?? 0;
+                      let t2 = tz?.t2 ?? Number(line.end_time) ?? t1;
+                      let p2 = tz?.p2 ?? Number(line.end_price) ?? p1;
+                      try {
+                        const elP1 = document.getElementById("fibtz-p1") as HTMLInputElement | null;
+                        const elT1 = document.getElementById("fibtz-t1") as HTMLInputElement | null;
+                        const elP2 = document.getElementById("fibtz-p2") as HTMLInputElement | null;
+                        const elT2 = document.getElementById("fibtz-t2") as HTMLInputElement | null;
+                        if (elP1 && Number.isFinite(Number(elP1.value))) p1 = Number(elP1.value);
+                        if (elT1 && Number.isFinite(Number(elT1.value))) t1 = Number(elT1.value);
+                        if (elP2 && Number.isFinite(Number(elP2.value))) p2 = Number(elP2.value);
+                        if (elT2 && Number.isFinite(Number(elT2.value))) t2 = Number(elT2.value);
+                      } catch {}
+                      const newNote = buildFibTzNote(
+                        { t1, p1, t2, p2 },
+                        fibTzLevels,
+                        {
+                          lineWidth: tz?.lineWidth ?? 1,
+                          lineStyle: tz?.lineStyle ?? "solid",
+                          showLabels: fibTzShowLabels,
+                          labelH: fibTzLabelH,
+                          labelV: fibTzLabelV,
+                          oneColor: fibTzOneColor,
+                          background: false,
+                          bgOpacity: 20,
+                        }
+                      );
                       pushUndo();
-                      setLines((prev) => prev.map((x) => String(x.id) === String(id) ? { ...x, note: newNote } : x));
+                      setLines((prev) => prev.map((x) => String(x.id) === String(id) ? {
+                        ...x, note: newNote, start_time: t1, end_time: t2, price: p1, end_price: p2,
+                      } : x));
                       try {
                         if (!String(id).startsWith("local-")) {
-                          void supabase.from("chart_lines").update({ note: newNote }).eq("id", id);
+                          void supabase.from("chart_lines").update({ note: newNote, start_time: t1, end_time: t2, price: p1, end_price: p2 }).eq("id", id);
                         }
                       } catch {}
                       setFibTzSettingsOpen(false);
                       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                     }}
-                  >
-                    Ok
-                  </button>
+                  >Ok</button>
                 </div>
               </div>
             </div>
@@ -22089,18 +22326,29 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           const tz = parseFibTzNote(l.note);
                           if (tz) {
                             const onSet = new Set(tz.levels.map(Number));
-                            setFibTzLevels(
-                              DEFAULT_FIB_TZ_LEVELS.map((d) => {
-                                const li = tz.levels.indexOf(d.v);
-                                return {
-                                  ...d,
-                                  on: onSet.has(d.v),
-                                  color: (li >= 0 && tz.colors[li]) ? tz.colors[li] : d.color,
-                                };
-                              })
-                            );
+                            const mapped = DEFAULT_FIB_TZ_LEVELS.map((d) => {
+                              const li = tz.levels.indexOf(d.v);
+                              return {
+                                ...d,
+                                on: onSet.has(d.v),
+                                color: (li >= 0 && tz.colors[li]) ? tz.colors[li] : d.color,
+                              };
+                            });
+                            // include custom levels not in defaults
+                            for (const lv of tz.levels) {
+                              if (!mapped.find((x) => x.v === lv)) {
+                                const ci = tz.levels.indexOf(lv);
+                                mapped.push({ v: lv, on: true, color: (ci >= 0 && tz.colors[ci]) ? tz.colors[ci] : "#2962FF" });
+                              }
+                            }
+                            setFibTzLevels(mapped);
+                            setFibTzShowLabels(tz.showLabels !== false);
+                            setFibTzLabelH(tz.labelH || "right");
+                            setFibTzLabelV(tz.labelV || "bottom");
+                            setFibTzOneColor(tz.oneColor);
                           }
                           setSelectedFibTzId(String(l.id));
+                          setFibTzSettingsTab("style");
                           setFibTzSettingsOpen(true);
                         }}
                         className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 flex items-center justify-center"
