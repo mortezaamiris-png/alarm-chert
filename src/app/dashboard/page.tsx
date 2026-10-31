@@ -18281,8 +18281,6 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {/* Color — hidden for AVWAP (uses Settings) */}
-                    {!(typeof l.note === "string" && l.note.startsWith("__avwap:")) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -18825,7 +18823,6 @@ priced.sort((a, b) => a.price - b.price);
                         </div>
                       )}
                     </div>
-                    )}
                     {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
                       <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     )}
