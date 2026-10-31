@@ -181,8 +181,15 @@ function computeAnchoredVP(
 
 /** Anchored VWAP + std-dev bands (TradingView style) */
 function computeAnchoredVWAP(
-  candles: { time: number; high: number; low: number; close: number; volume?: number }[],
-  anchorTime: number
+  candles: { time: number; open?: number; high: number; low: number; close: number; volume?: number }[],
+  anchorTime: number,
+  opts?: {
+    source?: string;
+    bandMode?: "std" | "pct";
+    mult1?: number;
+    mult2?: number;
+    mult3?: number;
+  }
 ): {
   vwap: { time: number; value: number }[];
   upper1: { time: number; value: number }[];
@@ -198,6 +205,33 @@ function computeAnchoredVWAP(
   const at = Number(anchorTime);
   const slice = candles.filter((c) => Number(c.time) >= at - 0.5);
   if (slice.length < 1) return empty;
+  const source = opts?.source || "hlc3";
+  const bandMode = opts?.bandMode || "std";
+  const m1 = opts?.mult1 ?? 1;
+  const m2 = opts?.mult2 ?? 2;
+  const m3 = opts?.mult3 ?? 3;
+
+  const srcPrice = (c: { open?: number; high: number; low: number; close: number; volume?: number }) => {
+    const o = Number(c.open ?? c.close);
+    const h = Number(c.high);
+    const l = Number(c.low);
+    const cl = Number(c.close);
+    const vol = Number(c.volume) || 0;
+    switch (source) {
+      case "open": return o;
+      case "high": return h;
+      case "low": return l;
+      case "close": return cl;
+      case "volume": return vol;
+      case "hl2": return (h + l) / 2;
+      case "ohlc4": return (o + h + l + cl) / 4;
+      case "hlcc4": return (h + l + cl + cl) / 4;
+      case "hlc3":
+      default:
+        return (h + l + cl) / 3;
+    }
+  };
+
   let sumPV = 0, sumV = 0, sumPV2 = 0;
   const vwap: { time: number; value: number }[] = [];
   const upper1: { time: number; value: number }[] = [];
@@ -209,7 +243,8 @@ function computeAnchoredVWAP(
   for (const c of slice) {
     const h = Number(c.high), l = Number(c.low), cl = Number(c.close);
     if (!Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(cl)) continue;
-    const tp = (h + l + cl) / 3;
+    const tp = srcPrice(c);
+    if (!Number.isFinite(tp)) continue;
     let v = Number(c.volume);
     if (!Number.isFinite(v) || v <= 0) v = 1;
     sumPV += tp * v;
@@ -220,12 +255,21 @@ function computeAnchoredVWAP(
     const std = Math.sqrt(variance);
     const t = Number(c.time);
     vwap.push({ time: t, value: vw });
-    upper1.push({ time: t, value: vw + std });
-    lower1.push({ time: t, value: vw - std });
-    upper2.push({ time: t, value: vw + 2 * std });
-    lower2.push({ time: t, value: vw - 2 * std });
-    upper3.push({ time: t, value: vw + 3 * std });
-    lower3.push({ time: t, value: vw - 3 * std });
+    if (bandMode === "pct") {
+      upper1.push({ time: t, value: vw * (1 + m1 / 100) });
+      lower1.push({ time: t, value: vw * (1 - m1 / 100) });
+      upper2.push({ time: t, value: vw * (1 + m2 / 100) });
+      lower2.push({ time: t, value: vw * (1 - m2 / 100) });
+      upper3.push({ time: t, value: vw * (1 + m3 / 100) });
+      lower3.push({ time: t, value: vw * (1 - m3 / 100) });
+    } else {
+      upper1.push({ time: t, value: vw + std * m1 });
+      lower1.push({ time: t, value: vw - std * m1 });
+      upper2.push({ time: t, value: vw + std * m2 });
+      lower2.push({ time: t, value: vw - std * m2 });
+      upper3.push({ time: t, value: vw + std * m3 });
+      lower3.push({ time: t, value: vw - std * m3 });
+    }
   }
   return { vwap, upper1, lower1, upper2, lower2, upper3, lower3 };
 }
@@ -249,6 +293,22 @@ function parseAvwapNote(note: string | null | undefined): null | {
   mult3: number;
   width: number;
   text: string;
+  bandMode: "std" | "pct";
+  source: string;
+  visTicks: boolean;
+  visSeconds: boolean;
+  visMinutes: boolean;
+  visHours: boolean;
+  visDays: boolean;
+  visWeeks: boolean;
+  visMonths: boolean;
+  visRanges: boolean;
+  visMinS: number; visMaxS: number;
+  visMinM: number; visMaxM: number;
+  visMinH: number; visMaxH: number;
+  visMinD: number; visMaxD: number;
+  visMinW: number; visMaxW: number;
+  visMinMo: number; visMaxMo: number;
 } {
   if (!note || typeof note !== "string" || !note.startsWith("__avwap:")) return null;
   const body = note.replace(/^__avwap:/, "");
@@ -273,6 +333,22 @@ function parseAvwapNote(note: string | null | undefined): null | {
     mult3: 3,
     width: 2,
     text: "",
+    bandMode: "std" as const,
+    source: "hlc3",
+    visTicks: true,
+    visSeconds: true,
+    visMinutes: true,
+    visHours: true,
+    visDays: true,
+    visWeeks: true,
+    visMonths: true,
+    visRanges: true,
+    visMinS: 1, visMaxS: 59,
+    visMinM: 1, visMaxM: 59,
+    visMinH: 1, visMaxH: 24,
+    visMinD: 1, visMaxD: 366,
+    visMinW: 1, visMaxW: 52,
+    visMinMo: 1, visMaxMo: 12,
   };
   for (const p of parts.slice(1)) {
     if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
@@ -295,6 +371,28 @@ function parseAvwapNote(note: string | null | undefined): null | {
     else if (k === "m2") o.mult2 = Number(v) || 2;
     else if (k === "m3") o.mult3 = Number(v) || 3;
     else if (k === "w") o.width = Math.max(1, Math.min(4, Number(v) || 2));
+    else if (k === "mode") o.bandMode = v === "pct" ? "pct" : "std";
+    else if (k === "src") o.source = v || "hlc3";
+    else if (k === "vt") o.visTicks = v !== "0";
+    else if (k === "vs") o.visSeconds = v !== "0";
+    else if (k === "vm") o.visMinutes = v !== "0";
+    else if (k === "vh") o.visHours = v !== "0";
+    else if (k === "vd") o.visDays = v !== "0";
+    else if (k === "vw") o.visWeeks = v !== "0";
+    else if (k === "vmo") o.visMonths = v !== "0";
+    else if (k === "vr") o.visRanges = v !== "0";
+    else if (k === "minS") o.visMinS = Number(v) || 1;
+    else if (k === "maxS") o.visMaxS = Number(v) || 59;
+    else if (k === "minM") o.visMinM = Number(v) || 1;
+    else if (k === "maxM") o.visMaxM = Number(v) || 59;
+    else if (k === "minH") o.visMinH = Number(v) || 1;
+    else if (k === "maxH") o.visMaxH = Number(v) || 24;
+    else if (k === "minD") o.visMinD = Number(v) || 1;
+    else if (k === "maxD") o.visMaxD = Number(v) || 366;
+    else if (k === "minW") o.visMinW = Number(v) || 1;
+    else if (k === "maxW") o.visMaxW = Number(v) || 52;
+    else if (k === "minMo") o.visMinMo = Number(v) || 1;
+    else if (k === "maxMo") o.visMaxMo = Number(v) || 12;
   }
   return o;
 }
@@ -317,6 +415,22 @@ function buildAvwapNote(cfg: {
   mult3?: number;
   width?: number;
   text?: string;
+  bandMode?: "std" | "pct";
+  source?: string;
+  visTicks?: boolean;
+  visSeconds?: boolean;
+  visMinutes?: boolean;
+  visHours?: boolean;
+  visDays?: boolean;
+  visWeeks?: boolean;
+  visMonths?: boolean;
+  visRanges?: boolean;
+  visMinS?: number; visMaxS?: number;
+  visMinM?: number; visMaxM?: number;
+  visMinH?: number; visMaxH?: number;
+  visMinD?: number; visMaxD?: number;
+  visMinW?: number; visMaxW?: number;
+  visMinMo?: number; visMaxMo?: number;
 }): string {
   const parts = [
     String(cfg.anchor),
@@ -335,12 +449,26 @@ function buildAvwapNote(cfg: {
     `m2=${cfg.mult2 ?? 2}`,
     `m3=${cfg.mult3 ?? 3}`,
     `w=${cfg.width ?? 2}`,
+    `mode=${cfg.bandMode === "pct" ? "pct" : "std"}`,
+    `src=${cfg.source || "hlc3"}`,
+    `vt=${cfg.visTicks === false ? "0" : "1"}`,
+    `vs=${cfg.visSeconds === false ? "0" : "1"}`,
+    `vm=${cfg.visMinutes === false ? "0" : "1"}`,
+    `vh=${cfg.visHours === false ? "0" : "1"}`,
+    `vd=${cfg.visDays === false ? "0" : "1"}`,
+    `vw=${cfg.visWeeks === false ? "0" : "1"}`,
+    `vmo=${cfg.visMonths === false ? "0" : "1"}`,
+    `vr=${cfg.visRanges === false ? "0" : "1"}`,
+    `minS=${cfg.visMinS ?? 1}`, `maxS=${cfg.visMaxS ?? 59}`,
+    `minM=${cfg.visMinM ?? 1}`, `maxM=${cfg.visMaxM ?? 59}`,
+    `minH=${cfg.visMinH ?? 1}`, `maxH=${cfg.visMaxH ?? 24}`,
+    `minD=${cfg.visMinD ?? 1}`, `maxD=${cfg.visMaxD ?? 366}`,
+    `minW=${cfg.visMinW ?? 1}`, `maxW=${cfg.visMaxW ?? 52}`,
+    `minMo=${cfg.visMinMo ?? 1}`, `maxMo=${cfg.visMaxMo ?? 12}`,
   ];
   if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
   return `__avwap:${parts.join("|")}`;
 }
-
-
 
 /**
  * Paint volume profile histogram.
@@ -2630,6 +2758,22 @@ export default function DashboardPage() {
     width: 2,
     text: "",
     anchor: 0,
+    bandMode: "std" as "std" | "pct",
+    source: "hlc3",
+    visTicks: true,
+    visSeconds: true,
+    visMinutes: true,
+    visHours: true,
+    visDays: true,
+    visWeeks: true,
+    visMonths: true,
+    visRanges: true,
+    visMinS: 1, visMaxS: 59,
+    visMinM: 1, visMaxM: 59,
+    visMinH: 1, visMaxH: 24,
+    visMinD: 1, visMaxD: 366,
+    visMinW: 1, visMaxW: 52,
+    visMinMo: 1, visMaxMo: 12,
   }));
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
   useEffect(() => {
@@ -2999,6 +3143,22 @@ export default function DashboardPage() {
       mult3: avwapCfg.mult3,
       width: avwapCfg.width,
       text: avwapCfg.text,
+      bandMode: avwapCfg.bandMode,
+      source: avwapCfg.source,
+      visTicks: avwapCfg.visTicks,
+      visSeconds: avwapCfg.visSeconds,
+      visMinutes: avwapCfg.visMinutes,
+      visHours: avwapCfg.visHours,
+      visDays: avwapCfg.visDays,
+      visWeeks: avwapCfg.visWeeks,
+      visMonths: avwapCfg.visMonths,
+      visRanges: avwapCfg.visRanges,
+      visMinS: avwapCfg.visMinS, visMaxS: avwapCfg.visMaxS,
+      visMinM: avwapCfg.visMinM, visMaxM: avwapCfg.visMaxM,
+      visMinH: avwapCfg.visMinH, visMaxH: avwapCfg.visMaxH,
+      visMinD: avwapCfg.visMinD, visMaxD: avwapCfg.visMaxD,
+      visMinW: avwapCfg.visMinW, visMaxW: avwapCfg.visMaxW,
+      visMinMo: avwapCfg.visMinMo, visMaxMo: avwapCfg.visMaxMo,
     });
     setLines((prev) => prev.map((x) => (String(x.id) === String(selectedAvwapId) ? { ...x, note, color: avwapCfg.vwapColor, width: avwapCfg.width } : x)));
     const t = window.setTimeout(async () => {
@@ -5966,31 +6126,34 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const cfg = parseAvwapNote(l.note);
             const anchor = cfg ? cfg.anchor : Number(l.note.replace(/^__avwap:/, "").split("|")[0]);
-            if (Number.isFinite(anchor)) {
-              const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
+            let avwapVisOk = true;
+            if (cfg) {
+              const iv = String(intervalRef.current || "15");
+              const ivNum = Number(iv);
+              if (iv === "D" || iv === "1D") avwapVisOk = cfg.visDays !== false;
+              else if (iv === "W" || iv === "1W") avwapVisOk = cfg.visWeeks !== false;
+              else if (iv === "M" || iv === "1M") avwapVisOk = cfg.visMonths !== false;
+              else if (Number.isFinite(ivNum)) {
+                if (ivNum < 1) avwapVisOk = cfg.visSeconds !== false;
+                else if (ivNum < 60) avwapVisOk = cfg.visMinutes !== false;
+                else avwapVisOk = cfg.visHours !== false;
+              }
+            }
+            if (avwapVisOk && Number.isFinite(anchor)) {
+              const pack = computeAnchoredVWAP(candlesRef.current || [], anchor, {
+                source: cfg?.source || "hlc3",
+                bandMode: cfg?.bandMode || "std",
+                mult1: cfg?.mult1 ?? 1,
+                mult2: cfg?.mult2 ?? 2,
+                mult3: cfg?.mult3 ?? 3,
+              });
               if (pack.vwap.length >= 1) {
                 const toData = (pts: { time: number; value: number }[]) =>
                   pts.map((p) => ({ time: p.time as any, value: p.value }));
 
-                // Apply band multipliers relative to ±1σ
-                const scaleBand = (
-                  baseUp: { time: number; value: number }[],
-                  baseLo: { time: number; value: number }[],
-                  mult: number
-                ) => {
-                  const up: { time: number; value: number }[] = [];
-                  const lo: { time: number; value: number }[] = [];
-                  for (let i = 0; i < pack.vwap.length; i++) {
-                    const vw = pack.vwap[i].value;
-                    const sigma = Math.abs(baseUp[i].value - vw); // 1σ
-                    up.push({ time: pack.vwap[i].time, value: vw + sigma * mult });
-                    lo.push({ time: pack.vwap[i].time, value: vw - sigma * mult });
-                  }
-                  return { up, lo };
-                };
-                const b1 = scaleBand(pack.upper1, pack.lower1, cfg?.mult1 ?? 1);
-                const b2 = scaleBand(pack.upper1, pack.lower1, cfg?.mult2 ?? 2);
-                const b3 = scaleBand(pack.upper1, pack.lower1, cfg?.mult3 ?? 3);
+                const b1 = { up: pack.upper1, lo: pack.lower1 };
+                const b2 = { up: pack.upper2, lo: pack.lower2 };
+                const b3 = { up: pack.upper3, lo: pack.lower3 };
 
                 const mkLine = (
                   pts: { time: number; value: number }[],
@@ -17011,12 +17174,23 @@ priced.sort((a, b) => a.price - b.price);
                 {avwapSettingsTab === "inputs" && (
                   <div className="px-4 py-3 space-y-3">
                     <div className="text-[10px] uppercase tracking-wide text-gray-500">Bands settings</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-gray-300 text-xs">Bands Calculation Mode</span>
+                      <select
+                        value={avwapCfg.bandMode}
+                        onChange={(e) => setAvwapCfg((c) => ({ ...c, bandMode: e.target.value as "std" | "pct" }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1 text-xs min-w-[140px]"
+                      >
+                        <option value="std">Standard Deviation</option>
+                        <option value="pct">Percentage</option>
+                      </select>
+                    </div>
                     <label className="flex items-center justify-between gap-2">
                       <span className="flex items-center gap-2">
                         <input type="checkbox" checked={avwapCfg.showBand1} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand1: e.target.checked }))} />
                         Bands Multiplier #1
                       </span>
-                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult1}
+                      <input type="number" step={0.1} min={0.1} max={100} value={avwapCfg.mult1}
                         onChange={(e) => setAvwapCfg((c) => ({ ...c, mult1: Number(e.target.value) || 1 }))}
                         className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
                     </label>
@@ -17025,7 +17199,7 @@ priced.sort((a, b) => a.price - b.price);
                         <input type="checkbox" checked={avwapCfg.showBand2} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand2: e.target.checked }))} />
                         Bands Multiplier #2
                       </span>
-                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult2}
+                      <input type="number" step={0.1} min={0.1} max={100} value={avwapCfg.mult2}
                         onChange={(e) => setAvwapCfg((c) => ({ ...c, mult2: Number(e.target.value) || 2 }))}
                         className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
                     </label>
@@ -17034,17 +17208,95 @@ priced.sort((a, b) => a.price - b.price);
                         <input type="checkbox" checked={avwapCfg.showBand3} onChange={(e) => setAvwapCfg((c) => ({ ...c, showBand3: e.target.checked }))} />
                         Bands Multiplier #3
                       </span>
-                      <input type="number" step={0.1} min={0.1} max={10} value={avwapCfg.mult3}
+                      <input type="number" step={0.1} min={0.1} max={100} value={avwapCfg.mult3}
                         onChange={(e) => setAvwapCfg((c) => ({ ...c, mult3: Number(e.target.value) || 3 }))}
                         className="w-16 bg-black/40 border border-white/15 rounded px-2 py-0.5 text-xs" />
                     </label>
-                    <div className="text-[11px] text-gray-500">Source: (H+L+C)/3 · Volume weighted</div>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <span className="text-gray-300 text-xs">Source</span>
+                      <select
+                        value={avwapCfg.source}
+                        onChange={(e) => setAvwapCfg((c) => ({ ...c, source: e.target.value }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1 text-xs min-w-[140px]"
+                      >
+                        <option value="open">Open</option>
+                        <option value="high">High</option>
+                        <option value="low">Low</option>
+                        <option value="close">Close</option>
+                        <option value="volume">Volume</option>
+                        <option value="hl2">(H + L)/2</option>
+                        <option value="hlc3">(H + L + C)/3</option>
+                        <option value="ohlc4">(O + H + L + C)/4</option>
+                        <option value="hlcc4">(H + L + C + C)/4</option>
+                      </select>
+                    </div>
                   </div>
                 )}
 
                 {avwapSettingsTab === "visibility" && (
-                  <div className="px-4 py-3 space-y-2 text-xs text-gray-400">
-                    <p>VWAP is always drawn on the current chart timeframe. Visibility filters by timeframe can be added later — currently visible on all intervals.</p>
+                  <div className="px-4 py-3 space-y-2.5 text-xs">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avwapCfg.visTicks} onChange={(e) => setAvwapCfg((c) => ({ ...c, visTicks: e.target.checked }))} />
+                      Ticks
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visSeconds} onChange={(e) => setAvwapCfg((c) => ({ ...c, visSeconds: e.target.checked }))} />
+                        Seconds
+                      </label>
+                      <input type="number" min={1} max={59} value={avwapCfg.visMinS} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinS: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={59} value={avwapCfg.visMaxS} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxS: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={59} value={avwapCfg.visMaxS} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxS: Number(e.target.value) || 59 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visMinutes} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinutes: e.target.checked }))} />
+                        Minutes
+                      </label>
+                      <input type="number" min={1} max={59} value={avwapCfg.visMinM} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinM: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={59} value={avwapCfg.visMaxM} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxM: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={59} value={avwapCfg.visMaxM} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxM: Number(e.target.value) || 59 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visHours} onChange={(e) => setAvwapCfg((c) => ({ ...c, visHours: e.target.checked }))} />
+                        Hours
+                      </label>
+                      <input type="number" min={1} max={24} value={avwapCfg.visMinH} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinH: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={24} value={avwapCfg.visMaxH} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxH: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={24} value={avwapCfg.visMaxH} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxH: Number(e.target.value) || 24 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visDays} onChange={(e) => setAvwapCfg((c) => ({ ...c, visDays: e.target.checked }))} />
+                        Days
+                      </label>
+                      <input type="number" min={1} max={366} value={avwapCfg.visMinD} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinD: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={366} value={avwapCfg.visMaxD} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxD: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={366} value={avwapCfg.visMaxD} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxD: Number(e.target.value) || 366 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visWeeks} onChange={(e) => setAvwapCfg((c) => ({ ...c, visWeeks: e.target.checked }))} />
+                        Weeks
+                      </label>
+                      <input type="number" min={1} max={52} value={avwapCfg.visMinW} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinW: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={52} value={avwapCfg.visMaxW} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxW: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={52} value={avwapCfg.visMaxW} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxW: Number(e.target.value) || 52 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 shrink-0">
+                        <input type="checkbox" checked={avwapCfg.visMonths} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMonths: e.target.checked }))} />
+                        Months
+                      </label>
+                      <input type="number" min={1} max={12} value={avwapCfg.visMinMo} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMinMo: Number(e.target.value) || 1 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="range" min={1} max={12} value={avwapCfg.visMaxMo} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxMo: Number(e.target.value) }))} className="flex-1 accent-orange-500" />
+                      <input type="number" min={1} max={12} value={avwapCfg.visMaxMo} onChange={(e) => setAvwapCfg((c) => ({ ...c, visMaxMo: Number(e.target.value) || 12 }))} className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={avwapCfg.visRanges} onChange={(e) => setAvwapCfg((c) => ({ ...c, visRanges: e.target.checked }))} />
+                      Ranges
+                    </label>
                   </div>
                 )}
 
@@ -18555,6 +18807,22 @@ priced.sort((a, b) => a.price - b.price);
                               width: p.width,
                               text: p.text,
                               anchor: p.anchor,
+                              bandMode: p.bandMode,
+                              source: p.source,
+                              visTicks: p.visTicks,
+                              visSeconds: p.visSeconds,
+                              visMinutes: p.visMinutes,
+                              visHours: p.visHours,
+                              visDays: p.visDays,
+                              visWeeks: p.visWeeks,
+                              visMonths: p.visMonths,
+                              visRanges: p.visRanges,
+                              visMinS: p.visMinS, visMaxS: p.visMaxS,
+                              visMinM: p.visMinM, visMaxM: p.visMaxM,
+                              visMinH: p.visMinH, visMaxH: p.visMaxH,
+                              visMinD: p.visMinD, visMaxD: p.visMaxD,
+                              visMinW: p.visMinW, visMaxW: p.visMaxW,
+                              visMinMo: p.visMinMo, visMaxMo: p.visMaxMo,
                             });
                           } else {
                             setAvwapCfg((c) => ({
@@ -18568,9 +18836,12 @@ priced.sort((a, b) => a.price - b.price);
                           setAvwapSettingsOpen(true);
                           setAvwapSettingsTab("style");
                         }}
-                        className="text-xs px-2 py-0.5 rounded border border-white/20 text-gray-200 hover:bg-white/10"
+                        className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
                       >
-                        Settings
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
                       </button>
                     ) : typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
                       <button
