@@ -2491,7 +2491,6 @@ export default function DashboardPage() {
     dash: string;
     isFib?: boolean;
     isAvwap?: boolean;
-    isAvp?: boolean;
     isFrvp?: boolean;
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
@@ -11554,65 +11553,6 @@ priced.sort((a, b) => a.price - b.price);
                 width: md.width,
                 dash: md.dash,
               };
-              // Anchored Volume Profile — move anchor time
-              if ((md as any).isAvp && typ === "line") {
-                const cur = (linesRef.current || []).find((x) => x.id === id);
-                const oldP = cur ? parseAvpNote(cur.note as any) : null;
-                const newAnchor = Number(md.pointA.time);
-                const note = buildAvpNote({
-                  ...(oldP || {
-                    bins: 24,
-                    side: "right" as const,
-                    widthPct: 30,
-                    upColor: "#2962FF",
-                    downColor: "#E91E63",
-                    showProfile: true,
-                    showPoc: true,
-                    showHistBox: true,
-                  }),
-                  anchor: newAnchor,
-                  text: (oldP && oldP.text) || "",
-                });
-                let ap = md.pointA.price;
-                try {
-                  const candles = candlesRef.current || [];
-                  const hit = candles.find((c) => Math.abs(Number(c.time) - newAnchor) < 2);
-                  if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
-                } catch {}
-                patch.note = note;
-                patch.start_time = newAnchor;
-                patch.end_time = null;
-                patch.end_price = null;
-                patch.price = ap;
-                await supabase.from("chart_lines").update(patch).eq("id", id);
-                setLines((prev) =>
-                  prev.map((a) =>
-                    a.id === id
-                      ? {
-                          ...a,
-                          note,
-                          price: ap,
-                          start_time: newAnchor,
-                          end_time: null,
-                          end_price: null,
-                        }
-                      : a
-                  )
-                );
-                md.pointA = { time: newAnchor, price: ap };
-                md.pointB = { time: newAnchor, price: ap };
-                md.phase = "drag-a";
-                lockChartInteraction(false);
-                refreshHandles();
-                try {
-                  const elB = handleBElRef.current;
-                  if (elB) elB.style.display = "none";
-                } catch {}
-                setStatusMsg("AVP anchor saved — drag again or ✓ Done");
-                setSaving(false);
-                setTimeout(() => { clickLockRef.current = false; }, 300);
-                return;
-              }
               // Anchored VWAP — move anchor time
               if ((md as any).isAvwap && typ === "line") {
                 const cur = (linesRef.current || []).find((x) => x.id === id);
@@ -19863,54 +19803,6 @@ priced.sort((a, b) => a.price - b.price);
                           return;
                         }
                         
-                        if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
-                          try {
-                            const p = parseAvpNote(l.note);
-                            const anchor = p ? p.anchor : Number(l.start_time);
-                            if (!Number.isFinite(anchor)) {
-                              setStatusMsg("AVP: no anchor");
-                              return;
-                            }
-                            let ap = Number(l.price) || 0;
-                            try {
-                              const candles = candlesRef.current || [];
-                              const hit = candles.find((c) => Math.abs(Number(c.time) - anchor) < 2);
-                              if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
-                              else if (candles.length) {
-                                // nearest candle
-                                let best = candles[0], bd = Math.abs(Number(candles[0].time) - anchor);
-                                for (const c of candles) {
-                                  const dd = Math.abs(Number(c.time) - anchor);
-                                  if (dd < bd) { bd = dd; best = c; }
-                                }
-                                ap = (Number(best.high) + Number(best.low)) / 2;
-                              }
-                            } catch {}
-                            movingVLineRef.current = false;
-                            movingRayRef.current = false;
-                            moveDiagRef.current = {
-                              id: l.id,
-                              phase: "drag-a",
-                              pointA: { time: anchor, price: ap },
-                              pointB: { time: anchor, price: ap },
-                              color: (p && p.upColor) || l.color || "#2962FF",
-                              width: 2,
-                              dash: "solid",
-                              isAvp: true,
-                            } as any;
-                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, "a");
-                            try {
-                              const elB = handleBElRef.current;
-                              if (elB) elB.style.display = "none";
-                              const elC = handleCElRef.current;
-                              if (elC) elC.style.display = "none";
-                            } catch {}
-                            setStatusMsg("AVP: drag blue point or tap a candle — ✓ Done");
-                          } catch {
-                            setStatusMsg("AVP move failed");
-                          }
-                          return;
-                        }
                         if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
                           try {
                             const p = parseAvwapNote(l.note);
