@@ -1496,6 +1496,15 @@ function parseFibTbtNote(note: string | null | undefined): null | {
   oneColor: string | null; background: boolean; bgOpacity: number;
   trend: boolean; trendColor: string;
   text: string;
+  vis: {
+    ticks: boolean; seconds: boolean; secFrom: number; secTo: number;
+    minutes: boolean; minFrom: number; minTo: number;
+    hours: boolean; hrFrom: number; hrTo: number;
+    days: boolean; dayFrom: number; dayTo: number;
+    weeks: boolean; wkFrom: number; wkTo: number;
+    months: boolean; moFrom: number; moTo: number;
+    ranges: boolean;
+  };
 } {
   if (!note || typeof note !== "string" || !note.startsWith("__fibtbt:")) return null;
   const body = note.replace(/^__fibtbt:/, "");
@@ -1517,6 +1526,15 @@ function parseFibTbtNote(note: string | null | undefined): null | {
   let trend = true;
   let trendColor = "#787B86";
   let text = "";
+  const vis = {
+    ticks: true, seconds: true, secFrom: 1, secTo: 59,
+    minutes: true, minFrom: 1, minTo: 59,
+    hours: true, hrFrom: 1, hrTo: 24,
+    days: true, dayFrom: 1, dayTo: 366,
+    weeks: true, wkFrom: 1, wkTo: 52,
+    months: true, moFrom: 1, moTo: 12,
+    ranges: true,
+  };
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p.startsWith("lc=")) colors = p.slice(3).split(",").map((c) => decodeURIComponent(c)).filter(Boolean);
@@ -1531,8 +1549,14 @@ function parseFibTbtNote(note: string | null | undefined): null | {
     else if (p === "tr=0") trend = false; else if (p === "tr=1") trend = true;
     else if (p.startsWith("tc=")) trendColor = decodeURIComponent(p.slice(3)) || "#787B86";
     else if (p.startsWith("txt=")) text = p.slice(4);
+    else if (p.startsWith("vis=")) {
+      try {
+        const v = JSON.parse(decodeURIComponent(p.slice(4)));
+        Object.assign(vis, v);
+      } catch {}
+    }
   }
-  return { t1, p1, t2, p2, t3, p3, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, trend, trendColor, text };
+  return { t1, p1, t2, p2, t3, p3, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, trend, trendColor, text, vis };
 }
 
 function buildFibTbtNote(
@@ -1542,6 +1566,7 @@ function buildFibTbtNote(
     lineWidth?: number; lineStyle?: string; showLabels?: boolean;
     labelH?: string; labelV?: string; oneColor?: string | null;
     background?: boolean; bgOpacity?: number; trend?: boolean; trendColor?: string; text?: string;
+    vis?: any;
   }
 ) {
   const onLevels = levels.filter((x) => x.on);
@@ -1555,6 +1580,9 @@ function buildFibTbtNote(
     `|tr=${opts?.trend === false ? 0 : 1}|tc=${encodeURIComponent(opts?.trendColor || "#787B86")}`;
   if (opts?.oneColor) s += `|one=${encodeURIComponent(opts.oneColor)}`;
   if (opts?.text && String(opts.text).trim()) s += `|txt=${String(opts.text).trim()}`;
+  if (opts?.vis) {
+    try { s += `|vis=${encodeURIComponent(JSON.stringify(opts.vis))}`; } catch {}
+  }
   return s;
 }
 
@@ -3517,6 +3545,15 @@ export default function DashboardPage() {
   const [fibTbtTrend, setFibTbtTrend] = useState(true);
   const [fibTbtTrendColor, setFibTbtTrendColor] = useState("#787B86");
   const [fibTbtTemplateOpen, setFibTbtTemplateOpen] = useState(false);
+  const [fibTbtVis, setFibTbtVis] = useState({
+    ticks: true, seconds: true, secFrom: 1, secTo: 59,
+    minutes: true, minFrom: 1, minTo: 59,
+    hours: true, hrFrom: 1, hrTo: 24,
+    days: true, dayFrom: 1, dayTo: 366,
+    weeks: true, wkFrom: 1, wkTo: 52,
+    months: true, moFrom: 1, moTo: 12,
+    ranges: true,
+  });
   const fibTbtPoint3Ref = useRef<{ time: number; price: number } | null>(null);
   const [fibTzVis, setFibTzVis] = useState({
     ticks: true, seconds: true, minutes: true, hours: true, days: true, weeks: true, months: true, ranges: true,
@@ -6619,30 +6656,76 @@ priced.sort((a, b) => a.price - b.price);
                   col: oneCol || (tb.colors && tb.colors[i]) || DEFAULT_FIB_TBT_LEVELS.find((d) => Math.abs(d.v - lv) < 1e-6)?.color || "#2962FF",
                 })).sort((a, b) => a.t - b.t);
 
-                // Background fills between consecutive levels
+                // Visibility filter (TV-style)
+                let visOk = true;
+                try {
+                  const v = tb.vis;
+                  if (v) {
+                    const iv = String(intervalRef.current || "").toLowerCase();
+                    const sec = (() => {
+                      try { return intervalToSeconds(String(intervalRef.current)); } catch { return 60; }
+                    })();
+                    if (iv.includes("tick") || iv === "tick") visOk = !!v.ticks;
+                    else if (sec < 60) visOk = !!v.seconds && sec >= (v.secFrom || 1) && sec <= (v.secTo || 59);
+                    else if (sec < 3600) {
+                      const m = Math.round(sec / 60);
+                      visOk = !!v.minutes && m >= (v.minFrom || 1) && m <= (v.minTo || 59);
+                    } else if (sec < 86400) {
+                      const h = Math.round(sec / 3600);
+                      visOk = !!v.hours && h >= (v.hrFrom || 1) && h <= (v.hrTo || 24);
+                    } else if (sec < 604800) {
+                      const d = Math.round(sec / 86400);
+                      visOk = !!v.days && d >= (v.dayFrom || 1) && d <= (v.dayTo || 366);
+                    } else if (sec < 2592000) {
+                      const w = Math.round(sec / 604800);
+                      visOk = !!v.weeks && w >= (v.wkFrom || 1) && w <= (v.wkTo || 52);
+                    } else {
+                      const mo = Math.max(1, Math.round(sec / 2592000));
+                      visOk = !!v.months && mo >= (v.moFrom || 1) && mo <= (v.moTo || 12);
+                    }
+                  }
+                } catch { visOk = true; }
+                if (!visOk) {
+                  // hidden on this timeframe
+                } else {
+                // Background fills between consecutive levels (TV style colored bands)
                 if (tb.background && host && levelTimes.length >= 2) {
-                  const op = Math.max(0.05, Math.min(1, (tb.bgOpacity ?? 20) / 100));
+                  const op = Math.max(0.08, Math.min(0.85, (Number(tb.bgOpacity) || 20) / 100));
+                  const hostW = host.clientWidth || host.offsetWidth || 2000;
                   for (let i = 0; i < levelTimes.length - 1; i++) {
                     const a = levelTimes[i], b = levelTimes[i + 1];
                     let xA: number | null = null, xB: number | null = null;
                     try { xA = chart.timeScale().timeToCoordinate(a.t as any); } catch {}
                     try { xB = chart.timeScale().timeToCoordinate(b.t as any); } catch {}
-                    if (xA == null || xB == null || Number.isNaN(Number(xA)) || Number.isNaN(Number(xB))) continue;
-                    const left = Math.min(Number(xA), Number(xB));
-                    const width = Math.abs(Number(xB) - Number(xA));
+                    // Clamp off-screen coordinates so partial bands still draw
+                    let xa = xA == null || Number.isNaN(Number(xA)) ? null : Number(xA);
+                    let xb = xB == null || Number.isNaN(Number(xB)) ? null : Number(xB);
+                    if (xa == null && xb == null) continue;
+                    if (xa == null) xa = xb! < 0 ? -50 : hostW + 50;
+                    if (xb == null) xb = xa! < 0 ? -50 : hostW + 50;
+                    // if both completely off same side, skip
+                    if ((xa < -2 && xb < -2) || (xa > hostW + 2 && xb > hostW + 2)) continue;
+                    const left = Math.min(xa, xb);
+                    const width = Math.abs(xb - xa);
                     if (width < 0.5) continue;
-                    const hex = a.col || "#2962FF";
-                    let fill = `rgba(41,98,255,${op})`;
-                    if (typeof hex === "string" && hex.startsWith("#") && hex.length >= 7) {
-                      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), bl = parseInt(hex.slice(5, 7), 16);
-                      if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(bl)) {
-                        fill = `rgba(${r},${g},${bl},${op})`;
+                    const hex = String(a.col || "#2962FF");
+                    let r = 41, g = 98, bl = 255;
+                    if (hex.startsWith("#") && hex.length >= 7) {
+                      const rr = parseInt(hex.slice(1, 3), 16);
+                      const gg = parseInt(hex.slice(3, 5), 16);
+                      const bb = parseInt(hex.slice(5, 7), 16);
+                      if (Number.isFinite(rr) && Number.isFinite(gg) && Number.isFinite(bb)) {
+                        r = rr; g = gg; bl = bb;
                       }
                     }
+                    const fill = `rgba(${r},${g},${bl},${op})`;
                     const bg = document.createElement("div");
                     bg.dataset.fibtbtId = String(l.id);
                     bg.dataset.fibtbtBg = "1";
-                    bg.style.cssText = `position:absolute;left:${left}px;top:0;bottom:28px;width:${width}px;background:${fill};pointer-events:none;z-index:15;`;
+                    bg.style.cssText = [
+                      `position:absolute;left:${left}px;top:0;bottom:28px;width:${Math.max(1, width)}px;`,
+                      `background:${fill};pointer-events:none;z-index:15;`,
+                    ].join("");
                     host.appendChild(bg);
                   }
                 }
@@ -6786,6 +6869,7 @@ priced.sort((a, b) => a.price - b.price);
                   mk("b", tb.t2, tb.p2);
                   mk("c", tb.t3, tb.p3);
                 }
+                } // end visOk
               }
             }
           } catch {}
@@ -21283,9 +21367,63 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <button type="button" className="text-[10px] text-gray-500" onClick={() => setFibTbtOneColor(null)}>Clear</button>
                     </div>
                     <label className="flex items-center gap-2 mb-2">
-                      <input type="checkbox" checked={fibTbtBackground} onChange={(e) => setFibTbtBackground(e.target.checked)} className="accent-orange-500" />
+                      <input type="checkbox" checked={fibTbtBackground} className="accent-orange-500"
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          setFibTbtBackground(on);
+                          // live preview on chart
+                          try {
+                            const id = selectedFibTbtId;
+                            if (!id) return;
+                            setLines((prev) => prev.map((x) => {
+                              if (String(x.id) !== String(id)) return x;
+                              const tb = parseFibTbtNote(x.note);
+                              if (!tb) return x;
+                              const levelsUi = DEFAULT_FIB_TBT_LEVELS.map((d) => {
+                                const ci = tb.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                                return { ...d, on: ci >= 0, color: (ci >= 0 && tb.colors[ci]) ? tb.colors[ci] : d.color };
+                              });
+                              // apply current UI levels too
+                              const note = buildFibTbtNote(
+                                { t1: tb.t1, p1: tb.p1, t2: tb.t2, p2: tb.p2, t3: tb.t3, p3: tb.p3 },
+                                fibTbtLevels,
+                                {
+                                  showLabels: fibTbtShowLabels, labelH: fibTbtLabelH, labelV: fibTbtLabelV,
+                                  oneColor: fibTbtOneColor, background: on, bgOpacity: fibTbtBgOpacity,
+                                  trend: fibTbtTrend, trendColor: fibTbtTrendColor, vis: fibTbtVis,
+                                }
+                              );
+                              return { ...x, note };
+                            }));
+                            setTimeout(() => { try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }, 0);
+                          } catch {}
+                        }} />
                       Background
-                      <input type="range" min={0} max={100} value={fibTbtBgOpacity} onChange={(e) => setFibTbtBgOpacity(Number(e.target.value))}
+                      <input type="range" min={0} max={100} value={fibTbtBgOpacity}
+                        onChange={(e) => {
+                          const op = Number(e.target.value);
+                          setFibTbtBgOpacity(op);
+                          try {
+                            const id = selectedFibTbtId;
+                            if (!id) return;
+                            setLines((prev) => prev.map((x) => {
+                              if (String(x.id) !== String(id)) return x;
+                              const tb = parseFibTbtNote(x.note);
+                              if (!tb) return x;
+                              const note = buildFibTbtNote(
+                                { t1: tb.t1, p1: tb.p1, t2: tb.t2, p2: tb.p2, t3: tb.t3, p3: tb.p3 },
+                                fibTbtLevels,
+                                {
+                                  showLabels: fibTbtShowLabels, labelH: fibTbtLabelH, labelV: fibTbtLabelV,
+                                  oneColor: fibTbtOneColor, background: fibTbtBackground, bgOpacity: op,
+                                  trend: fibTbtTrend, trendColor: fibTbtTrendColor, vis: fibTbtVis,
+                                }
+                              );
+                              return { ...x, note };
+                            }));
+                            setTimeout(() => { try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }, 0);
+                          } catch {}
+                        }}
                         className="flex-1 accent-orange-500" />
                       <span className="w-8 text-right tabular-nums text-gray-400">{fibTbtBgOpacity}</span>
                     </label>
@@ -21322,7 +21460,41 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   );
                 })()}
                 {fibTbtSettingsTab === "visibility" && (
-                  <p className="text-gray-500 text-[11px]">Shown on all chart intervals by default.</p>
+                  <div className="space-y-2.5 text-[11px]">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" className="accent-orange-500" checked={fibTbtVis.ticks}
+                        onChange={(e) => setFibTbtVis((v) => ({ ...v, ticks: e.target.checked }))} />
+                      <span>Ticks</span>
+                    </label>
+                    {([
+                      ["seconds", "Seconds", "secFrom", "secTo", 1, 59],
+                      ["minutes", "Minutes", "minFrom", "minTo", 1, 59],
+                      ["hours", "Hours", "hrFrom", "hrTo", 1, 24],
+                      ["days", "Days", "dayFrom", "dayTo", 1, 366],
+                      ["weeks", "Weeks", "wkFrom", "wkTo", 1, 52],
+                      ["months", "Months", "moFrom", "moTo", 1, 12],
+                    ] as const).map(([key, label, fromK, toK, minV, maxV]) => (
+                      <div key={key} className="flex items-center gap-2">
+                        <input type="checkbox" className="accent-orange-500" checked={(fibTbtVis as any)[key]}
+                          onChange={(e) => setFibTbtVis((v) => ({ ...v, [key]: e.target.checked }))} />
+                        <span className="w-14 shrink-0">{label}</span>
+                        <input type="number" min={minV} max={maxV} value={(fibTbtVis as any)[fromK]}
+                          onChange={(e) => setFibTbtVis((v) => ({ ...v, [fromK]: Number(e.target.value) || minV }))}
+                          className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 tabular-nums" />
+                        <input type="range" min={minV} max={maxV} value={(fibTbtVis as any)[toK]}
+                          onChange={(e) => setFibTbtVis((v) => ({ ...v, [toK]: Number(e.target.value) }))}
+                          className="flex-1 accent-orange-500" />
+                        <input type="number" min={minV} max={maxV} value={(fibTbtVis as any)[toK]}
+                          onChange={(e) => setFibTbtVis((v) => ({ ...v, [toK]: Number(e.target.value) || maxV }))}
+                          className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 tabular-nums" />
+                      </div>
+                    ))}
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" className="accent-orange-500" checked={fibTbtVis.ranges}
+                        onChange={(e) => setFibTbtVis((v) => ({ ...v, ranges: e.target.checked }))} />
+                      <span>Ranges</span>
+                    </label>
+                  </div>
                 )}
                 <div className="flex gap-2 items-center pt-3 border-t border-gray-800 mt-3">
                   <div className="relative">
@@ -21392,7 +21564,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         {
                           showLabels: fibTbtShowLabels, labelH: fibTbtLabelH, labelV: fibTbtLabelV,
                           oneColor: fibTbtOneColor, background: fibTbtBackground, bgOpacity: fibTbtBgOpacity,
-                          trend: fibTbtTrend, trendColor: fibTbtTrendColor,
+                          trend: fibTbtTrend, trendColor: fibTbtTrendColor, vis: fibTbtVis,
                         }
                       );
                       pushUndo();
@@ -23342,6 +23514,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             setFibTbtBgOpacity(tb.bgOpacity ?? 20);
                             setFibTbtTrend(tb.trend !== false);
                             setFibTbtTrendColor(tb.trendColor || "#787B86");
+                            if (tb.vis) setFibTbtVis((prev) => ({ ...prev, ...tb.vis }));
                           }
                           setSelectedFibTbtId(String(l.id));
                           setFibTbtSettingsTab("style");
