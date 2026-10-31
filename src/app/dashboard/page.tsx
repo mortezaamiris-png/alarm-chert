@@ -6223,6 +6223,15 @@ priced.sort((a, b) => a.price - b.price);
                     wrap.setAttribute("data-avwap-fill", String(l.id));
                     wrap.style.cssText =
                       "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:5;overflow:hidden;";
+                    // store time/price pairs so pan can update polygon without full re-render
+                    try {
+                      const pairs = b1.up.map((p, i) => ({
+                        t: p.time,
+                        u: p.value,
+                        l: b1.lo[i] ? b1.lo[i].value : p.value,
+                      }));
+                      wrap.setAttribute("data-avwap-pts", JSON.stringify(pairs));
+                    } catch {}
 
                     // Background between band1 upper/lower
                     if (cfg?.showBg !== false && cfg?.showBand1 !== false && b1.up.length >= 2) {
@@ -6270,6 +6279,9 @@ priced.sort((a, b) => a.price - b.price);
                       if (x != null && y != null) {
                         const lab = document.createElement("div");
                         lab.textContent = cfg.text;
+                        lab.setAttribute("data-avwap-note", "1");
+                        lab.setAttribute("data-t", String(pack.vwap[0].time));
+                        lab.setAttribute("data-p", String(pack.vwap[0].value));
                         lab.style.cssText =
                           `position:absolute;left:${Number(x) + 10}px;top:${Number(y) - 18}px;` +
                           `transform:translateY(-50%);font-size:11px;font-weight:600;color:${colMain};` +
@@ -6797,6 +6809,54 @@ priced.sort((a, b) => a.price - b.price);
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
           syncMoveHandlesNow();
           scheduleOverlaySync();
+          // Reposition Anchored VWAP fill polygons (no full re-render)
+          try {
+            if ((window as any).__avwapFillRaf) cancelAnimationFrame((window as any).__avwapFillRaf);
+            (window as any).__avwapFillRaf = requestAnimationFrame(() => {
+              try {
+                const host = vlineOverlayRef.current;
+                const chart2 = chartRef.current;
+                const ser2 = seriesRef.current;
+                if (!host || !chart2 || !ser2) return;
+                host.querySelectorAll("[data-avwap-fill]").forEach((wrap) => {
+                  const raw = (wrap as HTMLElement).getAttribute("data-avwap-pts");
+                  if (!raw) return;
+                  let pairs: { t: number; u: number; l: number }[] = [];
+                  try { pairs = JSON.parse(raw); } catch { return; }
+                  const pts: string[] = [];
+                  for (const p of pairs) {
+                    const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                    const y = ser2.priceToCoordinate(p.u);
+                    if (x == null || y == null) continue;
+                    pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                  }
+                  for (let i = pairs.length - 1; i >= 0; i--) {
+                    const p = pairs[i];
+                    const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                    const y = ser2.priceToCoordinate(p.l);
+                    if (x == null || y == null) continue;
+                    pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                  }
+                  const poly = wrap.querySelector("polygon");
+                  if (poly && pts.length >= 4) poly.setAttribute("points", pts.join(" "));
+                  // note label
+                  const lab = wrap.querySelector("[data-avwap-note]") as HTMLElement | null;
+                  if (lab && pairs.length) {
+                    const x = chart2.timeScale().timeToCoordinate(pairs[0].t as any);
+                    const y = ser2.priceToCoordinate(pairs[0].u); // use upper at first; label uses vwap via data
+                    const vt = Number(lab.getAttribute("data-t") || pairs[0].t);
+                    const vp = Number(lab.getAttribute("data-p") || 0);
+                    const xx = chart2.timeScale().timeToCoordinate(vt as any);
+                    const yy = ser2.priceToCoordinate(vp);
+                    if (xx != null && yy != null) {
+                      lab.style.left = `${Number(xx) + 10}px`;
+                      lab.style.top = `${Number(yy) - 18}px`;
+                    }
+                  }
+                });
+              } catch {}
+            });
+          } catch {}
           // keep osc masks/SVG aligned while panning (rAF throttle)
           try {
             if ((window as any).__oscMaskRaf) cancelAnimationFrame((window as any).__oscMaskRaf);
@@ -17300,11 +17360,75 @@ priced.sort((a, b) => a.price - b.price);
                   </div>
                 )}
 
-                <div className="flex justify-end gap-2 px-4 py-3 border-t border-white/10">
-                  <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
-                    onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); }}>Cancel</button>
-                  <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
-                    onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10">
+                  <div className="relative" data-menu>
+                    <button
+                      type="button"
+                      className="px-2.5 py-1.5 rounded border border-white/15 text-gray-300 hover:bg-white/5 text-xs flex items-center gap-1"
+                      onClick={() => setOpenMenu(openMenu === "avwap-tpl" ? null : "avwap-tpl")}
+                    >
+                      Template ▾
+                    </button>
+                    {openMenu === "avwap-tpl" && (
+                      <div className="absolute z-50 bottom-full mb-1 left-0 min-w-[140px] rounded-xl border border-white/15 bg-[#1e222d] shadow-xl py-1 overflow-hidden">
+                        <button
+                          type="button"
+                          className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              localStorage.setItem("avwap_template", JSON.stringify(avwapCfg));
+                              setStatusMsg("VWAP template saved");
+                            } catch { setStatusMsg("Save failed"); }
+                            setOpenMenu(null);
+                          }}
+                        >Save as…</button>
+                        <button
+                          type="button"
+                          className="w-full text-left px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("avwap_template");
+                              if (raw) {
+                                const tpl = JSON.parse(raw);
+                                setAvwapCfg((c) => ({ ...c, ...tpl, anchor: c.anchor, text: c.text }));
+                                setStatusMsg("VWAP template applied");
+                              } else {
+                                // defaults
+                                setAvwapCfg((c) => ({
+                                  ...c,
+                                  vwapColor: "#2962FF",
+                                  band1Color: "#26a69a",
+                                  band2Color: "#8d6e63",
+                                  band3Color: "#26a69a",
+                                  bgColor: "#26a69a",
+                                  bgOpacity: 12,
+                                  showBand1: true,
+                                  showBand2: false,
+                                  showBand3: false,
+                                  showBg: true,
+                                  showLabel: true,
+                                  mult1: 1, mult2: 2, mult3: 3,
+                                  width: 2,
+                                  bandMode: "std",
+                                  source: "hlc3",
+                                  visTicks: true, visSeconds: true, visMinutes: true,
+                                  visHours: true, visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+                                }));
+                                setStatusMsg("VWAP defaults applied");
+                              }
+                            } catch { setStatusMsg("Load failed"); }
+                            setOpenMenu(null);
+                          }}
+                        >Apply defaults</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                      onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); }}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                      onClick={() => { setAvwapSettingsOpen(false); setSelectedAvwapId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -19176,7 +19300,7 @@ priced.sort((a, b) => a.price - b.price);
                             } catch {}
                             moveDiagRef.current = {
                               id: l.id,
-                              phase: "pick",
+                              phase: "drag-a",
                               pointA: { time: anchor, price: ap },
                               pointB: { time: anchor, price: ap },
                               color: (p && p.vwapColor) || l.color || "#2962FF",
@@ -19184,8 +19308,13 @@ priced.sort((a, b) => a.price - b.price);
                               dash: "solid",
                               isAvwap: true,
                             } as any;
-                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, null);
-                            setStatusMsg("VWAP: drag the circle to move anchor — ✓ Done");
+                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, "a");
+                            // hide second handle (same point)
+                            try {
+                              const elB = handleBElRef.current;
+                              if (elB) elB.style.display = "none";
+                            } catch {}
+                            setStatusMsg("VWAP: drag or tap a new candle for anchor — ✓ Done");
                           } catch {
                             setStatusMsg("VWAP move failed");
                           }
