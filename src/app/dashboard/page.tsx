@@ -1342,6 +1342,14 @@ function parseFibTzNote(note: string | null | undefined): null | {
   background: boolean;
   bgOpacity: number;
   text: string;
+  visTicks: boolean; visSeconds: boolean; visMinutes: boolean; visHours: boolean;
+  visDays: boolean; visWeeks: boolean; visMonths: boolean; visRanges: boolean;
+  visMinS: number; visMaxS: number;
+  visMinM: number; visMaxM: number;
+  visMinH: number; visMaxH: number;
+  visMinD: number; visMaxD: number;
+  visMinW: number; visMaxW: number;
+  visMinMo: number; visMaxMo: number;
 } {
   if (!note || typeof note !== "string" || !note.startsWith("__fibtz:")) return null;
   const body = note.replace(/^__fibtz:/, "");
@@ -1368,6 +1376,10 @@ function parseFibTzNote(note: string | null | undefined): null | {
   let background = false;
   let bgOpacity = 20;
   let text = "";
+  let visTicks = true, visSeconds = true, visMinutes = true, visHours = true;
+  let visDays = true, visWeeks = true, visMonths = true, visRanges = true;
+  let visMinS = 1, visMaxS = 59, visMinM = 1, visMaxM = 59, visMinH = 1, visMaxH = 24;
+  let visMinD = 1, visMaxD = 366, visMinW = 1, visMaxW = 52, visMinMo = 1, visMaxMo = 12;
   for (let i = 2; i < parts.length; i++) {
     const p = parts[i];
     if (p.startsWith("lc=")) colors = p.slice(3).split(",").map((c) => decodeURIComponent(c)).filter(Boolean);
@@ -1392,8 +1404,30 @@ function parseFibTzNote(note: string | null | undefined): null | {
       const n = parseInt(p.slice(4), 10);
       if (!Number.isNaN(n)) bgOpacity = Math.max(0, Math.min(100, n));
     } else if (p.startsWith("txt=")) text = p.slice(4);
+    else if (p === "vt=0") visTicks = false; else if (p === "vt=1") visTicks = true;
+    else if (p === "vs=0") visSeconds = false; else if (p === "vs=1") visSeconds = true;
+    else if (p === "vm=0") visMinutes = false; else if (p === "vm=1") visMinutes = true;
+    else if (p === "vh=0") visHours = false; else if (p === "vh=1") visHours = true;
+    else if (p === "vd=0") visDays = false; else if (p === "vd=1") visDays = true;
+    else if (p === "vw=0") visWeeks = false; else if (p === "vw=1") visWeeks = true;
+    else if (p === "vmo=0") visMonths = false; else if (p === "vmo=1") visMonths = true;
+    else if (p === "vr=0") visRanges = false; else if (p === "vr=1") visRanges = true;
+    else if (p.startsWith("minS=")) visMinS = Number(p.slice(5)) || 1;
+    else if (p.startsWith("maxS=")) visMaxS = Number(p.slice(5)) || 59;
+    else if (p.startsWith("minM=")) visMinM = Number(p.slice(5)) || 1;
+    else if (p.startsWith("maxM=")) visMaxM = Number(p.slice(5)) || 59;
+    else if (p.startsWith("minH=")) visMinH = Number(p.slice(5)) || 1;
+    else if (p.startsWith("maxH=")) visMaxH = Number(p.slice(5)) || 24;
+    else if (p.startsWith("minD=")) visMinD = Number(p.slice(5)) || 1;
+    else if (p.startsWith("maxD=")) visMaxD = Number(p.slice(5)) || 366;
+    else if (p.startsWith("minW=")) visMinW = Number(p.slice(5)) || 1;
+    else if (p.startsWith("maxW=")) visMaxW = Number(p.slice(5)) || 52;
+    else if (p.startsWith("minMo=")) visMinMo = Number(p.slice(6)) || 1;
+    else if (p.startsWith("maxMo=")) visMaxMo = Number(p.slice(6)) || 12;
   }
-  return { t1, p1, t2, p2, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, text };
+  return { t1, p1, t2, p2, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, text,
+    visTicks, visSeconds, visMinutes, visHours, visDays, visWeeks, visMonths, visRanges,
+    visMinS, visMaxS, visMinM, visMaxM, visMinH, visMaxH, visMinD, visMaxD, visMinW, visMaxW, visMinMo, visMaxMo };
 }
 
 function buildFibTzNote(
@@ -1409,6 +1443,11 @@ function buildFibTzNote(
     background?: boolean;
     bgOpacity?: number;
     text?: string;
+    visTicks?: boolean; visSeconds?: boolean; visMinutes?: boolean; visHours?: boolean;
+    visDays?: boolean; visWeeks?: boolean; visMonths?: boolean; visRanges?: boolean;
+    visMinS?: number; visMaxS?: number; visMinM?: number; visMaxM?: number;
+    visMinH?: number; visMaxH?: number; visMinD?: number; visMaxD?: number;
+    visMinW?: number; visMaxW?: number; visMinMo?: number; visMaxMo?: number;
   }
 ) {
   const onLevels = levels.filter((x) => x.on);
@@ -1422,6 +1461,11 @@ function buildFibTzNote(
     `|bg=${opts?.background ? 1 : 0}|bgo=${opts?.bgOpacity ?? 20}`;
   if (opts?.oneColor) s += `|one=${encodeURIComponent(opts.oneColor)}`;
   if (opts?.text && String(opts.text).trim()) s += `|txt=${String(opts.text).trim()}`;
+  s += `|vt=${opts?.visTicks === false ? 0 : 1}|vs=${opts?.visSeconds === false ? 0 : 1}|vm=${opts?.visMinutes === false ? 0 : 1}|vh=${opts?.visHours === false ? 0 : 1}`;
+  s += `|vd=${opts?.visDays === false ? 0 : 1}|vw=${opts?.visWeeks === false ? 0 : 1}|vmo=${opts?.visMonths === false ? 0 : 1}|vr=${opts?.visRanges === false ? 0 : 1}`;
+  s += `|minS=${opts?.visMinS ?? 1}|maxS=${opts?.visMaxS ?? 59}|minM=${opts?.visMinM ?? 1}|maxM=${opts?.visMaxM ?? 59}`;
+  s += `|minH=${opts?.visMinH ?? 1}|maxH=${opts?.visMaxH ?? 24}|minD=${opts?.visMinD ?? 1}|maxD=${opts?.visMaxD ?? 366}`;
+  s += `|minW=${opts?.visMinW ?? 1}|maxW=${opts?.visMaxW ?? 52}|minMo=${opts?.visMinMo ?? 1}|maxMo=${opts?.visMaxMo ?? 12}`;
   return s;
 }
 
@@ -3366,6 +3410,11 @@ export default function DashboardPage() {
   const [fibTzLabelH, setFibTzLabelH] = useState<"left" | "center" | "right">("right");
   const [fibTzLabelV, setFibTzLabelV] = useState<"top" | "middle" | "bottom">("bottom");
   const [fibTzOneColor, setFibTzOneColor] = useState<string | null>(null);
+  const [fibTzVis, setFibTzVis] = useState({
+    ticks: true, seconds: true, minutes: true, hours: true, days: true, weeks: true, months: true, ranges: true,
+    minS: 1, maxS: 59, minM: 1, maxM: 59, minH: 1, maxH: 24, minD: 1, maxD: 366, minW: 1, maxW: 52, minMo: 1, maxMo: 12,
+  });
+  const [fibTzTemplateOpen, setFibTzTemplateOpen] = useState(false);
   const [fibLevels, setFibLevels] = useState(() => {
     const saved = loadLS("fib_levels", null as any);
     if (!Array.isArray(saved) || !saved.length) return DEFAULT_FIB_LEVELS.map((x) => ({ ...x }));
@@ -6444,6 +6493,27 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const tz = parseFibTzNote(l.note);
             if (tz && chart && series) {
+              // Visibility by timeframe
+              const ivNow = String(intervalRef.current || "60");
+              let visOk = true;
+              if (ivNow === "D" || ivNow === "1D") {
+                visOk = tz.visDays !== false && 1 >= (tz.visMinD ?? 1) && 1 <= (tz.visMaxD ?? 366);
+              } else if (ivNow === "W" || ivNow === "1W") {
+                visOk = tz.visWeeks !== false && 1 >= (tz.visMinW ?? 1) && 1 <= (tz.visMaxW ?? 52);
+              } else if (ivNow === "M" || ivNow === "1M") {
+                visOk = tz.visMonths !== false && 1 >= (tz.visMinMo ?? 1) && 1 <= (tz.visMaxMo ?? 12);
+              } else {
+                const n = Number(ivNow);
+                if (!Number.isNaN(n) && n >= 60) {
+                  const hours = n / 60;
+                  visOk = tz.visHours !== false && hours >= (tz.visMinH ?? 1) && hours <= (tz.visMaxH ?? 24);
+                } else if (!Number.isNaN(n) && n > 0) {
+                  visOk = tz.visMinutes !== false && n >= (tz.visMinM ?? 1) && n <= (tz.visMaxM ?? 59);
+                }
+              }
+              if (!visOk) {
+                try { vlineOverlayRef.current?.querySelectorAll?.(`[data-fibtz-id="${l.id}"]`).forEach((el: Element) => el.remove()); } catch {}
+              } else {
               const host = vlineOverlayRef.current;
               const isSel = String((window as any).__selectedFibTzId || selectedFibTzId || "") === String(l.id);
               try {
@@ -6498,13 +6568,13 @@ priced.sort((a, b) => a.price - b.price);
                     const lab = document.createElement("div");
                     lab.dataset.fibtzId = String(l.id);
                     lab.dataset.fibtzLevel = String(lv);
-                    const hAlign = tz.labelH === "left" ? "translateX(4px)" : tz.labelH === "center" ? "translateX(-50%)" : "translateX(calc(-100% - 4px))";
-                    const vPos = tz.labelV === "top" ? "top:4px" : tz.labelV === "middle" ? "top:50%;transform:translateY(-50%)" : "bottom:32px";
-                    // combine transforms carefully
+                    // left = text starts just right of line; right = text ends just left of line; center = centered
+                    const hAlign = tz.labelH === "left" ? "translateX(6px)" : tz.labelH === "center" ? "translateX(-50%)" : "translateX(calc(-100% - 6px))";
                     let transform = hAlign;
-                    let topCss = "top:4px";
+                    let topCss = "top:6px";
                     if (tz.labelV === "middle") { topCss = "top:50%"; transform = `${hAlign} translateY(-50%)`; }
-                    else if (tz.labelV === "bottom") { topCss = "bottom:32px"; transform = hAlign; }
+                    else if (tz.labelV === "bottom") { topCss = "bottom:36px"; transform = hAlign; }
+                    else { topCss = "top:6px"; transform = hAlign; }
                     lab.style.cssText = [
                       `position:absolute;left:${Number(x)}px;${topCss};transform:${transform};`,
                       `color:${col};font-size:10px;font-weight:600;pointer-events:none;z-index:19;`,
@@ -6611,6 +6681,7 @@ priced.sort((a, b) => a.price - b.price);
                   });
                 });
               }
+              } // end visOk
             }
           } catch {}
         } else if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
@@ -12196,7 +12267,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try {
           const mNow = modeRef.current;
           const startPt = diagStartRef.current;
-          if ((mNow === "fib" || mNow === "fib-ext") && param?.point && seriesRef.current) {
+          if ((mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz") && param?.point && seriesRef.current) {
             let price2: number | null = null;
             try {
               const p = seriesRef.current.coordinateToPrice(param.point.y);
@@ -12228,6 +12299,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       { time: tCursor, price: p2 },
                       "b"
                     );
+                    // Fib time zone: dashed horizontal connector preview
+                    if (mNow === "fib-tz") {
+                      try {
+                        const host = vlineOverlayRef.current;
+                        if (host) {
+                          let prev = host.querySelector("[data-fibtz-preview]") as HTMLElement | null;
+                          if (!prev) {
+                            prev = document.createElement("div");
+                            prev.dataset.fibtzPreview = "1";
+                            host.appendChild(prev);
+                          }
+                          const x1 = chartNow.timeScale().timeToCoordinate(startPt.time as any);
+                          const x2 = chartNow.timeScale().timeToCoordinate(tCursor as any);
+                          const y1 = seriesRef.current.priceToCoordinate(startPt.price);
+                          if (x1 != null && x2 != null && y1 != null) {
+                            const left = Math.min(Number(x1), Number(x2));
+                            const right = Math.max(Number(x1), Number(x2));
+                            prev.style.cssText = [
+                              `position:absolute;left:${left}px;top:${Number(y1)}px;width:${Math.max(2, right - left)}px;height:0;`,
+                              `border-top:1.5px dashed rgba(148,163,184,0.9);pointer-events:none;z-index:20;`,
+                            ].join("");
+                          }
+                        }
+                      } catch {}
+                    }
                   } else {
                     // Before first click: hollow point follows mouse
                     const elA = handleAElRef.current;
@@ -12523,6 +12619,49 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               const tu = Number(t);
               const pr = Number(p);
               let hitId: string | null = null;
+              let hitFibTz: string | null = null;
+              // Fib time zone hit: near any vertical level line
+              try {
+                const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+                for (const ln of linesRef.current || []) {
+                  const note = ln.note ? String(ln.note) : "";
+                  if (!note.startsWith("__fibtz:")) continue;
+                  const tz = parseFibTzNote(note);
+                  if (!tz) continue;
+                  const unit = Math.abs(tz.t2 - tz.t1) > 0.5 ? (tz.t2 - tz.t1) : barSec;
+                  for (const lv of tz.levels) {
+                    const tLv = tz.t1 + lv * unit;
+                    let xLv: number | null = null;
+                    try { xLv = chartRef.current!.timeScale().timeToCoordinate(tLv as any); } catch {}
+                    if (xLv != null && Math.abs(Number(xLv) - param.point.x) < 10) {
+                      hitFibTz = String(ln.id);
+                      break;
+                    }
+                  }
+                  // also near anchors
+                  if (!hitFibTz) {
+                    for (const tt of [tz.t1, tz.t2]) {
+                      let xA: number | null = null;
+                      try { xA = chartRef.current!.timeScale().timeToCoordinate(tt as any); } catch {}
+                      if (xA != null && Math.abs(Number(xA) - param.point.x) < 12) {
+                        hitFibTz = String(ln.id);
+                        break;
+                      }
+                    }
+                  }
+                  if (hitFibTz) break;
+                }
+              } catch {}
+              if (hitFibTz) {
+                (window as any).__selectedFibTzId = hitFibTz;
+                setSelectedFibTzId(hitFibTz);
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+              } else if ((window as any).__selectedFibTzId || selectedFibTzId) {
+                // empty click → hide handles
+                (window as any).__selectedFibTzId = null;
+                setSelectedFibTzId(null);
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+              }
               for (const ln of linesRef.current || []) {
                 const note = ln.note ? String(ln.note) : "";
                 if (!note.startsWith("__long:") && !note.startsWith("__short:")) continue;
@@ -12879,7 +13018,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       channelHandle: null as any,
                     } as any;
                     try {
-                      if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                      try { vlineOverlayRef.current?.querySelectorAll("[data-fibtz-preview]").forEach((el) => el.remove()); } catch {}
+      if (handleAElRef.current) handleAElRef.current.style.display = "none";
                       if (handleBElRef.current) handleBElRef.current.style.display = "none";
                       if (handleCElRef.current) handleCElRef.current.style.display = "none";
                     } catch {}
@@ -20607,10 +20747,94 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 })()}
 
                 {fibTzSettingsTab === "visibility" && (
-                  <p className="text-gray-500 text-[11px]">Visibility filters use the same timeframe rules as other drawings. Levels stay visible on all chart intervals by default.</p>
+                  <div className="space-y-2">
+                    {([
+                      ["ticks", "Ticks", null],
+                      ["seconds", "Seconds", "S"],
+                      ["minutes", "Minutes", "M"],
+                      ["hours", "Hours", "H"],
+                      ["days", "Days", "D"],
+                      ["weeks", "Weeks", "W"],
+                      ["months", "Months", "Mo"],
+                      ["ranges", "Ranges", null],
+                    ] as const).map(([key, label, rangeKey]) => (
+                      <div key={key} className="flex items-center gap-2">
+                        <input type="checkbox" className="accent-orange-500"
+                          checked={(fibTzVis as any)[key]}
+                          onChange={(e) => setFibTzVis((v) => ({ ...v, [key]: e.target.checked }))} />
+                        <span className="w-16 text-gray-300">{label}</span>
+                        {rangeKey && (
+                          <>
+                            <input type="number" className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5"
+                              value={(fibTzVis as any)[`min${rangeKey}`]}
+                              onChange={(e) => setFibTzVis((v) => ({ ...v, [`min${rangeKey}`]: Number(e.target.value) || 1 }))} />
+                            <input type="range" min={1} max={rangeKey === "H" ? 24 : rangeKey === "D" ? 366 : rangeKey === "W" ? 52 : rangeKey === "Mo" ? 12 : 59}
+                              value={(fibTzVis as any)[`min${rangeKey}`]}
+                              onChange={(e) => setFibTzVis((v) => ({ ...v, [`min${rangeKey}`]: Number(e.target.value) }))}
+                              className="flex-1 accent-orange-500" />
+                            <input type="range" min={1} max={rangeKey === "H" ? 24 : rangeKey === "D" ? 366 : rangeKey === "W" ? 52 : rangeKey === "Mo" ? 12 : 59}
+                              value={(fibTzVis as any)[`max${rangeKey}`]}
+                              onChange={(e) => setFibTzVis((v) => ({ ...v, [`max${rangeKey}`]: Number(e.target.value) }))}
+                              className="flex-1 accent-orange-500" />
+                            <input type="number" className="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5"
+                              value={(fibTzVis as any)[`max${rangeKey}`]}
+                              onChange={(e) => setFibTzVis((v) => ({ ...v, [`max${rangeKey}`]: Number(e.target.value) || 1 }))} />
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
 
-                <div className="flex gap-2 justify-end pt-3 border-t border-gray-800 mt-3">
+                <div className="flex gap-2 items-center pt-3 border-t border-gray-800 mt-3">
+                  <div className="relative">
+                    <button type="button" className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300 hover:bg-white/5"
+                      onClick={() => setFibTzTemplateOpen((v) => !v)}>Template ▾</button>
+                    {fibTzTemplateOpen && (
+                      <div className="absolute bottom-full mb-1 left-0 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]">
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-gray-200"
+                          onClick={() => {
+                            setFibTzLevels(DEFAULT_FIB_TZ_LEVELS.map((x) => ({ ...x })));
+                            setFibTzShowLabels(true);
+                            setFibTzLabelH("right");
+                            setFibTzLabelV("bottom");
+                            setFibTzOneColor(null);
+                            setFibTzVis({
+                              ticks: true, seconds: true, minutes: true, hours: true, days: true, weeks: true, months: true, ranges: true,
+                              minS: 1, maxS: 59, minM: 1, maxM: 59, minH: 1, maxH: 24, minD: 1, maxD: 366, minW: 1, maxW: 52, minMo: 1, maxMo: 12,
+                            });
+                            try { localStorage.removeItem("fib_tz_levels"); } catch {}
+                            setFibTzTemplateOpen(false);
+                          }}>Reset to default</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-gray-200"
+                          onClick={() => {
+                            try {
+                              localStorage.setItem("fib_tz_template", JSON.stringify({
+                                levels: fibTzLevels, showLabels: fibTzShowLabels, labelH: fibTzLabelH, labelV: fibTzLabelV, oneColor: fibTzOneColor, vis: fibTzVis,
+                              }));
+                            } catch {}
+                            setFibTzTemplateOpen(false);
+                          }}>Save as template</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-gray-200"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("fib_tz_template");
+                              if (raw) {
+                                const t = JSON.parse(raw);
+                                if (t.levels) setFibTzLevels(t.levels);
+                                if (t.showLabels != null) setFibTzShowLabels(t.showLabels);
+                                if (t.labelH) setFibTzLabelH(t.labelH);
+                                if (t.labelV) setFibTzLabelV(t.labelV);
+                                if (t.oneColor !== undefined) setFibTzOneColor(t.oneColor);
+                                if (t.vis) setFibTzVis(t.vis);
+                              }
+                            } catch {}
+                            setFibTzTemplateOpen(false);
+                          }}>Apply template</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1" />
                   <button type="button" className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300 hover:bg-white/5"
                     onClick={() => setFibTzSettingsOpen(false)}>Cancel</button>
                   <button
@@ -20647,6 +20871,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           oneColor: fibTzOneColor,
                           background: false,
                           bgOpacity: 20,
+                          visTicks: fibTzVis.ticks, visSeconds: fibTzVis.seconds, visMinutes: fibTzVis.minutes, visHours: fibTzVis.hours,
+                          visDays: fibTzVis.days, visWeeks: fibTzVis.weeks, visMonths: fibTzVis.months, visRanges: fibTzVis.ranges,
+                          visMinS: fibTzVis.minS, visMaxS: fibTzVis.maxS, visMinM: fibTzVis.minM, visMaxM: fibTzVis.maxM,
+                          visMinH: fibTzVis.minH, visMaxH: fibTzVis.maxH, visMinD: fibTzVis.minD, visMaxD: fibTzVis.maxD,
+                          visMinW: fibTzVis.minW, visMaxW: fibTzVis.maxW, visMinMo: fibTzVis.minMo, visMaxMo: fibTzVis.maxMo,
                         }
                       );
                       pushUndo();
@@ -22346,6 +22575,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             setFibTzLabelH(tz.labelH || "right");
                             setFibTzLabelV(tz.labelV || "bottom");
                             setFibTzOneColor(tz.oneColor);
+                            setFibTzVis({
+                              ticks: tz.visTicks !== false, seconds: tz.visSeconds !== false, minutes: tz.visMinutes !== false, hours: tz.visHours !== false,
+                              days: tz.visDays !== false, weeks: tz.visWeeks !== false, months: tz.visMonths !== false, ranges: tz.visRanges !== false,
+                              minS: tz.visMinS ?? 1, maxS: tz.visMaxS ?? 59, minM: tz.visMinM ?? 1, maxM: tz.visMaxM ?? 59,
+                              minH: tz.visMinH ?? 1, maxH: tz.visMaxH ?? 24, minD: tz.visMinD ?? 1, maxD: tz.visMaxD ?? 366,
+                              minW: tz.visMinW ?? 1, maxW: tz.visMaxW ?? 52, minMo: tz.visMinMo ?? 1, maxMo: tz.visMaxMo ?? 12,
+                            });
                           }
                           setSelectedFibTzId(String(l.id));
                           setFibTzSettingsTab("style");
