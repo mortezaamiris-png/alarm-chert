@@ -18913,7 +18913,7 @@ priced.sort((a, b) => a.price - b.price);
                               dash: "solid",
                               isAvwap: true,
                             } as any;
-                            positionHandles({ time: anchor, price: ap }, null, null);
+                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, null);
                             setStatusMsg("VWAP: drag the circle to move anchor — ✓ Done");
                           } catch {
                             setStatusMsg("VWAP move failed");
