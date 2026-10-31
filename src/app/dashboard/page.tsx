@@ -89,6 +89,7 @@ type ToolMode =
   | "fib"
   | "fib-ext"
   | "fib-tz"
+  | "fib-tbt"
   | "avp"
   | "avwap"
   | "frvp"
@@ -1236,7 +1237,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:"))) {
     return false;
   }
   return (
@@ -1466,6 +1467,94 @@ function buildFibTzNote(
   s += `|minS=${opts?.visMinS ?? 1}|maxS=${opts?.visMaxS ?? 59}|minM=${opts?.visMinM ?? 1}|maxM=${opts?.visMaxM ?? 59}`;
   s += `|minH=${opts?.visMinH ?? 1}|maxH=${opts?.visMaxH ?? 24}|minD=${opts?.visMinD ?? 1}|maxD=${opts?.visMaxD ?? 366}`;
   s += `|minW=${opts?.visMinW ?? 1}|maxW=${opts?.visMaxW ?? 52}|minMo=${opts?.visMinMo ?? 1}|maxMo=${opts?.visMaxMo ?? 12}`;
+  return s;
+}
+
+
+/** Trend-based Fib Time levels (ratios of base segment) */
+const DEFAULT_FIB_TBT_LEVELS: { v: number; on: boolean; color: string }[] = [
+  { v: 0, on: true, color: "#787B86" },
+  { v: 0.382, on: true, color: "#F23645" },
+  { v: 0.5, on: false, color: "#4CAF50" },
+  { v: 0.618, on: true, color: "#4CAF50" },
+  { v: 1, on: true, color: "#089981" },
+  { v: 1.382, on: true, color: "#00BCD4" },
+  { v: 1.618, on: true, color: "#787B86" },
+  { v: 2, on: true, color: "#2962FF" },
+  { v: 2.382, on: true, color: "#E91E63" },
+  { v: 2.618, on: true, color: "#9C27B0" },
+  { v: 3, on: true, color: "#9C27B0" },
+  { v: 3.618, on: false, color: "#F23645" },
+  { v: 4.236, on: false, color: "#FF9800" },
+];
+
+function parseFibTbtNote(note: string | null | undefined): null | {
+  t1: number; p1: number; t2: number; p2: number; t3: number; p3: number;
+  levels: number[]; colors: string[];
+  lineWidth: 1 | 2 | 3; lineStyle: "solid" | "dashed" | "dotted";
+  showLabels: boolean; labelH: "left" | "center" | "right"; labelV: "top" | "middle" | "bottom";
+  oneColor: string | null; background: boolean; bgOpacity: number;
+  trend: boolean; trendColor: string;
+  text: string;
+} {
+  if (!note || typeof note !== "string" || !note.startsWith("__fibtbt:")) return null;
+  const body = note.replace(/^__fibtbt:/, "");
+  const parts = body.split("|");
+  const coords = parts[0].split(",").map(Number);
+  if (coords.length < 6 || coords.slice(0, 6).some((n) => !Number.isFinite(n))) return null;
+  const [t1, p1, t2, p2, t3, p3] = coords;
+  const levels = (parts[1] || "0,0.382,0.618,1,1.382,1.618,2,2.382,2.618,3")
+    .split(",").map(Number).filter((n) => Number.isFinite(n));
+  let colors: string[] = [];
+  let lineWidth: 1 | 2 | 3 = 1;
+  let lineStyle: "solid" | "dashed" | "dotted" = "solid";
+  let showLabels = true;
+  let labelH: "left" | "center" | "right" = "right";
+  let labelV: "top" | "middle" | "bottom" = "bottom";
+  let oneColor: string | null = null;
+  let background = true;
+  let bgOpacity = 20;
+  let trend = true;
+  let trendColor = "#787B86";
+  let text = "";
+  for (let i = 2; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.startsWith("lc=")) colors = p.slice(3).split(",").map((c) => decodeURIComponent(c)).filter(Boolean);
+    else if (p.startsWith("lw=")) { const n = parseInt(p.slice(3), 10); if (n === 1 || n === 2 || n === 3) lineWidth = n; }
+    else if (p.startsWith("ls=")) { const e = p.slice(3); if (e === "solid" || e === "dashed" || e === "dotted") lineStyle = e; }
+    else if (p === "lbl=0") showLabels = false; else if (p === "lbl=1") showLabels = true;
+    else if (p.startsWith("lh=")) { const e = p.slice(3); if (e === "left" || e === "center" || e === "right") labelH = e; }
+    else if (p.startsWith("lv=")) { const e = p.slice(3); if (e === "top" || e === "middle" || e === "bottom") labelV = e; }
+    else if (p.startsWith("one=")) oneColor = decodeURIComponent(p.slice(4)) || null;
+    else if (p === "bg=1") background = true; else if (p === "bg=0") background = false;
+    else if (p.startsWith("bgo=")) { const n = parseInt(p.slice(4), 10); if (!Number.isNaN(n)) bgOpacity = Math.max(0, Math.min(100, n)); }
+    else if (p === "tr=0") trend = false; else if (p === "tr=1") trend = true;
+    else if (p.startsWith("tc=")) trendColor = decodeURIComponent(p.slice(3)) || "#787B86";
+    else if (p.startsWith("txt=")) text = p.slice(4);
+  }
+  return { t1, p1, t2, p2, t3, p3, levels, colors, lineWidth, lineStyle, showLabels, labelH, labelV, oneColor, background, bgOpacity, trend, trendColor, text };
+}
+
+function buildFibTbtNote(
+  coords: { t1: number; p1: number; t2: number; p2: number; t3: number; p3: number },
+  levels: { v: number; on: boolean; color: string }[],
+  opts?: {
+    lineWidth?: number; lineStyle?: string; showLabels?: boolean;
+    labelH?: string; labelV?: string; oneColor?: string | null;
+    background?: boolean; bgOpacity?: number; trend?: boolean; trendColor?: string; text?: string;
+  }
+) {
+  const onLevels = levels.filter((x) => x.on);
+  const levelsOn = onLevels.map((x) => x.v).join(",");
+  const lc = onLevels.map((x) => encodeURIComponent(x.color || "#2962FF")).join(",");
+  let s =
+    `__fibtbt:${coords.t1},${coords.p1},${coords.t2},${coords.p2},${coords.t3},${coords.p3}|${levelsOn}` +
+    `|lc=${lc}|lw=${opts?.lineWidth ?? 1}|ls=${opts?.lineStyle || "solid"}` +
+    `|lbl=${opts?.showLabels === false ? 0 : 1}|lh=${opts?.labelH || "right"}|lv=${opts?.labelV || "bottom"}` +
+    `|bg=${opts?.background === false ? 0 : 1}|bgo=${opts?.bgOpacity ?? 20}` +
+    `|tr=${opts?.trend === false ? 0 : 1}|tc=${encodeURIComponent(opts?.trendColor || "#787B86")}`;
+  if (opts?.oneColor) s += `|one=${encodeURIComponent(opts.oneColor)}`;
+  if (opts?.text && String(opts.text).trim()) s += `|txt=${String(opts.text).trim()}`;
   return s;
 }
 
@@ -2211,6 +2300,7 @@ function userFacingNote(note?: string | null): string {
     if (rp?.text) return rp.text;
     return "";
   }
+  if (s.startsWith("__fibtbt:")) return "Trend-based fib time";
   if (s.startsWith("__fibtz:")) return "Fib time zone";
   if (s.startsWith("__fibtz:")) return "Fib time zone";
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
@@ -3410,6 +3500,24 @@ export default function DashboardPage() {
   const [fibTzLabelH, setFibTzLabelH] = useState<"left" | "center" | "right">("right");
   const [fibTzLabelV, setFibTzLabelV] = useState<"top" | "middle" | "bottom">("bottom");
   const [fibTzOneColor, setFibTzOneColor] = useState<string | null>(null);
+  const [fibTbtLevels, setFibTbtLevels] = useState(() => {
+    const saved = loadLS("fib_tbt_levels", null as any);
+    if (Array.isArray(saved) && saved.length) return saved as typeof DEFAULT_FIB_TBT_LEVELS;
+    return DEFAULT_FIB_TBT_LEVELS.map((x) => ({ ...x }));
+  });
+  const [fibTbtSettingsOpen, setFibTbtSettingsOpen] = useState(false);
+  const [selectedFibTbtId, setSelectedFibTbtId] = useState<string | null>(null);
+  const [fibTbtSettingsTab, setFibTbtSettingsTab] = useState<"style" | "coords" | "visibility">("style");
+  const [fibTbtShowLabels, setFibTbtShowLabels] = useState(true);
+  const [fibTbtLabelH, setFibTbtLabelH] = useState<"left" | "center" | "right">("right");
+  const [fibTbtLabelV, setFibTbtLabelV] = useState<"top" | "middle" | "bottom">("bottom");
+  const [fibTbtOneColor, setFibTbtOneColor] = useState<string | null>(null);
+  const [fibTbtBackground, setFibTbtBackground] = useState(true);
+  const [fibTbtBgOpacity, setFibTbtBgOpacity] = useState(20);
+  const [fibTbtTrend, setFibTbtTrend] = useState(true);
+  const [fibTbtTrendColor, setFibTbtTrendColor] = useState("#787B86");
+  const [fibTbtTemplateOpen, setFibTbtTemplateOpen] = useState(false);
+  const fibTbtPoint3Ref = useRef<{ time: number; price: number } | null>(null);
   const [fibTzVis, setFibTzVis] = useState({
     ticks: true, seconds: true, minutes: true, hours: true, days: true, weeks: true, months: true, ranges: true,
     minS: 1, maxS: 59, minM: 1, maxM: 59, minH: 1, maxH: 24, minD: 1, maxD: 366, minW: 1, maxW: 52, minMo: 1, maxMo: 12,
@@ -5872,7 +5980,9 @@ export default function DashboardPage() {
       if (!posDraggingRef.current) {
         vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => el.remove());
       try { vlineOverlayRef.current?.querySelectorAll("[data-fibtz-id]").forEach((el) => el.remove()); } catch {}
+      try { vlineOverlayRef.current?.querySelectorAll("[data-fibtbt-id]").forEach((el) => el.remove()); } catch {}
       try { vlineOverlayRef.current?.querySelectorAll("[data-fibtz-preview]").forEach((el) => el.remove()); } catch {}
+      try { vlineOverlayRef.current?.querySelectorAll("[data-fibtbt-preview]").forEach((el) => el.remove()); } catch {}
       } else {
         const dragId = posHandleDragRef.current?.id;
         vlineOverlayRef.current?.querySelectorAll("[data-pos-id]").forEach((el) => {
@@ -6489,6 +6599,192 @@ priced.sort((a, b) => a.price - b.price);
             (chartLinesRef.current as any).set(l.id, { __fibPriceLines: true, lines: pls, series: extraSeries });
             } // end visOk
           }
+        } else if (typeof l.note === "string" && l.note.startsWith("__fibtbt:")) {
+          // Trend-based Fib Time: 3 anchors + vertical lines at ratios * (t2-t1) from t3
+          try {
+            const tb = parseFibTbtNote(l.note);
+            if (tb && chart && series) {
+              const host = vlineOverlayRef.current;
+              const isSel = String((window as any).__selectedFibTbtId || selectedFibTbtId || "") === String(l.id);
+              try { host?.querySelectorAll?.(`[data-fibtbt-id="${l.id}"]`).forEach((el: Element) => el.remove()); } catch {}
+              const unit = tb.t2 - tb.t1;
+              if (!(Math.abs(unit) > 0.5)) { /* skip degenerate */ }
+              else {
+                const lw = tb.lineWidth || 1;
+                const oneCol = tb.oneColor;
+                // sorted times for background bands
+                const levelTimes = tb.levels.map((lv, i) => ({
+                  lv, i,
+                  t: tb.t3 + lv * unit,
+                  col: oneCol || (tb.colors && tb.colors[i]) || DEFAULT_FIB_TBT_LEVELS.find((d) => Math.abs(d.v - lv) < 1e-6)?.color || "#2962FF",
+                })).sort((a, b) => a.t - b.t);
+
+                // Background fills between consecutive levels
+                if (tb.background && host) {
+                  const op = Math.max(0, Math.min(100, tb.bgOpacity ?? 20)) / 100;
+                  for (let i = 0; i < levelTimes.length - 1; i++) {
+                    const a = levelTimes[i], b = levelTimes[i + 1];
+                    const xA = chart.timeScale().timeToCoordinate(a.t as any);
+                    const xB = chart.timeScale().timeToCoordinate(b.t as any);
+                    if (xA == null || xB == null) continue;
+                    const left = Math.min(Number(xA), Number(xB));
+                    const width = Math.abs(Number(xB) - Number(xA));
+                    if (width < 1) continue;
+                    const hex = a.col || "#2962FF";
+                    let fill = `rgba(41,98,255,${op * 0.5})`;
+                    if (hex.startsWith("#") && hex.length === 7) {
+                      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), bl = parseInt(hex.slice(5, 7), 16);
+                      fill = `rgba(${r},${g},${bl},${op * 0.45})`;
+                    }
+                    const bg = document.createElement("div");
+                    bg.dataset.fibtbtId = String(l.id);
+                    bg.style.cssText = `position:absolute;left:${left}px;top:0;bottom:28px;width:${width}px;background:${fill};pointer-events:none;z-index:16;`;
+                    host.appendChild(bg);
+                  }
+                }
+
+                // Trend line (dashed) through 3 points when selected or trend on
+                if (tb.trend && host) {
+                  const pts = [
+                    { t: tb.t1, p: tb.p1 },
+                    { t: tb.t2, p: tb.p2 },
+                    { t: tb.t3, p: tb.p3 },
+                  ];
+                  const xy: { x: number; y: number }[] = [];
+                  for (const pt of pts) {
+                    const x = chart.timeScale().timeToCoordinate(pt.t as any);
+                    const y = series.priceToCoordinate(pt.p);
+                    if (x != null && y != null) xy.push({ x: Number(x), y: Number(y) });
+                  }
+                  for (let i = 0; i < xy.length - 1; i++) {
+                    const a = xy[i], b = xy[i + 1];
+                    const dx = b.x - a.x, dy = b.y - a.y;
+                    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                    const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                    const seg = document.createElement("div");
+                    seg.dataset.fibtbtId = String(l.id);
+                    seg.style.cssText = [
+                      `position:absolute;left:${a.x}px;top:${a.y}px;width:${len}px;height:0;`,
+                      `border-top:1.5px dashed ${tb.trendColor || "#787B86"};transform-origin:0 0;transform:rotate(${ang}deg);`,
+                      `pointer-events:none;z-index:17;opacity:${isSel ? 1 : 0.7};`,
+                    ].join("");
+                    host.appendChild(seg);
+                  }
+                }
+
+                // Vertical level lines + labels
+                for (const { lv, col, t } of levelTimes) {
+                  const x = chart.timeScale().timeToCoordinate(t as any);
+                  if (x == null || !Number.isFinite(Number(x))) continue;
+                  if (host) {
+                    const line = document.createElement("div");
+                    line.dataset.fibtbtId = String(l.id);
+                    line.dataset.fibtbtLevel = String(lv);
+                    line.style.cssText = [
+                      `position:absolute;left:${Number(x) - 3}px;top:0;bottom:28px;width:7px;`,
+                      `background:linear-gradient(to right, transparent 0, transparent calc(50% - ${lw / 2}px), ${col} calc(50% - ${lw / 2}px), ${col} calc(50% + ${lw / 2}px), transparent calc(50% + ${lw / 2}px), transparent 100%);`,
+                      `opacity:0.95;pointer-events:auto;cursor:pointer;z-index:18;`,
+                      isSel ? "outline:1px dashed rgba(255,255,255,0.3);" : "",
+                    ].filter(Boolean).join("");
+                    line.addEventListener("pointerdown", (ev) => {
+                      ev.stopPropagation();
+                      try {
+                        (window as any).__selectedFibTbtId = String(l.id);
+                        setSelectedFibTbtId(String(l.id));
+                        renderAllLinesAndAlarmsRef.current?.();
+                      } catch {}
+                    });
+                    host.appendChild(line);
+                    if (tb.showLabels) {
+                      const lab = document.createElement("div");
+                      lab.dataset.fibtbtId = String(l.id);
+                      const hAlign = tb.labelH === "left" ? "translateX(6px)" : tb.labelH === "center" ? "translateX(-50%)" : "translateX(calc(-100% - 6px))";
+                      let transform = hAlign;
+                      let posCss = "top:8px";
+                      if (tb.labelV === "middle") { posCss = "top:50%"; transform = `${hAlign} translateY(-50%)`; }
+                      else if (tb.labelV === "bottom") { posCss = "bottom:40px"; }
+                      lab.style.cssText = [
+                        `position:absolute;left:${Number(x)}px;${posCss};transform:${transform};`,
+                        `color:${col};font-size:10px;font-weight:700;pointer-events:none;z-index:19;`,
+                        `text-shadow:0 1px 3px #000;white-space:nowrap;`,
+                      ].join("");
+                      lab.textContent = String(lv);
+                      host.appendChild(lab);
+                    }
+                  }
+                }
+
+                // 3 handles when selected
+                if (host && isSel) {
+                  const mk = (which: string, tt: number, pp: number) => {
+                    const xx = chart.timeScale().timeToCoordinate(tt as any);
+                    const yy = series.priceToCoordinate(pp);
+                    if (xx == null || yy == null) return;
+                    const h = document.createElement("div");
+                    h.dataset.fibtbtId = String(l.id);
+                    h.dataset.fibtbtHandle = which;
+                    h.style.cssText = [
+                      `position:absolute;left:${Number(xx)}px;top:${Number(yy)}px;transform:translate(-50%,-50%);`,
+                      `width:12px;height:12px;border-radius:50%;background:#2962FF;border:2px solid #fff;`,
+                      `cursor:move;z-index:25;pointer-events:auto;`,
+                    ].join("");
+                    h.addEventListener("pointerdown", (ev) => {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      (window as any).__selectedFibTbtId = String(l.id);
+                      try { setSelectedFibTbtId(String(l.id)); } catch {}
+                      const onMove = (e2: PointerEvent) => {
+                        const chart2 = chartRef.current;
+                        const ser2 = seriesRef.current;
+                        const rect = chartContainerRef.current?.getBoundingClientRect();
+                        if (!chart2 || !ser2 || !rect) return;
+                        const logical = chart2.timeScale().coordinateToLogical(e2.clientX - rect.left);
+                        const candles = candlesRef.current || [];
+                        if (logical == null || !candles.length) return;
+                        const barSec2 = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+                        const lastIdx = candles.length - 1;
+                        let newT: number;
+                        if (logical > lastIdx) newT = candles[lastIdx].time + Math.round(logical - lastIdx) * barSec2;
+                        else if (logical < 0) newT = candles[0].time + Math.round(logical) * barSec2;
+                        else newT = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(logical)))].time);
+                        const pr = ser2.coordinateToPrice(e2.clientY - rect.top);
+                        const newP = pr != null && Number.isFinite(pr) ? Number(pr) : pp;
+                        const coords = {
+                          t1: which === "a" ? newT : tb.t1, p1: which === "a" ? newP : tb.p1,
+                          t2: which === "b" ? newT : tb.t2, p2: which === "b" ? newP : tb.p2,
+                          t3: which === "c" ? newT : tb.t3, p3: which === "c" ? newP : tb.p3,
+                        };
+                        const levelsUi = DEFAULT_FIB_TBT_LEVELS.map((d) => {
+                          const on = tb.levels.some((v) => Math.abs(v - d.v) < 1e-6);
+                          const ci = tb.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                          return { ...d, on, color: (ci >= 0 && tb.colors[ci]) ? tb.colors[ci] : d.color };
+                        });
+                        const newNote = buildFibTbtNote(coords, levelsUi, {
+                          lineWidth: tb.lineWidth, lineStyle: tb.lineStyle, showLabels: tb.showLabels,
+                          labelH: tb.labelH, labelV: tb.labelV, oneColor: tb.oneColor,
+                          background: tb.background, bgOpacity: tb.bgOpacity, trend: tb.trend, trendColor: tb.trendColor,
+                        });
+                        setLines((prev) => prev.map((x) => x.id === l.id ? {
+                          ...x, note: newNote, start_time: coords.t1, end_time: coords.t3, price: coords.p1, end_price: coords.p3,
+                        } : x));
+                      };
+                      const onUp = () => {
+                        document.removeEventListener("pointermove", onMove);
+                        document.removeEventListener("pointerup", onUp);
+                        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                      };
+                      document.addEventListener("pointermove", onMove);
+                      document.addEventListener("pointerup", onUp);
+                    });
+                    host.appendChild(h);
+                  };
+                  mk("a", tb.t1, tb.p1);
+                  mk("b", tb.t2, tb.p2);
+                  mk("c", tb.t3, tb.p3);
+                }
+              }
+            }
+          } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__fibtz:")) {
           // Fibonacci Time Zone — 2 anchors + vertical lines at fib * unit
           try {
@@ -12286,7 +12582,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try {
           const mNow = modeRef.current;
           const startPt = diagStartRef.current;
-          if ((mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz") && param?.point && seriesRef.current) {
+          if ((mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz" || mNow === "fib-tbt") && param?.point && seriesRef.current) {
             let price2: number | null = null;
             try {
               const p = seriesRef.current.coordinateToPrice(param.point.y);
@@ -12339,6 +12635,49 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               `position:absolute;left:${left}px;top:${Number(y1)}px;width:${Math.max(2, right - left)}px;height:0;`,
                               `border-top:1.5px dashed rgba(148,163,184,0.9);pointer-events:none;z-index:20;`,
                             ].join("");
+                          }
+                        }
+                      } catch {}
+                    }
+                    // Trend-based fib time: dashed trend polyline A-B-C
+                    if (mNow === "fib-tbt") {
+                      try {
+                        const host = vlineOverlayRef.current;
+                        if (host && seriesRef.current) {
+                          host.querySelectorAll("[data-fibtbt-preview]").forEach((el) => el.remove());
+                          const pts: { x: number; y: number }[] = [];
+                          const xa = chartNow.timeScale().timeToCoordinate(startPt.time as any);
+                          const ya = seriesRef.current.priceToCoordinate(startPt.price);
+                          if (xa != null && ya != null) pts.push({ x: Number(xa), y: Number(ya) });
+                          const mid = fibTbtPoint3Ref.current;
+                          if (mid) {
+                            const xb = chartNow.timeScale().timeToCoordinate(mid.time as any);
+                            const yb = seriesRef.current.priceToCoordinate(mid.price);
+                            if (xb != null && yb != null) pts.push({ x: Number(xb), y: Number(yb) });
+                          }
+                          pts.push({ x: Number(param.point.x), y: Number(param.point.y) });
+                          for (let i = 0; i < pts.length - 1; i++) {
+                            const a = pts[i], b = pts[i + 1];
+                            const seg = document.createElement("div");
+                            seg.dataset.fibtbtPreview = "1";
+                            const dx = b.x - a.x, dy = b.y - a.y;
+                            const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                            const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                            seg.style.cssText = [
+                              `position:absolute;left:${a.x}px;top:${a.y}px;width:${len}px;height:0;`,
+                              `border-top:1.5px dashed rgba(148,163,184,0.95);transform-origin:0 0;transform:rotate(${ang}deg);`,
+                              `pointer-events:none;z-index:20;`,
+                            ].join("");
+                            host.appendChild(seg);
+                          }
+                          // show hollow C following cursor when B is set
+                          if (mid && handleCElRef.current) {
+                            handleCElRef.current.style.display = "block";
+                            handleCElRef.current.style.left = `${param.point.x}px`;
+                            handleCElRef.current.style.top = `${param.point.y}px`;
+                            handleCElRef.current.style.borderColor = "#2962FF";
+                            handleCElRef.current.style.width = "14px";
+                            handleCElRef.current.style.height = "14px";
                           }
                         }
                       } catch {}
@@ -14752,6 +15091,115 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           modeRef.current = "none";
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 250);
+          return;
+        }
+
+        if (m === "fib-tbt") {
+          // Trend-based Fib Time: 3 clicks A → B → C
+          const t = resolveTime(param);
+          if (t == null) return;
+          const start = diagStartRef.current;
+          const mid = fibTbtPoint3Ref.current; // reuse ref name as point B storage
+          if (!start) {
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            fibTbtPoint3Ref.current = null;
+            try {
+              const elA = handleAElRef.current;
+              if (elA) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
+                  elA.style.display = "block";
+                  elA.style.left = `${x}px`; elA.style.top = `${y}px`;
+                  elA.style.borderColor = "#2962FF"; elA.style.width = "14px"; elA.style.height = "14px";
+                }
+              }
+              if (handleBElRef.current) handleBElRef.current.style.display = "none";
+              if (handleCElRef.current) handleCElRef.current.style.display = "none";
+            } catch {}
+            setStatusMsg("Trend-based fib time: tap point 2");
+            return;
+          }
+          if (!mid) {
+            fibTbtPoint3Ref.current = { time: t, price: fp };
+            try {
+              positionHandles(
+                { time: start.time, price: start.price },
+                { time: t, price: fp },
+                "b"
+              );
+            } catch {}
+            setStatusMsg("Trend-based fib time: tap point 3 (origin)");
+            return;
+          }
+          // third point → save
+          clickLockRef.current = true;
+          setSaving(true);
+          const levelsNow = (loadLS("fib_tbt_levels", DEFAULT_FIB_TBT_LEVELS) as typeof DEFAULT_FIB_TBT_LEVELS) || DEFAULT_FIB_TBT_LEVELS;
+          const note = buildFibTbtNote(
+            { t1: start.time, p1: start.price, t2: mid.time, p2: mid.price, t3: t, p3: fp },
+            levelsNow,
+            { lineWidth: 1, lineStyle: "solid", showLabels: true, labelH: "right", labelV: "bottom", background: true, bgOpacity: 20, trend: true, trendColor: "#787B86" }
+          );
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: start.price,
+            end_price: fp,
+            start_time: start.time,
+            end_time: t,
+            color: "#2962FF",
+            width: 1,
+            dash: "dashed",
+            note,
+          };
+          try {
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+              (fb as any).user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setSelectedFibTbtId(String((data as any).id));
+              setStatusMsg("Trend-based fib time saved");
+            } else {
+              const local: ChartLine = {
+                id: `local-fibtbt-${Date.now()}`,
+                symbol: symbolRef.current.toUpperCase(),
+                price: start.price,
+                end_price: fp,
+                start_time: start.time,
+                end_time: t,
+                color: base.color,
+                width: 1,
+                note,
+              };
+              setLines((prev) => [local, ...prev]);
+              setSelectedFibTbtId(local.id);
+              setStatusMsg("Trend-based fib time local only");
+            }
+          } catch {
+            setStatusMsg("Trend-based fib time save failed");
+          }
+          diagStartRef.current = null;
+          setDiagStart(null);
+          fibTbtPoint3Ref.current = null;
+          try {
+            if (handleAElRef.current) handleAElRef.current.style.display = "none";
+            if (handleBElRef.current) handleBElRef.current.style.display = "none";
+            if (handleCElRef.current) handleCElRef.current.style.display = "none";
+            vlineOverlayRef.current?.querySelectorAll("[data-fibtbt-preview]").forEach((el) => el.remove());
+          } catch {}
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 250);
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           return;
         }
 
@@ -17855,7 +18303,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setDrawToolsOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "fib-tz" || mode === "avp" || mode === "avwap" || mode === "frvp"
+                  fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "fib-tz" || mode === "fib-tbt" || mode === "avp" || mode === "avwap" || mode === "frvp"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -17910,6 +18358,30 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <line x1="18" y1="9" x2="18" y2="15" />
                     </svg>
                     Fib time zone
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-tbt" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      fibTbtPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib-tbt");
+                      modeRef.current = "fib-tbt";
+                      setStatusMsg("Trend-based fib time: tap point 1, then 2, then 3");
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="shrink-0">
+                      <line x1="4" y1="5" x2="4" y2="19" />
+                      <line x1="9" y1="5" x2="9" y2="19" />
+                      <line x1="14" y1="5" x2="14" y2="19" />
+                      <line x1="19" y1="5" x2="19" y2="19" />
+                      <path d="M3 16 L8 10 L13 13" strokeDasharray="2 2" />
+                    </svg>
+                    Trend-based fib time
                   </button>
                   <button
                     type="button"
@@ -20689,7 +21161,189 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </div>
           )}
 
-          {fibTzSettingsOpen && selectedFibTzId && (
+          {fibTbtSettingsOpen && selectedFibTbtId && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setFibTbtSettingsOpen(false); setSelectedFibTbtId(null); }}>
+              <div className="bg-gray-950 border border-gray-700 rounded-2xl shadow-2xl w-[min(92vw,340px)] max-h-[85vh] overflow-y-auto p-4 text-xs text-gray-200"
+                onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white">Trend-based fib time</h3>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg" onClick={() => { setFibTbtSettingsOpen(false); setSelectedFibTbtId(null); }}>×</button>
+                </div>
+                <div className="flex gap-3 border-b border-gray-800 mb-3 text-[11px]">
+                  {(["style", "coords", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-2 px-1 capitalize ${fibTbtSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500"}`}
+                      onClick={() => setFibTbtSettingsTab(tab)}>
+                      {tab === "coords" ? "Coordinates" : tab === "style" ? "Style" : "Visibility"}
+                    </button>
+                  ))}
+                </div>
+                {fibTbtSettingsTab === "style" && (
+                  <>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="checkbox" checked={fibTbtTrend} onChange={(e) => setFibTbtTrend(e.target.checked)} className="accent-orange-500" />
+                      <span>Trend line</span>
+                      <input type="color" value={fibTbtTrendColor} onChange={(e) => setFibTbtTrendColor(e.target.value)}
+                        className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer ml-auto" />
+                    </label>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto mb-3">
+                      {fibTbtLevels.map((lv, i) => (
+                        <div key={lv.v} className="flex items-center gap-2">
+                          <input type="checkbox" checked={!!lv.on} className="accent-orange-500"
+                            onChange={(e) => setFibTbtLevels(fibTbtLevels.map((x, j) => j === i ? { ...x, on: e.target.checked } : x))} />
+                          <input type="number" step="0.001" value={lv.v}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              if (!Number.isFinite(n)) return;
+                              setFibTbtLevels(fibTbtLevels.map((x, j) => j === i ? { ...x, v: n } : x));
+                            }}
+                            className="w-16 bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 tabular-nums" />
+                          <input type="color" value={lv.color}
+                            onChange={(e) => setFibTbtLevels(fibTbtLevels.map((x, j) => j === i ? { ...x, color: e.target.value } : x))}
+                            className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer" />
+                          <span className="w-6 h-0.5 rounded" style={{ background: lv.color }} />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-gray-400">Use one color</span>
+                      <input type="color" value={fibTbtOneColor || "#2962FF"} onChange={(e) => setFibTbtOneColor(e.target.value)}
+                        className="w-7 h-6 rounded border border-gray-600 bg-transparent cursor-pointer" />
+                      <button type="button" className="text-[10px] text-gray-500" onClick={() => setFibTbtOneColor(null)}>Clear</button>
+                    </div>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="checkbox" checked={fibTbtBackground} onChange={(e) => setFibTbtBackground(e.target.checked)} className="accent-orange-500" />
+                      Background
+                      <input type="range" min={0} max={100} value={fibTbtBgOpacity} onChange={(e) => setFibTbtBgOpacity(Number(e.target.value))}
+                        className="flex-1 accent-orange-500" />
+                      <span className="w-8 text-right tabular-nums text-gray-400">{fibTbtBgOpacity}</span>
+                    </label>
+                    <label className="flex items-center gap-2 mb-2 text-gray-300">
+                      <input type="checkbox" checked={fibTbtShowLabels} onChange={(e) => setFibTbtShowLabels(e.target.checked)} className="accent-orange-500" />
+                      Labels
+                      <select value={fibTbtLabelH} onChange={(e) => setFibTbtLabelH(e.target.value as any)}
+                        className="ml-auto bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5">
+                        <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+                      </select>
+                      <select value={fibTbtLabelV} onChange={(e) => setFibTbtLabelV(e.target.value as any)}
+                        className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5">
+                        <option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+                {fibTbtSettingsTab === "coords" && (() => {
+                  const line = lines.find((x) => String(x.id) === String(selectedFibTbtId));
+                  const tb = line ? parseFibTbtNote(line.note) : null;
+                  if (!tb) return <p className="text-gray-500">No data</p>;
+                  return (
+                    <div className="space-y-3">
+                      {[1, 2, 3].map((n) => (
+                        <div key={n} className="flex items-center gap-2">
+                          <span className="text-gray-400 w-24">#{n} (price, bar)</span>
+                          <input type="number" step="any" defaultValue={(tb as any)[`p${n}`]} id={`fibtbt-p${n}`}
+                            className="w-24 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                          <input type="number" step="1" defaultValue={Math.round((tb as any)[`t${n}`])} id={`fibtbt-t${n}`}
+                            className="w-28 bg-gray-900 border border-gray-700 rounded px-1.5 py-1" />
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {fibTbtSettingsTab === "visibility" && (
+                  <p className="text-gray-500 text-[11px]">Shown on all chart intervals by default.</p>
+                )}
+                <div className="flex gap-2 items-center pt-3 border-t border-gray-800 mt-3">
+                  <div className="relative">
+                    <button type="button" className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300 hover:bg-white/5"
+                      onClick={() => setFibTbtTemplateOpen((v) => !v)}>Template ▾</button>
+                    {fibTbtTemplateOpen && (
+                      <div className="absolute bottom-full mb-1 left-0 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]">
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            setFibTbtLevels(DEFAULT_FIB_TBT_LEVELS.map((x) => ({ ...x })));
+                            setFibTbtShowLabels(true); setFibTbtBackground(true); setFibTbtBgOpacity(20);
+                            setFibTbtTrend(true); setFibTbtOneColor(null); setFibTbtTemplateOpen(false);
+                          }}>Reset to default</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              localStorage.setItem("fib_tbt_template", JSON.stringify({
+                                levels: fibTbtLevels, showLabels: fibTbtShowLabels, labelH: fibTbtLabelH, labelV: fibTbtLabelV,
+                                oneColor: fibTbtOneColor, background: fibTbtBackground, bgOpacity: fibTbtBgOpacity,
+                                trend: fibTbtTrend, trendColor: fibTbtTrendColor,
+                              }));
+                            } catch {}
+                            setFibTbtTemplateOpen(false);
+                          }}>Save as template</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            try {
+                              const raw = localStorage.getItem("fib_tbt_template");
+                              if (raw) {
+                                const t = JSON.parse(raw);
+                                if (t.levels) setFibTbtLevels(t.levels);
+                                if (t.showLabels != null) setFibTbtShowLabels(t.showLabels);
+                                if (t.labelH) setFibTbtLabelH(t.labelH);
+                                if (t.labelV) setFibTbtLabelV(t.labelV);
+                                if (t.oneColor !== undefined) setFibTbtOneColor(t.oneColor);
+                                if (t.background != null) setFibTbtBackground(t.background);
+                                if (t.bgOpacity != null) setFibTbtBgOpacity(t.bgOpacity);
+                                if (t.trend != null) setFibTbtTrend(t.trend);
+                                if (t.trendColor) setFibTbtTrendColor(t.trendColor);
+                              }
+                            } catch {}
+                            setFibTbtTemplateOpen(false);
+                          }}>Apply template</button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1" />
+                  <button type="button" className="px-3 py-1.5 rounded-lg border border-gray-600 text-gray-300" onClick={() => setFibTbtSettingsOpen(false)}>Cancel</button>
+                  <button type="button" className="px-3 py-1.5 rounded-lg bg-orange-500 text-black font-semibold"
+                    onClick={() => {
+                      const id = selectedFibTbtId;
+                      const line = lines.find((x) => String(x.id) === String(id));
+                      if (!line) { setFibTbtSettingsOpen(false); return; }
+                      const tb = parseFibTbtNote(line.note);
+                      let t1 = tb?.t1 ?? 0, p1 = tb?.p1 ?? 0, t2 = tb?.t2 ?? 0, p2 = tb?.p2 ?? 0, t3 = tb?.t3 ?? 0, p3 = tb?.p3 ?? 0;
+                      try {
+                        for (const n of [1, 2, 3]) {
+                          const ep = document.getElementById(`fibtbt-p${n}`) as HTMLInputElement | null;
+                          const et = document.getElementById(`fibtbt-t${n}`) as HTMLInputElement | null;
+                          if (ep && Number.isFinite(Number(ep.value))) { if (n === 1) p1 = Number(ep.value); if (n === 2) p2 = Number(ep.value); if (n === 3) p3 = Number(ep.value); }
+                          if (et && Number.isFinite(Number(et.value))) { if (n === 1) t1 = Number(et.value); if (n === 2) t2 = Number(et.value); if (n === 3) t3 = Number(et.value); }
+                        }
+                      } catch {}
+                      const newNote = buildFibTbtNote(
+                        { t1, p1, t2, p2, t3, p3 },
+                        fibTbtLevels,
+                        {
+                          showLabels: fibTbtShowLabels, labelH: fibTbtLabelH, labelV: fibTbtLabelV,
+                          oneColor: fibTbtOneColor, background: fibTbtBackground, bgOpacity: fibTbtBgOpacity,
+                          trend: fibTbtTrend, trendColor: fibTbtTrendColor,
+                        }
+                      );
+                      pushUndo();
+                      setLines((prev) => prev.map((x) => String(x.id) === String(id) ? {
+                        ...x, note: newNote, start_time: t1, end_time: t3, price: p1, end_price: p3,
+                      } : x));
+                      try {
+                        if (!String(id).startsWith("local-")) {
+                          void supabase.from("chart_lines").update({ note: newNote, start_time: t1, end_time: t3, price: p1, end_price: p3 }).eq("id", id);
+                        }
+                      } catch {}
+                      setFibTbtSettingsOpen(false);
+                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                    }}
+                  >Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+{fibTzSettingsOpen && selectedFibTzId && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
               onClick={() => { setFibTzSettingsOpen(false); setSelectedFibTzId(null); }}>
               <div
@@ -22340,10 +22994,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     setSelectedFibTzId(String(l.id));
                     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                   }
+                  if (typeof l.note === "string" && l.note.startsWith("__fibtbt:")) {
+                    (window as any).__selectedFibTbtId = String(l.id);
+                    setSelectedFibTbtId(String(l.id));
+                    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                  }
                 }}
                 className={`bg-gray-900 border rounded-lg px-3 py-2 cursor-pointer ${
                   (movingId === l.id && movingType === "line") ||
-                  (typeof l.note === "string" && l.note.startsWith("__fibtz:") && String(selectedFibTzId) === String(l.id))
+                  (typeof l.note === "string" && l.note.startsWith("__fibtz:") && String(selectedFibTzId) === String(l.id)) ||
+                  (typeof l.note === "string" && l.note.startsWith("__fibtbt:") && String(selectedFibTbtId) === String(l.id))
                     ? "border-dashed border-orange-400/80 ring-1 ring-orange-500/40"
                     : "border-gray-800"
                 }`}
@@ -22352,6 +23012,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
                     {typeof l.note === "string" && l.note.startsWith("__fibext:")
                       ? "Fib Ext"
+                      : typeof l.note === "string" && l.note.startsWith("__fibtbt:")
+                      ? "Fib TBT"
                       : typeof l.note === "string" && l.note.startsWith("__fibtz:")
                       ? "Fib TZ"
                       : typeof l.note === "string" && l.note.startsWith("__fib:")
@@ -22589,6 +23251,37 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <circle cx="12" cy="12" r="3" />
                           <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    ) : typeof l.note === "string" && l.note.startsWith("__fibtbt:") ? (
+                      <button
+                        type="button"
+                        title="Trend-based fib time settings"
+                        onClick={() => {
+                          const tb = parseFibTbtNote(l.note);
+                          if (tb) {
+                            setFibTbtLevels(DEFAULT_FIB_TBT_LEVELS.map((d) => {
+                              const ci = tb.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                              return { ...d, on: ci >= 0, color: (ci >= 0 && tb.colors[ci]) ? tb.colors[ci] : d.color };
+                            }));
+                            setFibTbtShowLabels(!!tb.showLabels);
+                            setFibTbtLabelH(tb.labelH || "right");
+                            setFibTbtLabelV(tb.labelV || "bottom");
+                            setFibTbtOneColor(tb.oneColor);
+                            setFibTbtBackground(!!tb.background);
+                            setFibTbtBgOpacity(tb.bgOpacity ?? 20);
+                            setFibTbtTrend(tb.trend !== false);
+                            setFibTbtTrendColor(tb.trendColor || "#787B86");
+                          }
+                          setSelectedFibTbtId(String(l.id));
+                          setFibTbtSettingsTab("style");
+                          setFibTbtSettingsOpen(true);
+                        }}
+                        className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
                         </svg>
                       </button>
                     ) : typeof l.note === "string" && l.note.startsWith("__fibtz:") ? (
