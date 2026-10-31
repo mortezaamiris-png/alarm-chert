@@ -91,6 +91,7 @@ type ToolMode =
   | "avp"
   | "avwap"
   | "frvp"
+  | "channel"
   | "long-pos"
   | "short-pos"
   | "alarm"
@@ -795,6 +796,118 @@ function buildFrvpNote(cfg: {
   return `__frvp:${parts.join("|")}`;
 }
 
+/** Parallel Channel note helpers */
+function parseChannelNote(note: string | null | undefined): null | {
+  t1: number; p1: number; t2: number; p2: number; offset: number;
+  levels: { v: number; on: boolean; color: string; width: number; dash: string }[];
+  extendLeft: boolean; extendRight: boolean;
+  showBg: boolean; bgColor: string; bgOpacity: number;
+  color: string; width: number; dash: string;
+  text: string; textSize: number; textAlignV: string; textAlignH: string;
+  visTicks: boolean; visSeconds: boolean; visMinutes: boolean; visHours: boolean;
+  visDays: boolean; visWeeks: boolean; visMonths: boolean; visRanges: boolean;
+} {
+  if (!note || typeof note !== "string" || !note.startsWith("__channel:")) return null;
+  const body = note.replace(/^__channel:/, "");
+  const parts = body.split("|");
+  if (parts.length < 5) return null;
+  const t1 = Number(parts[0]), p1 = Number(parts[1]), t2 = Number(parts[2]), p2 = Number(parts[3]), offset = Number(parts[4]);
+  if (![t1, p1, t2, p2, offset].every(Number.isFinite)) return null;
+  const defaultLevels = [
+    { v: -0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+    { v: 0, on: true, color: "#787b86", width: 1, dash: "solid" },
+    { v: 0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+    { v: 0.5, on: true, color: "#787b86", width: 1, dash: "dashed" },
+    { v: 0.75, on: false, color: "#787b86", width: 1, dash: "solid" },
+    { v: 1, on: true, color: "#787b86", width: 1, dash: "solid" },
+    { v: 1.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+  ];
+  const o: any = {
+    t1, p1, t2, p2, offset,
+    levels: defaultLevels.map((l) => ({ ...l })),
+    extendLeft: false, extendRight: false,
+    showBg: true, bgColor: "#2962FF", bgOpacity: 12,
+    color: "#787b86", width: 1, dash: "solid",
+    text: "", textSize: 14, textAlignV: "top", textAlignH: "left",
+    visTicks: true, visSeconds: false, visMinutes: true, visHours: true,
+    visDays: false, visWeeks: true, visMonths: true, visRanges: true,
+  };
+  for (const p of parts.slice(5)) {
+    if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    const k = p.slice(0, eq);
+    const v = p.slice(eq + 1);
+    if (k === "lv") {
+      // format: 0:1,0.5:1,1:1  or just list of active ratios
+      const active = new Set(v.split(",").map((x) => Number(x)).filter(Number.isFinite));
+      o.levels = o.levels.map((l: any) => ({ ...l, on: active.has(l.v) || (l.v === 0 || l.v === 1 ? true : active.has(l.v)) }));
+      // ensure 0 and 1 always considered if empty
+      if (active.size === 0) o.levels = o.levels.map((l: any) => ({ ...l, on: l.v === 0 || l.v === 0.5 || l.v === 1 }));
+    } else if (k === "extL") o.extendLeft = v === "1";
+    else if (k === "extR") o.extendRight = v === "1";
+    else if (k === "bg") o.showBg = v !== "0";
+    else if (k === "bgc") o.bgColor = v;
+    else if (k === "bgo") o.bgOpacity = Math.max(0, Math.min(100, Number(v) || 12));
+    else if (k === "col") o.color = v;
+    else if (k === "w") o.width = Math.max(1, Math.min(4, Number(v) || 1));
+    else if (k === "dash") o.dash = v === "dashed" ? "dashed" : "solid";
+    else if (k === "tsz") o.textSize = Number(v) || 14;
+    else if (k === "tav") o.textAlignV = v || "top";
+    else if (k === "tah") o.textAlignH = v || "left";
+    else if (k === "vt") o.visTicks = v !== "0";
+    else if (k === "vs") o.visSeconds = v === "1";
+    else if (k === "vm") o.visMinutes = v !== "0";
+    else if (k === "vh") o.visHours = v !== "0";
+    else if (k === "vd") o.visDays = v === "1";
+    else if (k === "vw") o.visWeeks = v !== "0";
+    else if (k === "vmo") o.visMonths = v !== "0";
+    else if (k === "vr") o.visRanges = v !== "0";
+  }
+  return o;
+}
+
+function buildChannelNote(cfg: {
+  t1: number; p1: number; t2: number; p2: number; offset: number;
+  levels?: { v: number; on: boolean; color?: string; width?: number; dash?: string }[];
+  extendLeft?: boolean; extendRight?: boolean;
+  showBg?: boolean; bgColor?: string; bgOpacity?: number;
+  color?: string; width?: number; dash?: string;
+  text?: string; textSize?: number; textAlignV?: string; textAlignH?: string;
+  visTicks?: boolean; visSeconds?: boolean; visMinutes?: boolean; visHours?: boolean;
+  visDays?: boolean; visWeeks?: boolean; visMonths?: boolean; visRanges?: boolean;
+}): string {
+  const active = (cfg.levels || [
+    { v: 0, on: true }, { v: 0.5, on: true }, { v: 1, on: true },
+  ]).filter((l) => l.on).map((l) => l.v);
+  const parts = [
+    String(cfg.t1), String(cfg.p1), String(cfg.t2), String(cfg.p2), String(cfg.offset),
+    `lv=${active.join(",")}`,
+    `extL=${cfg.extendLeft ? "1" : "0"}`,
+    `extR=${cfg.extendRight ? "1" : "0"}`,
+    `bg=${cfg.showBg === false ? "0" : "1"}`,
+    `bgc=${cfg.bgColor || "#2962FF"}`,
+    `bgo=${cfg.bgOpacity ?? 12}`,
+    `col=${cfg.color || "#787b86"}`,
+    `w=${cfg.width ?? 1}`,
+    `dash=${cfg.dash === "dashed" ? "dashed" : "solid"}`,
+    `tsz=${cfg.textSize ?? 14}`,
+    `tav=${cfg.textAlignV || "top"}`,
+    `tah=${cfg.textAlignH || "left"}`,
+    `vt=${cfg.visTicks === false ? "0" : "1"}`,
+    `vs=${cfg.visSeconds ? "1" : "0"}`,
+    `vm=${cfg.visMinutes === false ? "0" : "1"}`,
+    `vh=${cfg.visHours === false ? "0" : "1"}`,
+    `vd=${cfg.visDays ? "1" : "0"}`,
+    `vw=${cfg.visWeeks === false ? "0" : "1"}`,
+    `vmo=${cfg.visMonths === false ? "0" : "1"}`,
+    `vr=${cfg.visRanges === false ? "0" : "1"}`,
+  ];
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
+  return `__channel:${parts.join("|")}`;
+}
+
+
 
 
 /**
@@ -1046,7 +1159,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:"))) {
     return false;
   }
   return (
@@ -1841,6 +1954,11 @@ function userFacingNote(note?: string | null): string {
   }
   if (s.startsWith("__avwap:")) {
     const p = parseAvwapNote(s);
+    if (p && p.text) return p.text;
+    return "";
+  }
+  if (s.startsWith("__channel:")) {
+    const p = parseChannelNote(s);
     if (p && p.text) return p.text;
     return "";
   }
@@ -2665,6 +2783,7 @@ export default function DashboardPage() {
     isAvwap?: boolean;
     isAvp?: boolean;
     isFrvp?: boolean;
+    isChannel?: boolean;
   } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
   const movingRayRef = useRef(false);
@@ -3148,6 +3267,29 @@ export default function DashboardPage() {
     visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
     visDays: true, visWeeks: true, visMonths: true, visRanges: true,
   }));
+  const [channelSettingsOpen, setChannelSettingsOpen] = useState(false);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
+  const [channelSettingsTab, setChannelSettingsTab] = useState<"style" | "text" | "coordinates" | "visibility">("style");
+  const [channelCfg, setChannelCfg] = useState(() => ({
+    t1: 0, p1: 0, t2: 0, p2: 0, offset: 0,
+    levels: [
+      { v: -0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+      { v: 0, on: true, color: "#787b86", width: 1, dash: "solid" },
+      { v: 0.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+      { v: 0.5, on: true, color: "#787b86", width: 1, dash: "dashed" },
+      { v: 0.75, on: false, color: "#787b86", width: 1, dash: "solid" },
+      { v: 1, on: true, color: "#787b86", width: 1, dash: "solid" },
+      { v: 1.25, on: false, color: "#787b86", width: 1, dash: "solid" },
+    ] as { v: number; on: boolean; color: string; width: number; dash: string }[],
+    extendLeft: false, extendRight: false,
+    showBg: true, bgColor: "#2962FF", bgOpacity: 12,
+    color: "#787b86", width: 1, dash: "solid",
+    text: "", textSize: 14, textAlignV: "top", textAlignH: "left",
+    visTicks: true, visSeconds: false, visMinutes: true, visHours: true,
+    visDays: false, visWeeks: true, visMonths: true, visRanges: true,
+  }));
+  const channelDraftRef = useRef<{ a?: { time: number; price: number }; b?: { time: number; price: number } } | null>(null);
+
   const [avwapCfg, setAvwapCfg] = useState(() => ({
     vwapColor: "#2962FF",
     band1Color: "#26a69a",
@@ -3606,6 +3748,33 @@ export default function DashboardPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAvpId, avpSettingsOpen, avpCfg]);
 
+
+
+  // Persist Parallel Channel settings while modal open
+  useEffect(() => {
+    if (!selectedChannelId || !channelSettingsOpen) return;
+    const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedChannelId));
+    if (!line) return;
+    const note = buildChannelNote({ ...channelCfg });
+    setLines((prev) => prev.map((x) => (String(x.id) === String(selectedChannelId) ? { ...x, note, price: channelCfg.p1, start_time: channelCfg.t1, end_time: channelCfg.t2, end_price: channelCfg.p2, color: channelCfg.color } : x)));
+    const t = window.setTimeout(async () => {
+      try {
+        if (!String(selectedChannelId).startsWith("local-")) {
+          await supabase.from("chart_lines").update({
+            note,
+            price: channelCfg.p1,
+            start_time: channelCfg.t1,
+            end_time: channelCfg.t2,
+            end_price: channelCfg.p2,
+            color: channelCfg.color,
+          }).eq("id", selectedChannelId);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 180);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChannelId, channelSettingsOpen, channelCfg]);
 
   // Persist FRVP settings while modal open
   useEffect(() => {
@@ -5407,6 +5576,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-frvp-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avwap-fill]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
     } catch {}
@@ -5719,7 +5889,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__channel:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -6562,6 +6732,117 @@ priced.sort((a, b) => a.price - b.price);
                 }
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __avpDom: true } as any);
+              }
+            }
+          } catch {}
+        } else if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+          try {
+            const cfg = parseChannelNote(l.note);
+            if (!cfg) { /* fallthrough skip */ }
+            else {
+              let visOk = true;
+              const iv = String(intervalRef.current || "15");
+              const ivNum = Number(iv);
+              if (iv === "D" || iv === "1D") visOk = cfg.visDays !== false;
+              else if (iv === "W" || iv === "1W") visOk = cfg.visWeeks !== false;
+              else if (iv === "M" || iv === "1M") visOk = cfg.visMonths !== false;
+              else if (Number.isFinite(ivNum)) {
+                if (ivNum < 1) visOk = cfg.visSeconds !== false;
+                else if (ivNum < 60) visOk = cfg.visMinutes !== false;
+                else visOk = cfg.visHours !== false;
+              }
+              if (visOk) {
+                const chart2 = chartRef.current;
+                if (chart2) {
+                  const t1 = cfg.t1, p1 = cfg.p1, t2 = cfg.t2, p2 = cfg.p2, off = cfg.offset;
+                  const tMin = Math.min(t1, t2), tMax = Math.max(t1, t2);
+                  // extend times
+                  let ta = t1, tb = t2;
+                  const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
+                  if (cfg.extendLeft) {
+                    const span = Math.abs(t2 - t1) || barSec * 20;
+                    if (t1 <= t2) ta = t1 - span * 5; else ta = t1 + span * 5;
+                  }
+                  if (cfg.extendRight) {
+                    const span = Math.abs(t2 - t1) || barSec * 20;
+                    if (t2 >= t1) tb = t2 + span * 5; else tb = t2 - span * 5;
+                  }
+                  // price at time along base
+                  const priceAt = (t: number, level: number) => {
+                    const span = (t2 - t1) || 1;
+                    const r = (t - t1) / span;
+                    const base = p1 + r * (p2 - p1);
+                    return base + off * level;
+                  };
+                  const levels = (cfg.levels || []).filter((lv) => lv.on);
+                  if (!levels.some((lv) => lv.v === 0)) levels.unshift({ v: 0, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash });
+                  if (!levels.some((lv) => lv.v === 1)) levels.push({ v: 1, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash });
+                  const seriesList: any[] = [];
+                  for (const lv of levels) {
+                    const col = lv.color || cfg.color || "#787b86";
+                    const w = (lv.width || cfg.width || 1) as 1 | 2 | 3 | 4;
+                    const dash = (lv.dash || cfg.dash) === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
+                    const s = chart2.addLineSeries({
+                      color: col,
+                      lineWidth: w,
+                      lineStyle: dash,
+                      priceLineVisible: false,
+                      lastValueVisible: false,
+                      crosshairMarkerVisible: false,
+                      autoscaleInfoProvider: () => null as any,
+                    });
+                    const pts = [
+                      { time: ta as any, value: priceAt(ta, lv.v) },
+                      { time: tb as any, value: priceAt(tb, lv.v) },
+                    ].sort((a, b) => Number(a.time) - Number(b.time));
+                    s.setData(pts);
+                    seriesList.push(s);
+                  }
+                  // background between 0 and 1
+                  if (cfg.showBg) {
+                    try {
+                      const host = vlineOverlayRef.current;
+                      if (host) {
+                        const xA = chart2.timeScale().timeToCoordinate(ta as any);
+                        const xB = chart2.timeScale().timeToCoordinate(tb as any);
+                        const y0a = seriesRef.current?.priceToCoordinate(priceAt(ta, 0));
+                        const y0b = seriesRef.current?.priceToCoordinate(priceAt(tb, 0));
+                        const y1a = seriesRef.current?.priceToCoordinate(priceAt(ta, 1));
+                        const y1b = seriesRef.current?.priceToCoordinate(priceAt(tb, 1));
+                        if (xA != null && xB != null && y0a != null && y0b != null && y1a != null && y1b != null) {
+                          const hex = (cfg.bgColor || "#2962FF").replace("#", "");
+                          const r = parseInt(hex.slice(0, 2), 16) || 41;
+                          const g = parseInt(hex.slice(2, 4), 16) || 98;
+                          const b = parseInt(hex.slice(4, 6), 16) || 255;
+                          const a = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
+                          const poly = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                          poly.setAttribute("data-channel-id", String(l.id));
+                          poly.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;";
+                          const pts = `${Number(xA)},${Number(y0a)} ${Number(xB)},${Number(y0b)} ${Number(xB)},${Number(y1b)} ${Number(xA)},${Number(y1a)}`;
+                          poly.innerHTML = `<polygon points="${pts}" fill="rgba(${r},${g},${b},${a})" />`;
+                          host.appendChild(poly);
+                        }
+                      }
+                    } catch {}
+                  }
+                  if (cfg.text) {
+                    try {
+                      const host = vlineOverlayRef.current;
+                      if (host) {
+                        const x = chart2.timeScale().timeToCoordinate(tMin as any);
+                        const y = seriesRef.current?.priceToCoordinate(priceAt(tMin, 0.5));
+                        if (x != null && y != null) {
+                          const lab = document.createElement("div");
+                          lab.setAttribute("data-channel-id", String(l.id));
+                          lab.textContent = cfg.text;
+                          lab.style.cssText = `position:absolute;left:${Number(x) + 6}px;top:${Number(y)}px;font-size:${cfg.textSize || 14}px;color:${cfg.color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;`;
+                          host.appendChild(lab);
+                        }
+                      }
+                    } catch {}
+                  }
+                  chartLinesRef.current.set(l.id, seriesList.length === 1 ? seriesList[0] : seriesList);
+                }
               }
             }
           } catch {}
@@ -11408,6 +11689,7 @@ priced.sort((a, b) => a.price - b.price);
               n0.startsWith("__avp:") ||
               n0.startsWith("__avwap:") ||
               n0.startsWith("__frvp:") ||
+              n0.startsWith("__channel:") ||
               n0.startsWith("__curve:") ||
               n0.startsWith("__fib:") ||
               n0.startsWith("__fibext:") ||
@@ -12898,6 +13180,108 @@ priced.sort((a, b) => a.price - b.price);
           setMode("none");
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Parallel Channel — 3 clicks: A (base start), B (base end), C (offset)
+        if (m === "channel") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const draft = channelDraftRef.current || {};
+          if (!draft.a) {
+            draft.a = { time: t, price: fp };
+            channelDraftRef.current = draft;
+            diagStartRef.current = { time: t, price: fp };
+            setDiagStart({ time: t, price: fp });
+            try {
+              const elA = handleAElRef.current;
+              if (elA) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
+                  elA.style.display = "block";
+                  elA.style.left = `${x}px`;
+                  elA.style.top = `${y}px`;
+                  elA.style.borderColor = "#787b86";
+                }
+              }
+            } catch {}
+            setStatusMsg("Channel: tap point 2 (base end)");
+            return;
+          }
+          if (!draft.b) {
+            draft.b = { time: t, price: fp };
+            channelDraftRef.current = draft;
+            try {
+              const elB = handleBElRef.current;
+              if (elB) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
+                  elB.style.display = "block";
+                  elB.style.left = `${x}px`;
+                  elB.style.top = `${y}px`;
+                  elB.style.borderColor = "#787b86";
+                }
+              }
+            } catch {}
+            setStatusMsg("Channel: tap point 3 (parallel / offset)");
+            return;
+          }
+          // third point → offset = price difference from interpolated base at same time
+          const a = draft.a, b = draft.b;
+          const span = Number(b.time) - Number(a.time) || 1;
+          const ratio = (Number(t) - Number(a.time)) / span;
+          const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
+          const offset = Number(fp) - baseAt;
+          clickLockRef.current = true;
+          setSaving(true);
+          try {
+            const note = buildChannelNote({
+              t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset,
+              levels: [
+                { v: 0, on: true }, { v: 0.5, on: true }, { v: 1, on: true },
+              ],
+              extendLeft: false, extendRight: false,
+              showBg: true, bgColor: "#2962FF", bgOpacity: 12,
+              color: "#787b86", width: 1,
+            });
+            const base: any = {
+              symbol: symbolRef.current.toUpperCase(),
+              price: a.price,
+              color: "#787b86",
+              width: 1,
+              dash: "solid",
+              start_time: a.time,
+              end_time: b.time,
+              end_price: b.price,
+              note,
+            };
+            const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            if (uid) base.user_id = uid;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb: any = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: a.time, end_time: b.time, end_price: b.price };
+              if (uid) fb.user_id = uid;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Parallel channel placed");
+            } else setStatusMsg("Channel save failed");
+          } catch { setStatusMsg("Channel save failed"); }
+          channelDraftRef.current = null;
+          diagStartRef.current = null;
+          setDiagStart(null);
+          try {
+            if (handleAElRef.current) handleAElRef.current.style.display = "none";
+            if (handleBElRef.current) handleBElRef.current.style.display = "none";
+          } catch {}
+          setMode("none");
+          modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 250);
           return;
         }
 
@@ -15277,6 +15661,11 @@ priced.sort((a, b) => a.price - b.price);
           if (rp) {
             noteToSave = buildRectNote(rp.t0, rp.t1, rp.p0, rp.p1, rp.fill, rp.fillOpacity, noteDraft.trim());
           }
+        } else if (s.startsWith("__channel:")) {
+          const p = parseChannelNote(s);
+          if (p) {
+            noteToSave = buildChannelNote({ ...p, text: noteDraft.trim() });
+          }
         } else if (s.startsWith("__frvp:")) {
           const p = parseFrvpNote(s);
           if (p) {
@@ -16079,7 +16468,7 @@ priced.sort((a, b) => a.price - b.price);
                   setAlarmMenuOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline"
+                  lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline" || mode === "channel"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -16112,6 +16501,25 @@ priced.sort((a, b) => a.price - b.price);
                     onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
                     Vertical line
+                  </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "channel" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setLineToolsOpen(false);
+                      channelDraftRef.current = null;
+                      setDiagStart(null);
+                      diagStartRef.current = null;
+                      setMovingId(null);
+                      setMode(mode === "channel" ? "none" : "channel");
+                      modeRef.current = mode === "channel" ? "none" : "channel";
+                      setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
+                    }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <line x1="3" y1="16" x2="14" y2="6" />
+                      <line x1="6" y1="20" x2="17" y2="10" />
+                      <line x1="10" y1="18" x2="18" y2="11" strokeDasharray="2 2" />
+                    </svg>
+                    Parallel channel
                   </button>
                 </div>
               )}
@@ -17762,6 +18170,194 @@ priced.sort((a, b) => a.price - b.price);
 
           
 
+
+
+          {/* Parallel Channel settings modal */}
+          {channelSettingsOpen && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); }}>
+              <div className="w-[min(360px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                  <div className="font-semibold text-white">Parallel channel</div>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); }}>×</button>
+                </div>
+                <div className="flex gap-3 px-4 pt-2 text-xs border-b border-white/10 flex-wrap">
+                  {(["style", "text", "coordinates", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-1.5 px-1 capitalize ${channelSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                      onClick={() => setChannelSettingsTab(tab)}>{tab}</button>
+                  ))}
+                </div>
+
+                {channelSettingsTab === "style" && (
+                  <div className="px-4 py-3 space-y-2 text-xs">
+                    {channelCfg.levels.map((lv, i) => (
+                      <div key={lv.v} className="flex items-center gap-2">
+                        <input type="checkbox" checked={lv.on}
+                          onChange={(e) => setChannelCfg((c) => {
+                            const levels = c.levels.map((x, j) => j === i ? { ...x, on: e.target.checked } : x);
+                            return { ...c, levels };
+                          })} />
+                        <input type="number" step={0.25} value={lv.v}
+                          onChange={(e) => setChannelCfg((c) => {
+                            const levels = c.levels.map((x, j) => j === i ? { ...x, v: Number(e.target.value) } : x);
+                            return { ...c, levels };
+                          })}
+                          className="w-14 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                        <label className="relative w-7 h-5 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: lv.color }}>
+                          <input type="color" value={lv.color}
+                            onChange={(e) => setChannelCfg((c) => {
+                              const levels = c.levels.map((x, j) => j === i ? { ...x, color: e.target.value } : x);
+                              return { ...c, levels, color: i === 1 ? e.target.value : c.color };
+                            })}
+                            className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </label>
+                        <select value={lv.dash}
+                          onChange={(e) => setChannelCfg((c) => {
+                            const levels = c.levels.map((x, j) => j === i ? { ...x, dash: e.target.value } : x);
+                            return { ...c, levels };
+                          })}
+                          className="bg-black/40 border border-white/15 rounded px-1 py-0.5 text-[10px]">
+                          <option value="solid">—</option>
+                          <option value="dashed">- -</option>
+                        </select>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <span>Extend</span>
+                      <select
+                        value={channelCfg.extendLeft && channelCfg.extendRight ? "both" : channelCfg.extendLeft ? "left" : channelCfg.extendRight ? "right" : "none"}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setChannelCfg((c) => ({
+                            ...c,
+                            extendLeft: v === "left" || v === "both",
+                            extendRight: v === "right" || v === "both",
+                          }));
+                        }}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="none">Don&apos;t extend</option>
+                        <option value="left">Extend left</option>
+                        <option value="right">Extend right</option>
+                        <option value="both">Extend both</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={channelCfg.showBg}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, showBg: e.target.checked }))} />
+                      Background
+                      <label className="relative w-7 h-5 rounded overflow-hidden border border-white/20 cursor-pointer ml-auto" style={{ background: channelCfg.bgColor }}>
+                        <input type="color" value={channelCfg.bgColor}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, bgColor: e.target.value }))}
+                          className="absolute inset-0 opacity-0 cursor-pointer" />
+                      </label>
+                      <input type="number" min={0} max={100} value={channelCfg.bgOpacity}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, bgOpacity: Number(e.target.value) || 0 }))}
+                        className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </label>
+                  </div>
+                )}
+
+                {channelSettingsTab === "text" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <label className="relative w-7 h-5 rounded overflow-hidden border border-white/20 cursor-pointer" style={{ background: channelCfg.color }}>
+                        <input type="color" value={channelCfg.color}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, color: e.target.value }))}
+                          className="absolute inset-0 opacity-0 cursor-pointer" />
+                      </label>
+                      <select value={channelCfg.textSize}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, textSize: Number(e.target.value) || 14 }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        {[10, 12, 14, 16, 18, 20].map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </div>
+                    <textarea
+                      value={channelCfg.text}
+                      onChange={(e) => setChannelCfg((c) => ({ ...c, text: e.target.value }))}
+                      placeholder="Add text"
+                      className="w-full h-20 bg-black/40 border border-white/15 rounded px-2 py-1 resize-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <span>Text alignment</span>
+                      <select value={channelCfg.textAlignV}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, textAlignV: e.target.value }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="top">Top</option>
+                        <option value="middle">Middle</option>
+                        <option value="bottom">Bottom</option>
+                      </select>
+                      <select value={channelCfg.textAlignH}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, textAlignH: e.target.value }))}
+                        className="bg-black/40 border border-white/15 rounded px-2 py-1">
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {channelSettingsTab === "coordinates" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>#1 (price, time)</span>
+                      <div className="flex gap-1">
+                        <input type="number" step="any" value={channelCfg.p1}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, p1: Number(e.target.value) }))}
+                          className="w-20 bg-black/40 border border-white/15 rounded px-1 py-0.5 font-mono" />
+                        <input type="number" value={channelCfg.t1}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, t1: Number(e.target.value) }))}
+                          className="w-28 bg-black/40 border border-white/15 rounded px-1 py-0.5 font-mono" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>#2 (price, time)</span>
+                      <div className="flex gap-1">
+                        <input type="number" step="any" value={channelCfg.p2}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, p2: Number(e.target.value) }))}
+                          className="w-20 bg-black/40 border border-white/15 rounded px-1 py-0.5 font-mono" />
+                        <input type="number" value={channelCfg.t2}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, t2: Number(e.target.value) }))}
+                          className="w-28 bg-black/40 border border-white/15 rounded px-1 py-0.5 font-mono" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Price offset</span>
+                      <input type="number" step="any" value={channelCfg.offset}
+                        onChange={(e) => setChannelCfg((c) => ({ ...c, offset: Number(e.target.value) }))}
+                        className="w-28 bg-black/40 border border-white/15 rounded px-2 py-1 font-mono" />
+                    </div>
+                  </div>
+                )}
+
+                {channelSettingsTab === "visibility" && (
+                  <div className="px-4 py-3 space-y-2 text-xs">
+                    {[
+                      ["visTicks", "Ticks"], ["visSeconds", "Seconds"], ["visMinutes", "Minutes"],
+                      ["visHours", "Hours"], ["visDays", "Days"], ["visWeeks", "Weeks"],
+                      ["visMonths", "Months"], ["visRanges", "Ranges"],
+                    ].map(([k, lab]) => (
+                      <label key={k} className="flex items-center gap-2">
+                        <input type="checkbox" checked={(channelCfg as any)[k]}
+                          onChange={(e) => setChannelCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                        {lab}
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/10">
+                  <button type="button" className="px-3 py-1.5 rounded text-gray-300 hover:bg-white/5"
+                    onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); }}>Cancel</button>
+                  <button type="button" className="px-3 py-1.5 rounded bg-orange-500 text-black font-semibold"
+                    onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Fixed Range Volume Profile settings modal */}
           {frvpSettingsOpen && (
@@ -19943,6 +20539,8 @@ priced.sort((a, b) => a.price - b.price);
                       ? "Rectangle"
                       : typeof l.note === "string" && l.note.startsWith("__brush:")
                       ? "Brush"
+                      : typeof l.note === "string" && l.note.startsWith("__channel:")
+                      ? "Parallel channel"
                       : typeof l.note === "string" && l.note.startsWith("__avp:")
                       ? "Anchored VP"
                       : typeof l.note === "string" && l.note.startsWith("__avwap:")
@@ -19997,7 +20595,36 @@ priced.sort((a, b) => a.price - b.price);
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {typeof l.note === "string" && l.note.startsWith("__frvp:") ? (
+                    {typeof l.note === "string" && l.note.startsWith("__channel:") ? (
+                      <button
+                        type="button"
+                        title="Channel settings"
+                        onClick={() => {
+                          const p = parseChannelNote(l.note);
+                          if (p) {
+                            setChannelCfg({
+                              t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+                              levels: p.levels,
+                              extendLeft: p.extendLeft, extendRight: p.extendRight,
+                              showBg: p.showBg, bgColor: p.bgColor, bgOpacity: p.bgOpacity,
+                              color: p.color, width: p.width, dash: p.dash,
+                              text: p.text, textSize: p.textSize, textAlignV: p.textAlignV, textAlignH: p.textAlignH,
+                              visTicks: p.visTicks, visSeconds: p.visSeconds, visMinutes: p.visMinutes, visHours: p.visHours,
+                              visDays: p.visDays, visWeeks: p.visWeeks, visMonths: p.visMonths, visRanges: p.visRanges,
+                            });
+                          }
+                          setSelectedChannelId(String(l.id));
+                          setChannelSettingsOpen(true);
+                          setChannelSettingsTab("style");
+                        }}
+                        className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    ) : typeof l.note === "string" && l.note.startsWith("__frvp:") ? (
                       <button
                         type="button"
                         title="FRVP settings"
@@ -20394,7 +21021,7 @@ priced.sort((a, b) => a.price - b.price);
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
+                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
                       <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     )}
                       </>
