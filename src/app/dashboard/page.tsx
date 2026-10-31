@@ -11593,26 +11593,26 @@ priced.sort((a, b) => a.price - b.price);
         let t1 = md.pointA.time, p1 = md.pointA.price, t2 = md.pointB.time, p2 = md.pointB.price;
         let off = Number((md as any).channelOffset ?? 0);
         if (key === "a0") {
-          // base start — free angle
+          // bottom-left: free angle (time + price)
           t1 = tCursor; p1 = price;
         } else if (key === "b0") {
-          // base end — free angle
+          // bottom-right: free angle (time + price)
           t2 = tCursor; p2 = price;
         } else if (key === "a1") {
-          // top-start: free time + price → sets t1 and offset so parallel stays true
+          // top-left: same as bottom-left — change angle; keep channel width (offset)
           t1 = tCursor;
-          off = price - p1;
+          p1 = price - off;
         } else if (key === "b1") {
-          // top-end: free time + price → sets t2 and offset
+          // top-right: same as bottom-right — change angle; keep channel width (offset)
           t2 = tCursor;
-          off = price - p2;
+          p2 = price - off;
         } else if (key === "m0") {
           // mid base: translate whole channel vertically (keep offset)
           const midP = (p1 + p2) / 2;
           const dlt = price - midP;
           p1 += dlt; p2 += dlt;
         } else if (key === "m1") {
-          // mid top: change channel width (offset)
+          // mid top: change channel width (offset) only
           const midBase = (p1 + p2) / 2;
           off = price - midBase;
         } else if (key === "body") {
