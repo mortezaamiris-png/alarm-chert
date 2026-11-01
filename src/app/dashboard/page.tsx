@@ -2622,28 +2622,54 @@ type DprCfg = {
 
 /**
  * Expand 3 ON-CURVE points (TradingView Curve style) into dense samples.
- * Middle point sits on the arc; internal Bezier control is derived so the
- * quadratic passes through a, b, c (b at t≈0.5).
+ * Time is always linear a→c (strictly monotonic → no waves/jagged).
+ * Price is quadratic Bezier so the curve passes through b at the
+ * parameter corresponding to b.time.
  */
 function expandCurveControls(
   a: { time: number; price: number },
   b: { time: number; price: number },
   c: { time: number; price: number },
-  steps = 36
+  steps = 48
 ): { time: number; value: number }[] {
-  // Bezier control so curve passes through b at t=0.5: P = 2b - (a+c)/2
-  const pTime = 2 * b.time - (a.time + c.time) / 2;
-  const pPrice = 2 * b.price - (a.price + c.price) / 2;
+  const tSpan = c.time - a.time;
+  if (!Number.isFinite(tSpan) || Math.abs(tSpan) < 1) {
+    const t0 = Math.min(a.time, b.time, c.time);
+    return [
+      { time: t0, value: a.price },
+      { time: t0 + 1, value: b.price },
+      { time: t0 + 2, value: c.price },
+    ];
+  }
+  // Parameter position of middle point in time (clamped away from ends)
+  let tMid = (b.time - a.time) / tSpan;
+  if (!Number.isFinite(tMid)) tMid = 0.5;
+  tMid = Math.max(0.05, Math.min(0.95, tMid));
+  // Solve for Bezier control P so B(tMid) = b.price
+  const tm = tMid;
+  const one = 1 - tm;
+  const denom = 2 * one * tm;
+  let pPrice: number;
+  if (Math.abs(denom) < 1e-8) {
+    pPrice = 2 * b.price - (a.price + c.price) / 2;
+  } else {
+    pPrice = (b.price - one * one * a.price - tm * tm * c.price) / denom;
+  }
   const out: { time: number; value: number }[] = [];
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const mt = (1 - t) * (1 - t) * a.time + 2 * (1 - t) * t * pTime + t * t * c.time;
-    const mp = (1 - t) * (1 - t) * a.price + 2 * (1 - t) * t * pPrice + t * t * c.price;
+    const mt = a.time + t * tSpan; // linear time → always mono
+    const o = 1 - t;
+    const mp = o * o * a.price + 2 * o * t * pPrice + t * t * c.price;
     out.push({ time: Math.round(mt), value: mp });
   }
   for (let i = 1; i < out.length; i++) {
     if (out[i].time <= out[i - 1].time) out[i].time = out[i - 1].time + 1;
   }
+  out[0].time = Math.round(a.time);
+  out[0].value = a.price;
+  out[out.length - 1].time = Math.max(out[out.length - 2].time + 1, Math.round(c.time));
+  out[out.length - 1].value = c.price;
   return out;
 }
 
@@ -7957,7 +7983,7 @@ priced.sort((a, b) => a.price - b.price);
               { time: pairs[0].time, price: pairs[0].value },
               { time: pairs[1].time, price: pairs[1].value },
               { time: pairs[2].time, price: pairs[2].value },
-              28
+              48
             );
           } else if (isCurve && pairs.length > 3) {
             // legacy dense: keep; also show 3 handles when moving
@@ -12536,9 +12562,14 @@ priced.sort((a, b) => a.price - b.price);
                   dens = expandCurveControls(pts[0], pts[1], { time: tCursor, price }, 36);
                 }
                 if (dens.length >= 2) {
+                  let savedR: any = null;
+                  try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
                   previewDiagSeriesRef.current.setData(
                     dens.map((p) => ({ time: p.time as any, value: p.value }))
                   );
+                  if (savedR) {
+                    try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+                  }
                 }
                 // keep draft markers synced
                 const host = vlineOverlayRef.current;
@@ -13375,7 +13406,7 @@ priced.sort((a, b) => a.price - b.price);
           if (ls && chart) {
             let data: { time: number; value: number }[] = [];
             if (md.isCurve && ctrls.length >= 3) {
-              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 36);
+              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 48);
             } else {
               data = ctrls.map((p) => ({ time: p.time, value: p.price }));
               for (let i = 1; i < data.length; i++) {
@@ -16919,14 +16950,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 autoscaleInfoProvider: () => null as any,
               });
             }
+            let savedRange: any = null;
+            try { savedRange = chart.timeScale().getVisibleLogicalRange(); } catch {}
             if (pts.length === 2) {
-              previewDiagSeriesRef.current.setData([
-                { time: pts[0].time as any, value: pts[0].price },
-                { time: Math.max(pts[0].time + 1, pts[1].time) as any, value: pts[1].price },
-              ]);
-            } else if (pts.length >= 3) {
-              const dens = expandCurveControls(pts[0], pts[1], pts[2], 28);
+              const dens = expandCurveControls(
+                pts[0],
+                { time: Math.round((pts[0].time + pts[1].time) / 2), price: (pts[0].price + pts[1].price) / 2 },
+                pts[1],
+                48
+              );
               previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
+            } else if (pts.length >= 3) {
+              const dens = expandCurveControls(pts[0], pts[1], pts[2], 48);
+              previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
+            }
+            if (savedRange) {
+              try { chart.timeScale().setVisibleLogicalRange(savedRange); } catch {}
             }
           } catch {}
           if (pts.length < 3) {
@@ -16967,6 +17006,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           clearPreview();
           setMode("none");
           modeRef.current = "none";
+          try {
+            const ch = chartRef.current;
+            if (ch) {
+              ch.applyOptions({
+                handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+              });
+            }
+          } catch {}
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
@@ -19539,9 +19587,23 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       pathPointsRef.current = [];
                       setDiagStart(null);
                       setMovingId(null);
-                      setMode(mode === "curve" ? "none" : "curve");
-                      modeRef.current = mode === "curve" ? "none" : "curve";
-                      setStatusMsg(mode === "curve" ? "" : "Curve: tap 3 points (start, middle, end)");
+                      const nextCurve = mode === "curve" ? "none" : "curve";
+                      setMode(nextCurve);
+                      modeRef.current = nextCurve;
+                      try {
+                        const ch = chartRef.current;
+                        if (ch) {
+                          ch.applyOptions({
+                            handleScroll: nextCurve === "curve"
+                              ? { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false }
+                              : { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                            handleScale: nextCurve === "curve"
+                              ? { axisPressedMouseMove: false, axisDoubleClickReset: false, mouseWheel: true, pinch: false }
+                              : { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                          });
+                        }
+                      } catch {}
+                      setStatusMsg(nextCurve === "curve" ? "Curve: tap 3 points (start, middle, end)" : "");
                     }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                       <path d="M4 18 C8 18 10 6 14 6 C18 6 20 18 20 18" />
