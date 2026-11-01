@@ -16233,21 +16233,28 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           return;
         }
 
-        // Vertical line: one click → line at that time
+        // Vertical line: one click → line at that time (always place local first)
         if (m === "vline") {
           clickLockRef.current = false;
           let t = resolveTime(param);
-          if (t == null || Number.isNaN(t) || !(t > 0)) {
+          if (t == null || Number.isNaN(t) || !(Number(t) > 0)) {
+            try {
+              if (param.point) {
+                const ct = chart.timeScale().coordinateToTime(param.point.x);
+                if (ct != null && Number(ct) > 0) t = Number(ct);
+              }
+            } catch {}
+          }
+          if (t == null || Number.isNaN(t) || !(Number(t) > 0)) {
             const bars0 = candlesRef.current || [];
             t = bars0.length ? Number(bars0[bars0.length - 1].time) : null;
           }
-          if (t == null || Number.isNaN(t) || !(t > 0)) {
+          if (t == null || Number.isNaN(t) || !(Number(t) > 0)) {
             setStatusMsg("Could not read time — try on chart area");
             return;
           }
-          const bars = candlesRef.current;
+          const bars = candlesRef.current || [];
           let lo = Infinity, hi = -Infinity;
-          // Prefer visible price range so the vertical line spans the whole chart pane
           try {
             const pr = (series.priceScale() as any).getVisibleRange?.();
             if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
@@ -16257,102 +16264,74 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           } catch {}
           if (!(hi > lo)) {
             for (const c of bars) {
-              if (c.low < lo) lo = c.low;
-              if (c.high > hi) hi = c.high;
+              if (Number(c.low) < lo) lo = Number(c.low);
+              if (Number(c.high) > hi) hi = Number(c.high);
             }
           }
           if (!(hi > lo)) {
-            lo = fp * 0.98;
-            hi = fp * 1.02;
+            const mid = Number(fp) || Number(bars[bars.length - 1]?.close) || 1;
+            lo = mid * 0.98;
+            hi = mid * 1.02;
           }
-          const pad = (hi - lo) * 0.08;
+          const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 0.01;
           const color = drawColorRef.current || DEFAULT_LINE_COLOR;
           const width = drawWidthRef.current || 2;
           const dash = drawDashRef.current || "solid";
-          try {
-            const uid =
-              (await supabase.auth.getSession()).data.session?.user?.id || null;
-            let payload: any = {
-              symbol: symbolUpper,
-              price: lo - pad,
-              end_price: hi + pad,
-              start_time: t,
-              end_time: t,
-              color,
-              width,
-              style: dash,
-              dash,
-              note: "__vline__",
-            };
-            if (uid) payload.user_id = uid;
-            let { data, error } = await supabase
-              .from("chart_lines")
-              .insert([payload])
-              .select()
-              .single();
-            if (error) {
-              payload = {
-                symbol: symbolUpper,
-                price: Number(fp) || lo,
-                start_time: t,
-                color,
-                width,
-                dash,
-                note: `__vline__:${t}`,
-              };
-              if (uid) payload.user_id = uid;
-              ({ data, error } = await supabase
-                .from("chart_lines")
-                .insert([payload])
-                .select()
-                .single());
-            }
-            if (!error && data) {
-              pushUndo();
-              const saved: ChartLine = {
-                ...(data as ChartLine),
-                start_time: (data as any).start_time ?? t,
-                end_time: (data as any).end_time ?? t,
-                end_price: (data as any).end_price ?? hi + pad,
-                note: "__vline__",
-              };
-              setLines((prev) => [saved, ...prev]);
-              setStatusMsg("Vertical line added");
-            } else {
-              const local: ChartLine = {
-                id: `local-vl-${Date.now()}`,
+          const localId = `local-vl-${Date.now()}`;
+          const local: ChartLine = {
+            id: localId,
+            symbol: symbolUpper,
+            price: lo - pad,
+            end_price: hi + pad,
+            start_time: Number(t),
+            end_time: Number(t),
+            color,
+            width,
+            style: dash,
+            dash,
+            note: "__vline__",
+          };
+          pushUndo();
+          setLines((prev) => [local, ...prev]);
+          setMode("none");
+          modeRef.current = "none";
+          setStatusMsg("Vertical line added");
+          // Persist in background (non-blocking)
+          void (async () => {
+            try {
+              const uid = (await supabase.auth.getSession()).data.session?.user?.id || null;
+              let payload: any = {
                 symbol: symbolUpper,
                 price: lo - pad,
                 end_price: hi + pad,
-                start_time: t,
-                end_time: t,
+                start_time: Number(t),
+                end_time: Number(t),
                 color,
                 width,
                 style: dash,
                 dash,
                 note: "__vline__",
               };
-              setLines((prev) => [local, ...prev]);
-              setStatusMsg("Vertical line local only — check login / DB");
-            }
-          } catch {
-            const local: ChartLine = {
-              id: `local-vl-${Date.now()}`,
-              symbol: symbolUpper,
-              price: lo - pad,
-              end_price: hi + pad,
-              start_time: t,
-              end_time: t,
-              color,
-              width,
-              style: dash,
-              dash,
-              note: "__vline__",
-            };
-            setLines((prev) => [local, ...prev]);
-            setStatusMsg("Vertical line local only — check login / DB");
-          }
-          setMode("none");
+              if (uid) payload.user_id = uid;
+              let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+              if (error) {
+                payload = {
+                  symbol: symbolUpper,
+                  price: Number(fp) || lo,
+                  start_time: Number(t),
+                  color,
+                  width,
+                  dash,
+                  note: `__vline__:${t}`,
+                };
+                if (uid) payload.user_id = uid;
+                ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
+              }
+              if (!error && data) {
+                setLines((prev) => prev.map((x) => (x.id === localId ? { ...x, id: data.id } : x)));
+              }
+            } catch {}
+          })();
           return;
         }
 
@@ -20650,11 +20629,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       modeRef.current = mode === "channel" ? "none" : "channel";
                       setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 15 L12 6 L21 9" />
-                      <path d="M3 20 L12 11 L21 14" />
-                      <path d="M7 17.5 L7 12.5" strokeDasharray="2 2" opacity="0.7" />
-                      <path d="M15 13.5 L15 8.5" strokeDasharray="2 2" opacity="0.7" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 16 L10 8 L20 10" />
+                      <path d="M4 20 L10 12 L20 14" />
+                      <circle cx="4" cy="16" r="1.6" fill="none" />
+                      <circle cx="10" cy="8" r="1.6" fill="none" />
+                      <circle cx="20" cy="10" r="1.6" fill="none" />
+                      <circle cx="4" cy="20" r="1.6" fill="none" />
+                      <circle cx="10" cy="12" r="1.6" fill="none" />
+                      <circle cx="20" cy="14" r="1.6" fill="none" />
                     </svg>
                     Parallel channel
                   </button>
@@ -20683,11 +20666,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                       setStatusMsg(nextCurve === "curve" ? "Curve: tap start, then end (middle appears after)" : "");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                      <path d="M4 18 C8 18 10 6 14 6 C18 6 20 18 20 18" />
-                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
-                      <circle cx="14" cy="6" r="1.5" fill="currentColor" />
-                      <circle cx="20" cy="18" r="1.5" fill="currentColor" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 17 C7 17 9 7 12 7 C15 7 17 17 21 17" />
+                      <circle cx="3" cy="17" r="2" fill="none" />
+                      <circle cx="12" cy="7" r="2" fill="none" />
+                      <circle cx="21" cy="17" r="2" fill="none" />
                     </svg>
                     Curve
                   </button>
@@ -21091,10 +21074,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
-            {/* Spacer — push bottom tools (measure / eye / trash / lists) down */}
-            <div className="flex-1 min-h-4" />
-            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
-
             {/* Measure — classic ruler icon */}
             <button
               type="button"
@@ -21305,6 +21284,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 </div>
               )}
             </div>
+
+            {/* Spacer — push bottom tools (measure / eye / trash / lists) down */}
+            <div className="flex-1 min-h-4" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
 
             {/* gap above lists toggle so measure / eye / trash stay higher */}
             <div className="h-3" />
@@ -24803,15 +24786,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               Show list »
             </button>
           )}
-          {/* Floating Show lists when bottom alarms/lines/history are hidden */}
-          {!showBottomLists && (
+          {/* Floating lists toggle — visible when tools panel is hidden OR lists are hidden */}
+          {(!showToolsPanel || !showBottomLists) && (
             <button
               type="button"
-              onClick={() => setShowBottomLists(true)}
+              onClick={() => setShowBottomLists((v) => !v)}
               className="absolute bottom-3 left-3 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300"
-              title="Show bottom lists"
+              title={showBottomLists ? "Hide bottom lists" : "Show bottom lists"}
             >
-              Show lists »
+              {showBottomLists ? "Hide lists «" : "Show lists »"}
             </button>
           )}
         </div>
