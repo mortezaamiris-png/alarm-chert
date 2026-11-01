@@ -2619,6 +2619,43 @@ type DprCfg = {
   visDays: boolean; visWeeks: boolean; visMonths: boolean; visRanges: boolean;
 };
 
+
+/** Expand 3 control points into dense quadratic Bezier samples (monotonic time). */
+function expandCurveControls(
+  a: { time: number; price: number },
+  b: { time: number; price: number },
+  c: { time: number; price: number },
+  steps = 28
+): { time: number; value: number }[] {
+  const out: { time: number; value: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = (1 - t) * (1 - t) * a.time + 2 * (1 - t) * t * b.time + t * t * c.time;
+    const mp = (1 - t) * (1 - t) * a.price + 2 * (1 - t) * t * b.price + t * t * c.price;
+    out.push({ time: Math.round(mt), value: mp });
+  }
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].time <= out[i - 1].time) out[i].time = out[i - 1].time + 1;
+  }
+  return out;
+}
+
+function parseCurveControls(note: string): { time: number; price: number }[] | null {
+  if (!note || !note.startsWith("__curve:")) return null;
+  const raw = note.replace(/^__curve:/, "");
+  const pairs = raw.split("|").map((s) => {
+    const [tt, pp] = s.split(",");
+    return { time: Number(tt), price: Number(pp) };
+  }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+  if (pairs.length < 3) return null;
+  // prefer first/mid/last when dense legacy data
+  if (pairs.length === 3) return pairs;
+  const a = pairs[0];
+  const c = pairs[pairs.length - 1];
+  const b = pairs[Math.floor(pairs.length / 2)];
+  return [a, b, c];
+}
+
 function defaultDprCfg(t0=0, p0=0, t1=0, p1=0): DprCfg {
   return {
     t0, p0, t1, p1,
@@ -7892,14 +7929,26 @@ priced.sort((a, b) => a.price - b.price);
             }
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
+          const isCurve = l.note.startsWith("__curve:");
           const raw = l.note.replace(/^__(?:path|curve):/, "");
-          const pairs = raw.split("|").map((s) => {
+          let pairs = raw.split("|").map((s) => {
             const [tt, pp] = s.split(",");
             return { time: Number(tt), value: Number(pp) };
           }).filter((p) => p.time > 0 && !Number.isNaN(p.value));
           pairs.sort((a, b) => a.time - b.time);
           for (let i = 1; i < pairs.length; i++) {
             if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
+          }
+          // Curve stored as 3 controls → expand to smooth arc
+          if (isCurve && pairs.length === 3) {
+            pairs = expandCurveControls(
+              { time: pairs[0].time, price: pairs[0].value },
+              { time: pairs[1].time, price: pairs[1].value },
+              { time: pairs[2].time, price: pairs[2].value },
+              28
+            );
+          } else if (isCurve && pairs.length > 3) {
+            // legacy dense: keep; also show 3 handles when moving
           }
           if (pairs.length >= 2) {
             const ls: any = chart.addLineSeries({
@@ -7915,6 +7964,38 @@ priced.sort((a, b) => a.price - b.price);
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
+          // Visible control handles when this curve/path is in move mode
+          try {
+            const isMoving = movingId === l.id && movingType === "line";
+            const host = vlineOverlayRef.current;
+            const ser = seriesRef.current;
+            if (isMoving && host && ser && chart) {
+              const ctrls = isCurve
+                ? (parseCurveControls(l.note) || [])
+                : raw.split("|").map((s) => {
+                    const [tt, pp] = s.split(",");
+                    return { time: Number(tt), price: Number(pp) };
+                  }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+              ctrls.forEach((pt, idx) => {
+                const el = document.createElement("div");
+                el.setAttribute(isCurve ? "data-curve-handle" : "data-path-handle", String(idx));
+                el.setAttribute(isCurve ? "data-curve-id" : "data-path-id", String(l.id));
+                el.setAttribute("data-t", String(pt.time));
+                el.setAttribute("data-p", String(pt.price));
+                el.style.cssText =
+                  `position:absolute;width:12px;height:12px;margin-left:-6px;margin-top:-6px;` +
+                  `border-radius:50%;border:2px solid ${color || "#2962FF"};background:#0b0e14;` +
+                  `pointer-events:auto;z-index:40;cursor:move;touch-action:none;`;
+                const x = chart.timeScale().timeToCoordinate(pt.time as any);
+                const y = ser.priceToCoordinate(pt.price);
+                if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+                  el.style.left = `${x}px`;
+                  el.style.top = `${y}px`;
+                  host.appendChild(el);
+                }
+              });
+            }
+          } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
           try {
             const cfg = parseAvpNote(l.note);
@@ -13072,6 +13153,144 @@ priced.sort((a, b) => a.price - b.price);
         } catch {}
       };
 
+
+      // Curve / Path control-point drag
+      const onCurvePathPointerDown = (e: PointerEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (!t || !t.getAttribute) return;
+        const curveIdx = t.getAttribute("data-curve-handle");
+        const pathIdx = t.getAttribute("data-path-handle");
+        const curveId = t.getAttribute("data-curve-id");
+        const pathId = t.getAttribute("data-path-id");
+        if (curveIdx == null && pathIdx == null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const id = curveId || pathId;
+        if (!id) return;
+        const line = (linesRef.current || []).find((x) => String(x.id) === String(id));
+        if (!line || typeof line.note !== "string") return;
+        const isCurve = !!curveId;
+        let ctrls: { time: number; price: number }[] = [];
+        if (isCurve) {
+          ctrls = parseCurveControls(line.note) || [];
+        } else {
+          ctrls = line.note.replace(/^__path:/, "").split("|").map((s) => {
+            const [tt, pp] = s.split(",");
+            return { time: Number(tt), price: Number(pp) };
+          }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+        }
+        if (ctrls.length < 2) return;
+        (moveDiagRef as any).current = {
+          id,
+          phase: "drag-a",
+          pointA: { time: ctrls[0].time, price: ctrls[0].price },
+          pointB: { time: ctrls[ctrls.length - 1].time, price: ctrls[ctrls.length - 1].price },
+          color: line.color || "#2962FF",
+          width: line.width || 2,
+          dash: "solid",
+          isCurve,
+          isPath: !isCurve,
+          curveCtrls: isCurve ? ctrls : null,
+          pathCtrls: !isCurve ? ctrls : null,
+          curveHandle: isCurve ? Number(curveIdx) : null,
+          pathHandle: !isCurve ? Number(pathIdx) : null,
+        };
+        setMode("move");
+        setMovingId(id);
+        setMovingType("line");
+        lockChartInteraction(true);
+        try { t.setPointerCapture(e.pointerId); } catch {}
+        setStatusMsg(isCurve ? `Curve: drag point ${Number(curveIdx) + 1}` : `Path: drag point ${Number(pathIdx) + 1}`);
+      };
+      const onCurvePathPointerMove = (e: PointerEvent) => {
+        const md = moveDiagRef.current as any;
+        if (!md || (!md.isCurve && !md.isPath)) return;
+        const handle = md.isCurve ? md.curveHandle : md.pathHandle;
+        if (handle == null || handle < 0) return;
+        const cont = chartContainerRef.current;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!cont || !chart || !ser) return;
+        const rect = cont.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(y);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
+            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+          }
+        } catch {}
+        if (tCursor == null) return;
+        const ctrls: { time: number; price: number }[] = md.isCurve
+          ? [...(md.curveCtrls || [])]
+          : [...(md.pathCtrls || [])];
+        if (!ctrls[handle]) return;
+        ctrls[handle] = { time: tCursor, price };
+        if (md.isCurve) md.curveCtrls = ctrls;
+        else md.pathCtrls = ctrls;
+        const note = md.isCurve
+          ? `__curve:` + ctrls.map((p) => `${p.time},${p.price}`).join("|")
+          : `__path:` + ctrls.map((p) => `${p.time},${p.price}`).join("|");
+        const cur = (linesRef.current || []).find((x) => String(x.id) === String(md.id));
+        if (cur) {
+          cur.note = note;
+          cur.price = ctrls[0].price;
+          cur.start_time = Math.min(...ctrls.map((p) => p.time));
+          cur.end_time = Math.max(...ctrls.map((p) => p.time));
+          cur.end_price = ctrls[ctrls.length - 1].price;
+        }
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      };
+      const onCurvePathPointerUp = async () => {
+        const md = moveDiagRef.current as any;
+        if (!md || (!md.isCurve && !md.isPath)) return;
+        const handle = md.isCurve ? md.curveHandle : md.pathHandle;
+        md.curveHandle = null;
+        md.pathHandle = null;
+        md.phase = "pick";
+        lockChartInteraction(false);
+        if (handle == null) return;
+        try {
+          const ctrls = md.isCurve ? (md.curveCtrls || []) : (md.pathCtrls || []);
+          const note = md.isCurve
+            ? `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|")
+            : `__path:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+          setLines((prev) => prev.map((x) =>
+            String(x.id) === String(md.id)
+              ? {
+                  ...x,
+                  note,
+                  price: ctrls[0]?.price,
+                  start_time: Math.min(...ctrls.map((p: any) => p.time)),
+                  end_time: Math.max(...ctrls.map((p: any) => p.time)),
+                  end_price: ctrls[ctrls.length - 1]?.price,
+                }
+              : x
+          ));
+          if (!String(md.id).startsWith("local-")) {
+            await supabase.from("chart_lines").update({
+              note,
+              price: ctrls[0]?.price,
+              start_time: Math.min(...ctrls.map((p: any) => p.time)),
+              end_time: Math.max(...ctrls.map((p: any) => p.time)),
+              end_price: ctrls[ctrls.length - 1]?.price,
+            }).eq("id", md.id);
+          }
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          setStatusMsg(md.isCurve ? "Curve updated" : "Path updated");
+        } catch {}
+      };
+      window.addEventListener("pointerdown", onCurvePathPointerDown, true);
+      window.addEventListener("pointermove", onCurvePathPointerMove);
+      window.addEventListener("pointerup", onCurvePathPointerUp);
+
       // Date & Price Range: drag corners / body
       const onDprPointerDown = (e: PointerEvent) => {
         const t = e.target as HTMLElement | null;
@@ -16401,6 +16620,29 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const isDbl = (param as any)?._dbl || false;
           pts.push({ time: t, price: fp });
           pathPointsRef.current = pts;
+          // Draft pivot markers
+          try {
+            const host = vlineOverlayRef.current;
+            const ser = seriesRef.current;
+            if (host && ser && chart) {
+              host.querySelectorAll("[data-path-draft]").forEach((el) => el.remove());
+              pts.forEach((pt, idx) => {
+                const el = document.createElement("div");
+                el.setAttribute("data-path-draft", String(idx));
+                el.style.cssText =
+                  `position:absolute;width:10px;height:10px;margin-left:-5px;margin-top:-5px;` +
+                  `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};background:#0b0e14;` +
+                  `pointer-events:none;z-index:45;`;
+                const x = chart.timeScale().timeToCoordinate(pt.time as any);
+                const y = ser.priceToCoordinate(pt.price);
+                if (x != null && y != null) {
+                  el.style.left = `${x}px`;
+                  el.style.top = `${y}px`;
+                  host.appendChild(el);
+                }
+              });
+            }
+          } catch {}
           try {
             if (!previewDiagSeriesRef.current) {
               previewDiagSeriesRef.current = chart.addLineSeries({
@@ -16413,12 +16655,18 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 autoscaleInfoProvider: () => null as any,
               });
             }
-            // Sort by time for LWC
-            const sorted = [...pts].sort((a, b) => a.time - b.time);
-            if (sorted.length >= 2) {
-              previewDiagSeriesRef.current.setData(
-                sorted.map((p) => ({ time: p.time as any, value: p.price }))
-              );
+            // Keep path order (do not sort — path is sequential)
+            if (pts.length >= 2) {
+              const dataPts = pts.map((p, i) => ({
+                time: (i === 0 ? p.time : Math.max(p.time, pts[i - 1].time + i)) as any,
+                value: p.price,
+              }));
+              // For LWC time must be unique & ordered — use sequential synthetic times for preview only when needed
+              const sorted = pts.map((p) => ({ time: p.time, value: p.price }));
+              for (let i = 1; i < sorted.length; i++) {
+                if (sorted[i].time <= sorted[i - 1].time) sorted[i].time = sorted[i - 1].time + 1;
+              }
+              previewDiagSeriesRef.current.setData(sorted.map((p) => ({ time: p.time as any, value: p.value })));
             }
           } catch {}
           if (pts.length >= 2 && isDbl) {
@@ -16459,6 +16707,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               setStatusMsg("Path saved");
             } else setStatusMsg("Path save failed");
             pathPointsRef.current = [];
+            try { vlineOverlayRef.current?.querySelectorAll("[data-path-draft]").forEach((el) => el.remove()); } catch {}
             clearPreview();
             setMode("none");
             modeRef.current = "none";
@@ -16477,35 +16726,70 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const pts = pathPointsRef.current;
           pts.push({ time: t, price: fp });
           pathPointsRef.current = pts;
+          // Draft markers so user sees selected points
+          try {
+            const host = vlineOverlayRef.current;
+            const ser = seriesRef.current;
+            if (host && ser && chart) {
+              host.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove());
+              pts.forEach((pt, idx) => {
+                const el = document.createElement("div");
+                el.setAttribute("data-curve-draft", String(idx));
+                el.style.cssText =
+                  `position:absolute;width:12px;height:12px;margin-left:-6px;margin-top:-6px;` +
+                  `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};background:#0b0e14;` +
+                  `pointer-events:none;z-index:45;`;
+                const x = chart.timeScale().timeToCoordinate(pt.time as any);
+                const y = ser.priceToCoordinate(pt.price);
+                if (x != null && y != null) {
+                  el.style.left = `${x}px`;
+                  el.style.top = `${y}px`;
+                  host.appendChild(el);
+                }
+              });
+            }
+          } catch {}
+          // Live preview polyline / arc
+          try {
+            if (!previewDiagSeriesRef.current) {
+              previewDiagSeriesRef.current = chart.addLineSeries({
+                color: drawColorRef.current,
+                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
+                lineStyle: LineStyle.Solid,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                autoscaleInfoProvider: () => null as any,
+              });
+            }
+            if (pts.length === 2) {
+              previewDiagSeriesRef.current.setData([
+                { time: pts[0].time as any, value: pts[0].price },
+                { time: Math.max(pts[0].time + 1, pts[1].time) as any, value: pts[1].price },
+              ]);
+            } else if (pts.length >= 3) {
+              const dens = expandCurveControls(pts[0], pts[1], pts[2], 28);
+              previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
+            }
+          } catch {}
           if (pts.length < 3) {
             setStatusMsg(`Curve: point ${pts.length}/3`);
             return;
           }
-          // Build dense curve points (quadratic Bezier in time-price space)
+          // Save only 3 control points
           const [p0, p1, p2] = pts;
-          const curvePts: { time: number; price: number }[] = [];
-          for (let i = 0; i <= 24; i++) {
-            const u = i / 24;
-            const mt = (1 - u) * (1 - u) * p0.time + 2 * (1 - u) * u * p1.time + u * u * p2.time;
-            const mp = (1 - u) * (1 - u) * p0.price + 2 * (1 - u) * u * p1.price + u * u * p2.price;
-            curvePts.push({ time: Math.round(mt), price: mp });
-          }
-          // ensure increasing times
-          for (let i = 1; i < curvePts.length; i++) {
-            if (curvePts[i].time <= curvePts[i - 1].time) curvePts[i].time = curvePts[i - 1].time + 1;
-          }
           clickLockRef.current = true;
           setSaving(true);
-          const note = `__curve:` + curvePts.map((p) => `${p.time},${p.price}`).join("|");
+          const note = `__curve:${p0.time},${p0.price}|${p1.time},${p1.price}|${p2.time},${p2.price}`;
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: p0.price,
             color: drawColorRef.current,
             width: drawWidthRef.current,
             dash: drawDashRef.current,
-            start_time: curvePts[0].time,
-            end_time: curvePts[curvePts.length - 1].time,
-            end_price: curvePts[curvePts.length - 1].price,
+            start_time: Math.min(p0.time, p1.time, p2.time),
+            end_time: Math.max(p0.time, p1.time, p2.time),
+            end_price: p2.price,
             note,
           };
           (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
@@ -16519,9 +16803,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             const saved = { ...(data as ChartLine), ...base, id: (data as any).id };
             pushUndo();
             setLines((prev) => [saved, ...prev]);
-            setStatusMsg("Curve saved");
+            setStatusMsg("Curve saved — Move to adjust points");
           } else setStatusMsg("Curve save failed");
           pathPointsRef.current = [];
+          try { vlineOverlayRef.current?.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove()); } catch {}
           clearPreview();
           setMode("none");
           modeRef.current = "none";
@@ -19330,7 +19615,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setAlarmMenuOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "dpr" || mode === "brush" || mode === "long-pos" || mode === "short-pos"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "dpr" || mode === "brush" || mode === "path" || mode === "long-pos" || mode === "short-pos"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -19410,6 +19695,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </svg>
                     </span>
                     Brush
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "path" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      setDiagStart(null);
+                      setMovingId(null);
+                      pathPointsRef.current = [];
+                      try { vlineOverlayRef.current?.querySelectorAll("[data-path-draft]").forEach((el) => el.remove()); } catch {}
+                      const next = mode === "path" ? "none" : "path";
+                      setMode(next as any);
+                      modeRef.current = next as any;
+                      setStatusMsg(next === "path" ? "Path: click points — double-click or Done to finish" : "");
+                    }}
+                  >
+                    <span className="w-4 text-center">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="5" cy="18" r="2" />
+                        <circle cx="12" cy="8" r="2" />
+                        <circle cx="19" cy="14" r="2" />
+                        <path d="M6.5 16.5 L10.5 9.5 L17.5 13.5" />
+                      </svg>
+                    </span>
+                    Path
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
@@ -24861,6 +25172,62 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Curve — 3 control handles
+                        if (typeof l.note === "string" && l.note.startsWith("__curve:")) {
+                          try {
+                            const ctrls = parseCurveControls(l.note);
+                            if (!ctrls || ctrls.length < 3) { setStatusMsg("Curve parse failed"); return; }
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: ctrls[0].time, price: ctrls[0].price },
+                              pointB: { time: ctrls[2].time, price: ctrls[2].price },
+                              color: l.color || "#2962FF",
+                              width: l.width || 2,
+                              dash: "solid",
+                              isCurve: true,
+                              curveCtrls: ctrls,
+                              curveHandle: null as any,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("Curve: drag points or ✓ Done");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("Curve move failed"); }
+                          return;
+                        }
+                        // Path — pivot handles
+                        if (typeof l.note === "string" && l.note.startsWith("__path:")) {
+                          try {
+                            const raw = l.note.replace(/^__path:/, "");
+                            const ctrls = raw.split("|").map((s) => {
+                              const [tt, pp] = s.split(",");
+                              return { time: Number(tt), price: Number(pp) };
+                            }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+                            if (ctrls.length < 2) { setStatusMsg("Path parse failed"); return; }
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: ctrls[0].time, price: ctrls[0].price },
+                              pointB: { time: ctrls[ctrls.length - 1].time, price: ctrls[ctrls.length - 1].price },
+                              color: l.color || "#2962FF",
+                              width: l.width || 2,
+                              dash: "solid",
+                              isPath: true,
+                              pathCtrls: ctrls,
+                              pathHandle: null as any,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("Path: drag points or ✓ Done");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("Path move failed"); }
+                          return;
+                        }
                         // Date & Price Range — select for body/corner drag
                         if (typeof l.note === "string" && l.note.startsWith("__dpr:")) {
                           try {
