@@ -2293,6 +2293,32 @@ function showLocalNotification(
 }
 
 
+
+const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
+  "draw": { label: "Horizontal line", icon: "—" },
+  "ray": { label: "Horizontal ray", icon: "→" },
+  "diag": { label: "Trendline", icon: "/" },
+  "vline": { label: "Vertical line", icon: "|" },
+  "channel": { label: "Parallel channel", icon: "⫽" },
+  "curve": { label: "Curve", icon: "∿" },
+  "fib": { label: "Fib retracement", icon: "F" },
+  "fib-ext": { label: "Fib extension", icon: "Fe" },
+  "fib-tz": { label: "Fib time zone", icon: "║" },
+  "fib-tbt": { label: "Trend fib time", icon: "║t" },
+  "avwap": { label: "Anchored VWAP", icon: "V" },
+  "frvp": { label: "Fixed range VP", icon: "▦" },
+  "avp": { label: "Anchored VP", icon: "▣" },
+  "arrow-up": { label: "Arrow up", icon: "↑" },
+  "arrow-down": { label: "Arrow down", icon: "↓" },
+  "callout": { label: "Callout", icon: "T" },
+  "brush": { label: "Brush", icon: "✎" },
+  "path": { label: "Path", icon: "⬠" },
+  "long-pos": { label: "Long position", icon: "L" },
+  "short-pos": { label: "Short position", icon: "S" },
+  "rect": { label: "Rectangle", icon: "□" },
+  "dpr": { label: "Date price range", icon: "⬚" },
+};
+
 function userFacingNote(note?: string | null): string {
   if (!note) return "";
   const s = String(note).trim();
@@ -3780,6 +3806,52 @@ export default function DashboardPage() {
   };
   const [hideAlarms, setHideAlarms] = useState(false);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
+  /** Favorite drawing tools (starred) — shown as floating icons on chart */
+  const [favTools, setFavTools] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("chart_fav_tools");
+      if (raw) { const a = JSON.parse(raw); if (Array.isArray(a)) return a.map(String); }
+    } catch {}
+    return [];
+  });
+  const [favToolsVisible, setFavToolsVisible] = useState(() => {
+    try { return localStorage.getItem("chart_fav_tools_visible") !== "0"; } catch { return true; }
+  });
+  const [favPositions, setFavPositions] = useState<Record<string, { x: number; y: number }>>(() => {
+    try {
+      const raw = localStorage.getItem("chart_fav_positions");
+      if (raw) { const o = JSON.parse(raw); if (o && typeof o === "object") return o; }
+    } catch {}
+    return {};
+  });
+  const favDragRef = useRef<{ id: string; ox: number; oy: number; sx: number; sy: number } | null>(null);
+  const toggleFavTool = useCallback((id: string, e?: { preventDefault?: () => void; stopPropagation?: () => void }) => {
+    try { e?.preventDefault(); e?.stopPropagation(); } catch {}
+    setFavTools((prev) => {
+      const has = prev.includes(id);
+      return has ? prev.filter((x) => x !== id) : [...prev, id];
+    });
+    setFavPositions((pos) => {
+      if (pos[id]) return pos;
+      const n = Object.keys(pos).length;
+      return { ...pos, [id]: { x: 56 + (n % 6) * 44, y: 48 + Math.floor(n / 6) * 44 } };
+    });
+  }, []);
+  const activateTool = useCallback((id: string) => {
+    try { clearPreview(); } catch {}
+    setLineToolsOpen(false);
+    setFibToolsOpen(false);
+    setDrawToolsOpen(false);
+    setPosToolsOpen(false);
+    setAlarmMenuOpen(false);
+    setMovingId(null);
+    setMovingType(null);
+    setDiagStart(null);
+    setMode(id as any);
+    modeRef.current = id as any;
+    const label = FAV_TOOL_META[id]?.label || id;
+    setStatusMsg(`${label}: active`);
+  }, []);
   const [drawToolsOpen, setDrawToolsOpen] = useState(false);
   const [fibToolsOpen, setFibToolsOpen] = useState(false);
   /** Long/Short position draft: step 1 entry, 2 stop, 3 target */
@@ -4403,6 +4475,16 @@ export default function DashboardPage() {
   useEffect(() => { drawColorRef.current = drawColor; saveLS("draw_color", drawColor); }, [drawColor]);
   useEffect(() => { drawWidthRef.current = drawWidth; saveLS("draw_width", drawWidth); }, [drawWidth]);
   useEffect(() => { drawDashRef.current = drawDash; saveLS("draw_dash", drawDash); }, [drawDash]);
+  useEffect(() => {
+    try { localStorage.setItem("chart_fav_tools", JSON.stringify(favTools)); } catch {}
+  }, [favTools]);
+  useEffect(() => {
+    try { localStorage.setItem("chart_fav_tools_visible", favToolsVisible ? "1" : "0"); } catch {}
+  }, [favToolsVisible]);
+  useEffect(() => {
+    try { localStorage.setItem("chart_fav_positions", JSON.stringify(favPositions)); } catch {}
+  }, [favPositions]);
+
   useEffect(() => { saveLS("fib_tz_levels", fibTzLevels); }, [fibTzLevels]);
   useEffect(() => { saveLS("fib_levels", fibLevels); }, [fibLevels]);
   useEffect(() => { saveLS("fib_reverse", fibReverse); }, [fibReverse]);
@@ -20671,16 +20753,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "draw" ? "none" : "draw"); setMovingId(null); setMovingType(null); setDiagStart(null); setStatusMsg("Horizontal line: tap on chart"); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
                     Horizontal line
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("draw") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("draw", e)}>{favTools.includes("draw") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "ray" ? "text-orange-300" : ""}`}
                     onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "ray" ? "none" : "ray"); setMovingId(null); setMovingType(null); setDiagStart(null); setStatusMsg("Horizontal ray: tap on chart"); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="12" x2="18" y2="12" /><polyline points="14,8 18,12 14,16" /></svg>
                     Horizontal ray
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("ray") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("ray", e)}>{favTools.includes("ray") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "diag" ? "text-orange-300" : ""}`}
                     onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "diag" ? "none" : "diag"); setMovingId(null); setMovingType(null); if (mode === "diag") setDiagStart(null); setStatusMsg("Trendline: tap two points"); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="18" x2="20" y2="6" /></svg>
                     Trendline
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("diag") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("diag", e)}>{favTools.includes("diag") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
                     onClick={() => {
@@ -20695,6 +20780,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
                     Vertical line
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("vline") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("vline", e)}>{favTools.includes("vline") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "channel" ? "text-orange-300" : ""}`}
                     onClick={() => {
@@ -20719,6 +20805,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <circle cx="20" cy="14" r="1.6" fill="none" />
                     </svg>
                     Parallel channel
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("channel") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("channel", e)}>{favTools.includes("channel") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
 <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "curve" ? "text-orange-300" : ""}`}
                     onClick={() => {
@@ -20752,6 +20839,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <circle cx="21" cy="17" r="2" fill="none" />
                     </svg>
                     Curve
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("curve") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("curve", e)}>{favTools.includes("curve") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                                   </div>
               )}
@@ -20804,6 +20892,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <path d="M6 19L16 7" strokeDasharray="2 2" />
                     </svg>
                     Fib retracement
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib", e)}>{favTools.includes("fib") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -20823,6 +20912,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <path d="M5 18L12 10L19 6" />
                     </svg>
                     Trend-based fib extension
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib-ext") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib-ext", e)}>{favTools.includes("fib-ext") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -20844,6 +20934,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <line x1="18" y1="9" x2="18" y2="15" />
                     </svg>
                     Fib time zone
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib-tz") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib-tz", e)}>{favTools.includes("fib-tz") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -20868,6 +20959,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <path d="M3 16 L8 10 L13 13" strokeDasharray="2 2" />
                     </svg>
                     Trend-based fib time
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib-tbt") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib-tbt", e)}>{favTools.includes("fib-tbt") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Volume-based</div>
@@ -20889,6 +20981,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <circle cx="12" cy="6" r="1.5" fill="currentColor" />
                     </svg>
                     Anchored VWAP
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("avwap") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("avwap", e)}>{favTools.includes("avwap") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -20909,6 +21002,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <rect x="15" y="6" width="4" height="14" rx="0.5" opacity="0.85" fill="currentColor" />
                     </svg>
                     Fixed range volume profile
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("frvp") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("frvp", e)}>{favTools.includes("frvp") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -20931,6 +21025,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <line x1="4" y1="21" x2="9" y2="21" />
                     </svg>
                     Anchored volume profile
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("avp") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("avp", e)}>{favTools.includes("avp") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                 </div>
               )}
@@ -20987,6 +21082,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     >
                       <span className="w-4 text-center">{t.icon}</span>
                       {t.label}
+                      <span role="button" title="Favorite"
+                        className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes(t.id) ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`}
+                        onClick={(e) => toggleFavTool(t.id, e)}>
+                        {favTools.includes(t.id) ? (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                        )}
+                      </span>
                     </button>
                   ))}
                   <div className="border-t border-gray-700 my-1" />
@@ -21005,6 +21109,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   >
                     <span className="w-4 text-center">💬</span>
                     Callout
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("callout") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("callout", e)}>{favTools.includes("callout") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -21030,6 +21135,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </svg>
                     </span>
                     Brush
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("brush") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("brush", e)}>{favTools.includes("brush") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -21056,6 +21162,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </svg>
                     </span>
                     Path
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("path") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("path", e)}>{favTools.includes("path") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Forecasting</div>
@@ -21080,6 +21187,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">L</text>
                     </svg>
                     Long position
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("long-pos") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("long-pos", e)}>{favTools.includes("long-pos") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -21102,6 +21210,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">S</text>
                     </svg>
                     Short position
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("short-pos") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("short-pos", e)}>{favTools.includes("short-pos") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Shapes</div>
@@ -21125,6 +21234,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <circle cx="21" cy="18" r="1.8" fill="currentColor" stroke="none" />
                     </svg>
                     Rectangle
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("rect") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("rect", e)}>{favTools.includes("rect") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
                     type="button"
@@ -21147,6 +21257,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <path d="M10 3 L10 1" strokeWidth="1.6" />
                     </svg>
                     Date and price range
+                    <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("dpr") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("dpr", e)}>{favTools.includes("dpr") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
 
                 </div>
@@ -21366,6 +21477,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 </div>
               )}
             </div>
+
+            {/* Favorites master toggle — show/hide starred tool icons on chart */}
+            <button
+              type="button"
+              title={favToolsVisible ? "Hide favorite tools on chart" : "Show favorite tools on chart"}
+              onClick={() => setFavToolsVisible((v) => !v)}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                favToolsVisible && favTools.length
+                  ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
+                  : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-amber-300"
+              }`}
+            >
+              {favToolsVisible ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              )}
+            </button>
 
             {/* Spacer — push bottom tools (measure / eye / trash / lists) down */}
             <div className="flex-1 min-h-4" />
@@ -21839,6 +21968,74 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             style={{ display: "none" }}
           />
 
+
+
+          {/* Favorite tools — floating icons on chart (draggable) */}
+          {favToolsVisible && favTools.length > 0 && (
+            <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden" data-fav-layer>
+              {favTools.map((id) => {
+                const meta = FAV_TOOL_META[id] || { label: id, icon: "★" };
+                const pos = favPositions[id] || { x: 60, y: 60 };
+                const active = mode === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    title={meta.label}
+                    className={`absolute pointer-events-auto w-9 h-9 rounded-lg border shadow-lg flex items-center justify-center text-sm font-semibold select-none touch-manipulation ${
+                      active
+                        ? "bg-orange-500 border-orange-400 text-black"
+                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:border-amber-500/60 hover:text-amber-200"
+                    }`}
+                    style={{ left: pos.x, top: pos.y, cursor: "grab" }}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const el = e.currentTarget;
+                      el.setPointerCapture(e.pointerId);
+                      favDragRef.current = {
+                        id,
+                        ox: pos.x,
+                        oy: pos.y,
+                        sx: e.clientX,
+                        sy: e.clientY,
+                      };
+                      let moved = false;
+                      const onMove = (ev: PointerEvent) => {
+                        const d = favDragRef.current;
+                        if (!d || d.id !== id) return;
+                        const dx = ev.clientX - d.sx;
+                        const dy = ev.clientY - d.sy;
+                        if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+                        const nx = Math.max(4, d.ox + dx);
+                        const ny = Math.max(4, d.oy + dy);
+                        el.style.left = `${nx}px`;
+                        el.style.top = `${ny}px`;
+                      };
+                      const onUp = (ev: PointerEvent) => {
+                        try { el.releasePointerCapture(e.pointerId); } catch {}
+                        document.removeEventListener("pointermove", onMove);
+                        document.removeEventListener("pointerup", onUp);
+                        const d = favDragRef.current;
+                        favDragRef.current = null;
+                        if (d && moved) {
+                          const nx = Math.max(4, d.ox + (ev.clientX - d.sx));
+                          const ny = Math.max(4, d.oy + (ev.clientY - d.sy));
+                          setFavPositions((p) => ({ ...p, [id]: { x: nx, y: ny } }));
+                        } else {
+                          activateTool(id);
+                        }
+                      };
+                      document.addEventListener("pointermove", onMove);
+                      document.addEventListener("pointerup", onUp);
+                    }}
+                  >
+                    <span className="text-base leading-none">{meta.icon}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
           {/* Channel / DPR move toolbar (no Edit handles) */}
