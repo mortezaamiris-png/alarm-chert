@@ -3861,7 +3861,7 @@ export default function DashboardPage() {
 
   const [drawColor, setDrawColor] = useState(() => loadLS("draw_color", DEFAULT_LINE_COLOR));
   const [drawWidth, setDrawWidth] = useState<1 | 2 | 3>(() => loadLS("draw_width", 2));
-  const [drawDash, setDrawDash] = useState<"solid" | "dashed">(() => loadLS("draw_dash", "solid"));
+  const [drawDash, setDrawDash] = useState<"solid" | "dashed" | "dotted">(() => loadLS("draw_dash", "solid") as "solid" | "dashed" | "dotted");
   const [fibTzLevels, setFibTzLevels] = useState(() => {
     const saved = loadLS("fib_tz_levels", null as any);
     if (Array.isArray(saved) && saved.length) return saved as typeof DEFAULT_FIB_TZ_LEVELS;
@@ -16346,9 +16346,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 el.style.transform = "translateX(-50%)";
                 el.style.pointerEvents = "none";
                 el.style.zIndex = "8";
-                if (dash === "dashed" || dash === "dotted") {
+                if (String(dash) === "dashed" || String(dash) === "dotted") {
                   el.style.background = "transparent";
-                  el.style.borderLeft = `${Math.max(1, width)}px ${dash === "dotted" ? "dotted" : "dashed"} ${color}`;
+                  el.style.borderLeft = `${Math.max(1, width)}px ${String(dash) === "dotted" ? "dotted" : "dashed"} ${color}`;
                   el.style.width = "0";
                 } else {
                   el.style.background = color;
