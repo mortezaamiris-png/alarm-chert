@@ -3805,6 +3805,7 @@ export default function DashboardPage() {
   const posDraggingRef = useRef(false);
   const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
+  const [showBottomLists, setShowBottomLists] = useState(() => loadLS("show_bottom_lists", true));
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
@@ -4817,6 +4818,7 @@ export default function DashboardPage() {
   }, [undoChart, redoChart]);
 
   useEffect(() => { saveLS("show_tools_panel", showToolsPanel); }, [showToolsPanel]);
+  useEffect(() => { saveLS("show_bottom_lists", showBottomLists); }, [showBottomLists]);
   useEffect(() => { saveLS("side_view_id", sideViewId); }, [sideViewId]);
   useEffect(() => { saveLS("alarm_sections_v1", alarmSections); }, [alarmSections]);
   useEffect(() => { saveLS("history_mode", historyMode); }, [historyMode]);
@@ -11726,14 +11728,19 @@ priced.sort((a, b) => a.price - b.price);
           // Zoom toward cursor Y (TV style)
           const relY = Math.min(1, Math.max(0, yFromTop / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // Strong zoom-in steps; low floor so candles can get very large
-          const factor = zoomIn ? 0.68 : 1.28;
+          // Strong zoom-in; allow very deep zoom without float collapse / reset
+          const factor = zoomIn ? 0.72 : 1.30;
           let newRange = (pTop - pBot) * factor;
           const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
-          const minRange = Math.max(absP * 1e-8, 1e-12);
-          const maxRange = absP * 200;
-          newRange = Math.max(newRange, minRange);
-          newRange = Math.min(newRange, maxRange);
+          // min ≈ 0.0005% of price (or 1% of current range) — deep but stable
+          const minRange = Math.max(absP * 5e-8, (pTop - pBot) * 0.002, 1e-14);
+          const maxRange = absP * 500;
+          if (zoomIn && newRange < minRange) newRange = minRange;
+          else if (!zoomIn && newRange > maxRange) newRange = maxRange;
+          else {
+            newRange = Math.max(newRange, minRange);
+            newRange = Math.min(newRange, maxRange);
+          }
           const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
@@ -11744,7 +11751,8 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const psRight = chart.priceScale("right") as any;
             const psSer = (ser.priceScale?.() as any) || psRight;
-            // 1) Lock scale to exact range (autoScale OFF → alarm lines cannot expand it)
+            // Always lock: autoScale OFF so alarm/line price-lines cannot expand the range
+            // (enabling autoScale as fallback was RESETTING zoom-in — the "stuck" bug)
             for (const ps of [psSer, psRight]) {
               if (!ps) continue;
               try { ps.applyOptions({ autoScale: false }); } catch {}
@@ -11754,35 +11762,7 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch {}
             }
-            // 2) If setVisibleRange had no effect (some LWC builds), reinforce via provider
-            //    by briefly enabling autoScale — provider returns our override exactly
-            try {
-              const vr = psSer?.getVisibleRange?.() || psRight?.getVisibleRange?.();
-              const applied =
-                vr &&
-                Math.abs(Number(vr.from) - newBot) / Math.max(Math.abs(newBot), 1e-12) < 0.05 &&
-                Math.abs(Number(vr.to) - newTop) / Math.max(Math.abs(newTop), 1e-12) < 0.05;
-              if (!applied) {
-                for (const ps of [psSer, psRight]) {
-                  if (!ps) continue;
-                  try { ps.applyOptions({ autoScale: true }); } catch {}
-                }
-                // Immediately lock again so next tick doesn't expand to price-lines
-                requestAnimationFrame(() => {
-                  try {
-                    for (const ps of [psSer, psRight]) {
-                      if (!ps) continue;
-                      try { ps.applyOptions({ autoScale: false }); } catch {}
-                      try {
-                        if (typeof ps.setVisibleRange === "function") {
-                          ps.setVisibleRange({ from: newBot, to: newTop });
-                        }
-                      } catch {}
-                    }
-                  } catch {}
-                });
-              }
-            } catch {}
+            // Provider on series already reads priceRangeOverrideRef — keep it, don't toggle autoScale
             try { chart.timeScale().applyOptions({}); } catch {}
           } catch {}
           try {
@@ -18709,13 +18689,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     };
 
     const onContext = (e: MouseEvent) => {
-      // Right-click cancels any active tool or move selection
+      // Right-click: close tool menus + cancel active tool if nothing was chosen
       const el = e.target as HTMLElement | null;
-      if (el?.closest?.("[data-menu]") || el?.closest?.("[data-move-bar]")) return;
       e.preventDefault();
+      try { setLineToolsOpen(false); } catch {}
       try { setPosToolsOpen(false); } catch {}
       try { setFibToolsOpen(false); } catch {}
       try { setDrawToolsOpen(false); } catch {}
+      try { setAlarmMenuOpen(false); } catch {}
+      // If inside an open menu item, still close menus; only skip cancelAll for move-bar
+      if (el?.closest?.("[data-move-bar]")) return;
       cancelAll();
     };
 
@@ -20545,7 +20528,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setAlarmMenuOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline" || mode === "channel"
+                  lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline" || mode === "channel" || mode === "curve"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -20574,7 +20557,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="18" x2="20" y2="6" /></svg>
                     Trendline
                   </button>
-                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "curve" ? "text-orange-300" : ""}`}
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
+                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
+                    Vertical line
+                  </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "channel" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setLineToolsOpen(false);
+                      channelDraftRef.current = null;
+                      setDiagStart(null);
+                      diagStartRef.current = null;
+                      setMovingId(null);
+                      setMode(mode === "channel" ? "none" : "channel");
+                      modeRef.current = mode === "channel" ? "none" : "channel";
+                      setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
+                    }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 15 L12 6 L21 9" />
+                      <path d="M3 20 L12 11 L21 14" />
+                      <path d="M7 17.5 L7 12.5" strokeDasharray="2 2" opacity="0.7" />
+                      <path d="M15 13.5 L15 8.5" strokeDasharray="2 2" opacity="0.7" />
+                    </svg>
+                    Parallel channel
+                  </button>
+<button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "curve" ? "text-orange-300" : ""}`}
                     onClick={() => {
                       clearPreview();
                       setLineToolsOpen(false);
@@ -20607,31 +20615,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     </svg>
                     Curve
                   </button>
-                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
-                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
-                    Vertical line
-                  </button>
-                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "channel" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setLineToolsOpen(false);
-                      channelDraftRef.current = null;
-                      setDiagStart(null);
-                      diagStartRef.current = null;
-                      setMovingId(null);
-                      setMode(mode === "channel" ? "none" : "channel");
-                      modeRef.current = mode === "channel" ? "none" : "channel";
-                      setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
-                    }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <line x1="3" y1="16" x2="14" y2="6" />
-                      <line x1="6" y1="20" x2="17" y2="10" />
-                      <line x1="10" y1="18" x2="18" y2="11" strokeDasharray="2 2" />
-                    </svg>
-                    Parallel channel
-                  </button>
-                </div>
+                                  </div>
               )}
             </div>
 
@@ -25486,8 +25470,33 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         )}
       </div>
 
-      {/* Bottom lists: active alarms | lines | history */}
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
+      {/* Bottom lists: active alarms | lines | history — toggle hide/show */}
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setShowBottomLists((v) => !v)}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gray-700 bg-gray-900 text-xs text-gray-300 hover:bg-white/10 hover:text-white transition-colors"
+          title={showBottomLists ? "Hide lists" : "Show lists"}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            {showBottomLists ? (
+              <>
+                <polyline points="6 9 12 15 18 9" />
+              </>
+            ) : (
+              <>
+                <polyline points="6 15 12 9 18 15" />
+              </>
+            )}
+          </svg>
+          {showBottomLists ? "Hide lists" : "Show lists"}
+          <span className="text-gray-500">
+            ({currentAlarms.length} alarms · {currentLines.length} lines)
+          </span>
+        </button>
+      </div>
+      {showBottomLists && (
+      <div className="mt-2 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
             Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
@@ -27117,6 +27126,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           </div>
         </div>
       </div>
+      )}
 
       <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
     </div>
