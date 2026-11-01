@@ -18700,7 +18700,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         return;
       }
 
-      // Always close alarm/lines (and other) tool menus on outside click
+      // Left-click outside: ONLY close dropdown menus (do NOT cancel active drawing tool —
+      // otherwise you cannot place lines on the chart). Right-click uses onContext for cancel.
       try { setLineToolsOpen(false); } catch {}
       try { setAlarmMenuOpen(false); } catch {}
       try { setPosToolsOpen(false); } catch {}
@@ -18743,21 +18744,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       } catch {}
 
-      // Exit move selection / clear active drawing tool on empty chart click
-      // (so orange alarm/lines icons deactivate)
-      const m = modeRef.current;
-      if (
-        m === "move" ||
-        m === "draw" || m === "ray" || m === "diag" || m === "vline" ||
-        m === "curve" || m === "channel" || m === "path" ||
-        m === "alarm" || m === "alarm-ray" || m === "alarm-diag"
-      ) {
+      // Only exit MOVE selection on empty chart left-click (not active drawing tools)
+      if (modeRef.current === "move" && movingIdRef.current) {
         cancelAll();
       }
     };
 
     const onContext = (e: MouseEvent) => {
-      // Right-click: close tool menus + cancel active tool if nothing was chosen
+      // Right-click: close ALL tool menus and cancel active drawing / move
       const el = e.target as HTMLElement | null;
       e.preventDefault();
       try { setLineToolsOpen(false); } catch {}
@@ -18765,7 +18759,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       try { setFibToolsOpen(false); } catch {}
       try { setDrawToolsOpen(false); } catch {}
       try { setAlarmMenuOpen(false); } catch {}
-      // If inside an open menu item, still close menus; only skip cancelAll for move-bar
       if (el?.closest?.("[data-move-bar]")) return;
       cancelAll();
     };
@@ -21313,6 +21306,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
+            {/* gap above lists toggle so measure / eye / trash stay higher */}
+            <div className="h-3" />
             {/* Show / Hide bottom lists (alarms · lines · history) */}
             <button
               type="button"
@@ -24806,6 +24801,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               title="Show alarm list"
             >
               Show list »
+            </button>
+          )}
+          {/* Floating Show lists when bottom alarms/lines/history are hidden */}
+          {!showBottomLists && (
+            <button
+              type="button"
+              onClick={() => setShowBottomLists(true)}
+              className="absolute bottom-3 left-3 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300"
+              title="Show bottom lists"
+            >
+              Show lists »
             </button>
           )}
         </div>
