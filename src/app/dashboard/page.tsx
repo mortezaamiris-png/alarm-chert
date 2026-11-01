@@ -2316,6 +2316,11 @@ function userFacingNote(note?: string | null): string {
     if (p && p.text) return p.text;
     return "";
   }
+  if (s.startsWith("__dpr:")) {
+    const p = parseDprNote(s);
+    if (p && p.text) return p.text;
+    return "";
+  }
   if (s.startsWith("__frvp:")) {
     const p = parseFrvpNote(s);
     if (p && p.text) return p.text;
@@ -4334,6 +4339,42 @@ export default function DashboardPage() {
   }, [selectedAvpId, avpSettingsOpen, avpCfg]);
 
 
+
+  // Persist Date & Price Range settings live while modal open
+  useEffect(() => {
+    if (!selectedDprId || !dprSettingsOpen) return;
+    const note = buildDprNote({ ...dprCfg });
+    setLines((prev) => prev.map((x) =>
+      String(x.id) === String(selectedDprId)
+        ? {
+            ...x,
+            note,
+            price: Math.min(dprCfg.p0, dprCfg.p1),
+            start_time: Math.min(dprCfg.t0, dprCfg.t1),
+            end_time: Math.max(dprCfg.t0, dprCfg.t1),
+            end_price: Math.max(dprCfg.p0, dprCfg.p1),
+            color: dprCfg.lineColor,
+          }
+        : x
+    ));
+    const t = window.setTimeout(async () => {
+      try {
+        if (!String(selectedDprId).startsWith("local-")) {
+          await supabase.from("chart_lines").update({
+            note,
+            price: Math.min(dprCfg.p0, dprCfg.p1),
+            start_time: Math.min(dprCfg.t0, dprCfg.t1),
+            end_time: Math.max(dprCfg.t0, dprCfg.t1),
+            end_price: Math.max(dprCfg.p0, dprCfg.p1),
+            color: dprCfg.lineColor,
+          }).eq("id", selectedDprId);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    }, 120);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDprId, dprSettingsOpen, dprCfg]);
 
   // Persist Parallel Channel settings while modal open
   useEffect(() => {
@@ -7734,13 +7775,34 @@ priced.sort((a, b) => a.price - b.price);
                     // custom text
                     if (cfg.text && String(cfg.text).trim()) {
                       const tx = document.createElement("div");
+                      tx.setAttribute("data-dpr-text", "1");
                       tx.style.cssText =
-                        `position:absolute;left:6px;top:6px;font-size:${cfg.textSize || 12}px;color:${cfg.textColor || axisCol};` +
+                        `position:absolute;left:50%;bottom:-4px;transform:translate(-50%,100%);` +
+                        `font-size:${cfg.textSize || 12}px;color:${cfg.textColor || axisCol};` +
                         `font-weight:${cfg.textBold ? "700" : "400"};font-style:${cfg.textItalic ? "italic" : "normal"};` +
-                        `pointer-events:none;max-width:90%;overflow:hidden;text-overflow:ellipsis;`;
+                        `pointer-events:none;white-space:pre;text-align:center;max-width:220px;`;
                       tx.textContent = cfg.text;
                       wrap.appendChild(tx);
                     }
+                    // interactive handles (2 corners + body)
+                    const mkHandle = (role: string, left: string, top: string) => {
+                      const h = document.createElement("div");
+                      h.setAttribute("data-dpr-handle", role);
+                      h.setAttribute("data-dpr-id", String(l.id));
+                      h.style.cssText =
+                        `position:absolute;left:${left};top:${top};width:12px;height:12px;` +
+                        `transform:translate(-50%,-50%);border-radius:50%;border:2px solid ${axisCol};` +
+                        `background:#0b0e14;pointer-events:auto;z-index:16;cursor:move;touch-action:none;`;
+                      wrap.appendChild(h);
+                    };
+                    mkHandle("a", "0%", "100%"); // bottom-left-ish start
+                    mkHandle("b", "100%", "0%"); // top-right-ish end
+                    // body hit area
+                    const body = document.createElement("div");
+                    body.setAttribute("data-dpr-handle", "body");
+                    body.setAttribute("data-dpr-id", String(l.id));
+                    body.style.cssText = "position:absolute;inset:0;pointer-events:auto;cursor:move;z-index:15;background:transparent;";
+                    wrap.appendChild(body);
                     host.appendChild(wrap);
                   }
                 }
@@ -13009,6 +13071,147 @@ priced.sort((a, b) => a.price - b.price);
           setStatusMsg("Channel updated — drag more or ✓ Done");
         } catch {}
       };
+
+      // Date & Price Range: drag corners / body
+      const onDprPointerDown = (e: PointerEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (!t || !t.getAttribute) return;
+        const role = t.getAttribute("data-dpr-handle");
+        const id = t.getAttribute("data-dpr-id");
+        if (!role || !id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const line = (linesRef.current || []).find((x) => String(x.id) === String(id));
+        if (!line || typeof line.note !== "string" || !line.note.startsWith("__dpr:")) return;
+        const cfg = parseDprNote(line.note);
+        if (!cfg) return;
+        const cont = chartContainerRef.current;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!cont || !chart || !ser) return;
+        const rect = cont.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(y);
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
+            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+          }
+        } catch {}
+        (moveDiagRef as any).current = {
+          id,
+          phase: "drag-a",
+          pointA: { time: cfg.t0, price: cfg.p0 },
+          pointB: { time: cfg.t1, price: cfg.p1 },
+          color: cfg.lineColor,
+          width: cfg.lineWidth,
+          dash: "solid",
+          isDpr: true,
+          dprHandle: role,
+          dprCfg: cfg,
+          bodyOrigin: role === "body" && tCursor != null && price != null
+            ? { t: tCursor, p: price, t0: cfg.t0, p0: cfg.p0, t1: cfg.t1, p1: cfg.p1 }
+            : null,
+        };
+        setMode("move");
+        setMovingId(id);
+        setMovingType("line");
+        lockChartInteraction(true);
+        try { t.setPointerCapture(e.pointerId); } catch {}
+        setStatusMsg(role === "body" ? "DPR: moving" : `DPR: drag ${role}`);
+      };
+      const onDprPointerMove = (e: PointerEvent) => {
+        const md = moveDiagRef.current as any;
+        if (!md || !md.isDpr || !md.dprHandle) return;
+        const cont = chartContainerRef.current;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!cont || !chart || !ser) return;
+        const rect = cont.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(y);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(x);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
+            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+          }
+        } catch {}
+        if (tCursor == null) return;
+        let t0 = md.pointA.time, p0 = md.pointA.price, t1 = md.pointB.time, p1 = md.pointB.price;
+        const key = String(md.dprHandle);
+        if (key === "a") { t0 = tCursor; p0 = price; }
+        else if (key === "b") { t1 = tCursor; p1 = price; }
+        else if (key === "body" && md.bodyOrigin) {
+          const o = md.bodyOrigin;
+          const dt = tCursor - o.t;
+          const dp = price - o.p;
+          t0 = o.t0 + dt; t1 = o.t1 + dt;
+          p0 = o.p0 + dp; p1 = o.p1 + dp;
+        }
+        md.pointA = { time: t0, price: p0 };
+        md.pointB = { time: t1, price: p1 };
+        const cfg = { ...(md.dprCfg || defaultDprCfg()), t0, p0, t1, p1 };
+        md.dprCfg = cfg;
+        // live visual update via note rewrite + re-render
+        const note = buildDprNote(cfg);
+        const cur = (linesRef.current || []).find((x) => String(x.id) === String(md.id));
+        if (cur) {
+          cur.note = note;
+          cur.price = Math.min(p0, p1);
+          cur.start_time = Math.min(t0, t1);
+          cur.end_time = Math.max(t0, t1);
+          cur.end_price = Math.max(p0, p1);
+        }
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      };
+      const onDprPointerUp = async (e: PointerEvent) => {
+        const md = moveDiagRef.current as any;
+        if (!md || !md.isDpr) return;
+        const key = md.dprHandle;
+        md.dprHandle = null;
+        md.phase = "pick";
+        lockChartInteraction(false);
+        if (!key) return;
+        try {
+          const cfg = md.dprCfg || defaultDprCfg(md.pointA.time, md.pointA.price, md.pointB.time, md.pointB.price);
+          cfg.t0 = md.pointA.time; cfg.p0 = md.pointA.price; cfg.t1 = md.pointB.time; cfg.p1 = md.pointB.price;
+          const note = buildDprNote(cfg);
+          setLines((prev) => prev.map((x) =>
+            String(x.id) === String(md.id)
+              ? { ...x, note, price: Math.min(cfg.p0, cfg.p1), start_time: Math.min(cfg.t0, cfg.t1), end_time: Math.max(cfg.t0, cfg.t1), end_price: Math.max(cfg.p0, cfg.p1), color: cfg.lineColor }
+              : x
+          ));
+          if (!String(md.id).startsWith("local-")) {
+            await supabase.from("chart_lines").update({
+              note,
+              price: Math.min(cfg.p0, cfg.p1),
+              start_time: Math.min(cfg.t0, cfg.t1),
+              end_time: Math.max(cfg.t0, cfg.t1),
+              end_price: Math.max(cfg.p0, cfg.p1),
+              color: cfg.lineColor,
+            }).eq("id", md.id);
+          }
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          setStatusMsg("Date & price range updated");
+        } catch {}
+      };
+      window.addEventListener("pointerdown", onDprPointerDown, true);
+      window.addEventListener("pointermove", onDprPointerMove);
+      window.addEventListener("pointerup", onDprPointerUp);
+
       window.addEventListener("pointerdown", onChPointerDown, true);
       window.addEventListener("pointermove", onChPointerMove);
       window.addEventListener("pointerup", onChPointerUp);
@@ -18051,6 +18254,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           if (p) {
             noteToSave = buildChannelNote({ ...p, text: noteDraft.trim() });
           }
+        } else if (s.startsWith("__dpr:")) {
+          const p = parseDprNote(s);
+          if (p) {
+            noteToSave = buildDprNote({ ...p, text: noteDraft.trim() });
+          }
         } else if (s.startsWith("__frvp:")) {
           const p = parseFrvpNote(s);
           if (p) {
@@ -20799,55 +21007,63 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 )}
 
                 {dprSettingsTab === "visibility" && (
-                  <div className="px-4 py-3 space-y-2 text-xs">
+                  <div className="px-4 py-3 space-y-2.5 text-xs">
                     {([
-                      ["visTicks", "Ticks"],
-                      ["visSeconds", "Seconds"],
-                      ["visMinutes", "Minutes"],
-                      ["visHours", "Hours"],
-                      ["visDays", "Days"],
-                      ["visWeeks", "Weeks"],
-                      ["visMonths", "Months"],
-                      ["visRanges", "Ranges"],
-                    ] as const).map(([k, lab]) => (
-                      <label key={k} className="flex items-center gap-2">
-                        <input type="checkbox" checked={(dprCfg as any)[k]}
-                          onChange={(e) => setDprCfg((c) => ({ ...c, [k]: e.target.checked }))} />
-                        {lab}
-                      </label>
+                      ["visTicks", "Ticks", null, null],
+                      ["visSeconds", "Seconds", 1, 59],
+                      ["visMinutes", "Minutes", 1, 59],
+                      ["visHours", "Hours", 1, 24],
+                      ["visDays", "Days", 1, 366],
+                      ["visWeeks", "Weeks", 1, 52],
+                      ["visMonths", "Months", 1, 12],
+                      ["visRanges", "Ranges", null, null],
+                    ] as const).map(([k, lab, mn, mx]) => (
+                      <div key={k} className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 w-[5.5rem] shrink-0">
+                          <input type="checkbox" checked={(dprCfg as any)[k]}
+                            onChange={(e) => setDprCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                          {lab}
+                        </label>
+                        {mn != null && mx != null && (
+                          <>
+                            <input type="number" min={mn} max={mx} defaultValue={mn}
+                              className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5 text-[11px]" readOnly />
+                            <input type="range" min={mn} max={mx} defaultValue={mx}
+                              className="flex-1 accent-orange-500 h-1" />
+                            <input type="number" min={mn} max={mx} defaultValue={mx}
+                              className="w-12 bg-black/40 border border-white/15 rounded px-1 py-0.5 text-[11px]" readOnly />
+                          </>
+                        )}
+                      </div>
                     ))}
                   </div>
                 )}
 
-                <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/10">
-                  <button type="button" className="px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-white/10"
-                    onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); }}>Cancel</button>
-                  <button type="button" className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500 text-black hover:bg-orange-400"
-                    onClick={() => {
-                      try {
-                        if (selectedDprId) {
-                          const note = buildDprNote({ ...dprCfg });
-                          setLines((prev) => prev.map((x) =>
-                            String(x.id) === String(selectedDprId)
-                              ? { ...x, note, price: Math.min(dprCfg.p0, dprCfg.p1), start_time: Math.min(dprCfg.t0, dprCfg.t1), end_time: Math.max(dprCfg.t0, dprCfg.t1), end_price: Math.max(dprCfg.p0, dprCfg.p1), color: dprCfg.lineColor }
-                              : x
-                          ));
-                          if (!String(selectedDprId).startsWith("local-")) {
-                            void supabase.from("chart_lines").update({
-                              note,
-                              price: Math.min(dprCfg.p0, dprCfg.p1),
-                              start_time: Math.min(dprCfg.t0, dprCfg.t1),
-                              end_time: Math.max(dprCfg.t0, dprCfg.t1),
-                              end_price: Math.max(dprCfg.p0, dprCfg.p1),
-                              color: dprCfg.lineColor,
-                            }).eq("id", selectedDprId);
-                          }
-                        }
-                      } catch {}
-                      setDprSettingsOpen(false);
-                      setSelectedDprId(null);
-                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                    }}>Ok</button>
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10">
+                  <div className="relative">
+                    <button type="button" className="px-2.5 py-1.5 rounded-lg text-xs border border-white/15 text-gray-300 hover:bg-white/10"
+                      onClick={() => setOpenMenu((m) => m === "__dpr_tpl__" ? null : "__dpr_tpl__")}>
+                      Template ▾
+                    </button>
+                    {openMenu === "__dpr_tpl__" && (
+                      <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[140px] rounded-lg border border-white/15 bg-[#1e222d] shadow-xl py-1 text-xs">
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
+                          onClick={() => {
+                            setDprCfg((c) => ({ ...defaultDprCfg(c.t0, c.p0, c.t1, c.p1), t0: c.t0, p0: c.p0, t1: c.t1, p1: c.p1 }));
+                            setOpenMenu(null);
+                          }}>Apply defaults</button>
+                        <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-gray-500" disabled>
+                          Save as…
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-white/10"
+                      onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); setOpenMenu(null); }}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500 text-black hover:bg-orange-400"
+                      onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); setOpenMenu(null); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Ok</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -24556,6 +24772,33 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Date & Price Range — select for body/corner drag
+                        if (typeof l.note === "string" && l.note.startsWith("__dpr:")) {
+                          try {
+                            const p = parseDprNote(l.note);
+                            if (!p) { setStatusMsg("DPR parse failed"); return; }
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: p.t0, price: p.p0 },
+                              pointB: { time: p.t1, price: p.p1 },
+                              color: p.lineColor || "#2962FF",
+                              width: p.lineWidth || 1,
+                              dash: "solid",
+                              isDpr: true,
+                              dprHandle: null as any,
+                              dprCfg: p,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("DPR: drag corners or body — ✓ Done");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("DPR move failed"); }
+                          return;
+                        }
                         // Parallel Channel — 6 handles (4 corners + 2 mids)
                         if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
                           try {
