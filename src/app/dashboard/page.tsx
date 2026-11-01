@@ -3826,7 +3826,10 @@ export default function DashboardPage() {
   });
   const favDragRef = useRef<{ id: string; ox: number; oy: number; sx: number; sy: number } | null>(null);
   const toggleFavTool = useCallback((id: string, e?: { preventDefault?: () => void; stopPropagation?: () => void }) => {
-    try { e?.preventDefault(); e?.stopPropagation(); } catch {}
+    try {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+    } catch {}
     setFavTools((prev) => {
       const has = prev.includes(id);
       return has ? prev.filter((x) => x !== id) : [...prev, id];
