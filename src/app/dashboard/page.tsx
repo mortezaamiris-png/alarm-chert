@@ -10994,17 +10994,12 @@ priced.sort((a, b) => a.price - b.price);
                 try { bb.lower?.setData([]); } catch {}
               }
             } catch {}
-            // Drop any manual price zoom from previous coin
+            // Drop manual zoom from previous coin — keep the stable autoscaleInfoProvider
+            // (it only applies override when priceRangeOverrideRef is set)
             priceRangeOverrideRef.current = null;
             try {
-              series.applyOptions({ autoscaleInfoProvider: undefined as any });
-            } catch {
-              try {
-                series.applyOptions({ autoscaleInfoProvider: () => null as any } as any);
-              } catch {}
-            }
-            try {
-              series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+              const ps = series.priceScale() as any;
+              ps.applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
               chart.priceScale("right").applyOptions({ autoScale: true });
             } catch {}
           }
@@ -11067,10 +11062,9 @@ priced.sort((a, b) => a.price - b.price);
                     scaleMargins: { top: 0.08, bottom: 0.12 },
                   });
                   chart.priceScale("right").applyOptions({ autoScale: true });
-                  // Seed a sensible vertical range from visible candles so scale
-                  // is never stuck at previous-coin prices (tiny candles bug)
+                  // Force vertical fit to recent candles (fixes tiny-candles after coin switch)
                   try {
-                    const past = Math.min(120, n);
+                    const past = Math.min(150, n);
                     let lo = Infinity, hi = -Infinity;
                     for (let i = n - past; i < n; i++) {
                       const c = src[i];
@@ -11081,12 +11075,15 @@ priced.sort((a, b) => a.price - b.price);
                       if (Number.isFinite(h)) hi = Math.max(hi, h);
                     }
                     if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
-                      const pad = (hi - lo) * 0.12 || hi * 0.01 || 0.01;
-                      // brief fixed range then re-enable autoScale so user can scroll
+                      const pad = (hi - lo) * 0.12 || Math.abs(hi) * 0.01 || 0.01;
+                      // 1) apply fixed range so LWC actually moves
+                      try { ps.applyOptions({ autoScale: false }); } catch {}
                       if (typeof ps.setVisibleRange === "function") {
                         ps.setVisibleRange({ from: lo - pad, to: hi + pad });
                       }
-                      ps.applyOptions({ autoScale: true });
+                      // 2) then auto — override is null so provider lets LWC autoscale
+                      try { ps.applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } }); } catch {}
+                      try { chart.priceScale("right").applyOptions({ autoScale: true }); } catch {}
                     }
                   } catch {}
                   // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
@@ -11107,6 +11104,20 @@ priced.sort((a, b) => a.price - b.price);
                   programmaticRangeRef.current = false;
                 });
               });
+              // Delayed re-fit: indicators/lines may re-apply after first paint and
+              // temporarily stretch the scale — re-fit once more after they settle
+              window.setTimeout(() => {
+                try {
+                  priceRangeOverrideRef.current = null;
+                  snapToLastCandles();
+                } catch {}
+              }, 120);
+              window.setTimeout(() => {
+                try {
+                  priceRangeOverrideRef.current = null;
+                  snapToLastCandles();
+                } catch {}
+              }, 400);
             } catch {
               programmaticRangeRef.current = false;
             }
@@ -11597,9 +11608,13 @@ priced.sort((a, b) => a.price - b.price);
             ? zones.find((z) => yRatio >= z.top - 0.02 && yRatio <= 1 - z.bot + 0.02)
             : undefined;
 
-          // نوار قیمت: ~۱۲۰px از لبه راست (اعداد BTC عریض‌اند)
-          const onPriceAxis = fromRight >= 0 && fromRight <= 130;
+          // نوار قیمت: عریض‌تر تا اعداد BTC و کلیک/اسکرول مطمئن بخورد
+          const onPriceAxis = fromRight >= 0 && fromRight <= 160;
           if (!onPriceAxis) return;
+
+          // Claim the wheel immediately so LWC doesn't scroll time axis instead
+          e.preventDefault();
+          e.stopPropagation();
 
           let delta = e.deltaY;
           if (Math.abs(delta) < 0.5 && Math.abs(e.deltaX) > Math.abs(delta)) delta = e.deltaX;
@@ -11713,28 +11728,20 @@ priced.sort((a, b) => a.price - b.price);
           e.preventDefault();
           e.stopPropagation();
 
+          // Store override — the stable series autoscaleInfoProvider reads this ref
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
-            // TV-style: keep autoScale OFF while user is zooming the price axis
-            // (re-enabling autoScale immediately was undoing every scroll tick)
             const ps = ser.priceScale?.() || chart.priceScale("right");
-            try {
-              ser.applyOptions({
-                autoscaleInfoProvider: () => ({
-                  priceRange: { minValue: newBot, maxValue: newTop },
-                }),
-              } as any);
-            } catch {}
-            try {
-              ps.applyOptions({ autoScale: false });
-            } catch {}
+            // Keep autoScale OFF + setVisibleRange so wheel zoom sticks (TV style)
+            try { ps.applyOptions({ autoScale: false }); } catch {}
             try {
               if (typeof ps.setVisibleRange === "function") {
                 ps.setVisibleRange({ from: newBot, to: newTop });
               }
             } catch {}
-            // DO NOT turn autoScale back on here — that was killing the zoom
+            // Do NOT replace autoscaleInfoProvider here — the chart-init provider
+            // already returns override when priceRangeOverrideRef is set.
           } catch {}
           try {
             requestAnimationFrame(() => {
@@ -11794,23 +11801,14 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
         };
         const resetPriceZoom = () => {
+          // Clear manual override so stable provider returns to normal autoscale
           priceRangeOverrideRef.current = null;
           try {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
-            // Remove sticky provider from previous manual zoom
-            try {
-              s?.applyOptions?.({ autoscaleInfoProvider: undefined as any });
-            } catch {
-              try {
-                s?.applyOptions?.({
-                  autoscaleInfoProvider: () => null as any,
-                } as any);
-              } catch {}
-            }
-            // Fit to last ~120 candles (TV double-click feel — candles look large)
             const src = candlesRef.current || [];
-            if (src.length >= 2 && typeof ps?.setVisibleRange === "function") {
+            // Fit to last candles so user immediately sees large candles (TV feel)
+            if (src.length >= 2) {
               let lo = Infinity, hi = -Infinity;
               const start = Math.max(0, src.length - 120);
               for (let i = start; i < src.length; i++) {
@@ -11822,10 +11820,15 @@ priced.sort((a, b) => a.price - b.price);
               }
               if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
                 const pad = (hi - lo) * 0.10 || Math.abs(hi) * 0.008 || 0.01;
-                try { ps.setVisibleRange({ from: lo - pad, to: hi + pad }); } catch {}
+                try { ps.applyOptions({ autoScale: false }); } catch {}
+                try {
+                  if (typeof ps.setVisibleRange === "function") {
+                    ps.setVisibleRange({ from: lo - pad, to: hi + pad });
+                  }
+                } catch {}
               }
             }
-            // Then hand control back to autoScale
+            // Hand control back to autoScale (override is null → provider uses original)
             try { ps.applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } }); } catch {}
             try { ps.setAutoScale?.(true); } catch {}
             try { chart.priceScale("right").applyOptions({ autoScale: true }); } catch {}
@@ -11839,7 +11842,7 @@ priced.sort((a, b) => a.price - b.price);
           const plotH = Math.max(1, rect.height - 28);
           const yRatio = (e.clientY - rect.top) / plotH;
           // Double-click on right price scale → reset vertical zoom (main or oscillator)
-          if (fromRight <= 100 && fromRight >= 0) {
+          if (fromRight <= 160 && fromRight >= 0) {
             e.preventDefault();
             e.stopPropagation();
             // Detect oscillator pane under cursor
@@ -11929,7 +11932,7 @@ priced.sort((a, b) => a.price - b.price);
           if (!(dt > 40 && dt < 380 && dist < 48)) return;
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - t.clientX;
-          if (fromRight <= 100 && fromRight >= 0) {
+          if (fromRight <= 160 && fromRight >= 0) {
             resetPriceZoom();
             return;
           }
