@@ -3425,6 +3425,17 @@ export default function DashboardPage() {
     isFrvp?: boolean;
     isChannel?: boolean;
   } | null>(null);
+  /** Unified continuous body-drag for any line/alarm (TV-style grab & move) */
+  const bodyDragRef = useRef<{
+    id: string;
+    kind: "line" | "alarm";
+    type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
+    startX: number;
+    startY: number;
+    startTime: number;
+    startPrice: number;
+    orig: any; // original geometry snapshot
+  } | null>(null);
   /** True when moving a horizontal ray (origin can shift in time) */
   const movingRayRef = useRef(false);
   const movingVLineRef = useRef(false);
@@ -13596,6 +13607,531 @@ priced.sort((a, b) => a.price - b.price);
           setStatusMsg(md.isCurve ? "Curve updated" : "Path updated");
         } catch {}
       };
+
+      // ═══════════════════════════════════════════════════════════
+      // UNIFIED BODY-DRAG: grab any line/alarm and drag the whole object
+      // (Horizontal, Ray, Vertical, Trendline, Curve, Alarms) — TV style
+      // ═══════════════════════════════════════════════════════════
+      const hitTestAnyLine = (px: number, py: number): {
+        id: string; kind: "line" | "alarm"; type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
+        score: number; obj: any;
+      } | null => {
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!chart || !ser) return null;
+        const HIT = 10;
+        const symU = (symbolRef.current || "").toUpperCase();
+        let best: any = null;
+        const consider = (id: string, kind: "line" | "alarm", type: any, score: number, obj: any) => {
+          if (score > HIT) return;
+          if (!best || score < best.score) best = { id, kind, type, score, obj };
+        };
+        const list = (linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU);
+        for (const l of list) {
+          const n0 = typeof l.note === "string" ? l.note : "";
+          try {
+            if (n0.startsWith("__curve:")) {
+              const ctrls = parseCurveControls(n0);
+              if (ctrls && ctrls.length >= 3) {
+                const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+                const dens = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 32, barTs);
+                let dmin = 1e9;
+                for (const pt of dens) {
+                  const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+                  const yy = ser.priceToCoordinate(pt.value);
+                  if (xx == null || yy == null) continue;
+                  dmin = Math.min(dmin, Math.hypot(px - Number(xx), py - Number(yy)));
+                }
+                consider(String(l.id), "line", "curve", dmin, l);
+              }
+            } else if (isDiagonalLine(l) || (n0.startsWith("__diag:"))) {
+              const t0 = Number(l.start_time), t1 = Number(l.end_time);
+              const p0 = Number(l.price), p1 = Number(l.end_price);
+              if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+              const x0 = chart.timeScale().timeToCoordinate(t0 as any);
+              const y0 = ser.priceToCoordinate(p0);
+              const x1 = chart.timeScale().timeToCoordinate(t1 as any);
+              const y1 = ser.priceToCoordinate(p1);
+              if (x0 == null || y0 == null || x1 == null || y1 == null) continue;
+              // distance from point to segment
+              const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+              const len2 = dx * dx + dy * dy || 1;
+              let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
+              t = Math.max(0, Math.min(1, t));
+              const d = Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
+              consider(String(l.id), "line", "diag", d, l);
+            } else if (n0 === "__vline__" || n0.startsWith("__vline__:")) {
+              const t0 = Number(l.start_time);
+              const x = chart.timeScale().timeToCoordinate(t0 as any);
+              if (x != null) consider(String(l.id), "line", "v", Math.abs(px - Number(x)), l);
+            } else if (n0.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l))) {
+              const y = ser.priceToCoordinate(Number(l.price));
+              if (y != null) consider(String(l.id), "line", "ray", Math.abs(py - Number(y)), l);
+            } else if (n0.startsWith("__arrow")) {
+              const y = ser.priceToCoordinate(Number(l.price));
+              const x = l.start_time != null ? chart.timeScale().timeToCoordinate(Number(l.start_time) as any) : null;
+              if (y != null) {
+                const d = x != null ? Math.hypot(px - Number(x), py - Number(y)) : Math.abs(py - Number(y));
+                consider(String(l.id), "line", "arrow", d, l);
+              }
+            } else if (!n0.startsWith("__rect:") && !n0.startsWith("__path:") && !n0.startsWith("__brush:") &&
+                       !n0.startsWith("__avp:") && !n0.startsWith("__avwap:") && !n0.startsWith("__frvp:") &&
+                       !n0.startsWith("__channel:") && !n0.startsWith("__fib") && !n0.startsWith("__long:") &&
+                       !n0.startsWith("__short:") && !n0.startsWith("__dpr:") && !n0.startsWith("__callout:")) {
+              // plain horizontal
+              const y = ser.priceToCoordinate(Number(l.price));
+              if (y != null) consider(String(l.id), "line", "h", Math.abs(py - Number(y)), l);
+            }
+          } catch {}
+        }
+        // Alarms
+        const alarms = (alarmsRef.current || []).filter((a: any) =>
+          String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered
+        );
+        for (const a of alarms) {
+          try {
+            if (isDiagonalLine(a as any) || (a.end_time != null && a.end_price != null && a.start_time != null && Number(a.start_time) !== Number(a.end_time))) {
+              const t0 = Number(a.start_time), t1 = Number(a.end_time);
+              const p0 = Number(a.price), p1 = Number(a.end_price);
+              const x0 = chart.timeScale().timeToCoordinate(t0 as any);
+              const y0 = ser.priceToCoordinate(p0);
+              const x1 = chart.timeScale().timeToCoordinate(t1 as any);
+              const y1 = ser.priceToCoordinate(p1);
+              if (x0 == null || y0 == null || x1 == null || y1 == null) continue;
+              const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+              const len2 = dx * dx + dy * dy || 1;
+              let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
+              t = Math.max(0, Math.min(1, t));
+              const d = Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
+              consider(String(a.id), "alarm", "diag", d, a);
+            } else if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
+              const y = ser.priceToCoordinate(Number(a.price));
+              if (y != null) consider(String(a.id), "alarm", "ray", Math.abs(py - Number(y)), a);
+            } else {
+              const y = ser.priceToCoordinate(Number(a.price));
+              if (y != null) consider(String(a.id), "alarm", "h", Math.abs(py - Number(y)), a);
+            }
+          } catch {}
+        }
+        return best;
+      };
+
+      const onBodyDragDown = (e: PointerEvent) => {
+        // Don't steal events from handles / menus / while drawing a new tool
+        const t = e.target as HTMLElement | null;
+        if (!t) return;
+        if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id]")) return;
+        const m = modeRef.current;
+        // Only when idle or already in move — not while actively drawing
+        if (m !== "none" && m !== "move") return;
+        // If a curve/path handle drag is already active, skip
+        const md = moveDiagRef.current as any;
+        if (md && (md.curveHandle != null || md.pathHandle != null || md.phase === "drag-a" || md.phase === "drag-b" || md.phase === "drag-body")) return;
+        if (bodyDragRef.current) return;
+
+        const cont = chartContainerRef.current;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!cont || !chart || !ser) return;
+        const rect = cont.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
+
+        const hit = hitTestAnyLine(px, py);
+        if (!hit) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const price = ser.coordinateToPrice(py);
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(px);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
+            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+          }
+        } catch {}
+        if (tCursor == null || price == null || Number.isNaN(price)) return;
+
+        // Snapshot original geometry
+        let orig: any = {};
+        const o = hit.obj;
+        if (hit.type === "curve") {
+          orig.ctrls = parseCurveControls(o.note) || [];
+        } else if (hit.type === "diag") {
+          orig.t0 = Number(o.start_time); orig.p0 = Number(o.price);
+          orig.t1 = Number(o.end_time); orig.p1 = Number(o.end_price);
+        } else if (hit.type === "v") {
+          orig.t = Number(o.start_time); orig.p0 = Number(o.price); orig.p1 = Number(o.end_price ?? o.price);
+        } else if (hit.type === "ray" || hit.type === "arrow") {
+          orig.t = o.start_time != null ? Number(o.start_time) : null;
+          orig.p = Number(o.price);
+          orig.note = o.note;
+        } else {
+          // horizontal
+          orig.p = Number(o.price);
+        }
+
+        bodyDragRef.current = {
+          id: hit.id,
+          kind: hit.kind,
+          type: hit.type,
+          startX: px,
+          startY: py,
+          startTime: tCursor,
+          startPrice: price,
+          orig,
+        };
+
+        // Enter move mode + select so handles appear for multi-point tools
+        setMode("move");
+        modeRef.current = "move";
+        setMovingId(hit.id);
+        movingIdRef.current = hit.id;
+        setMovingType(hit.kind);
+        if (hit.type === "curve" && orig.ctrls?.length >= 3) {
+          (moveDiagRef as any).current = {
+            id: hit.id, phase: "drag-body", isCurve: true, isCurveBody: true,
+            curveCtrls: orig.ctrls.map((p: any) => ({ ...p })),
+            curveHandle: null,
+            pointA: orig.ctrls[0], pointB: orig.ctrls[orig.ctrls.length - 1],
+            color: o.color || "#2962FF", width: o.width || 2, dash: "solid",
+            bodyStart: { time: tCursor, price },
+            bodyOrig: orig.ctrls.map((p: any) => ({ ...p })),
+          };
+        } else if (hit.type === "diag") {
+          (moveDiagRef as any).current = {
+            id: hit.id, phase: "drag-body",
+            pointA: { time: orig.t0, price: orig.p0 },
+            pointB: { time: orig.t1, price: orig.p1 },
+            color: o.color || "#2962FF", width: o.width || 2, dash: "solid",
+          };
+        } else {
+          moveDiagRef.current = null;
+          movingVLineRef.current = hit.type === "v";
+          movingRayRef.current = hit.type === "ray" || hit.type === "arrow";
+        }
+        lockChartInteraction(true);
+        try { (t as any).setPointerCapture?.(e.pointerId); } catch {}
+        setStatusMsg("Moving…");
+      };
+
+      const onBodyDragMove = (e: PointerEvent) => {
+        const bd = bodyDragRef.current;
+        if (!bd) return;
+        const cont = chartContainerRef.current;
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        if (!cont || !chart || !ser) return;
+        const rect = cont.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        const price = ser.coordinateToPrice(py);
+        if (price == null || Number.isNaN(price)) return;
+        let tCursor: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(px);
+          const candles = candlesRef.current;
+          if (logical != null && candles.length) {
+            const barSec = intervalToSeconds(String(intervalRef.current));
+            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
+            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+          }
+        } catch {}
+        if (tCursor == null) return;
+
+        const dT = tCursor - bd.startTime;
+        const dP = price - bd.startPrice;
+        let savedR: any = null;
+        try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
+
+        try {
+          if (bd.type === "curve") {
+            const ctrls = (bd.orig.ctrls || []).map((p: any) => ({ time: p.time + dT, price: p.price + dP }));
+            const md = moveDiagRef.current as any;
+            if (md) { md.curveCtrls = ctrls; }
+            const ls = chartLinesRef.current.get(bd.id);
+            if (ls) {
+              const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+              const data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 48, barTs);
+              ls.setData(data.map((p) => ({ time: p.time as any, value: p.value })));
+            }
+            // move handles
+            const host = vlineOverlayRef.current;
+            if (host) {
+              host.querySelectorAll(`[data-curve-id="${bd.id}"]`).forEach((el) => {
+                const idx = Number((el as HTMLElement).getAttribute("data-curve-handle") || -1);
+                if (idx < 0 || !ctrls[idx]) return;
+                const xx = chart.timeScale().timeToCoordinate(ctrls[idx].time as any);
+                const yy = ser.priceToCoordinate(ctrls[idx].price);
+                if (xx != null && yy != null) {
+                  (el as HTMLElement).style.left = `${xx}px`;
+                  (el as HTMLElement).style.top = `${yy}px`;
+                }
+              });
+            }
+            // update linesRef live
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (cur) {
+              cur.note = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              cur.price = ctrls[0].price;
+              cur.start_time = Math.min(...ctrls.map((p: any) => p.time));
+              cur.end_time = Math.max(...ctrls.map((p: any) => p.time));
+              cur.end_price = ctrls[ctrls.length - 1].price;
+            }
+          } else if (bd.type === "diag") {
+            const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
+            const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
+            const ls = chartLinesRef.current.get(bd.id);
+            if (ls) {
+              const pts = [
+                { time: Math.min(t0, t1) as any, value: t0 <= t1 ? p0 : p1 },
+                { time: Math.max(t0, t1) as any, value: t0 <= t1 ? p1 : p0 },
+              ];
+              ls.setData(pts);
+            }
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (cur) {
+              cur.start_time = t0; cur.price = p0; cur.end_time = t1; cur.end_price = p1;
+            }
+            if (bd.kind === "alarm") {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (curA) { curA.start_time = t0; curA.price = p0; (curA as any).end_time = t1; (curA as any).end_price = p1; }
+            }
+            // update handles if any
+            try {
+              const md = moveDiagRef.current as any;
+              if (md) { md.pointA = { time: t0, price: p0 }; md.pointB = { time: t1, price: p1 }; }
+              positionHandles({ time: t0, price: p0 }, { time: t1, price: p1 }, null, null);
+            } catch {}
+          } else if (bd.type === "h") {
+            const newP = bd.orig.p + dP;
+            if (bd.kind === "line") {
+              const ls = chartLinesRef.current.get(bd.id);
+              // H-lines are often price lines; update via render or price line
+              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (cur) cur.price = newP;
+              // live: try series or force light re-render of that line only
+              try {
+                const pl = alarmLinesRef.current.get(bd.id); // sometimes shared
+                // prefer full light update through existing price lines map if present
+              } catch {}
+              // Use chartLinesRef if it's a series-based H line, else update price line
+              try {
+                const seriesMap = chartLinesRef.current;
+                // Many H lines are IPriceLine on main series — find and update
+                // Fallback: patch linesRef and call a lightweight redraw via setData on a temp approach
+              } catch {}
+              // Practical: update the DOM-less price line by re-applying
+              try {
+                // Store pending price for up-handler; live visual via preview or direct
+                (bd as any)._liveP = newP;
+                // Draw a temporary preview line
+                if (!previewDiagSeriesRef.current) {
+                  previewDiagSeriesRef.current = chart.addLineSeries({
+                    color: (bd.orig as any).color || "#2962FF",
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Solid,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                }
+                // For pure H: use price line on main series for live feedback
+                try {
+                  if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                  (bd as any)._pl = ser.createPriceLine({
+                    price: newP,
+                    color: "#f0b90b",
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: "",
+                  });
+                } catch {}
+              } catch {}
+            } else {
+              // alarm H
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (curA) curA.price = newP;
+              (bd as any)._liveP = newP;
+              try {
+                if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                (bd as any)._pl = ser.createPriceLine({
+                  price: newP,
+                  color: "#f0b90b",
+                  lineWidth: 2,
+                  lineStyle: LineStyle.Solid,
+                  axisLabelVisible: true,
+                  title: "",
+                });
+              } catch {}
+            }
+          } else if (bd.type === "v") {
+            const newT = bd.orig.t + dT;
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (cur) { cur.start_time = newT; cur.end_time = newT; }
+            (bd as any)._liveT = newT;
+            // verticals are DOM — trigger light repaint of vline positions
+            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            if (savedR) { try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {} }
+            return;
+          } else if (bd.type === "ray" || bd.type === "arrow") {
+            const newP = bd.orig.p + dP;
+            const newT = bd.orig.t != null ? bd.orig.t + dT : null;
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (cur) {
+              cur.price = newP;
+              if (newT != null) {
+                cur.start_time = newT;
+                if (typeof cur.note === "string" && cur.note.startsWith("__ray:")) cur.note = `__ray:${newT}`;
+              }
+            }
+            if (bd.kind === "alarm") {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (curA) {
+                curA.price = newP;
+                if (newT != null) curA.start_time = newT;
+              }
+            }
+            (bd as any)._liveP = newP;
+            (bd as any)._liveT = newT;
+            try {
+              if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+              (bd as any)._pl = ser.createPriceLine({
+                price: newP,
+                color: "#f0b90b",
+                lineWidth: 2,
+                lineStyle: LineStyle.Solid,
+                axisLabelVisible: true,
+                title: "",
+              });
+            } catch {}
+          }
+        } catch {}
+        if (savedR) {
+          try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+        }
+      };
+
+      const onBodyDragUp = async () => {
+        const bd = bodyDragRef.current;
+        if (!bd) return;
+        bodyDragRef.current = null;
+        // Prevent the same pointer-up/click from teleporting the line via subscribeClick
+        clickLockRef.current = true;
+        setTimeout(() => { clickLockRef.current = false; }, 350);
+        lockChartInteraction(false);
+        // remove temp price line
+        try {
+          const ser = seriesRef.current;
+          if (ser && (bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+        } catch {}
+        try {
+          if (previewDiagSeriesRef.current) {
+            try { chartRef.current?.removeSeries(previewDiagSeriesRef.current); } catch {}
+            previewDiagSeriesRef.current = null;
+          }
+        } catch {}
+
+        try {
+          if (bd.type === "curve") {
+            const md = moveDiagRef.current as any;
+            const ctrls = md?.curveCtrls || bd.orig.ctrls;
+            if (ctrls?.length >= 3) {
+              const note = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              const patch: any = {
+                note,
+                price: ctrls[0].price,
+                start_time: Math.min(...ctrls.map((p: any) => p.time)),
+                end_time: Math.max(...ctrls.map((p: any) => p.time)),
+                end_price: ctrls[ctrls.length - 1].price,
+              };
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              if (!String(bd.id).startsWith("local-")) {
+                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+              }
+            }
+            if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
+          } else if (bd.type === "diag") {
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (bd.kind === "line" && cur) {
+              const patch: any = {
+                start_time: cur.start_time, price: cur.price,
+                end_time: cur.end_time, end_price: cur.end_price,
+              };
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              if (!String(bd.id).startsWith("local-")) {
+                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+              }
+            } else if (bd.kind === "alarm") {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (curA) {
+                const patch: any = {
+                  start_time: curA.start_time, price: curA.price,
+                  end_time: (curA as any).end_time, end_price: (curA as any).end_price,
+                };
+                setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+                await supabase.from("alarms").update(patch).eq("id", bd.id);
+              }
+            }
+          } else if (bd.type === "h") {
+            const newP = (bd as any)._liveP ?? bd.orig.p;
+            if (bd.kind === "line") {
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
+              if (!String(bd.id).startsWith("local-")) {
+                await supabase.from("chart_lines").update({ price: newP }).eq("id", bd.id);
+              }
+            } else {
+              setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
+              await supabase.from("alarms").update({ price: newP }).eq("id", bd.id);
+            }
+          } else if (bd.type === "v") {
+            const newT = (bd as any)._liveT ?? bd.orig.t;
+            setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, start_time: newT, end_time: newT } : x));
+            if (!String(bd.id).startsWith("local-")) {
+              await supabase.from("chart_lines").update({ start_time: newT, end_time: newT }).eq("id", bd.id);
+            }
+          } else if (bd.type === "ray" || bd.type === "arrow") {
+            const newP = (bd as any)._liveP ?? bd.orig.p;
+            const newT = (bd as any)._liveT ?? bd.orig.t;
+            if (bd.kind === "line") {
+              const patch: any = { price: newP };
+              if (newT != null) {
+                patch.start_time = newT;
+                if (bd.type === "ray") patch.note = `__ray:${newT}`;
+              }
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              if (!String(bd.id).startsWith("local-")) {
+                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+              }
+            } else {
+              const patch: any = { price: newP };
+              if (newT != null) patch.start_time = newT;
+              setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              await supabase.from("alarms").update(patch).eq("id", bd.id);
+            }
+          }
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          setStatusMsg("Moved");
+        } catch {
+          setStatusMsg("Move failed");
+        }
+        // Keep selection so handles stay visible for fine edit (curve/diag)
+        // User can click empty to deselect via cancelAll
+      };
+
+      window.addEventListener("pointerdown", onBodyDragDown, true);
+      window.addEventListener("pointermove", onBodyDragMove);
+      window.addEventListener("pointerup", onBodyDragUp);
+
       window.addEventListener("pointerdown", onCurvePathPointerDown, true);
       window.addEventListener("pointermove", onCurvePathPointerMove);
       window.addEventListener("pointerup", onCurvePathPointerUp);
@@ -17855,6 +18391,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     const cancelAll = () => {
       try {
         moveDiagRef.current = null;
+        bodyDragRef.current = null;
         movingVLineRef.current = false;
         movingRayRef.current = false;
         diagStartRef.current = null;
@@ -17890,6 +18427,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       // Cancel move selection on outside click OR empty chart (not on a handle)
       // Use refs so we never miss because of stale React state
       if (modeRef.current !== "move" || !movingIdRef.current) return;
+      // Don't cancel while an active body-drag is in progress
+      if (bodyDragRef.current) return;
       const el = e.target as HTMLElement | null;
       if (!el) return;
       if (
