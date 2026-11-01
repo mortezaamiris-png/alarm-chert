@@ -11608,8 +11608,9 @@ priced.sort((a, b) => a.price - b.price);
             ? zones.find((z) => yRatio >= z.top - 0.02 && yRatio <= 1 - z.bot + 0.02)
             : undefined;
 
-          // نوار قیمت: عریض‌تر تا اعداد BTC و کلیک/اسکرول مطمئن بخورد
-          const onPriceAxis = fromRight >= 0 && fromRight <= 160;
+          // نوار قیمت: از لبه راست تا ~۱۸۰px یا ۱۸٪ عرض چارت (هر کدام بزرگ‌تر)
+          const axisW = Math.max(180, rect.width * 0.18);
+          const onPriceAxis = fromRight >= 0 && fromRight <= axisW;
           if (!onPriceAxis) return;
 
           // Claim the wheel immediately so LWC doesn't scroll time axis instead
@@ -11731,22 +11732,32 @@ priced.sort((a, b) => a.price - b.price);
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
 
-          // Override drives the stable autoscaleInfoProvider on the main series
+          // Same path as touch-zoom (which works): override + autoScale ON
+          // so the stable autoscaleInfoProvider supplies the range every frame.
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
             const psRight = chart.priceScale("right") as any;
-            const psSer = ser.priceScale?.() as any;
-            // Disable autoScale on both handles, then set range
+            const psSer = (ser.priceScale?.() as any) || psRight;
+            // Prefer setVisibleRange when available (locks the scale immediately)
             for (const ps of [psSer, psRight]) {
               if (!ps) continue;
-              try { ps.applyOptions({ autoScale: false }); } catch {}
               try {
                 if (typeof ps.setVisibleRange === "function") {
+                  try { ps.applyOptions({ autoScale: false }); } catch {}
                   ps.setVisibleRange({ from: newBot, to: newTop });
                 }
               } catch {}
             }
+            // Always also keep autoScale true so provider reinforces the range
+            // (this is the path that already works for touch drag on price axis)
+            for (const ps of [psSer, psRight]) {
+              if (!ps) continue;
+              try { ps.applyOptions({ autoScale: true }); } catch {}
+              try { ps.setAutoScale?.(true); } catch {}
+            }
+            // Nudge a relayout so the new range paints this frame
+            try { chart.timeScale().applyOptions({}); } catch {}
           } catch {}
           try {
             requestAnimationFrame(() => {
@@ -11948,6 +11959,8 @@ priced.sort((a, b) => a.price - b.price);
         container.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         // backup: document capture — در صورت پوشش overlay روی محور قیمت
         document.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
+        // window capture as last resort (some browsers route wheel oddly with nested scrollers)
+        window.addEventListener("wheel", onWheelPrice, { passive: false, capture: true });
         container.addEventListener("dblclick", onDblPrice, { capture: true });
         container.addEventListener("touchend", onTouchEndDoubleTap, { passive: true });
         const onCtxChart = (e: MouseEvent) => {
@@ -12151,6 +12164,7 @@ priced.sort((a, b) => a.price - b.price);
           // MUST pass same capture flag used in addEventListener or the listener never detaches
           try { container.removeEventListener("wheel", onWheelPrice, true); } catch {}
           try { document.removeEventListener("wheel", onWheelPrice, true as any); } catch {}
+          try { window.removeEventListener("wheel", onWheelPrice, true as any); } catch {}
           try { container.removeEventListener("dblclick", onDblPrice, true); } catch {}
           try { container.removeEventListener("touchend", onTouchEndDoubleTap); } catch {}
           try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
