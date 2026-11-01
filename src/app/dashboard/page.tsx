@@ -10996,6 +10996,17 @@ priced.sort((a, b) => a.price - b.price);
             } catch {}
             // Drop any manual price zoom from previous coin
             priceRangeOverrideRef.current = null;
+            try {
+              series.applyOptions({ autoscaleInfoProvider: undefined as any });
+            } catch {
+              try {
+                series.applyOptions({ autoscaleInfoProvider: () => null as any } as any);
+              } catch {}
+            }
+            try {
+              series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+              chart.priceScale("right").applyOptions({ autoScale: true });
+            } catch {}
           }
 
           // Clear old price-lines before data so autoscale is not stuck (TF + symbol)
@@ -11705,7 +11716,8 @@ priced.sort((a, b) => a.price - b.price);
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
-            // روش مطمئن LWC: autoScale خاموش + setVisibleRange
+            // TV-style: keep autoScale OFF while user is zooming the price axis
+            // (re-enabling autoScale immediately was undoing every scroll tick)
             const ps = ser.priceScale?.() || chart.priceScale("right");
             try {
               ser.applyOptions({
@@ -11722,10 +11734,7 @@ priced.sort((a, b) => a.price - b.price);
                 ps.setVisibleRange({ from: newBot, to: newTop });
               }
             } catch {}
-            // بعضی نسخه‌ها فقط با autoScale + provider کار می‌کنند
-            try {
-              ps.applyOptions({ autoScale: true });
-            } catch {}
+            // DO NOT turn autoScale back on here — that was killing the zoom
           } catch {}
           try {
             requestAnimationFrame(() => {
@@ -11789,11 +11798,21 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
-            // Compute range from current candles so reset is visible even if LWC autoScale is sticky
+            // Remove sticky provider from previous manual zoom
+            try {
+              s?.applyOptions?.({ autoscaleInfoProvider: undefined as any });
+            } catch {
+              try {
+                s?.applyOptions?.({
+                  autoscaleInfoProvider: () => null as any,
+                } as any);
+              } catch {}
+            }
+            // Fit to last ~120 candles (TV double-click feel — candles look large)
             const src = candlesRef.current || [];
             if (src.length >= 2 && typeof ps?.setVisibleRange === "function") {
               let lo = Infinity, hi = -Infinity;
-              const start = Math.max(0, src.length - 150);
+              const start = Math.max(0, src.length - 120);
               for (let i = start; i < src.length; i++) {
                 const c = src[i];
                 const l = Number(c?.low ?? c?.close);
@@ -11802,12 +11821,13 @@ priced.sort((a, b) => a.price - b.price);
                 if (Number.isFinite(h)) hi = Math.max(hi, h);
               }
               if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
-                const pad = (hi - lo) * 0.12 || hi * 0.01 || 0.01;
-                ps.setVisibleRange({ from: lo - pad, to: hi + pad });
+                const pad = (hi - lo) * 0.10 || Math.abs(hi) * 0.008 || 0.01;
+                try { ps.setVisibleRange({ from: lo - pad, to: hi + pad }); } catch {}
               }
             }
-            ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            // Then hand control back to autoScale
+            try { ps.applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } }); } catch {}
+            try { ps.setAutoScale?.(true); } catch {}
             try { chart.priceScale("right").applyOptions({ autoScale: true }); } catch {}
             try { updateMargins(); } catch {}
             setStatusMsg("Price scale reset");
@@ -13748,7 +13768,7 @@ priced.sort((a, b) => a.price - b.price);
         const chart = chartRef.current;
         const ser = seriesRef.current;
         if (!chart || !ser) return null;
-        const HIT = 16;
+        const HIT = 5; // only the actual line stroke (TV-tight)
         const symU = (symbolRef.current || "").toUpperCase();
         let best: any = null;
         const consider = (id: string, kind: "line" | "alarm", type: any, score: number, obj: any) => {
