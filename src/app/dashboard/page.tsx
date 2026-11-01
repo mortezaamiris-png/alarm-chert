@@ -16277,25 +16277,102 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const color = drawColorRef.current || DEFAULT_LINE_COLOR;
           const width = drawWidthRef.current || 2;
           const dash = drawDashRef.current || "solid";
+          // Snap to nearest candle time so timeToCoordinate always resolves
+          let tSnap = Number(t);
+          try {
+            const barsSnap = candlesRef.current || [];
+            if (barsSnap.length) {
+              let loI = 0, hiI = barsSnap.length - 1;
+              while (loI < hiI) {
+                const mid = (loI + hiI) >> 1;
+                if (Number(barsSnap[mid].time) < tSnap) loI = mid + 1;
+                else hiI = mid;
+              }
+              const cands = [loI, Math.max(0, loI - 1), Math.min(barsSnap.length - 1, loI + 1)];
+              let best = Number(barsSnap[loI].time), bestD = Math.abs(best - tSnap);
+              for (const i of cands) {
+                const tt = Number(barsSnap[i].time);
+                const d = Math.abs(tt - tSnap);
+                if (d < bestD) { bestD = d; best = tt; }
+              }
+              tSnap = best;
+            }
+          } catch {}
+
           const localId = `local-vl-${Date.now()}`;
           const local: ChartLine = {
             id: localId,
             symbol: symbolUpper,
             price: lo - pad,
             end_price: hi + pad,
-            start_time: Number(t),
-            end_time: Number(t),
+            start_time: tSnap,
+            end_time: tSnap,
             color,
             width,
             style: dash,
             dash,
             note: "__vline__",
           };
-          pushUndo();
+          try { pushUndo(); } catch {}
           setLines((prev) => [local, ...prev]);
+          // Also push into linesRef immediately so render sees it before React flush
+          try {
+            if (Array.isArray(linesRef.current)) {
+              linesRef.current = [local, ...linesRef.current];
+            }
+          } catch {}
+
+          // INSTANT paint on overlay (don't wait for React effect)
+          try {
+            const host = vlineOverlayRef.current;
+            const chart2 = chartRef.current;
+            if (host && chart2) {
+              let x: number | null = null;
+              try { x = chart2.timeScale().timeToCoordinate(tSnap as any) as any; } catch {}
+              if (x == null || Number.isNaN(Number(x))) {
+                // try logical coordinate from click
+                try {
+                  if (param.point) x = param.point.x;
+                } catch {}
+              }
+              if (x != null && !Number.isNaN(Number(x))) {
+                const el = document.createElement("div");
+                el.dataset.vlineId = localId;
+                el.style.position = "absolute";
+                el.style.top = "0";
+                el.style.bottom = "22px";
+                el.style.left = `${Number(x)}px`;
+                el.style.width = `${Math.max(1, width)}px`;
+                el.style.transform = "translateX(-50%)";
+                el.style.pointerEvents = "none";
+                el.style.zIndex = "8";
+                if (dash === "dashed" || dash === "dotted") {
+                  el.style.background = "transparent";
+                  el.style.borderLeft = `${Math.max(1, width)}px ${dash === "dotted" ? "dotted" : "dashed"} ${color}`;
+                  el.style.width = "0";
+                } else {
+                  el.style.background = color;
+                }
+                host.appendChild(el);
+              }
+              // keep items list in sync for pan/zoom
+              vlineItemsRef.current = [
+                { id: localId, time: tSnap, color, width: Math.max(1, width), dash: String(dash) },
+                ...vlineItemsRef.current.filter((v) => v.id !== localId),
+              ];
+            }
+          } catch {}
+
           setMode("none");
           modeRef.current = "none";
           setStatusMsg("Vertical line added");
+          // Full re-render next frames
+          try {
+            requestAnimationFrame(() => {
+              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            });
+            setTimeout(() => { try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }, 50);
+          } catch {}
           // Persist in background (non-blocking)
           void (async () => {
             try {
@@ -16304,8 +16381,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 symbol: symbolUpper,
                 price: lo - pad,
                 end_price: hi + pad,
-                start_time: Number(t),
-                end_time: Number(t),
+                start_time: tSnap,
+                end_time: tSnap,
                 color,
                 width,
                 style: dash,
@@ -16318,11 +16395,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 payload = {
                   symbol: symbolUpper,
                   price: Number(fp) || lo,
-                  start_time: Number(t),
+                  start_time: tSnap,
                   color,
                   width,
                   dash,
-                  note: `__vline__:${t}`,
+                  note: `__vline__:${tSnap}`,
                 };
                 if (uid) payload.user_id = uid;
                 ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
@@ -20461,6 +20538,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               </svg>
             </button>
 
+            <div className="h-3" />
+
             {/* Alarm — top of tool list */}
             <div className="relative">
               <button
@@ -21074,6 +21153,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
+            {/* push measure / eye / trash slightly lower */}
+            <div className="flex-1 min-h-6" style={{ maxHeight: 72 }} />
+            <div className="h-2" />
             {/* Measure — classic ruler icon */}
             <button
               type="button"
