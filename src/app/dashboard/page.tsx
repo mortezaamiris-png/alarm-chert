@@ -2664,12 +2664,7 @@ function expandCurveControls(
   } else {
     pPrice = (B.price - one * one * A.price - tm * tm * C.price) / denom;
   }
-  // Soft-limit extreme control so the arc stays usable when mid is dragged far
-  const midLin = A.price + (C.price - A.price) * tm;
-  const maxDev = Math.max(Math.abs(C.price - A.price) * 8, Math.abs(midLin) * 0.15, 1e-6);
-  if (Math.abs(pPrice - midLin) > maxDev) {
-    pPrice = midLin + Math.sign(pPrice - midLin) * maxDev;
-  }
+  // NO soft-limit: curve must pass exactly through the three on-curve points (TV style)
   const priceAt = (t: number) => {
     const o = 1 - t;
     return o * o * A.price + 2 * o * t * pPrice + t * t * C.price;
@@ -13528,7 +13523,13 @@ priced.sort((a, b) => a.price - b.price);
                 if (data[i].time <= data[i - 1].time) data[i].time = data[i - 1].time + 1;
               }
             }
+            // Preserve visible range so candles never jump/spread while dragging
+            let savedR: any = null;
+            try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
             ls.setData(data.map((p) => ({ time: p.time as any, value: p.value })));
+            if (savedR) {
+              try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+            }
           }
           if (host && chart && ser) {
             host.querySelectorAll(
@@ -14647,6 +14648,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setMovingType(best.kind);
             movingVLineRef.current = best.isV;
             movingRayRef.current = best.isRay;
+            // Always clear previous special move state so other lines are not blocked by a leftover curve/path/channel ref
+            try {
+              const prevMd = moveDiagRef.current as any;
+              if (prevMd && (prevMd.isCurve || prevMd.isPath || prevMd.isChannel || prevMd.isDpr)) {
+                moveDiagRef.current = null;
+              }
+            } catch { moveDiagRef.current = null; }
             if (best.kind === "line") {
               const l = list.find((x) => x.id === best!.id);
               // Curve selected by body click → show 3 handles + enable body-drag
@@ -17897,6 +17905,38 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       ) {
         return;
       }
+      // If a curve is selected and the click is near the arc, do NOT cancel —
+      // let the body-drag handler take over (TV: grab the line to move whole object)
+      try {
+        const md0 = moveDiagRef.current as any;
+        if (md0 && md0.isCurve && md0.curveCtrls && md0.curveCtrls.length >= 3) {
+          const cont = chartContainerRef.current;
+          const chart = chartRef.current;
+          const ser = seriesRef.current;
+          if (cont && chart && ser) {
+            const rect = cont.getBoundingClientRect();
+            const cx = (e as MouseEvent).clientX ?? ((e as TouchEvent).touches?.[0]?.clientX);
+            const cy = (e as MouseEvent).clientY ?? ((e as TouchEvent).touches?.[0]?.clientY);
+            if (cx != null && cy != null) {
+              const px = cx - rect.left;
+              const py = cy - rect.top;
+              if (px >= 0 && py >= 0 && px <= rect.width && py <= rect.height) {
+                const barTsB = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((tt: number) => tt > 0);
+                const dens = expandCurveControls(md0.curveCtrls[0], md0.curveCtrls[1], md0.curveCtrls[2], 36, barTsB);
+                let bestD = 1e9;
+                for (const pt of dens) {
+                  const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+                  const yy = ser.priceToCoordinate(pt.value);
+                  if (xx == null || yy == null) continue;
+                  const d = Math.hypot(px - Number(xx), py - Number(yy));
+                  if (d < bestD) bestD = d;
+                }
+                if (bestD <= 16) return; // near curve → keep selection for body-drag
+              }
+            }
+          }
+        }
+      } catch {}
       // Click on chart canvas (empty) or outside → hide handles / exit move
       cancelAll();
     };
