@@ -19090,6 +19090,25 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="18" x2="20" y2="6" /></svg>
                     Trendline
                   </button>
+                  <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "curve" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setLineToolsOpen(false);
+                      pathPointsRef.current = [];
+                      setDiagStart(null);
+                      setMovingId(null);
+                      setMode(mode === "curve" ? "none" : "curve");
+                      modeRef.current = mode === "curve" ? "none" : "curve";
+                      setStatusMsg(mode === "curve" ? "" : "Curve: tap 3 points (start, middle, end)");
+                    }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                      <path d="M4 18 C8 18 10 6 14 6 C18 6 20 18 20 18" />
+                      <circle cx="4" cy="18" r="1.5" fill="currentColor" />
+                      <circle cx="14" cy="6" r="1.5" fill="currentColor" />
+                      <circle cx="20" cy="18" r="1.5" fill="currentColor" />
+                    </svg>
+                    Curve
+                  </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
                     onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
@@ -20147,12 +20166,75 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
-          {/* Channel move: only Done (hide color/width/Edit handles bar) */}
+          {/* Channel / DPR move toolbar (no Edit handles) */}
           {mode === "move" && movingId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-            return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__channel:"));
+            if (!ln || typeof ln.note !== "string") return false;
+            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:");
           })() && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
+              {(() => {
+                const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+                const isDpr = !!(ln && typeof ln.note === "string" && ln.note.startsWith("__dpr:"));
+                if (!isDpr) return null;
+                return (
+                  <>
+                    <button
+                      type="button"
+                      title="Settings"
+                      onClick={() => {
+                        const p = parseDprNote(ln!.note as string);
+                        if (p) setDprCfg({ ...p });
+                        setSelectedDprId(String(movingId));
+                        setDprSettingsOpen(true);
+                        setDprSettingsTab("style");
+                      }}
+                      className="w-8 h-8 rounded-lg border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      title="Delete"
+                      onClick={async () => {
+                        const id = movingId;
+                        moveDiagRef.current = null;
+                        setMovingId(null);
+                        setMovingType(null);
+                        setMode("none");
+                        clearPreview();
+                        try {
+                          chartRef.current?.applyOptions({
+                            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                            handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                          });
+                        } catch {}
+                        if (id) {
+                          setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                          try {
+                            if (!String(id).startsWith("local-")) {
+                              await supabase.from("chart_lines").delete().eq("id", id);
+                            }
+                          } catch {}
+                          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                        }
+                        setStatusMsg("Deleted");
+                      }}
+                      className="w-8 h-8 rounded-lg border border-white/20 text-red-400 hover:bg-red-500/20 flex items-center justify-center"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M10 11v6M14 11v6" />
+                        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                      </svg>
+                    </button>
+                  </>
+                );
+              })()}
               <button
                 type="button"
                 onClick={async () => {
@@ -20196,7 +20278,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm-diag" ||
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-              return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__channel:"));
+              return !!(ln && typeof ln.note === "string" && (ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:")));
             })()))) && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {mode === "path" && (
@@ -21049,8 +21131,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[140px] rounded-lg border border-white/15 bg-[#1e222d] shadow-xl py-1 text-xs">
                         <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10"
                           onClick={() => {
-                            setDprCfg((c) => ({ ...defaultDprCfg(c.t0, c.p0, c.t1, c.p1), t0: c.t0, p0: c.p0, t1: c.t1, p1: c.p1 }));
+                            setDprCfg((c) => {
+                              const next = defaultDprCfg(c.t0, c.p0, c.t1, c.p1);
+                              next.t0 = c.t0; next.p0 = c.p0; next.t1 = c.t1; next.p1 = c.p1;
+                              // keep coords, reset style/stats/text/visibility
+                              return { ...next };
+                            });
                             setOpenMenu(null);
+                            try { window.setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
+                            setStatusMsg("DPR defaults applied");
                           }}>Apply defaults</button>
                         <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-gray-500" disabled>
                           Save as…
