@@ -11608,9 +11608,8 @@ priced.sort((a, b) => a.price - b.price);
             ? zones.find((z) => yRatio >= z.top - 0.02 && yRatio <= 1 - z.bot + 0.02)
             : undefined;
 
-          // نوار قیمت: از لبه راست تا ~۱۸۰px یا ۱۸٪ عرض چارت (هر کدام بزرگ‌تر)
-          const axisW = Math.max(180, rect.width * 0.18);
-          const onPriceAxis = fromRight >= 0 && fromRight <= axisW;
+          // فقط خود نوار قیمت (نه بدنه چارت) — عرض تقریبی scale LWC
+          const onPriceAxis = fromRight >= 0 && fromRight <= 70;
           if (!onPriceAxis) return;
 
           // Claim the wheel immediately so LWC doesn't scroll time axis instead
@@ -11721,42 +11720,37 @@ priced.sort((a, b) => a.price - b.price);
           // Zoom toward cursor Y (TV style)
           const relY = Math.min(1, Math.max(0, yFromTop / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          // Slightly stronger step so each notch is obvious
-          const factor = zoomIn ? 0.82 : 1.22;
+          // Stronger zoom-in so user can enlarge candles more
+          const factor = zoomIn ? 0.70 : 1.25;
           let newRange = (pTop - pBot) * factor;
           const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
-          newRange = Math.max(newRange, absP * 1e-6);
-          newRange = Math.min(newRange, absP * 80);
+          // Very low floor so zoom-in can go deep (e.g. 0.01% of price)
+          const minRange = Math.max(absP * 1e-8, 1e-12);
+          const maxRange = absP * 200;
+          newRange = Math.max(newRange, minRange);
+          newRange = Math.min(newRange, maxRange);
           const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
 
-          // Same path as touch-zoom (which works): override + autoScale ON
-          // so the stable autoscaleInfoProvider supplies the range every frame.
+          // Keep override + autoScale OFF so alarm/line price-lines cannot expand the range
+          // and block further zoom-in (that was the "stops zooming in" bug).
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
             const psRight = chart.priceScale("right") as any;
             const psSer = (ser.priceScale?.() as any) || psRight;
-            // Prefer setVisibleRange when available (locks the scale immediately)
             for (const ps of [psSer, psRight]) {
               if (!ps) continue;
+              try { ps.applyOptions({ autoScale: false }); } catch {}
               try {
                 if (typeof ps.setVisibleRange === "function") {
-                  try { ps.applyOptions({ autoScale: false }); } catch {}
                   ps.setVisibleRange({ from: newBot, to: newTop });
                 }
               } catch {}
             }
-            // Always also keep autoScale true so provider reinforces the range
-            // (this is the path that already works for touch drag on price axis)
-            for (const ps of [psSer, psRight]) {
-              if (!ps) continue;
-              try { ps.applyOptions({ autoScale: true }); } catch {}
-              try { ps.setAutoScale?.(true); } catch {}
-            }
-            // Nudge a relayout so the new range paints this frame
+            // Provider still returns override on any internal autoscale pass
             try { chart.timeScale().applyOptions({}); } catch {}
           } catch {}
           try {
@@ -11858,7 +11852,7 @@ priced.sort((a, b) => a.price - b.price);
           const plotH = Math.max(1, rect.height - 28);
           const yRatio = (e.clientY - rect.top) / plotH;
           // Double-click on right price scale → reset vertical zoom (main or oscillator)
-          if (fromRight <= 160 && fromRight >= 0) {
+          if (fromRight <= 70 && fromRight >= 0) {
             e.preventDefault();
             e.stopPropagation();
             // Detect oscillator pane under cursor
@@ -11948,7 +11942,7 @@ priced.sort((a, b) => a.price - b.price);
           if (!(dt > 40 && dt < 380 && dist < 48)) return;
           const rect = container.getBoundingClientRect();
           const fromRight = rect.right - t.clientX;
-          if (fromRight <= 160 && fromRight >= 0) {
+          if (fromRight <= 70 && fromRight >= 0) {
             resetPriceZoom();
             return;
           }
@@ -13899,7 +13893,7 @@ priced.sort((a, b) => a.price - b.price);
           if (cont) {
             const r = cont.getBoundingClientRect();
             const fromRight = r.right - e.clientX;
-            if (fromRight >= 0 && fromRight <= 160) return;
+            if (fromRight >= 0 && fromRight <= 70) return;
           }
         } catch {}
         const m = modeRef.current;
