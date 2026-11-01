@@ -2708,6 +2708,46 @@ function expandCurveControls(
 }
 
 
+
+/** Map any unix time to pixel X even if it is between two bars (needed for free mid-handle). */
+function timeToXPixel(
+  chart: any,
+  t: number,
+  candles?: { time: number }[] | null
+): number | null {
+  try {
+    const x = chart?.timeScale?.()?.timeToCoordinate?.(t as any);
+    if (x != null && !Number.isNaN(Number(x))) return Number(x);
+  } catch {}
+  const bars = (candles && candles.length ? candles : null) as { time: number }[] | null;
+  if (!chart || !bars || bars.length < 1) return null;
+  try {
+    if (t <= bars[0].time) {
+      const x0 = chart.timeScale().timeToCoordinate(bars[0].time as any);
+      return x0 != null ? Number(x0) : null;
+    }
+    const last = bars[bars.length - 1];
+    if (t >= last.time) {
+      const x1 = chart.timeScale().timeToCoordinate(last.time as any);
+      return x1 != null ? Number(x1) : null;
+    }
+    let lo = 0, hi = bars.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (bars[mid].time <= t) lo = mid;
+      else hi = mid;
+    }
+    const t0 = bars[lo].time, t1 = bars[hi].time;
+    const x0 = chart.timeScale().timeToCoordinate(t0 as any);
+    const x1 = chart.timeScale().timeToCoordinate(t1 as any);
+    if (x0 == null || x1 == null) return null;
+    const f = (t - t0) / ((t1 - t0) || 1);
+    return Number(x0) + f * (Number(x1) - Number(x0));
+  } catch {
+    return null;
+  }
+}
+
 function parseCurveControls(note: string): { time: number; price: number }[] | null {
   if (!note || !note.startsWith("__curve:")) return null;
   const raw = note.replace(/^__curve:/, "");
@@ -8078,6 +8118,7 @@ priced.sort((a, b) => a.price - b.price);
                   return { time: Number(tt), price: Number(pp) };
                 }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
               }
+              const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) })).filter((c: any) => c.time > 0);
               ctrls.forEach((pt, idx) => {
                 const el = document.createElement("div");
                 el.setAttribute(isCurve ? "data-curve-handle" : "data-path-handle", String(idx));
@@ -8088,9 +8129,10 @@ priced.sort((a, b) => a.price - b.price);
                   `position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;` +
                   `border-radius:50%;border:2px solid ${color || "#2962FF"};background:transparent;` +
                   `pointer-events:auto;z-index:40;cursor:move;touch-action:none;box-shadow:0 0 0 1px rgba(0,0,0,0.45);`;
-                const x = chart.timeScale().timeToCoordinate(pt.time as any);
+                // timeToXPixel: mid can sit between bars (TV style free horizontal)
+                const x = timeToXPixel(chart, pt.time, barCandles);
                 const y = ser.priceToCoordinate(pt.price);
-                if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+                if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(Number(y))) {
                   el.style.left = `${x}px`;
                   el.style.top = `${y}px`;
                   host.appendChild(el);
@@ -13452,7 +13494,15 @@ priced.sort((a, b) => a.price - b.price);
                     const barSec = intervalToSeconds(String(intervalRef.current));
                     if (logical > candles.length - 1) t0 = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
                     else if (logical < 0) t0 = candles[0].time + Math.round(logical * barSec);
-                    else t0 = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+                    else {
+                      const lo = Math.max(0, Math.min(candles.length - 1, Math.floor(logical)));
+                      const hi = Math.max(0, Math.min(candles.length - 1, Math.ceil(logical)));
+                      if (lo === hi) t0 = candles[lo].time;
+                      else {
+                        const f = logical - lo;
+                        t0 = Math.round(candles[lo].time + f * (candles[hi].time - candles[lo].time));
+                      }
+                    }
                   }
                 } catch {}
                 if (t0 == null || price0 == null || Number.isNaN(price0)) return;
@@ -13487,9 +13537,21 @@ priced.sort((a, b) => a.price - b.price);
           const candles = candlesRef.current;
           if (logical != null && candles.length) {
             const barSec = intervalToSeconds(String(intervalRef.current));
-            if (logical > candles.length - 1) tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
-            else if (logical < 0) tCursor = candles[0].time + Math.round(logical * barSec);
-            else tCursor = candles[Math.max(0, Math.min(candles.length - 1, Math.round(logical)))].time;
+            if (logical > candles.length - 1) {
+              tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+            } else if (logical < 0) {
+              tCursor = candles[0].time + Math.round(logical * barSec);
+            } else {
+              // continuous interpolation between bars → mid can move freely L/R (TV style)
+              const lo = Math.max(0, Math.min(candles.length - 1, Math.floor(logical)));
+              const hi = Math.max(0, Math.min(candles.length - 1, Math.ceil(logical)));
+              if (lo === hi) {
+                tCursor = candles[lo].time;
+              } else {
+                const f = logical - lo;
+                tCursor = Math.round(candles[lo].time + f * (candles[hi].time - candles[lo].time));
+              }
+            }
           }
         } catch {}
         if (tCursor == null) return;
@@ -13548,6 +13610,7 @@ priced.sort((a, b) => a.price - b.price);
             }
           }
           if (host && chart && ser) {
+            const barCandlesLive = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) })).filter((c: any) => c.time > 0);
             host.querySelectorAll(
               md.isCurve ? `[data-curve-id="${md.id}"]` : `[data-path-id="${md.id}"]`
             ).forEach((el) => {
@@ -13556,7 +13619,7 @@ priced.sort((a, b) => a.price - b.price);
               );
               if (idx < 0 || !ctrls[idx]) return;
               const pt = ctrls[idx];
-              const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+              const xx = timeToXPixel(chart, pt.time, barCandlesLive);
               const yy = ser.priceToCoordinate(pt.price);
               if (xx != null && yy != null) {
                 (el as HTMLElement).style.left = `${xx}px`;
