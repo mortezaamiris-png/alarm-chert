@@ -3817,14 +3817,14 @@ export default function DashboardPage() {
   const [favToolsVisible, setFavToolsVisible] = useState(() => {
     try { return localStorage.getItem("chart_fav_tools_visible") !== "0"; } catch { return true; }
   });
-  const [favPositions, setFavPositions] = useState<Record<string, { x: number; y: number }>>(() => {
+  const [favBarPos, setFavBarPos] = useState<{ x: number; y: number }>(() => {
     try {
-      const raw = localStorage.getItem("chart_fav_positions");
-      if (raw) { const o = JSON.parse(raw); if (o && typeof o === "object") return o; }
+      const raw = localStorage.getItem("chart_fav_bar_pos");
+      if (raw) { const o = JSON.parse(raw); if (o && Number.isFinite(o.x) && Number.isFinite(o.y)) return o; }
     } catch {}
-    return {};
+    return { x: 52, y: 48 };
   });
-  const favDragRef = useRef<{ id: string; ox: number; oy: number; sx: number; sy: number } | null>(null);
+  const favDragRef = useRef<any>(null);
   const toggleFavTool = useCallback((id: string, e?: { preventDefault?: () => void; stopPropagation?: () => void }) => {
     try {
       e?.preventDefault?.();
@@ -3833,11 +3833,6 @@ export default function DashboardPage() {
     setFavTools((prev) => {
       const has = prev.includes(id);
       return has ? prev.filter((x) => x !== id) : [...prev, id];
-    });
-    setFavPositions((pos) => {
-      if (pos[id]) return pos;
-      const n = Object.keys(pos).length;
-      return { ...pos, [id]: { x: 56 + (n % 6) * 44, y: 48 + Math.floor(n / 6) * 44 } };
     });
   }, []);
   const activateTool = useCallback((id: string) => {
@@ -4485,8 +4480,8 @@ export default function DashboardPage() {
     try { localStorage.setItem("chart_fav_tools_visible", favToolsVisible ? "1" : "0"); } catch {}
   }, [favToolsVisible]);
   useEffect(() => {
-    try { localStorage.setItem("chart_fav_positions", JSON.stringify(favPositions)); } catch {}
-  }, [favPositions]);
+    try { localStorage.setItem("chart_fav_bar_pos", JSON.stringify(favBarPos)); } catch {}
+  }, [favBarPos]);
 
   useEffect(() => { saveLS("fib_tz_levels", fibTzLevels); }, [fibTzLevels]);
   useEffect(() => { saveLS("fib_levels", fibLevels); }, [fibLevels]);
@@ -21481,12 +21476,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
-            {/* Favorites master toggle — show/hide starred tool icons on chart */}
+            {/* Spacer — push bottom tools down */}
+            <div className="flex-1 min-h-4" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
+
+            {/* Favorites master — below trash, above lists chevron */}
             <button
               type="button"
-              title={favToolsVisible ? "Hide favorite tools on chart" : "Show favorite tools on chart"}
+              title={favToolsVisible ? "Hide favorite tools bar" : "Show favorite tools bar"}
               onClick={() => setFavToolsVisible((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors mb-1 ${
                 favToolsVisible && favTools.length
                   ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
                   : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-amber-300"
@@ -21499,12 +21498,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </button>
 
-            {/* Spacer — push bottom tools (measure / eye / trash / lists) down */}
-            <div className="flex-1 min-h-4" />
-            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
-
-            {/* gap above lists toggle so measure / eye / trash stay higher */}
-            <div className="h-3" />
             {/* Show / Hide bottom lists (alarms · lines · history) */}
             <button
               type="button"
@@ -21973,70 +21966,99 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
 
 
-          {/* Favorite tools — floating icons on chart (draggable) */}
+          {/* Favorite tools — horizontal draggable bar */}
           {favToolsVisible && favTools.length > 0 && (
-            <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden" data-fav-layer>
-              {favTools.map((id) => {
-                const meta = FAV_TOOL_META[id] || { label: id, icon: "★" };
-                const pos = favPositions[id] || { x: 60, y: 60 };
-                const active = mode === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    title={meta.label}
-                    className={`absolute pointer-events-auto w-9 h-9 rounded-lg border shadow-lg flex items-center justify-center text-sm font-semibold select-none touch-manipulation ${
-                      active
-                        ? "bg-orange-500 border-orange-400 text-black"
-                        : "bg-gray-900/95 border-gray-600 text-gray-200 hover:border-amber-500/60 hover:text-amber-200"
-                    }`}
-                    style={{ left: pos.x, top: pos.y, cursor: "grab" }}
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const el = e.currentTarget;
-                      el.setPointerCapture(e.pointerId);
-                      favDragRef.current = {
-                        id,
-                        ox: pos.x,
-                        oy: pos.y,
-                        sx: e.clientX,
-                        sy: e.clientY,
-                      };
-                      let moved = false;
-                      const onMove = (ev: PointerEvent) => {
-                        const d = favDragRef.current;
-                        if (!d || d.id !== id) return;
-                        const dx = ev.clientX - d.sx;
-                        const dy = ev.clientY - d.sy;
-                        if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
-                        const nx = Math.max(4, d.ox + dx);
-                        const ny = Math.max(4, d.oy + dy);
-                        el.style.left = `${nx}px`;
-                        el.style.top = `${ny}px`;
-                      };
-                      const onUp = (ev: PointerEvent) => {
-                        try { el.releasePointerCapture(e.pointerId); } catch {}
-                        document.removeEventListener("pointermove", onMove);
-                        document.removeEventListener("pointerup", onUp);
-                        const d = favDragRef.current;
-                        favDragRef.current = null;
-                        if (d && moved) {
-                          const nx = Math.max(4, d.ox + (ev.clientX - d.sx));
-                          const ny = Math.max(4, d.oy + (ev.clientY - d.sy));
-                          setFavPositions((p) => ({ ...p, [id]: { x: nx, y: ny } }));
-                        } else {
-                          activateTool(id);
-                        }
-                      };
-                      document.addEventListener("pointermove", onMove);
-                      document.addEventListener("pointerup", onUp);
-                    }}
-                  >
-                    <span className="text-base leading-none">{meta.icon}</span>
-                  </button>
-                );
-              })}
+            <div
+              className="absolute z-40 pointer-events-auto select-none"
+              data-fav-layer
+              style={{ left: favBarPos.x, top: favBarPos.y }}
+            >
+              <div
+                className="flex items-center gap-1 bg-gray-950/95 border border-gray-600/80 rounded-xl px-1.5 py-1 shadow-2xl backdrop-blur-sm"
+              >
+                {/* drag handle for whole bar */}
+                <div
+                  title="Drag bar"
+                  className="w-5 h-8 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const startX = e.clientX;
+                    const startY = e.clientY;
+                    const ox = favBarPos.x;
+                    const oy = favBarPos.y;
+                    const onMove = (ev: PointerEvent) => {
+                      const nx = Math.max(4, ox + (ev.clientX - startX));
+                      const ny = Math.max(4, oy + (ev.clientY - startY));
+                      setFavBarPos({ x: nx, y: ny });
+                    };
+                    const onUp = () => {
+                      document.removeEventListener("pointermove", onMove);
+                      document.removeEventListener("pointerup", onUp);
+                    };
+                    document.addEventListener("pointermove", onMove);
+                    document.addEventListener("pointerup", onUp);
+                  }}
+                >
+                  <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+                    <circle cx="3" cy="2" r="1.2" /><circle cx="7" cy="2" r="1.2" />
+                    <circle cx="3" cy="7" r="1.2" /><circle cx="7" cy="7" r="1.2" />
+                    <circle cx="3" cy="12" r="1.2" /><circle cx="7" cy="12" r="1.2" />
+                  </svg>
+                </div>
+                {favTools.map((id, index) => {
+                  const meta = FAV_TOOL_META[id] || { label: id, icon: "★" };
+                  const active = mode === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      title={meta.label}
+                      className={`w-8 h-8 rounded-lg border flex items-center justify-center text-sm font-semibold touch-manipulation shrink-0 ${
+                        active
+                          ? "bg-orange-500 border-orange-400 text-black"
+                          : "bg-gray-900 border-gray-600 text-gray-200 hover:border-amber-500/50 hover:text-amber-200"
+                      }`}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        const startX = e.clientX;
+                        const startY = e.clientY;
+                        let moved = false;
+                        const fromIdx = index;
+                        const onMove = (ev: PointerEvent) => {
+                          const dx = ev.clientX - startX;
+                          if (Math.abs(dx) > 12 || Math.abs(ev.clientY - startY) > 12) moved = true;
+                          // reorder when dragged past neighbor
+                          if (Math.abs(dx) > 28) {
+                            const dir = dx > 0 ? 1 : -1;
+                            const toIdx = fromIdx + dir;
+                            if (toIdx >= 0 && toIdx < favTools.length) {
+                              setFavTools((prev) => {
+                                const next = [...prev];
+                                const [item] = next.splice(fromIdx, 1);
+                                next.splice(toIdx, 0, item);
+                                return next;
+                              });
+                              // reset baseline so further drag continues
+                              document.removeEventListener("pointermove", onMove);
+                              document.removeEventListener("pointerup", onUp);
+                            }
+                          }
+                        };
+                        const onUp = () => {
+                          document.removeEventListener("pointermove", onMove);
+                          document.removeEventListener("pointerup", onUp);
+                          if (!moved) activateTool(id);
+                        };
+                        document.addEventListener("pointermove", onMove);
+                        document.addEventListener("pointerup", onUp);
+                      }}
+                    >
+                      <span className="text-[13px] leading-none">{meta.icon}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
