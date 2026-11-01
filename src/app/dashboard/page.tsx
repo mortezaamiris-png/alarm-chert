@@ -2620,18 +2620,25 @@ type DprCfg = {
 };
 
 
-/** Expand 3 control points into dense quadratic Bezier samples (monotonic time). */
+/**
+ * Expand 3 ON-CURVE points (TradingView Curve style) into dense samples.
+ * Middle point sits on the arc; internal Bezier control is derived so the
+ * quadratic passes through a, b, c (b at t≈0.5).
+ */
 function expandCurveControls(
   a: { time: number; price: number },
   b: { time: number; price: number },
   c: { time: number; price: number },
-  steps = 28
+  steps = 36
 ): { time: number; value: number }[] {
+  // Bezier control so curve passes through b at t=0.5: P = 2b - (a+c)/2
+  const pTime = 2 * b.time - (a.time + c.time) / 2;
+  const pPrice = 2 * b.price - (a.price + c.price) / 2;
   const out: { time: number; value: number }[] = [];
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const mt = (1 - t) * (1 - t) * a.time + 2 * (1 - t) * t * b.time + t * t * c.time;
-    const mp = (1 - t) * (1 - t) * a.price + 2 * (1 - t) * t * b.price + t * t * c.price;
+    const mt = (1 - t) * (1 - t) * a.time + 2 * (1 - t) * t * pTime + t * t * c.time;
+    const mp = (1 - t) * (1 - t) * a.price + 2 * (1 - t) * t * pPrice + t * t * c.price;
     out.push({ time: Math.round(mt), value: mp });
   }
   for (let i = 1; i < out.length; i++) {
@@ -7983,9 +7990,9 @@ priced.sort((a, b) => a.price - b.price);
                 el.setAttribute("data-t", String(pt.time));
                 el.setAttribute("data-p", String(pt.price));
                 el.style.cssText =
-                  `position:absolute;width:12px;height:12px;margin-left:-6px;margin-top:-6px;` +
-                  `border-radius:50%;border:2px solid ${color || "#2962FF"};background:#0b0e14;` +
-                  `pointer-events:auto;z-index:40;cursor:move;touch-action:none;`;
+                  `position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;` +
+                  `border-radius:50%;border:2px solid ${color || "#2962FF"};background:transparent;` +
+                  `pointer-events:auto;z-index:40;cursor:move;touch-action:none;box-shadow:0 0 0 1px rgba(0,0,0,0.45);`;
                 const x = chart.timeScale().timeToCoordinate(pt.time as any);
                 const y = ser.priceToCoordinate(pt.price);
                 if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
@@ -12423,8 +12430,10 @@ priced.sort((a, b) => a.price - b.price);
         const isRectDraw = (m0 === "rect" || m0 === "frvp") && !!diagStartRef.current;
         const isChannelDraw = m0 === "channel" && !!(channelDraftRef.current && channelDraftRef.current.a);
         const isDprDraw = m0 === "dpr" && !!(dprDraftRef.current && dprDraftRef.current.a);
+        const isCurveDraw = m0 === "curve" && pathPointsRef.current.length >= 1 && pathPointsRef.current.length < 3;
+        const isPathDraw = m0 === "path" && pathPointsRef.current.length >= 1;
         // measureEnd is state — use measureStartRef only for live drag
-        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !isDprDraw && !(m0 === "measure" && measureStartRef.current)) return;
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !isDprDraw && !isCurveDraw && !isPathDraw && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -12447,7 +12456,9 @@ priced.sort((a, b) => a.price - b.price);
             modeNow !== "dpr" &&
             modeNow !== "arrow" &&
             modeNow !== "frvp" &&
-            modeNow !== "channel"
+            modeNow !== "channel" &&
+            modeNow !== "curve" &&
+            modeNow !== "path"
           ) {
             return;
           }
@@ -12474,6 +12485,96 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
           if (tCursor == null) return;
+
+          // Curve live preview (TV-style: 3 on-curve points)
+          if (modeNow === "curve") {
+            const pts = pathPointsRef.current || [];
+            if (pts.length >= 1 && pts.length < 3) {
+              try {
+                if (!previewDiagSeriesRef.current) {
+                  previewDiagSeriesRef.current = chart.addLineSeries({
+                    color: drawColorRef.current || "#f0b90b",
+                    lineWidth: Math.max(2, drawWidthRef.current || 2) as 1 | 2 | 3 | 4,
+                    lineStyle: LineStyle.Solid,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                }
+                let dens: { time: number; value: number }[] = [];
+                if (pts.length === 1) {
+                  // start fixed; cursor = end; mid auto halfway (slight bow)
+                  const a = pts[0];
+                  const c = { time: tCursor, price };
+                  const mid = {
+                    time: Math.round((a.time + c.time) / 2),
+                    price: (a.price + c.price) / 2,
+                  };
+                  dens = expandCurveControls(a, mid, c, 36);
+                } else if (pts.length === 2) {
+                  // start + mid fixed; cursor = end
+                  dens = expandCurveControls(pts[0], pts[1], { time: tCursor, price }, 36);
+                }
+                if (dens.length >= 2) {
+                  previewDiagSeriesRef.current.setData(
+                    dens.map((p) => ({ time: p.time as any, value: p.value }))
+                  );
+                }
+                // keep draft markers synced
+                const host = vlineOverlayRef.current;
+                const ser = seriesRef.current;
+                if (host && ser) {
+                  host.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove());
+                  const show = [...pts, { time: tCursor, price }];
+                  show.forEach((pt, idx) => {
+                    if (idx >= 3) return;
+                    const el = document.createElement("div");
+                    el.setAttribute("data-curve-draft", String(idx));
+                    el.style.cssText =
+                      `position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;` +
+                      `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};` +
+                      `background:transparent;pointer-events:none;z-index:45;box-shadow:0 0 0 1px rgba(0,0,0,0.4);`;
+                    const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+                    const yy = ser.priceToCoordinate(pt.price);
+                    if (xx != null && yy != null) {
+                      el.style.left = `${xx}px`;
+                      el.style.top = `${yy}px`;
+                      host.appendChild(el);
+                    }
+                  });
+                }
+              } catch {}
+            }
+          }
+
+          // Path live preview
+          if (modeNow === "path") {
+            const pts = pathPointsRef.current || [];
+            if (pts.length >= 1) {
+              try {
+                if (!previewDiagSeriesRef.current) {
+                  previewDiagSeriesRef.current = chart.addLineSeries({
+                    color: drawColorRef.current || "#2962FF",
+                    lineWidth: Math.max(2, drawWidthRef.current || 2) as 1 | 2 | 3 | 4,
+                    lineStyle: LineStyle.Solid,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                    autoscaleInfoProvider: () => null as any,
+                  });
+                }
+                const all = [...pts, { time: tCursor, price }];
+                const sorted = all.map((p) => ({ time: p.time, value: p.price }));
+                for (let i = 1; i < sorted.length; i++) {
+                  if (sorted[i].time <= sorted[i - 1].time) sorted[i].time = sorted[i - 1].time + 1;
+                }
+                previewDiagSeriesRef.current.setData(
+                  sorted.map((p) => ({ time: p.time as any, value: p.value }))
+                );
+              } catch {}
+            }
+          }
 
           // Rectangle live preview (TV-style)
           if (modeNow === "rect" && diagStartRef.current) {
@@ -16736,9 +16837,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 const el = document.createElement("div");
                 el.setAttribute("data-curve-draft", String(idx));
                 el.style.cssText =
-                  `position:absolute;width:12px;height:12px;margin-left:-6px;margin-top:-6px;` +
-                  `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};background:#0b0e14;` +
-                  `pointer-events:none;z-index:45;`;
+                  `position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;` +
+                  `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};background:transparent;` +
+                  `pointer-events:none;z-index:45;box-shadow:0 0 0 1px rgba(0,0,0,0.45);`;
                 const x = chart.timeScale().timeToCoordinate(pt.time as any);
                 const y = ser.priceToCoordinate(pt.price);
                 if (x != null && y != null) {
