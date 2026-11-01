@@ -94,6 +94,7 @@ type ToolMode =
   | "avwap"
   | "frvp"
   | "channel"
+  | "dpr"
   | "long-pos"
   | "short-pos"
   | "alarm"
@@ -1237,7 +1238,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:"))) {
     return false;
   }
   return (
@@ -2598,6 +2599,183 @@ function buildRectNote(
   return s;
 }
 
+/** Date & Price Range — parse / build */
+type DprCfg = {
+  t0: number; t1: number; p0: number; p1: number;
+  lineColor: string; lineWidth: number;
+  showBorder: boolean; borderColor: string; borderWidth: number;
+  showBg: boolean; bgColor: string; bgOpacity: number;
+  showStatsPrice: boolean; showStatsPct: boolean; showStatsPips: boolean;
+  showStatsBars: boolean; showStatsTime: boolean; showStatsVolume: boolean;
+  labelColor: string; labelSize: number;
+  showLabelBg: boolean; labelBgColor: string; labelBgOpacity: number;
+  text: string; textColor: string; textSize: number; textBold: boolean; textItalic: boolean;
+  visTicks: boolean; visSeconds: boolean; visMinutes: boolean; visHours: boolean;
+  visDays: boolean; visWeeks: boolean; visMonths: boolean; visRanges: boolean;
+};
+
+function defaultDprCfg(t0=0, p0=0, t1=0, p1=0): DprCfg {
+  return {
+    t0, p0, t1, p1,
+    lineColor: "#2962FF", lineWidth: 1,
+    showBorder: false, borderColor: "#2962FF", borderWidth: 1,
+    showBg: true, bgColor: "#2962FF", bgOpacity: 20,
+    showStatsPrice: true, showStatsPct: true, showStatsPips: true,
+    showStatsBars: true, showStatsTime: true, showStatsVolume: false,
+    labelColor: "#ffffff", labelSize: 12,
+    showLabelBg: true, labelBgColor: "#1e222d", labelBgOpacity: 90,
+    text: "", textColor: "#2962FF", textSize: 12, textBold: false, textItalic: false,
+    visTicks: true, visSeconds: true, visMinutes: true, visHours: true,
+    visDays: true, visWeeks: true, visMonths: true, visRanges: true,
+  };
+}
+
+function parseDprNote(note: string | null | undefined): DprCfg | null {
+  if (!note || typeof note !== "string" || !note.startsWith("__dpr:")) return null;
+  const body = note.replace(/^__dpr:/, "");
+  const parts = body.split("|");
+  if (parts.length < 2) return null;
+  const [a, b] = parts;
+  const [t0s, p0s] = a.split(",");
+  const [t1s, p1s] = b.split(",");
+  const t0 = Number(t0s), t1 = Number(t1s), p0 = Number(p0s), p1 = Number(p1s);
+  if (![t0, t1, p0, p1].every(Number.isFinite)) return null;
+  const o = defaultDprCfg(Math.min(t0, t1), Math.min(p0, p1), Math.max(t0, t1), Math.max(p0, p1));
+  // keep original orientation for coordinates
+  o.t0 = t0; o.p0 = p0; o.t1 = t1; o.p1 = p1;
+  for (const p of parts.slice(2)) {
+    if (p.startsWith("txt=")) {
+      try { o.text = decodeURIComponent(p.slice(4)); } catch { o.text = p.slice(4); }
+      continue;
+    }
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    const k = p.slice(0, eq);
+    const v = p.slice(eq + 1);
+    if (k === "lc") o.lineColor = v;
+    else if (k === "lw") o.lineWidth = Math.max(1, Math.min(4, Number(v) || 1));
+    else if (k === "bd") o.showBorder = v !== "0";
+    else if (k === "bc") o.borderColor = v;
+    else if (k === "bw") o.borderWidth = Math.max(1, Math.min(4, Number(v) || 1));
+    else if (k === "bg") o.showBg = v !== "0";
+    else if (k === "bgc") o.bgColor = v;
+    else if (k === "bgo") o.bgOpacity = Math.max(0, Math.min(100, Number(v) || 20));
+    else if (k === "sp") o.showStatsPrice = v !== "0";
+    else if (k === "spt") o.showStatsPct = v !== "0";
+    else if (k === "spi") o.showStatsPips = v !== "0";
+    else if (k === "sb") o.showStatsBars = v !== "0";
+    else if (k === "st") o.showStatsTime = v !== "0";
+    else if (k === "sv") o.showStatsVolume = v === "1";
+    else if (k === "lbl") o.labelColor = v;
+    else if (k === "ls") o.labelSize = Math.max(8, Math.min(24, Number(v) || 12));
+    else if (k === "lbg") o.showLabelBg = v !== "0";
+    else if (k === "lbc") o.labelBgColor = v;
+    else if (k === "lbo") o.labelBgOpacity = Math.max(0, Math.min(100, Number(v) || 90));
+    else if (k === "tc") o.textColor = v;
+    else if (k === "tsz") o.textSize = Math.max(8, Math.min(32, Number(v) || 12));
+    else if (k === "tb") o.textBold = v === "1";
+    else if (k === "ti") o.textItalic = v === "1";
+    else if (k === "vt") o.visTicks = v !== "0";
+    else if (k === "vs") o.visSeconds = v !== "0";
+    else if (k === "vm") o.visMinutes = v !== "0";
+    else if (k === "vh") o.visHours = v !== "0";
+    else if (k === "vd") o.visDays = v !== "0";
+    else if (k === "vw") o.visWeeks = v !== "0";
+    else if (k === "vmo") o.visMonths = v !== "0";
+    else if (k === "vr") o.visRanges = v !== "0";
+  }
+  return o;
+}
+
+function buildDprNote(cfg: DprCfg): string {
+  const parts = [
+    `${cfg.t0},${cfg.p0}`,
+    `${cfg.t1},${cfg.p1}`,
+    `lc=${cfg.lineColor || "#2962FF"}`,
+    `lw=${cfg.lineWidth ?? 1}`,
+    `bd=${cfg.showBorder ? "1" : "0"}`,
+    `bc=${cfg.borderColor || "#2962FF"}`,
+    `bw=${cfg.borderWidth ?? 1}`,
+    `bg=${cfg.showBg === false ? "0" : "1"}`,
+    `bgc=${cfg.bgColor || "#2962FF"}`,
+    `bgo=${cfg.bgOpacity ?? 20}`,
+    `sp=${cfg.showStatsPrice === false ? "0" : "1"}`,
+    `spt=${cfg.showStatsPct === false ? "0" : "1"}`,
+    `spi=${cfg.showStatsPips === false ? "0" : "1"}`,
+    `sb=${cfg.showStatsBars === false ? "0" : "1"}`,
+    `st=${cfg.showStatsTime === false ? "0" : "1"}`,
+    `sv=${cfg.showStatsVolume ? "1" : "0"}`,
+    `lbl=${cfg.labelColor || "#ffffff"}`,
+    `ls=${cfg.labelSize ?? 12}`,
+    `lbg=${cfg.showLabelBg === false ? "0" : "1"}`,
+    `lbc=${cfg.labelBgColor || "#1e222d"}`,
+    `lbo=${cfg.labelBgOpacity ?? 90}`,
+    `tc=${cfg.textColor || "#2962FF"}`,
+    `tsz=${cfg.textSize ?? 12}`,
+    `tb=${cfg.textBold ? "1" : "0"}`,
+    `ti=${cfg.textItalic ? "1" : "0"}`,
+    `vt=${cfg.visTicks === false ? "0" : "1"}`,
+    `vs=${cfg.visSeconds === false ? "0" : "1"}`,
+    `vm=${cfg.visMinutes === false ? "0" : "1"}`,
+    `vh=${cfg.visHours === false ? "0" : "1"}`,
+    `vd=${cfg.visDays === false ? "0" : "1"}`,
+    `vw=${cfg.visWeeks === false ? "0" : "1"}`,
+    `vmo=${cfg.visMonths === false ? "0" : "1"}`,
+    `vr=${cfg.visRanges === false ? "0" : "1"}`,
+  ];
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${encodeURIComponent(String(cfg.text).trim())}`);
+  return `__dpr:${parts.join("|")}`;
+}
+
+function formatDprDuration(sec: number): string {
+  const s = Math.max(0, Math.round(Math.abs(sec)));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0 || parts.length === 0) parts.push(`${m}m`);
+  return parts.join(" ");
+}
+
+function buildDprStatsText(
+  cfg: DprCfg,
+  candles: { time: number; volume?: number }[]
+): string {
+  const t0 = Math.min(cfg.t0, cfg.t1);
+  const t1 = Math.max(cfg.t0, cfg.t1);
+  const p0 = cfg.p0;
+  const p1 = cfg.p1;
+  const dP = p1 - p0;
+  const abs = Math.abs(dP);
+  const pct = p0 !== 0 ? (dP / Math.abs(p0)) * 100 : 0;
+  // pips ≈ absolute * 10000 for forex-like; for crypto show abs as "ticks" with smart decimals
+  const pips = abs;
+  const bars = (candles || []).filter((c) => {
+    const t = Number(c.time);
+    return t >= t0 && t <= t1;
+  }).length;
+  const dur = formatDprDuration(t1 - t0);
+  let vol = 0;
+  if (cfg.showStatsVolume) {
+    for (const c of candles || []) {
+      const t = Number(c.time);
+      if (t >= t0 && t <= t1) vol += Number(c.volume) || 0;
+    }
+  }
+  const line1: string[] = [];
+  if (cfg.showStatsPrice !== false) line1.push(String(Number(abs.toPrecision(6))));
+  if (cfg.showStatsPct !== false) line1.push(`(${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`);
+  if (cfg.showStatsPips !== false) line1.push(String(Number(pips.toPrecision(6))));
+  const line2: string[] = [];
+  if (cfg.showStatsBars !== false) line2.push(`${bars} bars`);
+  if (cfg.showStatsTime !== false) line2.push(dur);
+  if (cfg.showStatsVolume) line2.push(`Vol ${vol > 1000 ? (vol / 1000).toFixed(1) + "K" : String(Math.round(vol))}`);
+  return [line1.join(" "), line2.join(", ")].filter(Boolean).join("\n");
+}
+
+
 /** Format unix seconds in a given IANA timezone */
 
 /** Snap unix time to the candle that contains it (floor) — critical for rays on higher TFs */
@@ -3470,6 +3648,12 @@ export default function DashboardPage() {
   /** Measure: first → second → third tap clears */
   const [measureStart, setMeasureStart] = useState<{ time: number; price: number } | null>(null);
   const [measureEnd, setMeasureEnd] = useState<{ time: number; price: number } | null>(null);
+  // Date & Price Range
+  const [dprSettingsOpen, setDprSettingsOpen] = useState(false);
+  const [selectedDprId, setSelectedDprId] = useState<string | null>(null);
+  const [dprSettingsTab, setDprSettingsTab] = useState<"style" | "text" | "coordinates" | "visibility">("style");
+  const [dprCfg, setDprCfg] = useState(() => defaultDprCfg());
+  const dprDraftRef = useRef<{ a?: { time: number; price: number } } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
   const measureSeriesRef = useRef<any>(null);
@@ -5825,6 +6009,8 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-frvp-preview]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-rect-preview]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-dpr-preview]").forEach((el) => el.remove());
+      try { dprDraftRef.current = null; } catch {}
     } catch {}
     // NOTE: do NOT remove [data-arrow-dir] here — those are saved arrows on the chart
     hideHandles();
@@ -5994,6 +6180,7 @@ export default function DashboardPage() {
     // clear previous DOM rects + fib bands (rebuilt below)
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-dpr-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-frvp-id]").forEach((el) => el.remove());
@@ -6314,7 +6501,7 @@ export default function DashboardPage() {
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
           if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__channel:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
+          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__channel:") || s.startsWith("__dpr:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
         })();
@@ -7439,6 +7626,128 @@ priced.sort((a, b) => a.price - b.price);
               chartLinesRef.current.set(l.id, { __rectDom: true } as any);
             }
           }
+        } else if (typeof l.note === "string" && l.note.startsWith("__dpr:")) {
+          try {
+            const cfg = parseDprNote(l.note);
+            if (cfg) {
+              // visibility by timeframe
+              let visOk = true;
+              const iv = String(intervalRef.current || "15");
+              const ivNum = Number(iv);
+              if (iv === "D" || iv === "1D") visOk = cfg.visDays !== false;
+              else if (iv === "W" || iv === "1W") visOk = cfg.visWeeks !== false;
+              else if (iv === "M" || iv === "1M") visOk = cfg.visMonths !== false;
+              else if (Number.isFinite(ivNum)) {
+                if (ivNum < 1) visOk = cfg.visSeconds !== false;
+                else if (ivNum < 60) visOk = cfg.visMinutes !== false;
+                else visOk = cfg.visHours !== false;
+              }
+              if (visOk) {
+                const host = vlineOverlayRef.current;
+                const chart2 = chartRef.current;
+                const ser2 = seriesRef.current;
+                if (host && chart2 && ser2) {
+                  const tLo = Math.min(cfg.t0, cfg.t1);
+                  const tHi = Math.max(cfg.t0, cfg.t1);
+                  const pLo = Math.min(cfg.p0, cfg.p1);
+                  const pHi = Math.max(cfg.p0, cfg.p1);
+                  const xa = chart2.timeScale().timeToCoordinate(tLo as any);
+                  const xb = chart2.timeScale().timeToCoordinate(tHi as any);
+                  const ya = ser2.priceToCoordinate(pHi);
+                  const yb = ser2.priceToCoordinate(pLo);
+                  if (xa != null && xb != null && ya != null && yb != null) {
+                    const left = Math.min(Number(xa), Number(xb));
+                    const top = Math.min(Number(ya), Number(yb));
+                    const w = Math.abs(Number(xb) - Number(xa));
+                    const h = Math.abs(Number(yb) - Number(ya));
+                    const midX = left + w / 2;
+                    const midY = top + h / 2;
+                    const wrap = document.createElement("div");
+                    wrap.setAttribute("data-dpr-id", String(l.id));
+                    wrap.setAttribute("data-dpr-pts", JSON.stringify({ t0: cfg.t0, p0: cfg.p0, t1: cfg.t1, p1: cfg.p1 }));
+                    wrap.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;pointer-events:none;z-index:14;box-sizing:border-box;`;
+                    // background
+                    if (cfg.showBg !== false) {
+                      const bg = document.createElement("div");
+                      const hex = (cfg.bgColor || "#2962FF").replace("#", "");
+                      const rr = parseInt(hex.slice(0, 2), 16) || 41;
+                      const gg = parseInt(hex.slice(2, 4), 16) || 98;
+                      const bb = parseInt(hex.slice(4, 6), 16) || 255;
+                      const aa = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 20) / 100));
+                      bg.style.cssText = `position:absolute;inset:0;background:rgba(${rr},${gg},${bb},${aa});pointer-events:none;`;
+                      wrap.appendChild(bg);
+                    }
+                    // border
+                    if (cfg.showBorder) {
+                      wrap.style.border = `${cfg.borderWidth || 1}px solid ${cfg.borderColor || "#2962FF"}`;
+                    }
+                    // cross axes (H + V) with arrows
+                    const axisCol = cfg.lineColor || "#2962FF";
+                    const axisW = Math.max(1, cfg.lineWidth || 1);
+                    const hLine = document.createElement("div");
+                    hLine.style.cssText = `position:absolute;left:0;right:0;top:50%;height:0;border-top:${axisW}px solid ${axisCol};transform:translateY(-50%);pointer-events:none;`;
+                    const vLine = document.createElement("div");
+                    vLine.style.cssText = `position:absolute;top:0;bottom:0;left:50%;width:0;border-left:${axisW}px solid ${axisCol};transform:translateX(-50%);pointer-events:none;`;
+                    wrap.appendChild(hLine);
+                    wrap.appendChild(vLine);
+                    // arrow heads via CSS triangles
+                    const arrowR = document.createElement("div");
+                    arrowR.style.cssText = `position:absolute;right:-1px;top:50%;width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:8px solid ${axisCol};transform:translateY(-50%);pointer-events:none;`;
+                    const arrowU = document.createElement("div");
+                    arrowU.style.cssText = `position:absolute;left:50%;top:-1px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:8px solid ${axisCol};transform:translateX(-50%);pointer-events:none;`;
+                    wrap.appendChild(arrowR);
+                    wrap.appendChild(arrowU);
+                    // corner dots
+                    for (const [lp, tp] of [["0%", "0%"], ["100%", "0%"], ["0%", "100%"], ["100%", "100%"]] as const) {
+                      // only show two opposite corners like TV
+                    }
+                    // start / end anchors (bottom-left & top-right of orientation)
+                    const a0 = document.createElement("div");
+                    a0.style.cssText = `position:absolute;left:0;bottom:0;width:10px;height:10px;border-radius:50%;border:2px solid ${axisCol};background:transparent;transform:translate(-50%,50%);pointer-events:none;`;
+                    const a1 = document.createElement("div");
+                    a1.style.cssText = `position:absolute;right:0;top:0;width:10px;height:10px;border-radius:50%;border:2px solid ${axisCol};background:transparent;transform:translate(50%,-50%);pointer-events:none;`;
+                    wrap.appendChild(a0);
+                    wrap.appendChild(a1);
+                    // stats label above box
+                    const stats = buildDprStatsText(cfg, candlesRef.current || []);
+                    if (stats) {
+                      const lab = document.createElement("div");
+                      lab.setAttribute("data-dpr-label", "1");
+                      lab.style.cssText =
+                        `position:absolute;left:50%;top:-8px;transform:translate(-50%,-100%);` +
+                        `font-size:${cfg.labelSize || 12}px;color:${cfg.labelColor || "#fff"};` +
+                        `white-space:pre;text-align:center;pointer-events:none;z-index:15;` +
+                        `line-height:1.35;font-family:system-ui,sans-serif;`;
+                      if (cfg.showLabelBg !== false) {
+                        const hex = (cfg.labelBgColor || "#1e222d").replace("#", "");
+                        const rr = parseInt(hex.slice(0, 2), 16) || 30;
+                        const gg = parseInt(hex.slice(2, 4), 16) || 34;
+                        const bb = parseInt(hex.slice(4, 6), 16) || 45;
+                        const aa = Math.max(0, Math.min(1, (cfg.labelBgOpacity ?? 90) / 100));
+                        lab.style.background = `rgba(${rr},${gg},${bb},${aa})`;
+                        lab.style.padding = "4px 8px";
+                        lab.style.borderRadius = "6px";
+                      }
+                      lab.textContent = stats;
+                      wrap.appendChild(lab);
+                    }
+                    // custom text
+                    if (cfg.text && String(cfg.text).trim()) {
+                      const tx = document.createElement("div");
+                      tx.style.cssText =
+                        `position:absolute;left:6px;top:6px;font-size:${cfg.textSize || 12}px;color:${cfg.textColor || axisCol};` +
+                        `font-weight:${cfg.textBold ? "700" : "400"};font-style:${cfg.textItalic ? "italic" : "normal"};` +
+                        `pointer-events:none;max-width:90%;overflow:hidden;text-overflow:ellipsis;`;
+                      tx.textContent = cfg.text;
+                      wrap.appendChild(tx);
+                    }
+                    host.appendChild(wrap);
+                  }
+                }
+              }
+              chartLinesRef.current.set(l.id, { __dprDom: true } as any);
+            }
+          } catch {}
         } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
           const t = Number(l.start_time || 0);
           if (t > 0) {
@@ -8504,6 +8813,29 @@ priced.sort((a, b) => a.price - b.price);
                 const ser2 = seriesRef.current;
                 if (!host || !chart2 || !ser2) return;
                 // Parallel channel fill + label sync
+                host.querySelectorAll("[data-dpr-id]").forEach((wrap) => {
+                  try {
+                    const el = wrap as HTMLElement;
+                    const raw = el.getAttribute("data-dpr-pts");
+                    if (!raw) return;
+                    const pts = JSON.parse(raw) as { t0: number; p0: number; t1: number; p1: number };
+                    const tLo = Math.min(pts.t0, pts.t1), tHi = Math.max(pts.t0, pts.t1);
+                    const pLo = Math.min(pts.p0, pts.p1), pHi = Math.max(pts.p0, pts.p1);
+                    const xa = chart2.timeScale().timeToCoordinate(tLo as any);
+                    const xb = chart2.timeScale().timeToCoordinate(tHi as any);
+                    const ya = ser2.priceToCoordinate(pHi);
+                    const yb = ser2.priceToCoordinate(pLo);
+                    if (xa == null || xb == null || ya == null || yb == null) return;
+                    const left = Math.min(Number(xa), Number(xb));
+                    const top = Math.min(Number(ya), Number(yb));
+                    const w = Math.abs(Number(xb) - Number(xa));
+                    const h = Math.abs(Number(yb) - Number(ya));
+                    el.style.left = `${left}px`;
+                    el.style.top = `${top}px`;
+                    el.style.width = `${Math.max(2, w)}px`;
+                    el.style.height = `${Math.max(2, h)}px`;
+                  } catch {}
+                });
                 host.querySelectorAll("[data-channel-fill]").forEach((wrap) => {
                   const raw = (wrap as HTMLElement).getAttribute("data-channel-pts");
                   if (!raw) return;
@@ -11947,8 +12279,9 @@ priced.sort((a, b) => a.price - b.price);
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
         const isRectDraw = (m0 === "rect" || m0 === "frvp") && !!diagStartRef.current;
         const isChannelDraw = m0 === "channel" && !!(channelDraftRef.current && channelDraftRef.current.a);
+        const isDprDraw = m0 === "dpr" && !!(dprDraftRef.current && dprDraftRef.current.a);
         // measureEnd is state — use measureStartRef only for live drag
-        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !(m0 === "measure" && measureStartRef.current)) return;
+        if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !isDprDraw && !(m0 === "measure" && measureStartRef.current)) return;
         if (isDiagDraw || isDiagMove) {
           try { e.preventDefault(); } catch {}
         }
@@ -11968,6 +12301,7 @@ priced.sort((a, b) => a.price - b.price);
             modeNow !== "measure" &&
             modeNow !== "move" &&
             modeNow !== "rect" &&
+            modeNow !== "dpr" &&
             modeNow !== "arrow" &&
             modeNow !== "frvp" &&
             modeNow !== "channel"
@@ -12134,6 +12468,64 @@ priced.sort((a, b) => a.price - b.price);
           }
 
           // Fixed Range VP live preview — verticals + box + live histogram
+          if (modeNow === "dpr" && dprDraftRef.current && dprDraftRef.current.a) {
+            try {
+              const a = dprDraftRef.current.a;
+              const cont = chartContainerRef.current;
+              const chart = chartRef.current;
+              const ser = seriesRef.current;
+              const host = vlineOverlayRef.current;
+              if (cont && chart && ser && host) {
+                const rect = cont.getBoundingClientRect();
+                const x = cx - rect.left;
+                const y = cy - rect.top;
+                const price = ser.coordinateToPrice(y);
+                let tCursor: number | null = null;
+                try {
+                  const logical = chart.timeScale().coordinateToLogical(x);
+                  const candles = candlesRef.current;
+                  if (logical != null && candles.length) {
+                    const barSec = intervalToSeconds(String(intervalRef.current));
+                    if (logical > candles.length - 1) {
+                      tCursor = candles[candles.length - 1].time + Math.round((logical - (candles.length - 1)) * barSec);
+                    } else if (logical < 0) {
+                      tCursor = candles[0].time + Math.round(logical * barSec);
+                    } else {
+                      const i = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+                      tCursor = candles[i].time;
+                    }
+                  }
+                } catch {}
+                if (price != null && tCursor != null) {
+                  host.querySelectorAll("[data-dpr-preview]").forEach((el) => el.remove());
+                  const tLo = Math.min(a.time, tCursor), tHi = Math.max(a.time, tCursor);
+                  const pLo = Math.min(a.price, price), pHi = Math.max(a.price, price);
+                  const xa = chart.timeScale().timeToCoordinate(tLo as any);
+                  const xb = chart.timeScale().timeToCoordinate(tHi as any);
+                  const ya = ser.priceToCoordinate(pHi);
+                  const yb = ser.priceToCoordinate(pLo);
+                  if (xa != null && xb != null && ya != null && yb != null) {
+                    const left = Math.min(Number(xa), Number(xb));
+                    const top = Math.min(Number(ya), Number(yb));
+                    const w = Math.abs(Number(xb) - Number(xa));
+                    const h = Math.abs(Number(yb) - Number(ya));
+                    const box = document.createElement("div");
+                    box.setAttribute("data-dpr-preview", "1");
+                    box.style.cssText =
+                      `position:absolute;left:${left}px;top:${top}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;` +
+                      `background:rgba(41,98,255,0.18);border:1px solid #2962FF;pointer-events:none;z-index:20;box-sizing:border-box;`;
+                    const hLine = document.createElement("div");
+                    hLine.style.cssText = "position:absolute;left:0;right:0;top:50%;border-top:1px solid #2962FF;transform:translateY(-50%);";
+                    const vLine = document.createElement("div");
+                    vLine.style.cssText = "position:absolute;top:0;bottom:0;left:50%;border-left:1px solid #2962FF;transform:translateX(-50%);";
+                    box.appendChild(hLine);
+                    box.appendChild(vLine);
+                    host.appendChild(box);
+                  }
+                }
+              }
+            } catch {}
+          }
           if ((modeNow as ToolMode) === "frvp" && diagStartRef.current) {
             const a = diagStartRef.current;
             try {
@@ -13303,7 +13695,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   const cx = x0 + t * dx, cy = y0 + t * dy;
                   consider(l.id, Math.hypot(px - cx, py - cy), false, false, true);
                 }
-              } else if (n0.startsWith("__channel:")) {
+              } else if (n0.startsWith("__dpr:") ||
+              n0.startsWith("__channel:")) {
                 try {
                   const cfg = parseChannelNote(n0);
                   if (cfg) {
@@ -14809,6 +15202,88 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           clearPreview();
           setMode("none");
           modeRef.current = "none";
+          setSaving(false);
+          setTimeout(() => { clickLockRef.current = false; }, 300);
+          return;
+        }
+
+        // Date & Price Range: 2 corners
+        if (m === "dpr") {
+          const t = resolveTime(param);
+          if (t == null) return;
+          const draft = dprDraftRef.current || {};
+          if (!draft.a) {
+            dprDraftRef.current = { a: { time: t, price: fp } };
+            setStatusMsg("Date & price range: tap opposite corner");
+            lockChartInteraction(true);
+            try {
+              const chart = chartRef.current;
+              const series = seriesRef.current;
+              if (chart && series && handleAElRef.current) {
+                const xA = chart.timeScale().timeToCoordinate(t as any);
+                const yA = series.priceToCoordinate(fp);
+                if (xA != null && yA != null) {
+                  handleAElRef.current.style.display = "block";
+                  handleAElRef.current.style.left = `${xA}px`;
+                  handleAElRef.current.style.top = `${yA}px`;
+                  handleAElRef.current.style.borderColor = "#2962FF";
+                }
+              }
+            } catch {}
+            return;
+          }
+          clickLockRef.current = true;
+          setSaving(true);
+          const a = draft.a;
+          const cfg = defaultDprCfg(a.time, a.price, t, fp);
+          cfg.t0 = a.time; cfg.p0 = a.price; cfg.t1 = t; cfg.p1 = fp;
+          const note = buildDprNote(cfg);
+          const base: any = {
+            symbol: symbolRef.current.toUpperCase(),
+            price: Math.min(a.price, fp),
+            end_price: Math.max(a.price, fp),
+            start_time: Math.min(a.time, t),
+            end_time: Math.max(a.time, t),
+            color: cfg.lineColor,
+            width: cfg.lineWidth,
+            dash: "solid",
+            note,
+          };
+          try {
+            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+            if (error) {
+              const fb: any = { symbol: base.symbol, price: base.price, color: base.color, note, start_time: base.start_time, end_time: base.end_time };
+              if (base.user_id) fb.user_id = base.user_id;
+              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+            }
+            if (!error && data) {
+              pushUndo();
+              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              setStatusMsg("Date & price range placed");
+            } else {
+              const local: ChartLine = {
+                id: `local-dpr-${Date.now()}`,
+                symbol: symbolRef.current.toUpperCase(),
+                price: base.price,
+                color: base.color,
+                note,
+                start_time: base.start_time,
+                end_time: base.end_time,
+                end_price: base.end_price,
+              };
+              pushUndo();
+              setLines((prev) => [local, ...prev]);
+              setStatusMsg("Date & price range placed (local)");
+            }
+          } catch {
+            setStatusMsg("Save failed");
+          }
+          dprDraftRef.current = null;
+          clearPreview();
+          setMode("none");
+          modeRef.current = "none";
+          lockChartInteraction(false);
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
@@ -18628,7 +19103,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setAlarmMenuOpen(false);
                 }}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
-                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "brush" || mode === "long-pos" || mode === "short-pos"
+                  drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "dpr" || mode === "brush" || mode === "long-pos" || mode === "short-pos"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                 }`}
@@ -18777,6 +19252,28 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <circle cx="21" cy="18" r="1.8" fill="currentColor" stroke="none" />
                     </svg>
                     Rectangle
+                  </button>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "dpr" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setDrawToolsOpen(false);
+                      dprDraftRef.current = null;
+                      setMovingId(null);
+                      setMode("dpr");
+                      modeRef.current = "dpr";
+                      setStatusMsg("Date & price range: tap first corner");
+                    }}
+                  >
+                    <svg width="18" height="16" viewBox="0 0 24 20" fill="none" stroke="currentColor" strokeWidth="1.6" className="shrink-0 opacity-90">
+                      <rect x="3" y="3" width="14" height="12" rx="1" />
+                      <line x1="10" y1="3" x2="10" y2="15" />
+                      <line x1="3" y1="9" x2="17" y2="9" />
+                      <path d="M17 9 L21 9" strokeWidth="1.6" />
+                      <path d="M10 3 L10 1" strokeWidth="1.6" />
+                    </svg>
+                    Date and price range
                   </button>
 
                 </div>
@@ -20162,7 +20659,201 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
 
 
-          {/* Parallel Channel settings modal */}
+          
+          {/* Date & Price Range settings modal */}
+          {dprSettingsOpen && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+              onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); }}>
+              <div className="w-[min(360px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                  <div className="font-semibold text-white">Date and price range</div>
+                  <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                    onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); }}>×</button>
+                </div>
+                <div className="flex gap-4 px-4 pt-2 border-b border-white/10 text-xs">
+                  {(["style", "text", "coordinates", "visibility"] as const).map((tab) => (
+                    <button key={tab} type="button"
+                      className={`pb-1.5 px-1 capitalize ${dprSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                      onClick={() => setDprSettingsTab(tab)}>{tab}</button>
+                  ))}
+                </div>
+
+                {dprSettingsTab === "style" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-20 text-gray-400">Line</span>
+                      <input type="color" value={dprCfg.lineColor} onChange={(e) => setDprCfg((c) => ({ ...c, lineColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                      <select value={dprCfg.lineWidth} onChange={(e) => setDprCfg((c) => ({ ...c, lineWidth: Number(e.target.value) || 1 }))}
+                        className="bg-black/40 border border-white/15 rounded px-1 py-0.5">
+                        {[1,2,3,4].map((w) => <option key={w} value={w}>{w}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 text-gray-400">
+                        <input type="checkbox" checked={dprCfg.showBorder} onChange={(e) => setDprCfg((c) => ({ ...c, showBorder: e.target.checked }))} />
+                        Border
+                      </label>
+                      <input type="color" value={dprCfg.borderColor} onChange={(e) => setDprCfg((c) => ({ ...c, borderColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                      <select value={dprCfg.borderWidth} onChange={(e) => setDprCfg((c) => ({ ...c, borderWidth: Number(e.target.value) || 1 }))}
+                        className="bg-black/40 border border-white/15 rounded px-1 py-0.5">
+                        {[1,2,3,4].map((w) => <option key={w} value={w}>{w}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-20 text-gray-400">
+                        <input type="checkbox" checked={dprCfg.showBg} onChange={(e) => setDprCfg((c) => ({ ...c, showBg: e.target.checked }))} />
+                        Background
+                      </label>
+                      <input type="color" value={dprCfg.bgColor} onChange={(e) => setDprCfg((c) => ({ ...c, bgColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                      <input type="number" min={0} max={100} value={dprCfg.bgOpacity}
+                        onChange={(e) => setDprCfg((c) => ({ ...c, bgOpacity: Number(e.target.value) || 0 }))}
+                        className="w-14 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="pt-1 text-[10px] text-gray-500 uppercase tracking-wide">Info</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="w-16 text-gray-400">Stats</span>
+                      {([
+                        ["showStatsPrice", "Price"],
+                        ["showStatsPct", "%"],
+                        ["showStatsPips", "Pips"],
+                        ["showStatsBars", "Bars"],
+                        ["showStatsTime", "Time"],
+                        ["showStatsVolume", "Vol"],
+                      ] as const).map(([k, lab]) => (
+                        <label key={k} className="flex items-center gap-1 text-[11px]">
+                          <input type="checkbox" checked={(dprCfg as any)[k]}
+                            onChange={(e) => setDprCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                          {lab}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-20 text-gray-400">Label</span>
+                      <input type="color" value={dprCfg.labelColor} onChange={(e) => setDprCfg((c) => ({ ...c, labelColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                      <select value={dprCfg.labelSize} onChange={(e) => setDprCfg((c) => ({ ...c, labelSize: Number(e.target.value) || 12 }))}
+                        className="bg-black/40 border border-white/15 rounded px-1 py-0.5">
+                        {[10,11,12,14,16,18,20].map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-2 w-28 text-gray-400">
+                        <input type="checkbox" checked={dprCfg.showLabelBg} onChange={(e) => setDprCfg((c) => ({ ...c, showLabelBg: e.target.checked }))} />
+                        Label background
+                      </label>
+                      <input type="color" value={dprCfg.labelBgColor} onChange={(e) => setDprCfg((c) => ({ ...c, labelBgColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                    </div>
+                  </div>
+                )}
+
+                {dprSettingsTab === "text" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={dprCfg.textColor} onChange={(e) => setDprCfg((c) => ({ ...c, textColor: e.target.value }))}
+                        className="w-8 h-6 rounded border border-white/20 bg-transparent" />
+                      <select value={dprCfg.textSize} onChange={(e) => setDprCfg((c) => ({ ...c, textSize: Number(e.target.value) || 12 }))}
+                        className="bg-black/40 border border-white/15 rounded px-1 py-0.5">
+                        {[10,11,12,14,16,18,20].map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <button type="button" className={`px-2 py-0.5 rounded border ${dprCfg.textBold ? "border-orange-500 text-orange-300" : "border-white/15"}`}
+                        onClick={() => setDprCfg((c) => ({ ...c, textBold: !c.textBold }))}>B</button>
+                      <button type="button" className={`px-2 py-0.5 rounded border italic ${dprCfg.textItalic ? "border-orange-500 text-orange-300" : "border-white/15"}`}
+                        onClick={() => setDprCfg((c) => ({ ...c, textItalic: !c.textItalic }))}>I</button>
+                    </div>
+                    <textarea
+                      value={dprCfg.text}
+                      onChange={(e) => setDprCfg((c) => ({ ...c, text: e.target.value }))}
+                      placeholder="Add text"
+                      rows={3}
+                      className="w-full bg-black/40 border border-white/15 rounded-lg px-2 py-1.5 text-xs resize-none"
+                    />
+                  </div>
+                )}
+
+                {dprSettingsTab === "coordinates" && (
+                  <div className="px-4 py-3 space-y-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-24 text-gray-400">#1 (price, bar)</span>
+                      <input type="number" step="any" value={dprCfg.p0}
+                        onChange={(e) => setDprCfg((c) => ({ ...c, p0: Number(e.target.value) }))}
+                        className="w-24 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="number" value={dprCfg.t0}
+                        onChange={(e) => setDprCfg((c) => ({ ...c, t0: Number(e.target.value) }))}
+                        className="w-24 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-24 text-gray-400">#2 (price, bar)</span>
+                      <input type="number" step="any" value={dprCfg.p1}
+                        onChange={(e) => setDprCfg((c) => ({ ...c, p1: Number(e.target.value) }))}
+                        className="w-24 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                      <input type="number" value={dprCfg.t1}
+                        onChange={(e) => setDprCfg((c) => ({ ...c, t1: Number(e.target.value) }))}
+                        className="w-24 bg-black/40 border border-white/15 rounded px-1 py-0.5" />
+                    </div>
+                  </div>
+                )}
+
+                {dprSettingsTab === "visibility" && (
+                  <div className="px-4 py-3 space-y-2 text-xs">
+                    {([
+                      ["visTicks", "Ticks"],
+                      ["visSeconds", "Seconds"],
+                      ["visMinutes", "Minutes"],
+                      ["visHours", "Hours"],
+                      ["visDays", "Days"],
+                      ["visWeeks", "Weeks"],
+                      ["visMonths", "Months"],
+                      ["visRanges", "Ranges"],
+                    ] as const).map(([k, lab]) => (
+                      <label key={k} className="flex items-center gap-2">
+                        <input type="checkbox" checked={(dprCfg as any)[k]}
+                          onChange={(e) => setDprCfg((c) => ({ ...c, [k]: e.target.checked }))} />
+                        {lab}
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/10">
+                  <button type="button" className="px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-white/10"
+                    onClick={() => { setDprSettingsOpen(false); setSelectedDprId(null); }}>Cancel</button>
+                  <button type="button" className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500 text-black hover:bg-orange-400"
+                    onClick={() => {
+                      try {
+                        if (selectedDprId) {
+                          const note = buildDprNote({ ...dprCfg });
+                          setLines((prev) => prev.map((x) =>
+                            String(x.id) === String(selectedDprId)
+                              ? { ...x, note, price: Math.min(dprCfg.p0, dprCfg.p1), start_time: Math.min(dprCfg.t0, dprCfg.t1), end_time: Math.max(dprCfg.t0, dprCfg.t1), end_price: Math.max(dprCfg.p0, dprCfg.p1), color: dprCfg.lineColor }
+                              : x
+                          ));
+                          if (!String(selectedDprId).startsWith("local-")) {
+                            void supabase.from("chart_lines").update({
+                              note,
+                              price: Math.min(dprCfg.p0, dprCfg.p1),
+                              start_time: Math.min(dprCfg.t0, dprCfg.t1),
+                              end_time: Math.max(dprCfg.t0, dprCfg.t1),
+                              end_price: Math.max(dprCfg.p0, dprCfg.p1),
+                              color: dprCfg.lineColor,
+                            }).eq("id", selectedDprId);
+                          }
+                        }
+                      } catch {}
+                      setDprSettingsOpen(false);
+                      setSelectedDprId(null);
+                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                    }}>Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+{/* Parallel Channel settings modal */}
           {channelSettingsOpen && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
               onClick={() => { setChannelSettingsOpen(false); setSelectedChannelId(null); }}>
@@ -23264,6 +23955,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ? "Rectangle"
                       : typeof l.note === "string" && l.note.startsWith("__brush:")
                       ? "Brush"
+                      : typeof l.note === "string" && l.note.startsWith("__dpr:")
+                      ? "Date and price range"
                       : typeof l.note === "string" && l.note.startsWith("__channel:")
                       ? "Parallel channel"
                       : typeof l.note === "string" && l.note.startsWith("__avp:")
@@ -23320,7 +24013,25 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 justify-end shrink-0">
-                    {typeof l.note === "string" && l.note.startsWith("__channel:") ? (
+                    {typeof l.note === "string" && l.note.startsWith("__dpr:") ? (
+                      <button
+                        type="button"
+                        title="Date & price range settings"
+                        onClick={() => {
+                          const p = parseDprNote(l.note);
+                          if (p) setDprCfg({ ...p });
+                          setSelectedDprId(String(l.id));
+                          setDprSettingsOpen(true);
+                          setDprSettingsTab("style");
+                        }}
+                        className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    ) : typeof l.note === "string" && l.note.startsWith("__channel:") ? (
                       <button
                         type="button"
                         title="Channel settings"
@@ -23825,7 +24536,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
+                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
                       <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
                     )}
                       </>
