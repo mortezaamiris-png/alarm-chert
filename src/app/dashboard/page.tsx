@@ -11658,7 +11658,7 @@ priced.sort((a, b) => a.price - b.price);
           }
 
           // ——— چارت اصلی ———
-          if (!inMainPane) return;
+          // Price-axis wheel always zooms MAIN scale (even if Y is near osc boundary)
           const ser = seriesRef.current as any;
           if (!ser) return;
 
@@ -11667,21 +11667,24 @@ priced.sort((a, b) => a.price - b.price);
           let pTop: number | null = null;
           let pBot: number | null = null;
 
+          // 1) Manual override from previous wheel ticks
           const ov0 = priceRangeOverrideRef.current;
           if (ov0 && ov0.to > ov0.from) {
             pBot = ov0.from;
             pTop = ov0.to;
           }
+          // 2) LWC visible range
           if (pTop == null || pBot == null) {
             try {
-              const ps0 = ser.priceScale?.() || chart.priceScale("right");
+              const ps0 = (ser.priceScale?.() || chart.priceScale("right")) as any;
               const vr = ps0?.getVisibleRange?.();
-              if (vr && vr.to > vr.from) {
+              if (vr && Number(vr.to) > Number(vr.from)) {
                 pBot = Number(vr.from);
                 pTop = Number(vr.to);
               }
             } catch {}
           }
+          // 3) Pixel → price at top/bottom of main pane
           if (pTop == null || pBot == null) {
             try {
               const t = ser.coordinateToPrice?.(2);
@@ -11692,6 +11695,7 @@ priced.sort((a, b) => a.price - b.price);
               }
             } catch {}
           }
+          // 4) Fallback: last candles high/low
           if (pTop == null || pBot == null) {
             try {
               const bars = candlesRef.current || [];
@@ -11713,35 +11717,36 @@ priced.sort((a, b) => a.price - b.price);
           }
           if (pTop == null || pBot == null || !(pTop > pBot)) return;
 
+          // Zoom toward cursor Y (TV style)
           const relY = Math.min(1, Math.max(0, yFromTop / mainH));
           const priceAtCursor = pTop - relY * (pTop - pBot);
-          const factor = zoomIn ? 0.88 : 1.14;
+          // Slightly stronger step so each notch is obvious
+          const factor = zoomIn ? 0.82 : 1.22;
           let newRange = (pTop - pBot) * factor;
           const absP = Math.max(Math.abs(priceAtCursor), Math.abs(pTop), Math.abs(pBot), 1e-12);
-          newRange = Math.max(newRange, absP * 1e-5);
-          newRange = Math.min(newRange, absP * 40);
+          newRange = Math.max(newRange, absP * 1e-6);
+          newRange = Math.min(newRange, absP * 80);
           const aboveRatio = Math.min(0.95, Math.max(0.05, (pTop - priceAtCursor) / Math.max(1e-12, pTop - pBot)));
           const newTop = priceAtCursor + newRange * aboveRatio;
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
 
-          e.preventDefault();
-          e.stopPropagation();
-
-          // Store override — the stable series autoscaleInfoProvider reads this ref
+          // Override drives the stable autoscaleInfoProvider on the main series
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
-            const ps = ser.priceScale?.() || chart.priceScale("right");
-            // Keep autoScale OFF + setVisibleRange so wheel zoom sticks (TV style)
-            try { ps.applyOptions({ autoScale: false }); } catch {}
-            try {
-              if (typeof ps.setVisibleRange === "function") {
-                ps.setVisibleRange({ from: newBot, to: newTop });
-              }
-            } catch {}
-            // Do NOT replace autoscaleInfoProvider here — the chart-init provider
-            // already returns override when priceRangeOverrideRef is set.
+            const psRight = chart.priceScale("right") as any;
+            const psSer = ser.priceScale?.() as any;
+            // Disable autoScale on both handles, then set range
+            for (const ps of [psSer, psRight]) {
+              if (!ps) continue;
+              try { ps.applyOptions({ autoScale: false }); } catch {}
+              try {
+                if (typeof ps.setVisibleRange === "function") {
+                  ps.setVisibleRange({ from: newBot, to: newTop });
+                }
+              } catch {}
+            }
           } catch {}
           try {
             requestAnimationFrame(() => {
@@ -12143,9 +12148,10 @@ priced.sort((a, b) => a.price - b.price);
 
         const prevCleanup = (chart as any).__interactCleanup;
         (chart as any).__interactCleanup = () => {
-          try { container.removeEventListener("wheel", onWheelPrice); } catch {}
-          try { document.removeEventListener("wheel", onWheelPrice); } catch {}
-          try { container.removeEventListener("dblclick", onDblPrice); } catch {}
+          // MUST pass same capture flag used in addEventListener or the listener never detaches
+          try { container.removeEventListener("wheel", onWheelPrice, true); } catch {}
+          try { document.removeEventListener("wheel", onWheelPrice, true as any); } catch {}
+          try { container.removeEventListener("dblclick", onDblPrice, true); } catch {}
           try { container.removeEventListener("touchend", onTouchEndDoubleTap); } catch {}
           try { container.removeEventListener("touchstart", onTouchStartPrice); } catch {}
           try { container.removeEventListener("touchmove", onTouchMovePrice); } catch {}
@@ -13873,6 +13879,15 @@ priced.sort((a, b) => a.price - b.price);
         const t = e.target as HTMLElement | null;
         if (!t) return;
         if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id]")) return;
+        // Clicking price labels on the right axis must NOT grab lines — only the line body on the plot
+        try {
+          const cont = chartContainerRef.current;
+          if (cont) {
+            const r = cont.getBoundingClientRect();
+            const fromRight = r.right - e.clientX;
+            if (fromRight >= 0 && fromRight <= 160) return;
+          }
+        } catch {}
         const m = modeRef.current;
         // Only when idle or already in move — not while actively drawing
         if (m !== "none" && m !== "move") return;
