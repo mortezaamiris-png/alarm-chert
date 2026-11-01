@@ -4795,7 +4795,7 @@ export default function DashboardPage() {
       window.clearTimeout(t3);
       try { ro?.disconnect(); } catch {}
     };
-  }, [chartLayout]);
+  }, [chartLayout, showBottomLists]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
   // Keyboard Undo / Redo
@@ -11610,12 +11610,11 @@ priced.sort((a, b) => a.price - b.price);
             ? zones.find((z) => yRatio >= z.top - 0.02 && yRatio <= 1 - z.bot + 0.02)
             : undefined;
 
-          // فقط نوار قیمت (~عرض واقعی scale). نه بدنه چارت.
-          // از priceScale.width() اگر موجود باشد استفاده کن
-          let axisW = 95;
+          // فقط نوار قیمت — عرض پایدار (~scale واقعی LWC + کمی حاشیه)
+          let axisW = 110;
           try {
             const w = (chart.priceScale("right") as any)?.width?.();
-            if (typeof w === "number" && w > 40 && w < 200) axisW = Math.ceil(w + 8);
+            if (typeof w === "number" && w > 50 && w < 160) axisW = Math.ceil(w + 12);
           } catch {}
           const onPriceAxis = fromRight >= 0 && fromRight <= axisW;
           if (!onPriceAxis) return;
@@ -11746,23 +11745,25 @@ priced.sort((a, b) => a.price - b.price);
           const newBot = priceAtCursor - newRange * (1 - aboveRatio);
           if (!(newTop > newBot) || !Number.isFinite(newTop) || !Number.isFinite(newBot)) return;
 
+          // Override first — stable series provider reads this every frame
           priceRangeOverrideRef.current = { from: newBot, to: newTop };
 
           try {
             const psRight = chart.priceScale("right") as any;
             const psSer = (ser.priceScale?.() as any) || psRight;
-            // Always lock: autoScale OFF so alarm/line price-lines cannot expand the range
-            // (enabling autoScale as fallback was RESETTING zoom-in — the "stuck" bug)
             for (const ps of [psSer, psRight]) {
               if (!ps) continue;
+              // setVisibleRange while locked
               try { ps.applyOptions({ autoScale: false }); } catch {}
               try {
                 if (typeof ps.setVisibleRange === "function") {
                   ps.setVisibleRange({ from: newBot, to: newTop });
                 }
               } catch {}
+              // Then autoScale ON so the series autoscaleInfoProvider (reads override)
+              // keeps painting this exact range — this is the path that actually works
+              try { ps.applyOptions({ autoScale: true }); } catch {}
             }
-            // Provider on series already reads priceRangeOverrideRef — keep it, don't toggle autoScale
             try { chart.timeScale().applyOptions({}); } catch {}
           } catch {}
           try {
@@ -14949,10 +14950,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       } catch {}
       chart.subscribeClick(async (param) => {
-        // Allow confirm-tap during pick phase even if clickLock is briefly set after save
+        // Allow confirm-tap during pick phase even if clickLock is briefly set after save.
+        // Also never block active drawing tools (vline/h-line/ray/...) — intermittent lock was dropping clicks.
         if (clickLockRef.current) {
           const md0 = moveDiagRef.current;
-          if (!(modeRef.current === "move" && md0 && md0.phase === "pick")) return;
+          const mNow = modeRef.current;
+          const drawing =
+            mNow === "vline" || mNow === "draw" || mNow === "ray" || mNow === "diag" ||
+            mNow === "alarm" || mNow === "alarm-ray" || mNow === "alarm-diag" ||
+            mNow === "curve" || mNow === "channel" || mNow === "path";
+          if (drawing) {
+            clickLockRef.current = false;
+          } else if (!(mNow === "move" && md0 && md0.phase === "pick")) {
+            return;
+          }
         }
 
         // Click on Long/Short shape → show labels; click empty → hide
@@ -16189,8 +16200,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
         // Vertical line: one click → line at that time
         if (m === "vline") {
-          const t = resolveTime(param);
-          if (t == null || Number.isNaN(t)) {
+          clickLockRef.current = false;
+          let t = resolveTime(param);
+          if (t == null || Number.isNaN(t) || !(t > 0)) {
+            const bars0 = candlesRef.current || [];
+            t = bars0.length ? Number(bars0[bars0.length - 1].time) : null;
+          }
+          if (t == null || Number.isNaN(t) || !(t > 0)) {
             setStatusMsg("Could not read time — try on chart area");
             return;
           }
@@ -18684,6 +18700,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           }
         }
       } catch {}
+      // Close tool menus on any outside click
+      try { setLineToolsOpen(false); } catch {}
+      try { setAlarmMenuOpen(false); } catch {}
+      try { setPosToolsOpen(false); } catch {}
+      try { setFibToolsOpen(false); } catch {}
+      try { setDrawToolsOpen(false); } catch {}
       // Click on chart canvas (empty) or outside → hide handles / exit move
       cancelAll();
     };
@@ -20558,7 +20580,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     Trendline
                   </button>
                   <button type="button" className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "vline" ? "text-orange-300" : ""}`}
-                    onClick={() => { clearPreview(); setLineToolsOpen(false); setMode(mode === "vline" ? "none" : "vline"); setMovingId(null); setMovingType(null); setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : ""); }}>
+                    onClick={() => {
+                      clearPreview();
+                      setLineToolsOpen(false);
+                      clickLockRef.current = false;
+                      setMode(mode === "vline" ? "none" : "vline");
+                      modeRef.current = mode === "vline" ? "none" : "vline";
+                      setMovingId(null);
+                      setMovingType(null);
+                      setStatusMsg(mode !== "vline" ? "Vertical line: tap on chart" : "");
+                    }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21" /><line x1="9" y1="3" x2="15" y2="3" /><line x1="9" y1="21" x2="15" y2="21" /></svg>
                     Vertical line
                   </button>
@@ -21233,7 +21264,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         )}
 
         {/* Chart — multi-pane layout */}
-        <div ref={layoutWrapRef} className="flex-1 min-w-0 relative" style={{ height: 640 }}>
+        <div
+          ref={layoutWrapRef}
+          className="flex-1 min-w-0 relative"
+          style={{ height: showBottomLists ? 640 : "calc(100vh - 120px)", minHeight: 640 }}
+        >
           <div
             className={
               chartLayout === "1"
