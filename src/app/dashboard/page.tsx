@@ -20464,7 +20464,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       <div className="flex gap-2">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
-          <div className="flex flex-col gap-1 shrink-0 self-stretch" style={{ minHeight: 420 }}>
+          <div
+            className="flex flex-col gap-1.5 shrink-0 self-stretch"
+            style={{
+              minHeight: 420,
+              height: showBottomLists ? 640 : "calc(100vh - 120px)",
+            }}
+          >
             {/* Hide tools — same idea as « Hide on coin list */}
             <button
               type="button"
@@ -20581,7 +20587,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </div>
 
             {/* separator under alarm */}
-            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
 
             {/* Line tools — 4 tools in one menu */}
             <div className="relative" data-menu>
@@ -20697,7 +20703,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </div>
 
             {/* separator before Fib / positions */}
-            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
 
             {/* Fibonacci tools — own icon above shapes */}
             <div className="relative" data-menu>
@@ -20746,6 +20752,25 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   </button>
                   <button
                     type="button"
+                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-ext" ? "text-orange-300" : ""}`}
+                    onClick={() => {
+                      clearPreview();
+                      setFibToolsOpen(false);
+                      setDiagStart(null);
+                      fibPoint3Ref.current = null;
+                      setMovingId(null);
+                      setMode("fib-ext");
+                      setStatusMsg("Fib Extension: tap A, then B, then C");
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
+                      <path d="M4 18h16" /><path d="M4 14h12" /><path d="M4 10h9" /><path d="M4 6h6" />
+                      <path d="M5 18L12 10L19 6" />
+                    </svg>
+                    Trend-based fib extension
+                  </button>
+                  <button
+                    type="button"
                     className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-tz" ? "text-orange-300" : ""}`}
                     onClick={() => {
                       clearPreview();
@@ -20788,25 +20813,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       <path d="M3 16 L8 10 L13 13" strokeDasharray="2 2" />
                     </svg>
                     Trend-based fib time
-                  </button>
-                  <button
-                    type="button"
-                    className={`w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 ${mode === "fib-ext" ? "text-orange-300" : ""}`}
-                    onClick={() => {
-                      clearPreview();
-                      setFibToolsOpen(false);
-                      setDiagStart(null);
-                      fibPoint3Ref.current = null;
-                      setMovingId(null);
-                      setMode("fib-ext");
-                      setStatusMsg("Fib Extension: tap A, then B, then C");
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
-                      <path d="M4 18h16" /><path d="M4 14h12" /><path d="M4 10h9" /><path d="M4 6h6" />
-                      <path d="M5 18L12 10L19 6" />
-                    </svg>
-                    Trend-based fib extension
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide">Volume-based</div>
@@ -20876,7 +20882,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </div>
 
             {/* Separator + shapes menu (TradingView-style) */}
-            <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
             <div className="relative" data-menu>
               <button
                 type="button"
@@ -21092,9 +21098,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
-            {/* Spacer — push measure / hide / trash lower but not at the very bottom */}
-            <div className="flex-1 min-h-2" style={{ maxHeight: 48 }} />
-            <div className="h-px w-7 mx-auto my-0.5 bg-gray-700/80 rounded-full" />
+            {/* Spacer — push bottom tools (measure / eye / trash / lists) down */}
+            <div className="flex-1 min-h-4" />
+            <div className="h-px w-7 mx-auto my-2.5 bg-gray-700/80 rounded-full" />
 
             {/* Measure — classic ruler icon */}
             <button
@@ -24805,7 +24811,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         </div>
 
         {showSideWl && (
-          <div className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col" style={{ maxHeight: 640 }}>
+          <div
+            className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col"
+            style={{
+              height: showBottomLists ? 640 : "calc(100vh - 120px)",
+              maxHeight: showBottomLists ? 640 : "calc(100vh - 120px)",
+              minHeight: 640,
+            }}
+          >
             <div className="px-2 py-1.5 border-b border-gray-800 flex flex-col gap-1.5">
               <div className="flex items-center gap-1">
                 <span className="text-[11px] font-medium text-gray-300 truncate flex-1 min-w-0" title={sideViewLabel}>
