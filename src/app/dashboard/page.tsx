@@ -2678,14 +2678,18 @@ function expandCurveControls(
     times = barTimes.filter((t) => t >= tMin && t <= tMax);
   }
   if (times.length < 2) {
-    const n = Math.max(4, Math.min(steps, Math.floor(Math.abs(tSpan)) || 4));
-    for (let i = 0; i <= n; i++) {
-      times.push(Math.round(A.time + (i / n) * tSpan));
-    }
+    // last resort: only endpoints (never invent intermediate timestamps that stretch the scale)
+    times = [A.time, C.time];
   }
 
+  // ONLY use existing bar times — never inject mid.time if it is not a real bar
+  // (injecting synthetic times makes LWC stretch the scale → empty gaps between candles)
   const bag = times.slice();
-  bag.push(A.time, B.time, C.time);
+  // endpoints only if they already exist in bar set (or fallback list)
+  const barSet = barTimes && barTimes.length >= 2 ? new Set(barTimes) : null;
+  for (const t of [A.time, C.time]) {
+    if (!barSet || barSet.has(t)) bag.push(t);
+  }
   bag.sort((x, y) => x - y);
   const finalTimes: number[] = [];
   for (const t of bag) {
@@ -6648,7 +6652,8 @@ export default function DashboardPage() {
         const noteStr = typeof l.note === "string" ? l.note : "";
         const softMove = noteStr.startsWith("__curve:") || noteStr.startsWith("__path:") ||
           noteStr.startsWith("__channel:") || noteStr.startsWith("__dpr:") ||
-          noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:");
+          noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:") ||
+          noteStr.startsWith("__diag:") || isDiagonalLine(l);
         // Curve/path/etc: keep original style while moving (only show handles)
         const color = (isMoving && !softMove) ? "#f59e0b" : (l.color || DEFAULT_LINE_COLOR);
         const width = (isMoving && !softMove) ? 3 : ((l.width as 1 | 2 | 3) || 2);
@@ -13619,7 +13624,7 @@ priced.sort((a, b) => a.price - b.price);
         const chart = chartRef.current;
         const ser = seriesRef.current;
         if (!chart || !ser) return null;
-        const HIT = 10;
+        const HIT = 16;
         const symU = (symbolRef.current || "").toUpperCase();
         let best: any = null;
         const consider = (id: string, kind: "line" | "alarm", type: any, score: number, obj: any) => {
@@ -14124,8 +14129,29 @@ priced.sort((a, b) => a.price - b.price);
         } catch {
           setStatusMsg("Move failed");
         }
-        // Keep selection so handles stay visible for fine edit (curve/diag)
-        // User can click empty to deselect via cancelAll
+        // After body-drag:
+        // - Curve / diag: keep selection + handles for fine edit (solid, no dashed)
+        // - H / ray / v / arrow: exit move so dashed MOVING line disappears immediately
+        if (bd.type === "h" || bd.type === "ray" || bd.type === "v" || bd.type === "arrow") {
+          try {
+            setMovingId(null);
+            movingIdRef.current = null;
+            setMovingType(null);
+            setMode("none");
+            modeRef.current = "none";
+            moveDiagRef.current = null;
+            movingVLineRef.current = false;
+            movingRayRef.current = false;
+            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          } catch {}
+        } else if (bd.type === "diag") {
+          // keep selected but phase=pick, solid style via softMove
+          try {
+            const md = moveDiagRef.current as any;
+            if (md) md.phase = "pick";
+          } catch {}
+        }
+        // curve: keep handles (already softMove)
       };
 
       window.addEventListener("pointerdown", onBodyDragDown, true);
