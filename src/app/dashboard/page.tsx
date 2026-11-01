@@ -4873,14 +4873,20 @@ export default function DashboardPage() {
   useEffect(() => {
     saveLS("ind_trend", showTrend); saveLS("vis_trend", trendVisible);
     saveLS("trend_p", trendPeriod); saveLS("trend_up", trendUpColor);
+    saveLS("trend_dn", trendDownColor); saveLS("trend_max", trendMax);
+  }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
+  // BB must save when toggled off — was missing from deps so it came back after refresh
+  useEffect(() => {
     saveLS("ind_bb", showBB); saveLS("vis_bb", bbVisible);
     saveLS("bb_len", bbLength); saveLS("bb_mult", bbMult);
     saveLS("bb_bc", bbBasisColor); saveLS("bb_uc", bbUpperColor); saveLS("bb_lc", bbLowerColor);
+  }, [showBB, bbVisible, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor]);
+  // HARSI same bug
+  useEffect(() => {
     saveLS("ind_harsi", showHARSI); saveLS("vis_harsi", harsiVisible);
     saveLS("harsi_len", harsiLen); saveLS("harsi_sm", harsiSmooth);
     saveLS("harsi_up", harsiUpColor); saveLS("harsi_dn", harsiDnColor);
-    saveLS("trend_dn", trendDownColor); saveLS("trend_max", trendMax);
-  }, [showTrend, trendVisible, trendPeriod, trendUpColor, trendDownColor, trendMax]);
+  }, [showHARSI, harsiVisible, harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
   useEffect(() => {
     saveLS("ind_tcp", showTCP); saveLS("vis_tcp", tcpVisible);
     saveLS("tcp_capital", tcpCapital); saveLS("tcp_risk", tcpRiskPct); saveLS("tcp_lev", tcpLeverage);
@@ -6325,14 +6331,12 @@ export default function DashboardPage() {
       if (lr) savedRange = { from: lr.from, to: lr.to };
     } catch {}
 
-    // Lock vertical scale so adding/removing diagonals cannot stretch candles
-    let lockedPriceRange: { from: number; to: number } | null = null;
-    try {
-      const pr = (series.priceScale() as any).getVisibleRange?.();
-      if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
-        lockedPriceRange = { from: Number(pr.from), to: Number(pr.to) };
-      }
-    } catch {}
+    // Only keep manual price zoom if user already set one — never force-lock autoScale
+    // (old code always captured + re-applied range → candles stuck tiny after coin switch)
+    const lockedPriceRange = priceRangeOverrideRef.current
+      && priceRangeOverrideRef.current.to > priceRangeOverrideRef.current.from
+      ? { from: priceRangeOverrideRef.current.from, to: priceRangeOverrideRef.current.to }
+      : null;
 
     alarmLinesRef.current.forEach((pl) => {
       try { series.removePriceLine(pl); } catch {}
@@ -9362,11 +9366,14 @@ priced.sort((a, b) => a.price - b.price);
         chart.timeScale().setVisibleLogicalRange(savedRange);
       } catch {}
     }
-    // Restore price scale so diagonals never stretch candles
+    // Restore ONLY user manual price zoom; leave autoScale alone otherwise
     if (lockedPriceRange) {
       try {
-        (series.priceScale() as any).setVisibleRange(lockedPriceRange);
-        priceRangeOverrideRef.current = lockedPriceRange;
+        const ps = series.priceScale() as any;
+        ps.applyOptions?.({ autoScale: false });
+        if (typeof ps.setVisibleRange === "function") {
+          ps.setVisibleRange(lockedPriceRange);
+        }
       } catch {}
     }
   }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, highlightRay, hideLines, hideAlarms]);
@@ -10979,6 +10986,16 @@ priced.sort((a, b) => a.price - b.price);
                 if (s) { try { s.setData([]); } catch {} }
               }
             } catch {}
+            try {
+              const bb = bbSeriesRef.current;
+              if (bb) {
+                try { bb.basis?.setData([]); } catch {}
+                try { bb.upper?.setData([]); } catch {}
+                try { bb.lower?.setData([]); } catch {}
+              }
+            } catch {}
+            // Drop any manual price zoom from previous coin
+            priceRangeOverrideRef.current = null;
           }
 
           // Clear old price-lines before data so autoscale is not stuck (TF + symbol)
@@ -11027,20 +11044,45 @@ priced.sort((a, b) => a.price - b.price);
 
               const snapToLastCandles = () => {
                 try {
-                  const n = (candlesRef.current && candlesRef.current.length
-                    ? candlesRef.current.length
-                    : candles.length);
+                  const src = (candlesRef.current && candlesRef.current.length
+                    ? candlesRef.current
+                    : candles);
+                  const n = src.length;
                   if (n < 2) return;
-                  series.priceScale().applyOptions({
+                  priceRangeOverrideRef.current = null;
+                  const ps = series.priceScale() as any;
+                  ps.applyOptions({
                     autoScale: true,
                     scaleMargins: { top: 0.08, bottom: 0.12 },
                   });
                   chart.priceScale("right").applyOptions({ autoScale: true });
+                  // Seed a sensible vertical range from visible candles so scale
+                  // is never stuck at previous-coin prices (tiny candles bug)
+                  try {
+                    const past = Math.min(120, n);
+                    let lo = Infinity, hi = -Infinity;
+                    for (let i = n - past; i < n; i++) {
+                      const c = src[i];
+                      if (!c) continue;
+                      const l = Number(c.low ?? c.close);
+                      const h = Number(c.high ?? c.close);
+                      if (Number.isFinite(l)) lo = Math.min(lo, l);
+                      if (Number.isFinite(h)) hi = Math.max(hi, h);
+                    }
+                    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+                      const pad = (hi - lo) * 0.12 || hi * 0.01 || 0.01;
+                      // brief fixed range then re-enable autoScale so user can scroll
+                      if (typeof ps.setVisibleRange === "function") {
+                        ps.setVisibleRange({ from: lo - pad, to: hi + pad });
+                      }
+                      ps.applyOptions({ autoScale: true });
+                    }
+                  } catch {}
                   // logical index: 0..n-1 = کندل واقعی؛ بعدش whitespace
-                  const past = Math.min(500, n);
+                  const pastT = Math.min(500, n);
                   chart.timeScale().applyOptions({ rightOffset: 12, barSpacing: 2.5 });
                   chart.timeScale().setVisibleLogicalRange({
-                    from: Math.max(0, n - past),
+                    from: Math.max(0, n - pastT),
                     to: n - 1 + FUTURE_VISIBLE,
                   });
                 } catch {}
@@ -11747,9 +11789,28 @@ priced.sort((a, b) => a.price - b.price);
           try {
             const s = seriesRef.current as any;
             const ps = s?.priceScale?.() || chart.priceScale("right");
+            // Compute range from current candles so reset is visible even if LWC autoScale is sticky
+            const src = candlesRef.current || [];
+            if (src.length >= 2 && typeof ps?.setVisibleRange === "function") {
+              let lo = Infinity, hi = -Infinity;
+              const start = Math.max(0, src.length - 150);
+              for (let i = start; i < src.length; i++) {
+                const c = src[i];
+                const l = Number(c?.low ?? c?.close);
+                const h = Number(c?.high ?? c?.close);
+                if (Number.isFinite(l)) lo = Math.min(lo, l);
+                if (Number.isFinite(h)) hi = Math.max(hi, h);
+              }
+              if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+                const pad = (hi - lo) * 0.12 || hi * 0.01 || 0.01;
+                ps.setVisibleRange({ from: lo - pad, to: hi + pad });
+              }
+            }
             ps?.setAutoScale?.(true);
-            ps?.applyOptions?.({ autoScale: true });
+            ps?.applyOptions?.({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
+            try { chart.priceScale("right").applyOptions({ autoScale: true }); } catch {}
             try { updateMargins(); } catch {}
+            setStatusMsg("Price scale reset");
           } catch {}
         };
         const onDblPrice = (e: MouseEvent) => {
