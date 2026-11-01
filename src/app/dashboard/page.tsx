@@ -6573,9 +6573,14 @@ export default function DashboardPage() {
     currentLines.forEach((l) => {
       try {
         const isMoving = movingId === l.id && movingType === "line";
-        const color = isMoving ? "#f59e0b" : l.color || DEFAULT_LINE_COLOR;
-        const width = isMoving ? 3 : ((l.width as 1 | 2 | 3) || 2);
-        const style = isMoving ? MOVE_STYLE : toLineStyle(l.dash || l.style);
+        const noteStr = typeof l.note === "string" ? l.note : "";
+        const softMove = noteStr.startsWith("__curve:") || noteStr.startsWith("__path:") ||
+          noteStr.startsWith("__channel:") || noteStr.startsWith("__dpr:") ||
+          noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:");
+        // Curve/path/etc: keep original style while moving (only show handles)
+        const color = (isMoving && !softMove) ? "#f59e0b" : (l.color || DEFAULT_LINE_COLOR);
+        const width = (isMoving && !softMove) ? 3 : ((l.width as 1 | 2 | 3) || 2);
+        const style = (isMoving && !softMove) ? MOVE_STYLE : toLineStyle(l.dash || l.style);
         // Title only when note exists (no "Line xxx" label)
         const noteClean = (() => {
           if (!l.note) return "";
@@ -7971,18 +7976,28 @@ priced.sort((a, b) => a.price - b.price);
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
-          // Visible control handles when this curve/path is in move mode
+          // Visible control handles when this curve/path is in move mode (3 for curve)
           try {
             const isMoving = movingId === l.id && movingType === "line";
             const host = vlineOverlayRef.current;
             const ser = seriesRef.current;
             if (isMoving && host && ser && chart) {
-              const ctrls = isCurve
-                ? (parseCurveControls(l.note) || [])
-                : raw.split("|").map((s) => {
-                    const [tt, pp] = s.split(",");
-                    return { time: Number(tt), price: Number(pp) };
-                  }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+              try {
+                host.querySelectorAll("[data-curve-handle],[data-path-handle]").forEach((el) => {
+                  if ((el.getAttribute("data-curve-id") || el.getAttribute("data-path-id")) === String(l.id)) el.remove();
+                });
+              } catch {}
+              let ctrls: { time: number; price: number }[] = [];
+              if (isCurve) {
+                ctrls = parseCurveControls(l.note) || [];
+                // never more than 3
+                if (ctrls.length > 3) ctrls = [ctrls[0], ctrls[Math.floor(ctrls.length / 2)], ctrls[ctrls.length - 1]];
+              } else {
+                ctrls = raw.split("|").map((s) => {
+                  const [tt, pp] = s.split(",");
+                  return { time: Number(tt), price: Number(pp) };
+                }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+              }
               ctrls.forEach((pt, idx) => {
                 const el = document.createElement("div");
                 el.setAttribute(isCurve ? "data-curve-handle" : "data-path-handle", String(idx));
@@ -8702,8 +8717,8 @@ priced.sort((a, b) => a.price - b.price);
         const elA0 = handleAElRef.current;
         const elB0 = handleBElRef.current;
         const elC0 = handleCElRef.current;
-        // Parallel channel uses its own 6 DOM handles — never show A/B/C ghosts
-        if (md && (md as any).isChannel) {
+        // Channel / Curve / Path use their own DOM handles — never show A/B/C ghosts
+        if (md && ((md as any).isChannel || (md as any).isCurve || (md as any).isPath || (md as any).isDpr)) {
           if (elA0) elA0.style.display = "none";
           if (elB0) elB0.style.display = "none";
           if (elC0) elC0.style.display = "none";
@@ -12423,7 +12438,11 @@ priced.sort((a, b) => a.price - b.price);
         const m0 = modeRef.current;
         const isDiagDraw =
           (m0 === "diag" || m0 === "alarm-diag" || m0 === "arrow") && !!diagStartRef.current;
-        const isDiagMove = m0 === "move" && !!moveDiagRef.current;
+        const isDiagMove = m0 === "move" && !!moveDiagRef.current &&
+          !(moveDiagRef.current as any).isChannel &&
+          !(moveDiagRef.current as any).isCurve &&
+          !(moveDiagRef.current as any).isPath &&
+          !(moveDiagRef.current as any).isDpr;
         const isRayPreview = m0 === "ray" || m0 === "alarm-ray";
         const isMeasure =
           m0 === "measure" && !!measureStartRef.current && !measureEnd;
@@ -13347,7 +13366,44 @@ priced.sort((a, b) => a.price - b.price);
           cur.end_time = Math.max(...ctrls.map((p) => p.time));
           cur.end_price = ctrls[ctrls.length - 1].price;
         }
-        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        // Lightweight live update: only the series + handles (avoid full chart rebuild)
+        try {
+          const chart = chartRef.current;
+          const ser = seriesRef.current;
+          const host = vlineOverlayRef.current;
+          const ls = chartLinesRef.current.get(md.id);
+          if (ls && chart) {
+            let data: { time: number; value: number }[] = [];
+            if (md.isCurve && ctrls.length >= 3) {
+              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 36);
+            } else {
+              data = ctrls.map((p) => ({ time: p.time, value: p.price }));
+              for (let i = 1; i < data.length; i++) {
+                if (data[i].time <= data[i - 1].time) data[i].time = data[i - 1].time + 1;
+              }
+            }
+            ls.setData(data.map((p) => ({ time: p.time as any, value: p.value })));
+          }
+          if (host && chart && ser) {
+            host.querySelectorAll(
+              md.isCurve ? `[data-curve-id="${md.id}"]` : `[data-path-id="${md.id}"]`
+            ).forEach((el) => {
+              const idx = Number(
+                el.getAttribute(md.isCurve ? "data-curve-handle" : "data-path-handle") || -1
+              );
+              if (idx < 0 || !ctrls[idx]) return;
+              const pt = ctrls[idx];
+              const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+              const yy = ser.priceToCoordinate(pt.price);
+              if (xx != null && yy != null) {
+                (el as HTMLElement).style.left = `${xx}px`;
+                (el as HTMLElement).style.top = `${yy}px`;
+              }
+            });
+          }
+        } catch {
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        }
       };
       const onCurvePathPointerUp = async () => {
         const md = moveDiagRef.current as any;
@@ -20582,7 +20638,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           {mode === "move" && movingId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
             if (!ln || typeof ln.note !== "string") return false;
-            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:");
+            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:") ||
+              ln.note.startsWith("__curve:") || ln.note.startsWith("__path:");
           })() && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {(() => {
@@ -20690,7 +20747,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm-diag" ||
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-              return !!(ln && typeof ln.note === "string" && (ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:")));
+              return !!(ln && typeof ln.note === "string" && (
+                ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:") ||
+                ln.note.startsWith("__curve:") || ln.note.startsWith("__path:")
+              ));
             })()))) && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {mode === "path" && (
