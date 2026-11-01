@@ -6309,7 +6309,7 @@ export default function DashboardPage() {
     rayItemsRef.current = [];
     calloutItemsRef.current = [];
     arrowMoveItemsRef.current = [];
-    // clear previous DOM rects + fib bands (rebuilt below)
+    // clear previous DOM rects + fib bands + curve/path handles (rebuilt below)
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-dpr-id]").forEach((el) => el.remove());
@@ -6319,6 +6319,10 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avwap-fill]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
+      // Always nuke curve/path handles + drafts so they never linger after deselect
+      vlineOverlayRef.current?.querySelectorAll(
+        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft]"
+      ).forEach((el) => el.remove());
     } catch {}
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-fib-band]").forEach((el) => el.remove());
@@ -8030,12 +8034,13 @@ priced.sort((a, b) => a.price - b.price);
             const isMoving = movingId === l.id && movingType === "line";
             const host = vlineOverlayRef.current;
             const ser = seriesRef.current;
+            // Always remove this line's handles first (hide when not moving)
+            try {
+              host?.querySelectorAll("[data-curve-handle],[data-path-handle]").forEach((el) => {
+                if ((el.getAttribute("data-curve-id") || el.getAttribute("data-path-id")) === String(l.id)) el.remove();
+              });
+            } catch {}
             if (isMoving && host && ser && chart) {
-              try {
-                host.querySelectorAll("[data-curve-handle],[data-path-handle]").forEach((el) => {
-                  if ((el.getAttribute("data-curve-id") || el.getAttribute("data-path-id")) === String(l.id)) el.remove();
-                });
-              } catch {}
               let ctrls: { time: number; price: number }[] = [];
               if (isCurve) {
                 ctrls = parseCurveControls(l.note) || [];
@@ -12498,7 +12503,7 @@ priced.sort((a, b) => a.price - b.price);
         const isRectDraw = (m0 === "rect" || m0 === "frvp") && !!diagStartRef.current;
         const isChannelDraw = m0 === "channel" && !!(channelDraftRef.current && channelDraftRef.current.a);
         const isDprDraw = m0 === "dpr" && !!(dprDraftRef.current && dprDraftRef.current.a);
-        const isCurveDraw = m0 === "curve" && pathPointsRef.current.length >= 1 && pathPointsRef.current.length < 3;
+        const isCurveDraw = m0 === "curve" && pathPointsRef.current.length >= 1 && pathPointsRef.current.length < 2;
         const isPathDraw = m0 === "path" && pathPointsRef.current.length >= 1;
         // measureEnd is state — use measureStartRef only for live drag
         if (!isDiagDraw && !isDiagMove && !isRayPreview && !isRectDraw && !isChannelDraw && !isDprDraw && !isCurveDraw && !isPathDraw && !(m0 === "measure" && measureStartRef.current)) return;
@@ -12557,7 +12562,7 @@ priced.sort((a, b) => a.price - b.price);
           // Curve live preview (TV-style: 3 on-curve points)
           if (modeNow === "curve") {
             const pts = pathPointsRef.current || [];
-            if (pts.length >= 1 && pts.length < 3) {
+            if (pts.length >= 1 && pts.length < 2) {
               try {
                 if (!previewDiagSeriesRef.current) {
                   previewDiagSeriesRef.current = chart.addLineSeries({
@@ -12572,19 +12577,19 @@ priced.sort((a, b) => a.price - b.price);
                 }
                 let dens: { time: number; value: number }[] = [];
                 if (pts.length === 1) {
-                  // start fixed; cursor = end; mid auto halfway (slight bow)
+                  // TV: start fixed; cursor = end; mid auto halfway with mild default bow (not straight)
                   const a = pts[0];
                   const c = { time: tCursor, price };
+                  const avgP = (a.price + c.price) / 2;
+                  const dy = Math.abs(c.price - a.price);
+                  // mild default arc like TradingView preview (bow ~15-25% of vertical span, min visible)
+                  const bow = Math.max(dy * 0.22, Math.abs(avgP) * 0.0015);
                   const mid = {
                     time: Math.round((a.time + c.time) / 2),
-                    price: (a.price + c.price) / 2,
+                    price: avgP + bow,
                   };
                   const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
                   dens = expandCurveControls(a, mid, c, 36, barTs);
-                } else if (pts.length === 2) {
-                  // start + mid fixed; cursor = end
-                  const barTs2 = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-                  dens = expandCurveControls(pts[0], pts[1], { time: tCursor, price }, 36, barTs2);
                 }
                 if (dens.length >= 2) {
                   let savedR: any = null;
@@ -16933,14 +16938,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           return;
         }
 
-        // Curve: 3 points → quadratic-ish polyline
+        // Curve (TradingView style): 2 clicks → start + end; middle auto; then Move handles
         if (m === "curve") {
           const t = resolveTime(param);
           if (t == null) return;
           const pts = pathPointsRef.current;
           pts.push({ time: t, price: fp });
           pathPointsRef.current = pts;
-          // Draft markers so user sees selected points
+          // Draft markers
           try {
             const host = vlineOverlayRef.current;
             const ser = seriesRef.current;
@@ -16963,7 +16968,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               });
             }
           } catch {}
-          // Live preview polyline / arc
+          // Live preview while waiting for 2nd point
           try {
             if (!previewDiagSeriesRef.current) {
               previewDiagSeriesRef.current = chart.addLineSeries({
@@ -16976,33 +16981,21 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 autoscaleInfoProvider: () => null as any,
               });
             }
-            let savedRange: any = null;
-            try { savedRange = chart.timeScale().getVisibleLogicalRange(); } catch {}
-            if (pts.length === 2) {
-              const barTsP = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-              const dens = expandCurveControls(
-                pts[0],
-                { time: Math.round((pts[0].time + pts[1].time) / 2), price: (pts[0].price + pts[1].price) / 2 },
-                pts[1],
-                48,
-                barTsP
-              );
-              previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
-            } else if (pts.length >= 3) {
-              const barTsP3 = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-              const dens = expandCurveControls(pts[0], pts[1], pts[2], 48, barTsP3);
-              previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
-            }
-            if (savedRange) {
-              try { chart.timeScale().setVisibleLogicalRange(savedRange); } catch {}
-            }
           } catch {}
-          if (pts.length < 3) {
-            setStatusMsg(`Curve: point ${pts.length}/3`);
+          if (pts.length < 2) {
+            setStatusMsg("Curve: now tap the end point");
             return;
           }
-          // Save only 3 control points
-          const [p0, p1, p2] = pts;
+          // 2nd point → auto middle + save (TV style: mild default bow so it is already curved)
+          const p0 = pts[0];
+          const p2 = pts[1];
+          const avgP = (p0.price + p2.price) / 2;
+          const dy = Math.abs(p2.price - p0.price);
+          const bow = Math.max(dy * 0.22, Math.abs(avgP) * 0.0015);
+          const p1 = {
+            time: Math.round((p0.time + p2.time) / 2),
+            price: avgP + bow,
+          };
           clickLockRef.current = true;
           setSaving(true);
           const note = `__curve:${p0.time},${p0.price}|${p1.time},${p1.price}|${p2.time},${p2.price}`;
@@ -17024,17 +17017,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             (fallback as any).user_id = base.user_id;
             ({ data, error } = await supabase.from("chart_lines").insert([fallback]).select().single());
           }
+          pathPointsRef.current = [];
+          try { vlineOverlayRef.current?.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove()); } catch {}
+          clearPreview();
           if (!error && data) {
             const saved = { ...(data as ChartLine), ...base, id: (data as any).id };
             pushUndo();
             setLines((prev) => [saved, ...prev]);
-            setStatusMsg("Curve saved — Move to adjust points");
-          } else setStatusMsg("Curve save failed");
-          pathPointsRef.current = [];
-          try { vlineOverlayRef.current?.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove()); } catch {}
-          clearPreview();
-          setMode("none");
-          modeRef.current = "none";
+            // Enter Move so 3 handles (incl. middle) appear immediately like TV
+            setMovingId(saved.id);
+            setMovingType("line");
+            setMode("move");
+            modeRef.current = "move";
+            setStatusMsg("Curve saved — drag the middle point to shape the arc");
+          } else {
+            setStatusMsg("Curve save failed");
+            setMode("none");
+            modeRef.current = "none";
+          }
           try {
             const ch = chartRef.current;
             if (ch) {
@@ -17048,6 +17048,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
+
 
         if (m === "draw" || m === "ray") {
           clickLockRef.current = true;
@@ -17715,31 +17716,52 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         diagStartRef.current = null;
         pathPointsRef.current = [];
         setMovingId(null);
+        movingIdRef.current = null;
         setMovingType(null);
         setDiagStart(null);
         setMode("none");
         modeRef.current = "none";
         clearPreview();
+        try {
+          vlineOverlayRef.current?.querySelectorAll(
+            "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-ch-handle],[data-dpr-handle]"
+          ).forEach((el) => el.remove());
+        } catch {}
+        // unlock chart interaction if it was locked for move
+        try {
+          const ch = chartRef.current;
+          if (ch) {
+            ch.applyOptions({
+              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+            });
+          }
+        } catch {}
         setStatusMsg("");
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
       } catch {}
     };
 
     const onDown = (e: MouseEvent | TouchEvent | PointerEvent) => {
-      // Outside-click only cancels move selection
-      if (mode !== "move" || !movingId) return;
+      // Cancel move selection on outside click OR empty chart (not on a handle)
+      // Use refs so we never miss because of stale React state
+      if (modeRef.current !== "move" || !movingIdRef.current) return;
       const el = e.target as HTMLElement | null;
       if (!el) return;
       if (
         el.closest?.("[data-menu]") ||
         el.closest?.("[data-note-edit]") ||
         el.closest?.("[data-ind-panel]") ||
-        el.closest?.("[data-move-bar]")
+        el.closest?.("[data-move-bar]") ||
+        el.closest?.("[data-curve-handle]") ||
+        el.closest?.("[data-path-handle]") ||
+        el.closest?.("[data-ch-handle]") ||
+        el.closest?.("[data-dpr-handle]") ||
+        el.closest?.("[data-pos-id]")
       ) {
         return;
       }
-      if (chartContainerRef.current && chartContainerRef.current.contains(el)) {
-        return;
-      }
+      // Click on chart canvas (empty) or outside → hide handles / exit move
       cancelAll();
     };
 
@@ -19632,7 +19654,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           });
                         }
                       } catch {}
-                      setStatusMsg(nextCurve === "curve" ? "Curve: tap 3 points (start, middle, end)" : "");
+                      setStatusMsg(nextCurve === "curve" ? "Curve: tap start, then end (middle appears after)" : "");
                     }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                       <path d="M4 18 C8 18 10 6 14 6 C18 6 20 18 20 18" />
