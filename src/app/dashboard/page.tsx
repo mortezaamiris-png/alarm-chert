@@ -2622,30 +2622,29 @@ type DprCfg = {
 
 /**
  * Expand 3 ON-CURVE points (TradingView Curve style) into dense samples.
- * Time is always linear a→c (strictly monotonic → no waves/jagged).
- * Price is quadratic Bezier so the curve passes through b at the
- * parameter corresponding to b.time.
+ * Sample times are snapped to existing bar times so we never inject new
+ * timestamps into the LWC time scale (that would zoom/spread candles).
+ * Price is quadratic Bezier so the curve passes through a, b, c.
  */
 function expandCurveControls(
   a: { time: number; price: number },
   b: { time: number; price: number },
   c: { time: number; price: number },
-  steps = 48
+  steps = 48,
+  barTimes?: number[] | null
 ): { time: number; value: number }[] {
   const tSpan = c.time - a.time;
   if (!Number.isFinite(tSpan) || Math.abs(tSpan) < 1) {
-    const t0 = Math.min(a.time, b.time, c.time);
+    const t0 = a.time;
     return [
       { time: t0, value: a.price },
       { time: t0 + 1, value: b.price },
       { time: t0 + 2, value: c.price },
     ];
   }
-  // Parameter position of middle point in time (clamped away from ends)
   let tMid = (b.time - a.time) / tSpan;
   if (!Number.isFinite(tMid)) tMid = 0.5;
   tMid = Math.max(0.05, Math.min(0.95, tMid));
-  // Solve for Bezier control P so B(tMid) = b.price
   const tm = tMid;
   const one = 1 - tm;
   const denom = 2 * one * tm;
@@ -2655,23 +2654,45 @@ function expandCurveControls(
   } else {
     pPrice = (b.price - one * one * a.price - tm * tm * c.price) / denom;
   }
-  const out: { time: number; value: number }[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const mt = a.time + t * tSpan; // linear time → always mono
+  const priceAt = (t: number) => {
     const o = 1 - t;
-    const mp = o * o * a.price + 2 * o * t * pPrice + t * t * c.price;
-    out.push({ time: Math.round(mt), value: mp });
+    return o * o * a.price + 2 * o * t * pPrice + t * t * c.price;
+  };
+
+  const tMin = Math.min(a.time, c.time);
+  const tMax = Math.max(a.time, c.time);
+  let times: number[] = [];
+
+  if (barTimes && barTimes.length >= 2) {
+    times = barTimes.filter((t) => t >= tMin && t <= tMax);
   }
-  for (let i = 1; i < out.length; i++) {
-    if (out[i].time <= out[i - 1].time) out[i].time = out[i - 1].time + 1;
+  if (times.length < 2) {
+    const n = Math.max(4, Math.min(steps, Math.floor(Math.abs(tSpan)) || 4));
+    for (let i = 0; i <= n; i++) {
+      times.push(Math.round(a.time + (i / n) * tSpan));
+    }
   }
-  out[0].time = Math.round(a.time);
-  out[0].value = a.price;
-  out[out.length - 1].time = Math.max(out[out.length - 2].time + 1, Math.round(c.time));
-  out[out.length - 1].value = c.price;
-  return out;
+
+  // Include endpoints, clamp, unique ascending (works left→right and right→left)
+  const bag = times.slice();
+  bag.push(a.time, c.time);
+  bag.sort((x, y) => x - y);
+  const finalTimes: number[] = [];
+  for (const t of bag) {
+    const tt = Math.max(tMin, Math.min(tMax, t));
+    if (!finalTimes.length || tt > finalTimes[finalTimes.length - 1]) finalTimes.push(tt);
+  }
+  if (finalTimes.length < 2) {
+    finalTimes.length = 0;
+    finalTimes.push(tMin, tMax);
+  }
+
+  return finalTimes.map((t) => {
+    const tParam = (t - a.time) / tSpan;
+    return { time: t, value: priceAt(tParam) };
+  });
 }
+
 
 function parseCurveControls(note: string): { time: number; price: number }[] | null {
   if (!note || !note.startsWith("__curve:")) return null;
@@ -7979,11 +8000,13 @@ priced.sort((a, b) => a.price - b.price);
           }
           // Curve stored as 3 controls → expand to smooth arc
           if (isCurve && pairs.length === 3) {
+            const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
             pairs = expandCurveControls(
               { time: pairs[0].time, price: pairs[0].value },
               { time: pairs[1].time, price: pairs[1].value },
               { time: pairs[2].time, price: pairs[2].value },
-              48
+              48,
+              barTs
             );
           } else if (isCurve && pairs.length > 3) {
             // legacy dense: keep; also show 3 handles when moving
@@ -12556,10 +12579,12 @@ priced.sort((a, b) => a.price - b.price);
                     time: Math.round((a.time + c.time) / 2),
                     price: (a.price + c.price) / 2,
                   };
-                  dens = expandCurveControls(a, mid, c, 36);
+                  const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+                  dens = expandCurveControls(a, mid, c, 36, barTs);
                 } else if (pts.length === 2) {
                   // start + mid fixed; cursor = end
-                  dens = expandCurveControls(pts[0], pts[1], { time: tCursor, price }, 36);
+                  const barTs2 = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+                  dens = expandCurveControls(pts[0], pts[1], { time: tCursor, price }, 36, barTs2);
                 }
                 if (dens.length >= 2) {
                   let savedR: any = null;
@@ -13406,7 +13431,8 @@ priced.sort((a, b) => a.price - b.price);
           if (ls && chart) {
             let data: { time: number; value: number }[] = [];
             if (md.isCurve && ctrls.length >= 3) {
-              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 48);
+              const barTsM = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 48, barTsM);
             } else {
               data = ctrls.map((p) => ({ time: p.time, value: p.price }));
               for (let i = 1; i < data.length; i++) {
@@ -16953,15 +16979,18 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             let savedRange: any = null;
             try { savedRange = chart.timeScale().getVisibleLogicalRange(); } catch {}
             if (pts.length === 2) {
+              const barTsP = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
               const dens = expandCurveControls(
                 pts[0],
                 { time: Math.round((pts[0].time + pts[1].time) / 2), price: (pts[0].price + pts[1].price) / 2 },
                 pts[1],
-                48
+                48,
+                barTsP
               );
               previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
             } else if (pts.length >= 3) {
-              const dens = expandCurveControls(pts[0], pts[1], pts[2], 48);
+              const barTsP3 = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+              const dens = expandCurveControls(pts[0], pts[1], pts[2], 48, barTsP3);
               previewDiagSeriesRef.current.setData(dens.map((p) => ({ time: p.time as any, value: p.value })));
             }
             if (savedRange) {
