@@ -6093,7 +6093,37 @@ export default function DashboardPage() {
     macdFast, macdSlow, macdSignal, macdColor, macdSigColor,
     harsiLen, harsiSmooth, harsiUpColor, harsiDnColor]);
 
+  // Keep a stable global pointer so resize kicks can always re-layout panes
+  useEffect(() => {
+    try { (window as any).__updateMargins = updateMargins; } catch {}
+  }, [updateMargins]);
 
+  // Hide/show bottom lists changes chart height → force resize + oscillator margins
+  useEffect(() => {
+    const kick = () => {
+      try {
+        const el = chartContainerRef.current;
+        const chart = chartRef.current;
+        if (el && chart) {
+          const w = el.clientWidth;
+          const h = el.clientHeight;
+          if (w > 20 && h > 20) {
+            chart.applyOptions({ width: w, height: h });
+          }
+        }
+      } catch {}
+      try { updateMargins(); } catch {}
+    };
+    kick();
+    const t1 = window.setTimeout(kick, 50);
+    const t2 = window.setTimeout(kick, 180);
+    const t3 = window.setTimeout(kick, 400);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+  }, [showBottomLists, updateMargins]);
 
   const hideHandles = useCallback(() => {
     try {
@@ -10901,6 +10931,7 @@ priced.sort((a, b) => a.price - b.price);
     // Capture symbol/interval + generation so a slow response never clobbers a newer request.
     // فقط رنج قیمت دستی را ریست کن — prev آلارم‌ها را پاک نکن (دیر تریگر نشود)
     priceRangeOverrideRef.current = null;
+    try { clickLockRef.current = false; } catch {}
     const gen = ++loadGenRef.current;
     const fetchSym = chartSymbol(symbolRef.current);
     const fetchIv = String(intervalRef.current);
@@ -10999,6 +11030,10 @@ priced.sort((a, b) => a.price - b.price);
             // Drop manual zoom from previous coin — keep the stable autoscaleInfoProvider
             // (it only applies override when priceRangeOverrideRef is set)
             priceRangeOverrideRef.current = null;
+            // Unlock drawing clicks (vline was stuck until refresh after coin switch)
+            try { clickLockRef.current = false; } catch {}
+            try { bodyDragRef.current = null; } catch {}
+            try { moveDiagRef.current = null; } catch {}
             try {
               const ps = series.priceScale() as any;
               ps.applyOptions({ autoScale: true, scaleMargins: { top: 0.08, bottom: 0.12 } });
@@ -18648,13 +18683,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     };
 
     const onDown = (e: MouseEvent | TouchEvent | PointerEvent) => {
-      // Cancel move selection on outside click OR empty chart (not on a handle)
-      // Use refs so we never miss because of stale React state
-      if (modeRef.current !== "move" || !movingIdRef.current) return;
-      // Don't cancel while an active body-drag is in progress
-      if (bodyDragRef.current) return;
       const el = e.target as HTMLElement | null;
       if (!el) return;
+      // Clicks inside tool menus / handles / panels — leave them alone
       if (
         el.closest?.("[data-menu]") ||
         el.closest?.("[data-note-edit]") ||
@@ -18668,6 +18699,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       ) {
         return;
       }
+
+      // Always close alarm/lines (and other) tool menus on outside click
+      try { setLineToolsOpen(false); } catch {}
+      try { setAlarmMenuOpen(false); } catch {}
+      try { setPosToolsOpen(false); } catch {}
+      try { setFibToolsOpen(false); } catch {}
+      try { setDrawToolsOpen(false); } catch {}
+
+      // Don't cancel while an active body-drag is in progress
+      if (bodyDragRef.current) return;
+
       // If a curve is selected and the click is near the arc, do NOT cancel —
       // let the body-drag handler take over (TV: grab the line to move whole object)
       try {
@@ -18700,14 +18742,18 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           }
         }
       } catch {}
-      // Close tool menus on any outside click
-      try { setLineToolsOpen(false); } catch {}
-      try { setAlarmMenuOpen(false); } catch {}
-      try { setPosToolsOpen(false); } catch {}
-      try { setFibToolsOpen(false); } catch {}
-      try { setDrawToolsOpen(false); } catch {}
-      // Click on chart canvas (empty) or outside → hide handles / exit move
-      cancelAll();
+
+      // Exit move selection / clear active drawing tool on empty chart click
+      // (so orange alarm/lines icons deactivate)
+      const m = modeRef.current;
+      if (
+        m === "move" ||
+        m === "draw" || m === "ray" || m === "diag" || m === "vline" ||
+        m === "curve" || m === "channel" || m === "path" ||
+        m === "alarm" || m === "alarm-ray" || m === "alarm-diag"
+      ) {
+        cancelAll();
+      }
     };
 
     const onContext = (e: MouseEvent) => {
@@ -21260,6 +21306,26 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 </div>
               )}
             </div>
+
+            {/* Show / Hide bottom lists (alarms · lines · history) */}
+            <button
+              type="button"
+              title={showBottomLists ? "Hide lists" : "Show lists"}
+              onClick={() => setShowBottomLists((v) => !v)}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                showBottomLists
+                  ? "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+                  : "bg-orange-500/15 border-orange-500/50 text-orange-300"
+              }`}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {showBottomLists ? (
+                  <polyline points="6 9 12 15 18 9" />
+                ) : (
+                  <polyline points="6 15 12 9 18 15" />
+                )}
+              </svg>
+            </button>
           </div>
         )}
 
@@ -25505,31 +25571,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         )}
       </div>
 
-      {/* Bottom lists: active alarms | lines | history — toggle hide/show */}
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setShowBottomLists((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gray-700 bg-gray-900 text-xs text-gray-300 hover:bg-white/10 hover:text-white transition-colors"
-          title={showBottomLists ? "Hide lists" : "Show lists"}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            {showBottomLists ? (
-              <>
-                <polyline points="6 9 12 15 18 9" />
-              </>
-            ) : (
-              <>
-                <polyline points="6 15 12 9 18 15" />
-              </>
-            )}
-          </svg>
-          {showBottomLists ? "Hide lists" : "Show lists"}
-          <span className="text-gray-500">
-            ({currentAlarms.length} alarms · {currentLines.length} lines)
-          </span>
-        </button>
-      </div>
+      {/* Bottom lists (toggle is on left toolbar) */}
       {showBottomLists && (
       <div className="mt-2 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
