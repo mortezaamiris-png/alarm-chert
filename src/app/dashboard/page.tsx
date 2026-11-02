@@ -4656,7 +4656,7 @@ export default function DashboardPage() {
   const [fibLineStyle, setFibLineStyle] = useState<"solid" | "dashed" | "dotted">(() => loadLS("fib_line_style", "solid"));
   const [fibTrend, setFibTrend] = useState(() => loadLS("fib_trend", false));
   const [fibTrendColor, setFibTrendColor] = useState(() => loadLS("fib_trend_color", "#f97316"));
-  const [fibBackground, setFibBackground] = useState(() => loadLS("fib_background", true));
+  const [fibBackground, setFibBackground] = useState(() => loadLS("fib_background", false));
   const [fibBgColor, setFibBgColor] = useState(() => loadLS("fib_bg_color", "#2962FF"));
   const [fibBgOpacity, setFibBgOpacity] = useState(() => loadLS("fib_bg_opacity", 20));
   const [fibLabelH, setFibLabelH] = useState<"left" | "center" | "right">(() => loadLS("fib_label_h", "right"));
@@ -7875,6 +7875,17 @@ export default function DashboardPage() {
                   lh === "left" ? (magnetLeft ? visLeft : labLeft) :
                   lh === "center" ? Math.round((labLeft + labRight) / 2) :
                   labRight;
+                // Skip levels far outside the current vertical viewport (big lag fix)
+                try {
+                  const yChk = series.priceToCoordinate(price);
+                  const plotH = (chartContainerRef.current?.clientHeight || 600);
+                  if (yChk != null) {
+                    const yy = Number(yChk);
+                    if (yy < -120 || yy > plotH + 120) {
+                      continue;
+                    }
+                  }
+                } catch {}
                 const hs: any = chart.addLineSeries({
                   color: col,
                   lineWidth: lw,
@@ -9948,7 +9959,11 @@ priced.sort((a, b) => a.price - b.price);
       } catch {}
     };
     const scheduleOverlaySync = () => {
+      // Coalesce: never queue more than one overlay frame (fib lag fix)
+      if ((window as any).__overlaySyncPending) return;
+      (window as any).__overlaySyncPending = true;
       requestAnimationFrame(() => {
+        (window as any).__overlaySyncPending = false;
         try {
           syncOverlayPositions();
         } catch {
@@ -9957,24 +9972,26 @@ priced.sort((a, b) => a.price - b.price);
             paintRays();
           } catch {}
         }
-        // Volume candles body overlay
+        // Heavy canvas paints ONLY when that chart type is active
         try {
-          paintVolumeCandleBodies({
-            canvas: volCandleCanvasRef.current,
-            chart: chartRef.current,
-            series: seriesRef.current,
-            candles: candlesRef.current || [],
-            active: String(chartTypeRef.current) === "volcandles",
-          });
-        } catch {}
-        try {
-          paintFootprintOverlay({
-            canvas: footprintCanvasRef.current,
-            chart: chartRef.current,
-            series: seriesRef.current,
-            footprints: footprintDataRef.current,
-            active: String(chartTypeRef.current) === "footprint",
-          });
+          const ct = String(chartTypeRef.current || "");
+          if (ct === "volcandles") {
+            paintVolumeCandleBodies({
+              canvas: volCandleCanvasRef.current,
+              chart: chartRef.current,
+              series: seriesRef.current,
+              candles: candlesRef.current || [],
+              active: true,
+            });
+          } else if (ct === "footprint") {
+            paintFootprintOverlay({
+              canvas: footprintCanvasRef.current,
+              chart: chartRef.current,
+              series: seriesRef.current,
+              footprints: footprintDataRef.current,
+              active: true,
+            });
+          }
         } catch {}
         // Fib/diag handles must track chart on every pan frame
         syncMoveHandlesNow();
@@ -10453,7 +10470,26 @@ priced.sort((a, b) => a.price - b.price);
       } catch {}
     }
   }, [currentLines, currentAlarms, movingId, movingType, highlightAlarmId, highlightPrice, highlightDiag, highlightRay, hideLines, hideAlarms]);
-  useEffect(() => { renderAllLinesAndAlarmsRef.current = renderAllLinesAndAlarms; }, [renderAllLinesAndAlarms]);
+  useEffect(() => {
+    // Debounced wrapper: placing fib used to call renderAll many times in one tick → chart freeze
+    let t: any = null;
+    let latest: (() => void) | null = renderAllLinesAndAlarms;
+    const run = () => {
+      t = null;
+      try { latest?.(); } catch {}
+    };
+    renderAllLinesAndAlarmsRef.current = () => {
+      latest = renderAllLinesAndAlarms;
+      if (t != null) return;
+      // 16ms coalesce — avoids double render (setLines effect + explicit call) freeze on fib place
+      t = setTimeout(run, 16);
+    };
+    // also keep immediate access for critical paths via property
+    (renderAllLinesAndAlarmsRef as any).immediate = renderAllLinesAndAlarms;
+    return () => {
+      if (t != null) clearTimeout(t);
+    };
+  }, [renderAllLinesAndAlarms]);
 
 
   const removeSMA = useCallback(() => {
@@ -18716,7 +18752,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               lineStyle: loadLS("fib_line_style", "solid") || "solid",
               trend: !!loadLS("fib_trend", false),
               trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
-              background: !!loadLS("fib_background", true),
+              background: !!loadLS("fib_background", false),
               bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
               labelH: loadLS("fib_label_h", "right") || "right",
@@ -18805,6 +18841,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           setMode("none");
           modeRef.current = "none";
           setSaving(false);
+          // CRITICAL: unlock pan/zoom after fib (prevents "chart grabbed" freeze)
+          try {
+            chart.applyOptions({
+              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+            });
+          } catch {}
+          try {
+            if (container) container.style.touchAction = "pan-x pan-y";
+          } catch {}
           setTimeout(() => { clickLockRef.current = false; }, 300);
           return;
         }
@@ -18864,7 +18910,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               lineStyle: loadLS("fib_line_style", "solid") || "solid",
               trend: !!loadLS("fib_trend", false),
               trendColor: loadLS("fib_trend_color", "#f97316") || "#f97316",
-              background: !!loadLS("fib_background", true),
+              background: !!loadLS("fib_background", false),
               bgColor: loadLS("fib_bg_color", "#2962FF") || "#2962FF",
               bgOpacity: loadLS("fib_bg_opacity", 20) ?? 20,
               labelH: loadLS("fib_label_h", "right") || "right",
