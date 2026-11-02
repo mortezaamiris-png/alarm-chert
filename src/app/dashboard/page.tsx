@@ -9553,19 +9553,27 @@ priced.sort((a, b) => a.price - b.price);
                   const pp = Number(el.getAttribute("data-p"));
                   const x = chart2.timeScale().timeToCoordinate(tt as any);
                   const y = ser2.priceToCoordinate(pp);
-                  if (x == null || y == null) return;
+                  if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
+                    el.style.display = "block";
+                    return;
+                  }
+                  el.style.display = "block";
                   el.style.left = `${Number(x)}px`;
-                  el.style.top = `${Number(y) + 6}px`;
+                  el.style.top = `${Number(y) + 8}px`;
                   el.style.transform = "translateX(-50%)";
                 });
-                // 6 channel edit handles
+                // 6 channel edit handles — keep visible even if one coord briefly fails
                 host.querySelectorAll("[data-ch-handle]").forEach((h) => {
                   const el = h as HTMLElement;
                   const tt = Number(el.getAttribute("data-t"));
                   const pp = Number(el.getAttribute("data-p"));
                   const x = chart2.timeScale().timeToCoordinate(tt as any);
                   const y = ser2.priceToCoordinate(pp);
-                  if (x == null || y == null) { el.style.display = "none"; return; }
+                  if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
+                    // keep last known pixel position; never hide mid squares
+                    el.style.display = "block";
+                    return;
+                  }
                   el.style.display = "block";
                   el.style.left = `${Number(x)}px`;
                   el.style.top = `${Number(y)}px`;
@@ -14200,7 +14208,7 @@ priced.sort((a, b) => a.price - b.price);
         const chart = chartRef.current;
         const ser = seriesRef.current;
         if (!chart || !ser) return null;
-        const HIT = 5; // only the actual line stroke (TV-tight)
+        const HIT = 7; // tight on the line stroke
         const symU = (symbolRef.current || "").toUpperCase();
         let best: any = null;
         const consider = (id: string, kind: "line" | "alarm", type: any, score: number, obj: any) => {
@@ -14652,6 +14660,14 @@ priced.sort((a, b) => a.price - b.price);
             previewDiagSeriesRef.current = null;
           }
         } catch {}
+
+        // Pure click (no real drag): keep selection + tools, do NOT save/exit
+        const movedPx = Number((bd as any)._movedPx || 0);
+        if (movedPx < 4) {
+          setStatusMsg("Selected — drag to move");
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          return;
+        }
 
         try {
           if (bd.type === "curve") {
@@ -15529,7 +15545,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         if (m === "none" && param.point) {
           const px = param.point.x;
           const py = param.point.y;
-          const HIT = 14; // click on/near the line body
+          const HIT = 8; // tight: on the line stroke, not a wide invisible margin
           const symU = symbolRef.current.toUpperCase();
           const list = (linesRef.current || []).filter(
             (l) => String(l.symbol || "").toUpperCase() === symU
