@@ -3875,6 +3875,7 @@ export default function DashboardPage() {
   const posDraggingRef = useRef(false);
   const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
+  const [moveStyleOpen, setMoveStyleOpen] = useState(false);
   const [showBottomLists, setShowBottomLists] = useState(() => loadLS("show_bottom_lists", true));
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -18677,7 +18678,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen && !lineToolsOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -18691,6 +18692,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       }
       if (drawToolsOpen && !el.closest?.("[data-menu]")) {
         setDrawToolsOpen(false);
+      }
+      if (lineToolsOpen && !el.closest?.("[data-menu]")) {
+        setLineToolsOpen(false);
+      }
+      if (alarmMenuOpen && !el.closest?.("[data-menu]") && !el.closest?.("[data-alarm-menu]")) {
         setAlarmMenuOpen(false);
       }
       if (fibToolsOpen && !el.closest?.("[data-menu]")) {
@@ -18755,7 +18761,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     fibToolsOpen,
     alarmMenuOpen,
     posToolsOpen,
+    lineToolsOpen,
   ]);
+
+
+  // Right-click anywhere → close tool menus (alarm / lines / fib / draw)
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (el?.closest?.("[data-menu]") || el?.closest?.("[data-alarm-menu]") || el?.closest?.("[data-move-bar]")) return;
+      try { setAlarmMenuOpen(false); } catch {}
+      try { setLineToolsOpen(false); } catch {}
+      try { setDrawToolsOpen(false); } catch {}
+      try { setFibToolsOpen(false); } catch {}
+      try { setPosToolsOpen(false); } catch {}
+    };
+    document.addEventListener("contextmenu", onCtx, true);
+    return () => document.removeEventListener("contextmenu", onCtx, true);
+  }, []);
 
   // Cancel tool / move: outside click (move only) OR right-click (any tool)
   useEffect(() => {
@@ -20621,7 +20644,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             <div className="h-3" />
 
             {/* Alarm — top of tool list */}
-            <div className="relative">
+            <div className="relative" data-menu data-alarm-menu>
               <button
                 type="button"
                 title="Alarm"
@@ -20647,6 +20670,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               </button>
               {alarmMenuOpen && (
                 <div
+                  data-alarm-menu
+                  data-menu
                   className="absolute left-full top-0 ml-1.5 flex flex-col gap-1 z-30"
                   style={{ animation: "tfPop 0.22s cubic-bezier(0.34,1.3,0.64,1)" }}
                 >
@@ -22308,6 +22333,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   </div>
                 )}
               </div>
+              {mode !== "move" && (
+              <>
               <div className="flex gap-1">
                 {LINE_WIDTHS.map((w) => (
                   <button
@@ -22386,15 +22413,147 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   {diagStart ? "② second point" : "① first point"}
                 </span>
               )}
+              </>
+              )}
               {mode === "move" && (
                 <>
-                  <span className="text-xs text-amber-400">
-                    {moveDiagRef.current ? "Edit handles" : "Click chart"}
-                  </span>
+                  {/* Style pack: width + dash inside one icon */}
+                  <div className="relative" data-menu>
+                    <button
+                      type="button"
+                      title="Line style"
+                      onClick={() => setMoveStyleOpen((v) => !v)}
+                      className="w-8 h-8 rounded-lg border border-gray-600 bg-gray-800 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="4" y1="8" x2="20" y2="8" />
+                        <line x1="4" y1="12" x2="16" y2="12" strokeDasharray="3 2" />
+                        <line x1="4" y1="16" x2="12" y2="16" strokeDasharray="1 2" />
+                      </svg>
+                    </button>
+                    {moveStyleOpen && (
+                      <div className="absolute bottom-full mb-1 left-0 z-50 bg-gray-900 border border-gray-700 rounded-xl p-2 shadow-xl flex flex-col gap-2 min-w-[120px]">
+                        <div className="flex gap-1">
+                          {LINE_WIDTHS.map((w) => (
+                            <button
+                              key={w}
+                              type="button"
+                              onClick={() => {
+                                setDrawWidth(w);
+                                const md = moveDiagRef.current;
+                                if (md) md.width = w;
+                                try { previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 }); } catch {}
+                                if (movingId && movingType === "line") {
+                                  setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, width: w } : l)));
+                                  void updateLineWidth(movingId, w);
+                                } else if (movingId && movingType === "alarm") {
+                                  setAlarms((prev) => prev.map((a) => (a.id === movingId ? { ...a, width: w } : a)));
+                                  void updateAlarmWidth(movingId, w);
+                                }
+                              }}
+                              className={`w-7 h-7 rounded text-xs ${drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"}`}
+                            >{w}</button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDrawDash((d) => {
+                              const next = d === "solid" ? "dashed" : d === "dashed" ? "dotted" : "solid";
+                              const md = moveDiagRef.current;
+                              if (md) md.dash = next;
+                              try {
+                                previewDiagSeriesRef.current?.applyOptions({
+                                  lineStyle: next === "dashed" ? LineStyle.Dashed : next === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                });
+                              } catch {}
+                              if (movingId && movingType === "line") {
+                                setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, dash: next, style: next } : l)));
+                              }
+                              return next as any;
+                            });
+                          }}
+                          className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 text-left"
+                        >
+                          {drawDash === "solid" ? "—— solid" : drawDash === "dotted" ? "· · · dotted" : "- - dashed"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Note */}
                   <button
                     type="button"
+                    title="Note"
+                    onClick={() => {
+                      const id = movingIdRef.current;
+                      if (!id) return;
+                      const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
+                      let note = "";
+                      if (typ === "line") {
+                        const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                        note = ln ? userFacingNote(ln.note) : "";
+                      } else {
+                        const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                        note = al && al.note && !String(al.note).startsWith("__") ? String(al.note) : "";
+                      }
+                      setEditingNoteId(String(id));
+                      setEditingNoteType(typ as any);
+                      setNoteDraft(note);
+                    }}
+                    className="w-8 h-8 rounded-lg border border-gray-600 bg-gray-800 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <line x1="8" y1="13" x2="16" y2="13" />
+                      <line x1="8" y1="17" x2="13" y2="17" />
+                    </svg>
+                  </button>
+                  {/* Trash */}
+                  <button
+                    type="button"
+                    title="Delete"
                     onClick={async () => {
-                      // Persist style (color/width/dash) if user only changed appearance
+                      const id = movingIdRef.current;
+                      const typ = movingTypeRef.current;
+                      moveDiagRef.current = null;
+                      setMovingId(null);
+                      setMovingType(null);
+                      setMode("none");
+                      setMoveStyleOpen(false);
+                      clearPreview();
+                      try {
+                        chartRef.current?.applyOptions({
+                          handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                          handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                        });
+                      } catch {}
+                      if (!id) return;
+                      if (typ === "alarm") {
+                        try { await deleteAlarm(id); } catch {
+                          setAlarms((prev) => prev.filter((a) => String(a.id) !== String(id)));
+                          try { await supabase.from("alarms").delete().eq("id", id); } catch {}
+                        }
+                      } else {
+                        try { await deleteLine(id); } catch {
+                          setLines((prev) => prev.filter((l) => String(l.id) !== String(id)));
+                          try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                        }
+                      }
+                      setStatusMsg("Deleted");
+                    }}
+                    className="w-8 h-8 rounded-lg border border-red-900/50 bg-gray-900 text-red-400 hover:bg-red-950/40 flex items-center justify-center"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                  {/* Confirm / exit move */}
+                  <button
+                    type="button"
+                    title="Done"
+                    onClick={async () => {
                       const md = moveDiagRef.current;
                       const id = movingIdRef.current;
                       const typ = movingTypeRef.current;
@@ -22411,18 +22570,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           };
                           if (typ === "line") {
                             await supabase.from("chart_lines").update(stylePatch).eq("id", id);
-                            setLines((prev) =>
-                              prev.map((l) =>
-                                l.id === id
-                                  ? { ...l, ...stylePatch, style: md.dash }
-                                  : l
-                              )
-                            );
+                            setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...stylePatch, style: md.dash } : l)));
                           } else if (typ === "alarm") {
                             await supabase.from("alarms").update(stylePatch).eq("id", id);
-                            setAlarms((prev) =>
-                              prev.map((a) => (a.id === id ? { ...a, ...stylePatch } : a))
-                            );
+                            setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, ...stylePatch } : a)));
                           }
                         } catch {}
                       }
@@ -22430,6 +22581,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setMovingId(null);
                       setMovingType(null);
                       setMode("none");
+                      setMoveStyleOpen(false);
                       clearPreview();
                       try {
                         chartRef.current?.applyOptions({
@@ -22442,9 +22594,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                       setStatusMsg("✓ Confirmed");
                     }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+                    className="w-8 h-8 rounded-lg bg-green-500 text-black hover:bg-green-400 flex items-center justify-center"
                   >
-                    ✓ Done
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
                   </button>
                 </>
               )}
