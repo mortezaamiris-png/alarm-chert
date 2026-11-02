@@ -6283,6 +6283,134 @@ export default function DashboardPage() {
       );
     } catch {}
   }, [selectedFibId, fibSettingsOpen, positionHandles]);
+  // Continuous drag of diagonal A/B/C handles (grab & move onto other candles)
+  useEffect(() => {
+    const elA = handleAElRef.current;
+    const elB = handleBElRef.current;
+    const elC = handleCElRef.current;
+    if (!elA || !elB) return;
+
+    const startDrag = (which: "a" | "b" | "c", e: PointerEvent) => {
+      const md = moveDiagRef.current;
+      if (!md || modeRef.current !== "move") return;
+      // only for real diagonal / fib (has two distinct endpoints)
+      if ((md as any).isCurve || (md as any).isPath || (md as any).isChannel || (md as any).isDpr) return;
+      e.preventDefault();
+      e.stopPropagation();
+      md.phase = which === "a" ? "drag-a" : which === "b" ? "drag-b" : "drag-c";
+      const target = e.currentTarget as HTMLElement;
+      try { target.setPointerCapture(e.pointerId); } catch {}
+      const onMove = (ev: PointerEvent) => {
+        const chart = chartRef.current;
+        const ser = seriesRef.current;
+        const cont = chartContainerRef.current;
+        const md2 = moveDiagRef.current;
+        if (!chart || !ser || !cont || !md2) return;
+        const rect = cont.getBoundingClientRect();
+        const px = ev.clientX - rect.left;
+        const py = ev.clientY - rect.top;
+        let price = ser.coordinateToPrice(py);
+        if (price == null || Number.isNaN(Number(price))) return;
+        // snap time to nearest candle
+        let time: number | null = null;
+        try {
+          const logical = chart.timeScale().coordinateToLogical(px);
+          const candles = candlesRef.current || [];
+          if (logical != null && candles.length) {
+            const idx = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
+            time = Number(candles[idx].time);
+          }
+        } catch {}
+        if (time == null) {
+          try {
+            const t = chart.timeScale().coordinateToTime(px);
+            if (t != null) time = Number(t);
+          } catch {}
+        }
+        if (time == null || Number.isNaN(time)) return;
+        if (md2.phase === "drag-a") md2.pointA = { time, price: Number(price) };
+        else if (md2.phase === "drag-b") md2.pointB = { time, price: Number(price) };
+        else if (md2.phase === "drag-c" && md2.pointC) md2.pointC = { time, price: Number(price) };
+        // live update original line if possible
+        try {
+          const id = md2.id;
+          setLines((prev) =>
+            prev.map((l) => {
+              if (String(l.id) !== String(id)) return l;
+              return {
+                ...l,
+                price: md2.pointA.price,
+                start_time: md2.pointA.time,
+                end_time: md2.pointB.time,
+                end_price: md2.pointB.price,
+              };
+            })
+          );
+        } catch {}
+        try {
+          positionHandles(md2.pointA, md2.pointB, which, md2.pointC || null);
+        } catch {}
+        // keep dashed preview in sync if present
+        try {
+          if (previewDiagSeriesRef.current) {
+            const pts = [
+              { time: md2.pointA.time as any, value: md2.pointA.price },
+              { time: md2.pointB.time as any, value: md2.pointB.price },
+            ].sort((x, y) => Number(x.time) - Number(y.time));
+            previewDiagSeriesRef.current.setData(pts);
+          }
+        } catch {}
+      };
+      const onUp = async () => {
+        try { target.releasePointerCapture(e.pointerId); } catch {}
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        const md2 = moveDiagRef.current;
+        if (!md2) return;
+        md2.phase = "pick";
+        const id = md2.id;
+        const typ = movingTypeRef.current;
+        try {
+          const patch: any = {
+            price: md2.pointA.price,
+            start_time: md2.pointA.time,
+            end_time: md2.pointB.time,
+            end_price: md2.pointB.price,
+          };
+          if (typ === "alarm") {
+            await supabase.from("alarms").update(patch).eq("id", id);
+            setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, ...patch } : a)));
+          } else {
+            // preserve __diag note if used
+            const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+            if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
+              patch.note = `__diag:${md2.pointA.time}:${md2.pointB.time}:${md2.pointB.price}`;
+            }
+            await supabase.from("chart_lines").update(patch).eq("id", id);
+            setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, ...patch } : l)));
+          }
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        } catch {}
+        try { positionHandles(md2.pointA, md2.pointB, null, md2.pointC || null); } catch {}
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    };
+
+    const ha = (e: PointerEvent) => startDrag("a", e);
+    const hb = (e: PointerEvent) => startDrag("b", e);
+    const hc = (e: PointerEvent) => startDrag("c", e);
+    elA.addEventListener("pointerdown", ha);
+    elB.addEventListener("pointerdown", hb);
+    elC?.addEventListener("pointerdown", hc);
+    return () => {
+      elA.removeEventListener("pointerdown", ha);
+      elB.removeEventListener("pointerdown", hb);
+      elC?.removeEventListener("pointerdown", hc);
+    };
+  }, [positionHandles, movingId, mode]);
+
+
 
 
   const clearPreview = useCallback(() => {
@@ -15626,7 +15754,21 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   width: l.width || 2,
                   dash: (l.dash || l.style || "solid") as string,
                 };
-                setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
+                // No extra dashed preview series — original line shows dashed via isMoving
+                try {
+                  if (previewDiagSeriesRef.current && chartRef.current) {
+                    chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                    previewDiagSeriesRef.current = null;
+                  }
+                } catch {}
+                try {
+                  positionHandles(
+                    { time: Number(l.start_time), price: Number(l.price) },
+                    { time: Number(l.end_time), price: Number(l.end_price) },
+                    null
+                  );
+                } catch {}
+                setStatusMsg("Drag the circles to move endpoints");
               } else if (best.isV) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move vertical line");
@@ -15638,7 +15780,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 setStatusMsg("Click chart to move ray");
               } else {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move line");
+                try {
+                  if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                  if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                  if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                  if (previewDiagSeriesRef.current && chartRef.current) {
+                    chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                    previewDiagSeriesRef.current = null;
+                  }
+                } catch {}
+                setStatusMsg("Line selected — drag to move");
               }
             } else {
               // alarm
@@ -15653,13 +15804,35 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   width: a.width || 2,
                   dash: (a.dash || "solid") as string,
                 };
-                setStatusMsg("Tap a circle to move alarm — empty chart or ✓ Done");
+                try {
+                  if (previewDiagSeriesRef.current && chartRef.current) {
+                    chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                    previewDiagSeriesRef.current = null;
+                  }
+                } catch {}
+                try {
+                  positionHandles(
+                    { time: Number(a.start_time), price: Number(a.price) },
+                    { time: Number(a.end_time), price: Number(a.end_price) },
+                    null
+                  );
+                } catch {}
+                setStatusMsg("Drag the circles to move endpoints");
               } else if (best.isRay) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move alarm ray");
               } else {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move alarm");
+                try {
+                  if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                  if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                  if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                  if (previewDiagSeriesRef.current && chartRef.current) {
+                    chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                    previewDiagSeriesRef.current = null;
+                  }
+                } catch {}
+                setStatusMsg("Alarm selected — drag to move");
               }
             }
             return;
@@ -18858,6 +19031,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         el.closest?.("[data-path-handle]") ||
         el.closest?.("[data-ch-handle]") ||
         el.closest?.("[data-dpr-handle]") ||
+        el.closest?.("[data-line-handle]") ||
         el.closest?.("[data-pos-id]")
       ) {
         return;
@@ -21711,18 +21885,21 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               {/* Hollow circle handles — same coordinate space as chart */}
               <div
                 ref={handleAElRef}
-                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+                data-line-handle="a"
+                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
               />
               <div
                 ref={handleBElRef}
-                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+                data-line-handle="b"
+                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
               />
               <div
                 ref={handleCElRef}
-                className="absolute w-4 h-4 rounded-full border-2 border-white pointer-events-none"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 40 }}
+                data-line-handle="c"
+                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
               />
 
               {statusMsg === "Loading..." && (
@@ -26434,21 +26611,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
                               }
-                              previewDiagSeriesRef.current = chart.addLineSeries({
-                                color: md.color,
-                                lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
-                                lineStyle: LineStyle.Dashed,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
-                              });
-                              const pts = [
-                                { time: md.pointA.time as any, value: md.pointA.price },
-                                { time: md.pointB.time as any, value: md.pointB.price },
-                              ].sort((x, y) => Number(x.time) - Number(y.time));
-                              previewDiagSeriesRef.current.setData(pts);
-                              try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
+                              // no extra dashed series — keep original line (isMoving styles it)
+                              try {
+                                if (previewDiagSeriesRef.current) {
+                                  chart.removeSeries(previewDiagSeriesRef.current);
+                                  previewDiagSeriesRef.current = null;
+                                }
+                              } catch {}
                               positionHandles(md.pointA, md.pointB, null);
                             }
                           } catch {}
@@ -27479,21 +27648,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
                                 previewDiagSeriesRef.current = null;
                               }
-                              previewDiagSeriesRef.current = chart.addLineSeries({
-                                color: md.color,
-                                lineWidth: Math.max(2, md.width) as 1 | 2 | 3 | 4,
-                                lineStyle: LineStyle.Dashed,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                crosshairMarkerVisible: false,
-                                autoscaleInfoProvider: () => null as any,
-                              });
-                              const pts = [
-                                { time: md.pointA.time as any, value: md.pointA.price },
-                                { time: md.pointB.time as any, value: md.pointB.price },
-                              ].sort((x, y) => Number(x.time) - Number(y.time));
-                              previewDiagSeriesRef.current.setData(pts);
-                              try { previewDiagSeriesRef.current.setMarkers([]); } catch {}
+                              // no extra dashed series — keep original line (isMoving styles it)
+                              try {
+                                if (previewDiagSeriesRef.current) {
+                                  chart.removeSeries(previewDiagSeriesRef.current);
+                                  previewDiagSeriesRef.current = null;
+                                }
+                              } catch {}
                               positionHandles(md.pointA, md.pointB, null);
                             }
                           } catch {}
