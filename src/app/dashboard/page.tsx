@@ -22567,6 +22567,59 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </div>
           )}
 
+          {mode === "path" && (
+            <div data-move-bar className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto px-3 py-2" style={{ left: 12, bottom: 112 }}>
+              <button
+                type="button"
+                onClick={async () => {
+                  const pts = [...pathPointsRef.current];
+                  if (pts.length < 2) {
+                    setStatusMsg("Need at least 2 points");
+                    return;
+                  }
+                  clickLockRef.current = true;
+                  setSaving(true);
+                  const first = pts[0];
+                  const last = pts[pts.length - 1];
+                  const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+                  const base: any = {
+                    symbol: symbolRef.current.toUpperCase(),
+                    price: first.price,
+                    color: drawColorRef.current,
+                    width: drawWidthRef.current,
+                    dash: drawDashRef.current,
+                    start_time: first.time,
+                    end_time: last.time,
+                    end_price: last.price,
+                    note,
+                  };
+                  try {
+                    (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                    let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+                    if (error) {
+                      const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                      (fb as any).user_id = base.user_id;
+                      ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                    }
+                    if (!error && data) {
+                      pushUndo();
+                      setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+                      setStatusMsg("Path saved");
+                    } else setStatusMsg("Path save failed");
+                  } catch { setStatusMsg("Path save failed"); }
+                  pathPointsRef.current = [];
+                  clearPreview();
+                  setMode("none");
+                  setSaving(false);
+                  setTimeout(() => { clickLockRef.current = false; }, 200);
+                }}
+                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
+              >
+                ✓ Finish path
+              </button>
+            </div>
+          )}
+
           {(mode === "draw" ||
             mode === "ray" ||
             mode === "diag" ||
@@ -22626,57 +22679,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   </svg>
                 </div>
               )}
-              {mode === "path" && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const pts = [...pathPointsRef.current];
-                    if (pts.length < 2) {
-                      setStatusMsg("Need at least 2 points");
-                      return;
-                    }
-                    clickLockRef.current = true;
-                    setSaving(true);
-                    const first = pts[0];
-                    const last = pts[pts.length - 1];
-                    const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
-                    const base: any = {
-                      symbol: symbolRef.current.toUpperCase(),
-                      price: first.price,
-                      color: drawColorRef.current,
-                      width: drawWidthRef.current,
-                      dash: drawDashRef.current,
-                      start_time: first.time,
-                      end_time: last.time,
-                      end_price: last.price,
-                      note,
-                    };
-                    try {
-                      (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-                      let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
-                      if (error) {
-                        const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
-                        (fb as any).user_id = base.user_id;
-                        ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-                      }
-                      if (!error && data) {
-                        pushUndo();
-                        setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-                        setStatusMsg("Path saved");
-                      } else setStatusMsg("Path save failed");
-                    } catch { setStatusMsg("Path save failed"); }
-                    pathPointsRef.current = [];
-                    clearPreview();
-                    setMode("none");
-                    setSaving(false);
-                    setTimeout(() => { clickLockRef.current = false; }, 200);
-                  }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
-                >
-                  ✓ Finish path
-                </button>
-              )}
-
               <div className="relative" data-menu>
                 <button
                   type="button"
