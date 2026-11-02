@@ -3576,6 +3576,21 @@ function buildMainPriceSeries(
           close: c.close,
         })) as any
     );
+  } else if (ctype === "volcandles") {
+    // Wicks only from LWC; bodies drawn on volume-candle canvas (width ∝ volume)
+    series = chart.addCandlestickSeries({
+      upColor: "rgba(0,0,0,0)",
+      downColor: "rgba(0,0,0,0)",
+      borderVisible: false,
+      borderUpColor: "rgba(0,0,0,0)",
+      borderDownColor: "rgba(0,0,0,0)",
+      wickUpColor: "#089981",
+      wickDownColor: "#f23645",
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    } as any);
+    series.setData(withFuture as any);
   } else {
     // candles | hollow | heikin
     const hollow = ctype === "hollow";
@@ -3595,12 +3610,90 @@ function buildMainPriceSeries(
   return series;
 }
 
+
+/** Paint volume-candle bodies (width ∝ volume) onto a canvas over the chart */
+function paintVolumeCandleBodies(opts: {
+  canvas: HTMLCanvasElement | null;
+  chart: any;
+  series: any;
+  candles: any[];
+  active: boolean;
+}) {
+  const { canvas, chart, series, candles, active } = opts;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.clientWidth || 0;
+  const h = canvas.clientHeight || 0;
+  if (w < 2 || h < 2) return;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  ctx.clearRect(0, 0, w, h);
+  if (!active || !chart || !series || !candles?.length) return;
+
+  let barSpacing = 6;
+  try {
+    const bs = (chart.timeScale() as any)?.options?.()?.barSpacing;
+    if (typeof bs === "number" && bs > 0) barSpacing = bs;
+  } catch {}
+  try {
+    const bs2 = (chart.timeScale() as any)?.getBarSpacing?.();
+    if (typeof bs2 === "number" && bs2 > 0) barSpacing = bs2;
+  } catch {}
+
+  let maxVol = 0;
+  type Pt = { x: number; o: number; c: number; open: number; close: number; vol: number };
+  const pts: Pt[] = [];
+  for (const c of candles) {
+    if (c == null || c.open == null || c.close == null) continue;
+    let x: number | null = null;
+    try { x = chart.timeScale().timeToCoordinate(c.time as any); } catch { x = null; }
+    if (x == null || Number.isNaN(Number(x))) continue;
+    if (Number(x) < -50 || Number(x) > w + 50) continue;
+    const vol = Math.max(0, Number(c.volume) || 0);
+    if (vol > maxVol) maxVol = vol;
+    const yo = series.priceToCoordinate(Number(c.open));
+    const yc = series.priceToCoordinate(Number(c.close));
+    if (yo == null || yc == null) continue;
+    pts.push({
+      x: Number(x),
+      o: Number(yo),
+      c: Number(yc),
+      open: Number(c.open),
+      close: Number(c.close),
+      vol,
+    });
+  }
+  if (!pts.length) return;
+  if (maxVol <= 0) maxVol = 1;
+
+  for (const p of pts) {
+    const bullish = p.close >= p.open;
+    const bodyTop = Math.min(p.o, p.c);
+    const bodyBot = Math.max(p.o, p.c);
+    const bodyH = Math.max(1, bodyBot - bodyTop);
+    const ratio = Math.min(1, Math.sqrt(p.vol / maxVol));
+    const bw = Math.max(1.5, Math.min(barSpacing * 0.92, barSpacing * (0.16 + 0.76 * ratio)));
+    const bx = p.x - bw / 2;
+    const fill = bullish ? "rgba(8,153,129,0.92)" : "rgba(242,54,69,0.92)";
+    const border = bullish ? "#089981" : "#f23645";
+    ctx.fillStyle = fill;
+    ctx.fillRect(bx, bodyTop, bw, bodyH);
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    if (bw >= 2) ctx.strokeRect(bx + 0.5, bodyTop + 0.5, Math.max(0, bw - 1), Math.max(0, bodyH - 1));
+  }
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null>(null);
   /** Tracks which chartType the current main series was created for */
   const seriesChartTypeRef = useRef<string>("candles");
+  const volCandleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const futureSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
@@ -3754,7 +3847,7 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Chart series style */
   const [chartType, setChartType] = useState<
-    | "candles" | "hollow" | "bars" | "line" | "step" | "area" | "baseline"
+    | "candles" | "hollow" | "volcandles" | "bars" | "line" | "step" | "area" | "baseline"
     | "columns" | "highlow" | "hlcarea" | "heikin" | "renko" | "linebreak" | "kagi"
   >(() => loadLS("chart_type", "candles"));
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
@@ -9457,6 +9550,16 @@ priced.sort((a, b) => a.price - b.price);
             paintRays();
           } catch {}
         }
+        // Volume candles body overlay
+        try {
+          paintVolumeCandleBodies({
+            canvas: volCandleCanvasRef.current,
+            chart: chartRef.current,
+            series: seriesRef.current,
+            candles: candlesRef.current || [],
+            active: String(chartTypeRef.current) === "volcandles",
+          });
+        } catch {}
         // Fib/diag handles must track chart on every pan frame
         syncMoveHandlesNow();
         // Reposition DOM rectangles while panning
@@ -11666,8 +11769,20 @@ priced.sort((a, b) => a.price - b.price);
                     })) as any
                 );
               } else {
-                // candles / hollow / heikin — apply hollow options if needed
-                if (ctypeNow === "hollow" || ctypeNow === "candles" || ctypeNow === "heikin") {
+                // candles / hollow / heikin / volcandles
+                if (ctypeNow === "volcandles") {
+                  try {
+                    series.applyOptions({
+                      upColor: "rgba(0,0,0,0)",
+                      downColor: "rgba(0,0,0,0)",
+                      borderVisible: false,
+                      borderUpColor: "rgba(0,0,0,0)",
+                      borderDownColor: "rgba(0,0,0,0)",
+                      wickUpColor: "#089981",
+                      wickDownColor: "#f23645",
+                    } as any);
+                  } catch {}
+                } else if (ctypeNow === "hollow" || ctypeNow === "candles" || ctypeNow === "heikin") {
                   const hollow = ctypeNow === "hollow";
                   try {
                     series.applyOptions({
@@ -11677,7 +11792,8 @@ priced.sort((a, b) => a.price - b.price);
                       borderDownColor: "#f23645",
                       wickUpColor: "#089981",
                       wickDownColor: "#f23645",
-                    });
+                      borderVisible: true,
+                    } as any);
                   } catch {}
                 }
                 series.setData(withF as any);
@@ -11687,6 +11803,17 @@ priced.sort((a, b) => a.price - b.price);
             }
           }
           try { syncFutureAxis(candles, fetchIv); } catch {}
+          try {
+            requestAnimationFrame(() => {
+              paintVolumeCandleBodies({
+                canvas: volCandleCanvasRef.current,
+                chart: chartRef.current,
+                series: seriesRef.current,
+                candles: candlesRef.current || candles,
+                active: String(chartTypeRef.current) === "volcandles",
+              });
+            });
+          } catch {}
 
           chart.applyOptions({
             localization: makeLocalization(tz),
@@ -12067,151 +12194,15 @@ priced.sort((a, b) => a.price - b.price);
         });
       } catch {}
       const ctype = chartTypeRef.current || chartType;
-      const dataSrc = transformCandlesForType(ctype, candles);
-      const withFuture = appendFutureWhitespace(dataSrc, String(intervalRef.current));
-      const closePts = () =>
-        withFuture
-          .filter((c: any) => c.open != null || c.close != null || c.value != null)
-          .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any;
-      let series: any;
-      if (ctype === "line" || ctype === "step") {
-        series = chart.addLineSeries({
-          color: "#3b82f6",
-          lineWidth: 2,
-          lineType: ctype === "step" ? 1 : 0, // 1 = stepline
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        } as any);
-        series.setData(closePts());
-      } else if (ctype === "area") {
-        series = chart.addAreaSeries({
-          lineColor: "#3b82f6",
-          topColor: "rgba(59,130,246,0.35)",
-          bottomColor: "rgba(59,130,246,0.02)",
-          lineWidth: 2,
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        });
-        series.setData(closePts());
-      } else if (ctype === "baseline") {
-        const closes = candles.map((c: any) => c.close).filter((v: any) => v != null);
-        const base = closes.length ? closes.reduce((a: number, b: number) => a + b, 0) / closes.length : 0;
-        series = chart.addBaselineSeries({
-          baseValue: { type: "price", price: base },
-          topLineColor: "#089981",
-          topFillColor1: "rgba(8,153,129,0.35)",
-          topFillColor2: "rgba(8,153,129,0.02)",
-          bottomLineColor: "#f23645",
-          bottomFillColor1: "rgba(242,54,69,0.02)",
-          bottomFillColor2: "rgba(242,54,69,0.35)",
-          lineWidth: 2,
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        } as any);
-        series.setData(closePts());
-      } else if (ctype === "columns") {
-        series = chart.addHistogramSeries({
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        } as any);
-        series.setData(
-          withFuture
-            .filter((c: any) => c.close != null)
-            .map((c: any) => ({
-              time: c.time,
-              value: c.close,
-              color: c.close >= (c.open ?? c.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
-            })) as any
-        );
-      } else if (ctype === "bars" || ctype === "highlow") {
-        // OHLC bars (high-low is same bar series with thinner look via thinBars)
-        series = chart.addBarSeries({
-          upColor: "#089981",
-          downColor: "#f23645",
-          thinBars: ctype === "highlow",
-          openVisible: ctype === "bars",
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        } as any);
-        series.setData(
-          withFuture
-            .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
-            .map((c: any) => ({
-              time: c.time,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-            })) as any
-        );
-      } else if (ctype === "hlcarea") {
-        series = chart.addAreaSeries({
-          lineColor: "#60a5fa",
-          topColor: "rgba(96,165,250,0.35)",
-          bottomColor: "rgba(96,165,250,0.02)",
-          lineWidth: 2,
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        });
-        series.setData(
-          withFuture
-            .filter((c: any) => c.close != null || c.value != null)
-            .map((c: any) => {
-              if (c.value != null && c.open == null) return { time: c.time, value: c.value };
-              const h = Number(c.high ?? c.close);
-              const l = Number(c.low ?? c.close);
-              const cl = Number(c.close ?? c.value);
-              return { time: c.time, value: (h + l + cl) / 3 };
-            }) as any
-        );
-      } else if (ctype === "renko" || ctype === "linebreak" || ctype === "kagi") {
-        series = chart.addCandlestickSeries({
-          upColor: "#089981",
-          downColor: "#f23645",
-          borderUpColor: "#089981",
-          borderDownColor: "#f23645",
-          wickUpColor: "#089981",
-          wickDownColor: "#f23645",
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        });
-        series.setData(
-          withFuture
-            .filter((c: any) => c.open != null && c.close != null)
-            .map((c: any) => ({
-              time: c.time,
-              open: c.open,
-              high: c.high ?? Math.max(c.open, c.close),
-              low: c.low ?? Math.min(c.open, c.close),
-              close: c.close,
-            })) as any
-        );
-      } else {
-        // candles | hollow | heikin
-        const hollow = ctype === "hollow";
-        series = chart.addCandlestickSeries({
-          upColor: hollow ? "transparent" : "#089981",
-          downColor: hollow ? "transparent" : "#f23645",
-          borderUpColor: "#089981",
-          borderDownColor: "#f23645",
-          wickUpColor: "#089981",
-          wickDownColor: "#f23645",
-          priceFormat: { type: "price", precision, minMove },
-          lastValueVisible: false,
-          priceLineVisible: false,
-        });
-        series.setData(withFuture as any);
-      }
-              try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
-      try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
-      lastLoadedSymbolRef.current = fetchSym;
+      const series: any = buildMainPriceSeries(
+        chart,
+        String(ctype),
+        candles,
+        precision,
+        minMove,
+        String(intervalRef.current || fetchIv)
+      );
+
       seriesRef.current = series;
       seriesChartTypeRef.current = String(chartTypeRef.current || chartType || "candles");
       pinnedToRightRef.current = true;
@@ -20980,7 +20971,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 <rect x="14" y="8" width="7" height="13" rx="1" />
               </svg>
               <span className="font-medium capitalize">{({
-                candles: "Candles", hollow: "Hollow", bars: "Bars", line: "Line", step: "Step",
+                candles: "Candles", hollow: "Hollow", volcandles: "Vol candles", bars: "Bars", line: "Line", step: "Step",
                 area: "Area", baseline: "Baseline", hlcarea: "HLC area", columns: "Columns",
                 highlow: "High-low", heikin: "Heikin", renko: "Renko", linebreak: "Line break", kagi: "Kagi",
               } as Record<string, string>)[chartType] || chartType}</span>
@@ -20998,6 +20989,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 {([
                   ["candles", "Candles"],
                   ["hollow", "Hollow candles"],
+                  ["volcandles", "Volume candles"],
                   ["bars", "Bars"],
                   ["line", "Line"],
                   ["step", "Step line"],
@@ -22344,6 +22336,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           ? "crosshair"
                           : "default",
                 }}
+              />
+              <canvas
+                ref={volCandleCanvasRef}
+                className="absolute inset-0 pointer-events-none rounded-xl"
+                style={{ zIndex: 12, width: "100%", height: "100%" }}
               />
               <div
                 ref={vlineOverlayRef}
