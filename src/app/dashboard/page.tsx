@@ -6957,7 +6957,8 @@ export default function DashboardPage() {
           if (s.startsWith("__")) return "";
           return s;
         })();
-        const title = isMoving ? "MOVING" : noteClean;
+        // Never label special drawings as MOVING on the price axis (causes a phantom H-line look)
+        const title = (isMoving && !softMove) ? "MOVING" : noteClean;
         const isArrowMark =
           typeof l.note === "string" &&
           (l.note === "__arrow_up__" ||
@@ -6973,8 +6974,12 @@ export default function DashboardPage() {
             l.note.startsWith("__path:") ||
             l.note.startsWith("__brush:") ||
             l.note.startsWith("__curve:") ||
+            l.note.startsWith("__channel:") ||
+            l.note.startsWith("__dpr:") ||
             l.note.startsWith("__fib:") ||
             l.note.startsWith("__fibext:") ||
+            l.note.startsWith("__fibtz:") ||
+            l.note.startsWith("__fibtbt:") ||
             l.note.startsWith("__long:") ||
             l.note.startsWith("__short:") ||
             l.note.startsWith("__callout:"));
@@ -8334,7 +8339,7 @@ priced.sort((a, b) => a.price - b.price);
               priceLineVisible: false,
               lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: title || "",
+              title: "", // never show axis tag for curve/path (no phantom H-line)
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
@@ -8907,7 +8912,8 @@ priced.sort((a, b) => a.price - b.price);
               note: title || "",
             } as any);
           }
-        } else {
+        } else if (!specialNote) {
+          // Plain horizontal only — never for curve/channel/fib/etc.
           const pl = series.createPriceLine({
             price: l.price, color, lineWidth: width, lineStyle: style,
             axisLabelVisible: true, title: title || "",
@@ -27345,7 +27351,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             setMode("move");
                             setMovingId(l.id);
                             setMovingType("line");
-                            setStatusMsg("Curve: drag points or ✓ Done");
+                            setStatusMsg("Curve: drag points");
+                            try {
+                              if (previewDiagSeriesRef.current && chartRef.current) {
+                                chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                                previewDiagSeriesRef.current = null;
+                              }
+                              if (previewLineRef.current && seriesRef.current) {
+                                seriesRef.current.removePriceLine(previewLineRef.current);
+                                previewLineRef.current = null;
+                              }
+                            } catch {}
                             try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                           } catch { setStatusMsg("Curve move failed"); }
                           return;
@@ -27449,7 +27465,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 });
                               }
                             } catch {}
-                            setStatusMsg("Channel: drag a handle (4 corners / 2 mids) — ✓ Done");
+                            setStatusMsg("Channel: drag handles");
+                            try {
+                              if (previewDiagSeriesRef.current && chartRef.current) {
+                                chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                                previewDiagSeriesRef.current = null;
+                              }
+                              if (previewLineRef.current && seriesRef.current) {
+                                seriesRef.current.removePriceLine(previewLineRef.current);
+                                previewLineRef.current = null;
+                              }
+                            } catch {}
                           } catch {
                             setStatusMsg("Channel move failed");
                           }
