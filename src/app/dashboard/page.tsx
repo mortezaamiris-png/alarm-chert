@@ -3477,6 +3477,7 @@ export default function DashboardPage() {
   const moveRafRef = useRef<number>(0);
   /** Hollow circle handle DOM nodes (move mode) */
   const handleAElRef = useRef<HTMLDivElement | null>(null);
+  const selMarkerRef = useRef<HTMLDivElement | null>(null);
   const handleBElRef = useRef<HTMLDivElement | null>(null);
   const handleCElRef = useRef<HTMLDivElement | null>(null);
   /** Diagonal move: pick a handle (A/B) then place it */
@@ -6278,6 +6279,70 @@ export default function DashboardPage() {
       );
     } catch {}
   }, [selectedFibId, fibSettingsOpen, positionHandles]);
+  // Selection marker on the active line (H / ray / diag / alarm)
+  useEffect(() => {
+    const el = selMarkerRef.current;
+    if (!el) return;
+    if (mode !== "move" || !movingId) {
+      el.style.display = "none";
+      return;
+    }
+    const chart = chartRef.current;
+    const ser = seriesRef.current;
+    if (!chart || !ser) { el.style.display = "none"; return; }
+
+    const place = (x: number, y: number) => {
+      el.style.display = "block";
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+    };
+
+    try {
+      // Prefer diagonal endpoints mid
+      const md = moveDiagRef.current;
+      if (md && String(md.id) === String(movingId) && !(md as any).isCurve && !(md as any).isPath && !(md as any).isChannel) {
+        const x0 = chart.timeScale().timeToCoordinate(md.pointA.time as any);
+        const y0 = ser.priceToCoordinate(md.pointA.price);
+        const x1 = chart.timeScale().timeToCoordinate(md.pointB.time as any);
+        const y1 = ser.priceToCoordinate(md.pointB.price);
+        if (x0 != null && y0 != null && x1 != null && y1 != null) {
+          place((Number(x0) + Number(x1)) / 2, (Number(y0) + Number(y1)) / 2);
+          return;
+        }
+      }
+      // Horizontal / ray / alarm: marker at 30% of chart width on the price
+      let price: number | null = null;
+      let time: number | null = null;
+      if (movingType === "line") {
+        const l = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+        if (l) {
+          price = Number(l.price);
+          time = l.start_time != null ? Number(l.start_time) : null;
+        }
+      } else if (movingType === "alarm") {
+        const a = (alarmsRef.current || []).find((x) => String(x.id) === String(movingId));
+        if (a) {
+          price = Number(a.price);
+          time = a.start_time != null ? Number(a.start_time) : null;
+        }
+      }
+      if (price == null || Number.isNaN(price)) { el.style.display = "none"; return; }
+      const y = ser.priceToCoordinate(price);
+      if (y == null) { el.style.display = "none"; return; }
+      let x: number | null = null;
+      if (time != null) {
+        try { x = chart.timeScale().timeToCoordinate(time as any); } catch {}
+      }
+      if (x == null) {
+        const cont = chartContainerRef.current;
+        x = cont ? cont.clientWidth * 0.28 : 120;
+      }
+      place(Number(x), Number(y));
+    } catch {
+      el.style.display = "none";
+    }
+  }, [mode, movingId, movingType, currentLines, currentAlarms]);
+
   // Continuous drag of diagonal A/B/C handles (grab & move onto other candles)
   useEffect(() => {
     const elA = handleAElRef.current;
@@ -21123,6 +21188,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       pathPointsRef.current = [];
                       setDiagStart(null);
                       setMovingId(null);
+                      setMovingType(null);
+                      moveDiagRef.current = null;
+                      try {
+                        if (previewLineRef.current && seriesRef.current) {
+                          seriesRef.current.removePriceLine(previewLineRef.current);
+                          previewLineRef.current = null;
+                        }
+                        if (previewDiagSeriesRef.current && chartRef.current) {
+                          chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                          previewDiagSeriesRef.current = null;
+                        }
+                        if (selMarkerRef.current) selMarkerRef.current.style.display = "none";
+                      } catch {}
                       const nextCurve = mode === "curve" ? "none" : "curve";
                       setMode(nextCurve);
                       modeRef.current = nextCurve;
@@ -21942,6 +22020,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
                 style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
               />
+              {/* Selection marker — shows which line is selected */}
+              <div
+                ref={selMarkerRef}
+                data-sel-marker
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  display: "none",
+                  width: 12,
+                  height: 12,
+                  transform: "translate(-50%, -50%)",
+                  background: "#f97316",
+                  border: "2px solid #fff",
+                  boxShadow: "0 0 0 2px rgba(249,115,22,0.45), 0 0 8px rgba(249,115,22,0.5)",
+                  zIndex: 48,
+                }}
+              />
 
               {statusMsg === "Loading..." && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none rounded-xl bg-black/35">
@@ -22381,8 +22475,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           {mode === "move" && movingId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
             if (!ln || typeof ln.note !== "string") return false;
-            // Curve/path use the main edit toolbar below; only channel/dpr keep this bar
-            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:");
+            // Only DPR keeps this special bar; channel uses main edit toolbar
+            return ln.note.startsWith("__dpr:");
           })() && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {(() => {
@@ -22480,9 +22574,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "arrow-up" ||
             mode === "arrow-down" ||
             mode === "arrow-marker" ||
-            mode === "path" ||
-            mode === "brush" ||
-            mode === "curve" ||
             mode === "fib" ||
             mode === "fib-ext" ||
             mode === "alarm" ||
@@ -22490,10 +22581,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm-diag" ||
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-              // channel/dpr keep their own bar; curve/path + all other lines use this main toolbar
-              return !!(ln && typeof ln.note === "string" && (
-                ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:")
-              ));
+              // only DPR keeps its own bar
+              return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__dpr:"));
             })()))) && (
             <div
               data-move-bar
@@ -22714,6 +22803,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
               {mode === "move" && (
                 <>
+                  {/* Channel settings gear */}
+                  {(() => {
+                    const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+                    if (!(ln && typeof ln.note === "string" && ln.note.startsWith("__channel:"))) return null;
+                    return (
+                      <button
+                        type="button"
+                        title="Channel settings"
+                        onClick={() => {
+                          try {
+                            const p = parseChannelNote(ln.note);
+                            if (p) setChannelCfg({ ...p } as any);
+                            setSelectedChannelId(String(movingId));
+                            setChannelSettingsOpen(true);
+                            setChannelSettingsTab("style");
+                          } catch {}
+                        }}
+                        className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                        </svg>
+                      </button>
+                    );
+                  })()}
                   {/* Style: width + dash */}
                   <div className="relative" data-menu>
                     <button
