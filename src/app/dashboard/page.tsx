@@ -15225,7 +15225,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         if (m === "none" && param.point) {
           const px = param.point.x;
           const py = param.point.y;
-          const HIT = 7; // precise click on the line only
+          const HIT = 14; // click on/near the line body
           const symU = symbolRef.current.toUpperCase();
           const list = (linesRef.current || []).filter(
             (l) => String(l.symbol || "").toUpperCase() === symU
@@ -18907,9 +18907,81 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       } catch {}
 
-      // Only exit MOVE selection on empty chart left-click (not active drawing tools)
+      // Only exit MOVE selection on empty chart left-click (not when clicking another/same line)
       if (modeRef.current === "move" && movingIdRef.current) {
-        cancelAll();
+        let nearLine = false;
+        try {
+          const cont = chartContainerRef.current;
+          const chart = chartRef.current;
+          const ser = seriesRef.current;
+          if (cont && chart && ser) {
+            const rect = cont.getBoundingClientRect();
+            const cx = (e as MouseEvent).clientX ?? ((e as TouchEvent).touches?.[0]?.clientX);
+            const cy = (e as MouseEvent).clientY ?? ((e as TouchEvent).touches?.[0]?.clientY);
+            if (cx != null && cy != null) {
+              const px = cx - rect.left;
+              const py = cy - rect.top;
+              if (px >= 0 && py >= 0 && px <= rect.width && py <= rect.height) {
+                const HIT_KEEP = 16;
+                const symU = String(symbolRef.current || "").toUpperCase();
+                const lines = (linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU);
+                for (const l of lines) {
+                  try {
+                    const n0 = typeof l.note === "string" ? l.note : "";
+                    if (n0.startsWith("__rect:") || n0.startsWith("__brush:") || n0.startsWith("__callout:")) continue;
+                    // horizontal
+                    if (!isDiagonalLine(l) && !(n0.startsWith("__ray:") || n0.startsWith("__vline") || movingVLineRef.current && String(l.id) === String(movingIdRef.current))) {
+                      if (l.end_time == null || Number(l.end_time) === Number(l.start_time) || (l.end_price == null && !n0.startsWith("__diag:"))) {
+                        // plain H line or ray
+                        const y = ser.priceToCoordinate(Number(l.price));
+                        if (y != null && Math.abs(py - Number(y)) <= HIT_KEEP) {
+                          // ray: only from origin to the right
+                          if (n0.startsWith("__ray:") || (l.start_time != null && l.end_time == null)) {
+                            const x0 = l.start_time != null ? chart.timeScale().timeToCoordinate(Number(l.start_time) as any) : null;
+                            if (x0 == null || px >= Number(x0) - 8) { nearLine = true; break; }
+                          } else if (!(n0.startsWith("__vline") || (l.start_time != null && l.end_time != null && Number(l.start_time) === Number(l.end_time) && l.end_price != null))) {
+                            nearLine = true; break;
+                          }
+                        }
+                      }
+                    }
+                    // vertical
+                    if (n0.startsWith("__vline") || (l.start_time != null && l.end_time != null && Number(l.start_time) === Number(l.end_time))) {
+                      const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                      if (x0 != null && Math.abs(px - Number(x0)) <= HIT_KEEP) { nearLine = true; break; }
+                    }
+                    // diagonal
+                    if (isDiagonalLine(l) || n0.startsWith("__diag:")) {
+                      const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
+                      const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
+                      const y0 = ser.priceToCoordinate(Number(l.price));
+                      const y1 = ser.priceToCoordinate(Number(l.end_price));
+                      if (x0 != null && x1 != null && y0 != null && y1 != null) {
+                        const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+                        const len2 = dx * dx + dy * dy || 1;
+                        let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
+                        t = Math.max(0, Math.min(1, t));
+                        const d = Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
+                        if (d <= HIT_KEEP) { nearLine = true; break; }
+                      }
+                    }
+                  } catch {}
+                }
+                if (!nearLine) {
+                  for (const a of (alarmsRef.current || [])) {
+                    try {
+                      if (String(a.symbol || "").toUpperCase() !== symU) continue;
+                      if (a.triggered || a.is_active === false) continue;
+                      const y = ser.priceToCoordinate(Number(a.price));
+                      if (y != null && Math.abs(py - Number(y)) <= HIT_KEEP) { nearLine = true; break; }
+                    } catch {}
+                  }
+                }
+              }
+            }
+          }
+        } catch {}
+        if (!nearLine) cancelAll();
       }
     };
 
@@ -22308,7 +22380,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   type="button"
                   title="Color"
                   onClick={() => setOpenMenu((m) => (m === "__style_color__" ? null : "__style_color__"))}
-                  className={mode === "move" ? "w-6 h-6 rounded-full border-2 border-gray-500/80 shadow-sm shrink-0" : "w-8 h-8 rounded-full border-2 border-gray-500 shadow shrink-0"}
+                  className={mode === "move" ? "w-7 h-7 rounded-md border border-gray-500/80 shadow-sm shrink-0" : "w-8 h-8 rounded-md border-2 border-gray-500 shadow shrink-0"}
                   style={{ background: drawColor }}
                 />
                 {openMenu === "__style_color__" && (
@@ -22602,6 +22674,75 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </div>
                     )}
                   </div>
+                  {/* Convert line → alarm */}
+                  {movingType === "line" && (
+                    <button
+                      type="button"
+                      title="Convert to alarm"
+                      onClick={async () => {
+                        const id = movingIdRef.current;
+                        if (!id) return;
+                        const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                        if (!l) return;
+                        try {
+                          pushUndo();
+                          const session = (await supabase.auth.getSession()).data.session;
+                          const uid = session?.user?.id;
+                          const isDiag = isDiagonalLine(l) || (typeof l.note === "string" && l.note.startsWith("__diag:"));
+                          const isRay = typeof l.note === "string" && l.note.startsWith("__ray:");
+                          const row: any = {
+                            symbol: String(l.symbol || symbolRef.current || "").toUpperCase(),
+                            price: Number(l.price),
+                            condition: "cross",
+                            is_active: true,
+                            triggered: false,
+                            color: l.color || DEFAULT_ALARM_COLOR,
+                            width: l.width || 2,
+                            dash: l.dash || l.style || "solid",
+                            note: null,
+                          };
+                          if (uid) row.user_id = uid;
+                          if (isDiag) {
+                            row.start_time = l.start_time;
+                            row.end_time = l.end_time;
+                            row.end_price = l.end_price;
+                            row.note = `__diag:${l.start_time}:${l.end_time}:${l.end_price}`;
+                          } else if (isRay || (l.start_time != null && (l.end_time == null || l.end_price == null))) {
+                            row.start_time = l.start_time;
+                            row.note = `__ray:${l.start_time}`;
+                          }
+                          const { data, error } = await supabase.from("alarms").insert([row]).select().single();
+                          if (!error && data) {
+                            setAlarms((prev) => [{ ...(data as any) }, ...prev]);
+                            // remove original line
+                            try { await deleteLine(id); } catch {
+                              setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                            }
+                            setMovingId(null);
+                            setMovingType(null);
+                            setMode("none");
+                            moveDiagRef.current = null;
+                            setMoveStyleOpen(false);
+                            setMoveNoteOpen(false);
+                            clearPreview();
+                            setStatusMsg("Converted to alarm");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } else {
+                            setStatusMsg("Convert failed");
+                          }
+                        } catch {
+                          setStatusMsg("Convert failed");
+                        }
+                      }}
+                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-amber-300/90 hover:border-amber-500/50 hover:text-amber-200 flex items-center justify-center transition-colors"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
+                    </button>
+                  )}
                   {/* Trash */}
                   <button
                     type="button"
