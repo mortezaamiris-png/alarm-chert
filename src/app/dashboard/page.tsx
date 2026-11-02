@@ -3876,6 +3876,10 @@ export default function DashboardPage() {
   const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [moveStyleOpen, setMoveStyleOpen] = useState(false);
+  const [moveBarPos, setMoveBarPos] = useState<{ x: number; y: number } | null>(null);
+  const [moveNoteOpen, setMoveNoteOpen] = useState(false);
+  const [moveNoteDraft, setMoveNoteDraft] = useState("");
+  const moveBarDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const [showBottomLists, setShowBottomLists] = useState(() => loadLS("show_bottom_lists", true));
   const [posToolsOpen, setPosToolsOpen] = useState(false);
   /** Measure: first → second → third tap clears */
@@ -22206,7 +22210,48 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ln.note.startsWith("__curve:") || ln.note.startsWith("__path:")
               ));
             })()))) && (
-            <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
+            <div
+              data-move-bar
+              className={`absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto ${mode === "move" ? "px-2 py-1.5" : "px-3 py-2"}`}
+              style={
+                mode === "move" && moveBarPos
+                  ? { left: moveBarPos.x, top: moveBarPos.y, bottom: "auto" }
+                  : { left: 12, bottom: 112 }
+              }
+              onPointerDown={(e) => {
+                if (mode !== "move") return;
+                const t = e.target as HTMLElement;
+                if (t.closest("button") || t.closest("input") || t.closest("[data-menu]") || t.closest("[data-note-edit]")) return;
+                e.preventDefault();
+                const ox = moveBarPos?.x ?? 12;
+                const oy = moveBarPos?.y ?? (typeof window !== "undefined" ? window.innerHeight - 200 : 400);
+                moveBarDragRef.current = { sx: e.clientX, sy: e.clientY, ox, oy };
+                const onMove = (ev: PointerEvent) => {
+                  const d = moveBarDragRef.current;
+                  if (!d) return;
+                  setMoveBarPos({
+                    x: Math.max(4, d.ox + (ev.clientX - d.sx)),
+                    y: Math.max(4, d.oy + (ev.clientY - d.sy)),
+                  });
+                };
+                const onUp = () => {
+                  moveBarDragRef.current = null;
+                  document.removeEventListener("pointermove", onMove);
+                  document.removeEventListener("pointerup", onUp);
+                };
+                document.addEventListener("pointermove", onMove);
+                document.addEventListener("pointerup", onUp);
+              }}
+            >
+              {mode === "move" && (
+                <div title="Drag" className="w-4 h-7 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0 -ml-0.5">
+                  <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
+                    <circle cx="2" cy="2" r="1.1"/><circle cx="6" cy="2" r="1.1"/>
+                    <circle cx="2" cy="6" r="1.1"/><circle cx="6" cy="6" r="1.1"/>
+                    <circle cx="2" cy="10" r="1.1"/><circle cx="6" cy="10" r="1.1"/>
+                  </svg>
+                </div>
+              )}
               {mode === "path" && (
                 <button
                   type="button"
@@ -22263,7 +22308,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   type="button"
                   title="Color"
                   onClick={() => setOpenMenu((m) => (m === "__style_color__" ? null : "__style_color__"))}
-                  className="w-8 h-8 rounded-full border-2 border-gray-500 shadow shrink-0"
+                  className={mode === "move" ? "w-6 h-6 rounded-full border-2 border-gray-500/80 shadow-sm shrink-0" : "w-8 h-8 rounded-full border-2 border-gray-500 shadow shrink-0"}
                   style={{ background: drawColor }}
                 />
                 {openMenu === "__style_color__" && (
@@ -22384,22 +22429,23 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
               {mode === "move" && (
                 <>
-                  {/* Style pack: width + dash inside one icon */}
+                  {/* Style: width + dash */}
                   <div className="relative" data-menu>
                     <button
                       type="button"
                       title="Line style"
-                      onClick={() => setMoveStyleOpen((v) => !v)}
-                      className="w-8 h-8 rounded-lg border border-gray-600 bg-gray-800 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); }}
+                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <line x1="4" y1="8" x2="20" y2="8" />
-                        <line x1="4" y1="12" x2="16" y2="12" strokeDasharray="3 2" />
-                        <line x1="4" y1="16" x2="12" y2="16" strokeDasharray="1 2" />
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                        <path d="M4 7h16" />
+                        <path d="M4 12h10" strokeDasharray="4 3" />
+                        <path d="M4 17h7" strokeDasharray="1.5 2.5" />
                       </svg>
                     </button>
                     {moveStyleOpen && (
-                      <div className="absolute bottom-full mb-1 left-0 z-50 bg-gray-900 border border-gray-700 rounded-xl p-2 shadow-xl flex flex-col gap-2 min-w-[120px]">
+                      <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
                         <div className="flex gap-1">
                           {LINE_WIDTHS.map((w) => (
                             <button
@@ -22409,7 +22455,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 setDrawWidth(w);
                                 const md = moveDiagRef.current;
                                 if (md) md.width = w;
-                                try { previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 }); } catch {}
+                                try { previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(1, w) as 1 | 2 | 3 | 4 }); } catch {}
                                 if (movingId && movingType === "line") {
                                   setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, width: w } : l)));
                                   void updateLineWidth(movingId, w);
@@ -22418,64 +22464,144 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                   void updateAlarmWidth(movingId, w);
                                 }
                               }}
-                              className={`w-7 h-7 rounded text-xs ${drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"}`}
+                              className={`w-7 h-7 rounded-md text-xs font-medium ${drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                             >{w}</button>
                           ))}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDrawDash((d) => {
-                              const next = d === "solid" ? "dashed" : d === "dashed" ? "dotted" : "solid";
-                              const md = moveDiagRef.current;
-                              if (md) md.dash = next;
-                              try {
-                                previewDiagSeriesRef.current?.applyOptions({
-                                  lineStyle: next === "dashed" ? LineStyle.Dashed : next === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
-                                });
-                              } catch {}
-                              if (movingId && movingType === "line") {
-                                setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, dash: next, style: next } : l)));
-                              }
-                              return next as any;
-                            });
-                          }}
-                          className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 text-left"
-                        >
-                          {drawDash === "solid" ? "—— solid" : drawDash === "dotted" ? "· · · dotted" : "- - dashed"}
-                        </button>
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                        <div className="flex gap-1">
+                          {(["solid", "dashed", "dotted"] as const).map((st) => (
+                            <button
+                              key={st}
+                              type="button"
+                              title={st}
+                              onClick={() => {
+                                setDrawDash(st);
+                                const md = moveDiagRef.current;
+                                if (md) md.dash = st;
+                                try {
+                                  previewDiagSeriesRef.current?.applyOptions({
+                                    lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                  });
+                                } catch {}
+                                if (movingId && movingType === "line") {
+                                  setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, dash: st, style: st } : l)));
+                                }
+                              }}
+                              className={`flex-1 h-7 rounded-md text-[10px] ${drawDash === st ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                            >
+                              {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
-                  {/* Note */}
-                  <button
-                    type="button"
-                    title="Note"
-                    onClick={() => {
-                      const id = movingIdRef.current;
-                      if (!id) return;
-                      const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
-                      let note = "";
-                      if (typ === "line") {
-                        const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                        note = ln ? userFacingNote(ln.note) : "";
-                      } else {
-                        const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
-                        note = al && al.note && !String(al.note).startsWith("__") ? String(al.note) : "";
-                      }
-                      setEditingNoteId(String(id));
-                      setEditingNoteType(typ as any);
-                      setNoteDraft(note);
-                    }}
-                    className="w-8 h-8 rounded-lg border border-gray-600 bg-gray-800 text-gray-200 hover:bg-white/10 flex items-center justify-center"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <polyline points="14 2 14 8 20 8" />
-                      <line x1="8" y1="13" x2="16" y2="13" />
-                      <line x1="8" y1="17" x2="13" y2="17" />
-                    </svg>
-                  </button>
+                  {/* Note — popup above */}
+                  <div className="relative" data-note-edit>
+                    <button
+                      type="button"
+                      title="Note"
+                      onClick={() => {
+                        if (moveNoteOpen) { setMoveNoteOpen(false); return; }
+                        const id = movingIdRef.current;
+                        if (!id) return;
+                        const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
+                        let note = "";
+                        if (typ === "line") {
+                          const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                          note = ln ? userFacingNote(ln.note) : "";
+                        } else {
+                          const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                          note = al && al.note && !String(al.note).startsWith("__") ? String(al.note) : "";
+                        }
+                        setMoveNoteDraft(note);
+                        setMoveNoteOpen(true);
+                        setMoveStyleOpen(false);
+                      }}
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                        moveNoteOpen ? "border-orange-500/60 bg-orange-500/15 text-orange-200" : "border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200"
+                      }`}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="8" y1="13" x2="16" y2="13" />
+                        <line x1="8" y1="17" x2="12" y2="17" />
+                      </svg>
+                    </button>
+                    {moveNoteOpen && (
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl w-44">
+                        <input
+                          autoFocus
+                          value={moveNoteDraft}
+                          onChange={(e) => setMoveNoteDraft(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const id = movingIdRef.current;
+                              const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
+                              if (id) {
+                                try {
+                                  if (typ === "line") {
+                                    const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                                    let note = moveNoteDraft.trim();
+                                    // preserve internal prefixes
+                                    if (ln?.note && String(ln.note).startsWith("__") && !note.startsWith("__")) {
+                                      // keep geometry note as-is for special tools; for plain lines replace user text
+                                      const n = String(ln.note);
+                                      if (n.startsWith("__diag:") || n.startsWith("__ray:") || n.startsWith("__hline:")) {
+                                        // append user text after
+                                        note = n.includes("|txt=") ? n.replace(/\|txt=.*$/, `|txt=${note}`) : `${n}|txt=${note}`;
+                                      } else if (!n.match(/^__(fib|channel|dpr|path|curve|avp|avwap|frvp|long|short|fibt)/)) {
+                                        note = moveNoteDraft.trim();
+                                      } else {
+                                        note = n; // don't overwrite special notes with plain text only
+                                      }
+                                    }
+                                    await supabase.from("chart_lines").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
+                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: moveNoteDraft.trim() || null } : l)));
+                                  } else {
+                                    await supabase.from("alarms").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
+                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: moveNoteDraft.trim() || null } : a)));
+                                  }
+                                } catch {}
+                              }
+                              setMoveNoteOpen(false);
+                              setStatusMsg("Note saved");
+                            }
+                            if (e.key === "Escape") setMoveNoteOpen(false);
+                          }}
+                          placeholder="Note…"
+                          className="w-full bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-orange-500/50"
+                        />
+                        <div className="flex gap-1 mt-1.5">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const id = movingIdRef.current;
+                              const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
+                              if (id) {
+                                try {
+                                  if (typ === "line") {
+                                    await supabase.from("chart_lines").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
+                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: moveNoteDraft.trim() || null } : l)));
+                                  } else {
+                                    await supabase.from("alarms").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
+                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: moveNoteDraft.trim() || null } : a)));
+                                  }
+                                } catch {}
+                              }
+                              setMoveNoteOpen(false);
+                              setStatusMsg("Note saved");
+                            }}
+                            className="flex-1 text-[10px] py-1 rounded bg-orange-500/90 text-black font-semibold hover:bg-orange-400"
+                          >Save</button>
+                          <button type="button" onClick={() => setMoveNoteOpen(false)} className="px-2 text-[10px] py-1 rounded bg-gray-800 text-gray-400 hover:text-gray-200">✕</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   {/* Trash */}
                   <button
                     type="button"
@@ -22488,6 +22614,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setMovingType(null);
                       setMode("none");
                       setMoveStyleOpen(false);
+                      setMoveNoteOpen(false);
                       clearPreview();
                       try {
                         chartRef.current?.applyOptions({
@@ -22509,61 +22636,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       }
                       setStatusMsg("Deleted");
                     }}
-                    className="w-8 h-8 rounded-lg border border-red-900/50 bg-gray-900 text-red-400 hover:bg-red-950/40 flex items-center justify-center"
+                    className="w-7 h-7 rounded-md border border-red-900/40 bg-gray-900 text-red-400/90 hover:bg-red-950/50 hover:text-red-300 flex items-center justify-center transition-colors"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="3 6 5 6 21 6" />
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
-                  </button>
-                  {/* Confirm / exit move */}
-                  <button
-                    type="button"
-                    title="Done"
-                    onClick={async () => {
-                      const md = moveDiagRef.current;
-                      const id = movingIdRef.current;
-                      const typ = movingTypeRef.current;
-                      if (md && id) {
-                        try {
-                          const stylePatch: any = {
-                            color: md.color,
-                            width: md.width,
-                            dash: md.dash,
-                            price: md.pointA.price,
-                            start_time: md.pointA.time,
-                            end_time: md.pointB.time,
-                            end_price: md.pointB.price,
-                          };
-                          if (typ === "line") {
-                            await supabase.from("chart_lines").update(stylePatch).eq("id", id);
-                            setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...stylePatch, style: md.dash } : l)));
-                          } else if (typ === "alarm") {
-                            await supabase.from("alarms").update(stylePatch).eq("id", id);
-                            setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, ...stylePatch } : a)));
-                          }
-                        } catch {}
-                      }
-                      moveDiagRef.current = null;
-                      setMovingId(null);
-                      setMovingType(null);
-                      setMode("none");
-                      setMoveStyleOpen(false);
-                      clearPreview();
-                      try {
-                        chartRef.current?.applyOptions({
-                          handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-                          handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
-                        });
-                        if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
-                        document.body.style.overflow = "";
-                        document.documentElement.style.overflow = "";
-                      } catch {}
-                      setStatusMsg("✓ Confirmed");
-                    }}
-                    className="w-8 h-8 rounded-lg bg-green-500 text-black hover:bg-green-400 flex items-center justify-center"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
                   </button>
                 </>
               )}
