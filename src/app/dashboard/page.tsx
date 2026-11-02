@@ -836,7 +836,7 @@ function parseChannelNote(note: string | null | undefined): null | {
     visDays: false, visWeeks: true, visMonths: true, visRanges: true,
   };
   for (const p of parts.slice(5)) {
-    if (p.startsWith("txt=")) { o.text = p.slice(4); continue; }
+    if (p.startsWith("txt=")) { try { o.text = decodeURIComponent(p.slice(4)); } catch { o.text = p.slice(4); } continue; }
     const eq = p.indexOf("=");
     if (eq < 0) continue;
     const k = p.slice(0, eq);
@@ -937,7 +937,7 @@ function buildChannelNote(cfg: {
     `vmo=${cfg.visMonths === false ? "0" : "1"}`,
     `vr=${cfg.visRanges === false ? "0" : "1"}`,
   ];
-  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${String(cfg.text).trim()}`);
+  if (cfg.text && String(cfg.text).trim()) parts.push(`txt=${encodeURIComponent(String(cfg.text).trim())}`);
   return `__channel:${parts.join("|")}`;
 }
 
@@ -6279,64 +6279,106 @@ export default function DashboardPage() {
       );
     } catch {}
   }, [selectedFibId, fibSettingsOpen, positionHandles]);
-  // Selection marker on the active line (H / ray / diag / alarm)
+  // Selection marker: ~50 bars before last visible candle; tracks chart scroll
   useEffect(() => {
     const el = selMarkerRef.current;
     if (!el) return;
-    if (mode !== "move" || !movingId) {
-      el.style.display = "none";
-      return;
-    }
-    const chart = chartRef.current;
-    const ser = seriesRef.current;
-    if (!chart || !ser) { el.style.display = "none"; return; }
 
-    const place = (x: number, y: number) => {
-      el.style.display = "block";
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-    };
+    const update = () => {
+      if (modeRef.current !== "move" || !movingIdRef.current) {
+        el.style.display = "none";
+        return;
+      }
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      if (!chart || !ser) { el.style.display = "none"; return; }
 
-    try {
-      // Prefer diagonal endpoints mid
-      const md = moveDiagRef.current;
-      if (md && String(md.id) === String(movingId) && !(md as any).isCurve && !(md as any).isPath && !(md as any).isChannel) {
-        const x0 = chart.timeScale().timeToCoordinate(md.pointA.time as any);
-        const y0 = ser.priceToCoordinate(md.pointA.price);
-        const x1 = chart.timeScale().timeToCoordinate(md.pointB.time as any);
-        const y1 = ser.priceToCoordinate(md.pointB.price);
-        if (x0 != null && y0 != null && x1 != null && y1 != null) {
-          // prefer the right-side endpoint (toward price scale)
-          if (Number(x1) >= Number(x0)) place(Number(x1), Number(y1));
-          else place(Number(x0), Number(y0));
+      const place = (x: number, y: number) => {
+        el.style.display = "block";
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+      };
+
+      try {
+        const md = moveDiagRef.current;
+        const mid = movingIdRef.current;
+        // Skip for curve/path/channel (they have their own handles)
+        if (md && String(md.id) === String(mid) && ((md as any).isCurve || (md as any).isPath || (md as any).isChannel || (md as any).isDpr)) {
+          el.style.display = "none";
           return;
         }
+        // Diagonal: right-side endpoint
+        if (md && String(md.id) === String(mid) && md.pointA && md.pointB) {
+          const x0 = chart.timeScale().timeToCoordinate(md.pointA.time as any);
+          const y0 = ser.priceToCoordinate(md.pointA.price);
+          const x1 = chart.timeScale().timeToCoordinate(md.pointB.time as any);
+          const y1 = ser.priceToCoordinate(md.pointB.price);
+          if (x0 != null && y0 != null && x1 != null && y1 != null) {
+            if (Number(x1) >= Number(x0)) place(Number(x1), Number(y1));
+            else place(Number(x0), Number(y0));
+            return;
+          }
+        }
+        let price: number | null = null;
+        if (movingTypeRef.current === "line") {
+          const l = (linesRef.current || []).find((x) => String(x.id) === String(mid));
+          if (l) price = Number(l.price);
+        } else {
+          const a = (alarmsRef.current || []).find((x) => String(x.id) === String(mid));
+          if (a) price = Number(a.price);
+        }
+        if (price == null || Number.isNaN(price)) { el.style.display = "none"; return; }
+        const y = ser.priceToCoordinate(price);
+        if (y == null) { el.style.display = "none"; return; }
+
+        // X: ~50 bars before the last VISIBLE candle
+        let x: number | null = null;
+        try {
+          const vr = chart.timeScale().getVisibleLogicalRange?.();
+          if (vr && Number.isFinite(vr.to)) {
+            const logical = Math.max(vr.from ?? 0, Number(vr.to) - 50);
+            const coord = chart.timeScale().logicalToCoordinate?.(logical as any);
+            if (coord != null && !Number.isNaN(Number(coord))) x = Number(coord);
+          }
+        } catch {}
+        if (x == null) {
+          const cont = chartContainerRef.current;
+          let axisW = 72;
+          try {
+            const w = (chart.priceScale("right") as any)?.width?.();
+            if (typeof w === "number" && w > 40) axisW = Math.ceil(w);
+          } catch {}
+          x = cont ? Math.max(40, cont.clientWidth - axisW - 80) : 400;
+        }
+        place(Number(x), Number(y));
+      } catch {
+        el.style.display = "none";
       }
-      // Horizontal / ray / alarm: marker on the RIGHT near price scale
-      let price: number | null = null;
-      if (movingType === "line") {
-        const l = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-        if (l) price = Number(l.price);
-      } else if (movingType === "alarm") {
-        const a = (alarmsRef.current || []).find((x) => String(x.id) === String(movingId));
-        if (a) price = Number(a.price);
-      }
-      if (price == null || Number.isNaN(price)) { el.style.display = "none"; return; }
-      const y = ser.priceToCoordinate(price);
-      if (y == null) { el.style.display = "none"; return; }
-      const cont = chartContainerRef.current;
-      // right side of plot, just left of price axis
-      let axisW = 72;
-      try {
-        const w = (chart.priceScale("right") as any)?.width?.();
-        if (typeof w === "number" && w > 40) axisW = Math.ceil(w);
-      } catch {}
-      const x = cont ? Math.max(40, cont.clientWidth - axisW - 18) : 400;
-      place(Number(x), Number(y));
-    } catch {
-      el.style.display = "none";
-    }
-  }, [mode, movingId, movingType, currentLines, currentAlarms]);
+    };
+
+    update();
+    const chart = chartRef.current;
+    if (!chart) return;
+    const ts = chart.timeScale();
+    const onRange = () => update();
+    try { ts.subscribeVisibleLogicalRangeChange(onRange); } catch {}
+    // also on crosshair / render ticks via rAF when panning
+    let raf = 0;
+    const onMove = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; update(); });
+    };
+    const cont = chartContainerRef.current;
+    cont?.addEventListener("pointermove", onMove);
+    cont?.addEventListener("wheel", onMove, { passive: true });
+
+    return () => {
+      try { ts.unsubscribeVisibleLogicalRangeChange(onRange); } catch {}
+      cont?.removeEventListener("pointermove", onMove);
+      cont?.removeEventListener("wheel", onMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [mode, movingId, movingType]);
 
   // Continuous drag of diagonal A/B/C handles (grab & move onto other candles)
   useEffect(() => {
@@ -8987,6 +9029,35 @@ priced.sort((a, b) => a.price - b.price);
         }
       } catch {}
     });
+    // Re-place channel handles if currently editing a channel (cleared above)
+    try {
+      if (modeRef.current === "move" && movingIdRef.current) {
+        const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingIdRef.current));
+        if (ln && typeof ln.note === "string" && ln.note.startsWith("__channel:")) {
+          const p = parseChannelNote(ln.note);
+          if (p) {
+            placeChannelHandles(vlineOverlayRef.current, {
+              t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+            }, (moveDiagRef.current as any)?.channelHandle || null);
+            const chart2 = chartRef.current;
+            const ser2 = seriesRef.current;
+            if (chart2 && ser2) {
+              vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                const el = h as HTMLElement;
+                const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                if (x != null && y != null) {
+                  el.style.display = "block";
+                  el.style.left = `${Number(x)}px`;
+                  el.style.top = `${Number(y)}px`;
+                }
+              });
+            }
+          }
+        }
+      }
+    } catch {}
+
     // Rays/vlines appear immediately with candles (before slower alarm series work)
     try { paintVLines(); paintRays(); } catch {}
 
@@ -9466,8 +9537,9 @@ priced.sort((a, b) => a.price - b.price);
                   const x = chart2.timeScale().timeToCoordinate(tt as any);
                   const y = ser2.priceToCoordinate(pp);
                   if (x == null || y == null) return;
-                  el.style.left = `${Number(x) + 6}px`;
-                  el.style.top = `${Number(y)}px`;
+                  el.style.left = `${Number(x)}px`;
+                  el.style.top = `${Number(y) + 6}px`;
+                  el.style.transform = "translateX(-50%)";
                 });
                 // 6 channel edit handles
                 host.querySelectorAll("[data-ch-handle]").forEach((h) => {
@@ -20093,6 +20165,62 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, dash } : a)));
     await supabase.from("alarms").update({ dash }).eq("id", id);
   };
+
+  const saveMoveNote = async () => {
+    const id = movingIdRef.current;
+    const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
+    if (!id) return;
+    const text = moveNoteDraft.trim();
+    try {
+      if (typ === "line") {
+        const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+        let noteOut: string | null = text || null;
+        if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+          const p = parseChannelNote(cur.note);
+          if (p) noteOut = buildChannelNote({ ...p, text: text || "" });
+        } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
+          const base = cur.note.replace(/\|txt=[^|]*/g, "");
+          noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
+        }
+        await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
+        setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
+        // keep channel handles after re-render
+        setTimeout(() => {
+          try {
+            if (modeRef.current === "move" && cur && typeof cur.note === "string" && String(noteOut || "").startsWith("__channel:")) {
+              const p = parseChannelNote(noteOut);
+              if (p) {
+                placeChannelHandles(vlineOverlayRef.current, {
+                  t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+                });
+                const chart2 = chartRef.current;
+                const ser2 = seriesRef.current;
+                if (chart2 && ser2) {
+                  vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
+                    const el = h as HTMLElement;
+                    const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
+                    const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
+                    if (x != null && y != null) {
+                      el.style.display = "block";
+                      el.style.left = `${Number(x)}px`;
+                      el.style.top = `${Number(y)}px`;
+                    }
+                  });
+                }
+              }
+            }
+            renderAllLinesAndAlarmsRef.current?.();
+          } catch {}
+        }, 30);
+      } else {
+        await supabase.from("alarms").update({ note: text || null }).eq("id", id);
+        setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: text || null } : a)));
+      }
+    } catch {}
+    setMoveNoteOpen(false);
+    setStatusMsg("Note saved");
+  };
+
   const updateLineColor = async (id: string, color: string) => {
     pushUndo();
     setLines((prev) => prev.map((l) => {
@@ -23013,51 +23141,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           autoFocus
                           value={moveNoteDraft}
                           onChange={(e) => setMoveNoteDraft(e.target.value)}
-                          onKeyDown={async (e) => {
+                          onKeyDown={(e) => {
                             if (e.key === "Enter") {
                               e.preventDefault();
-                              const id = movingIdRef.current;
-                              const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
-                              if (id) {
-                                try {
-                                  if (typ === "line") {
-                                    const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                                    let note = moveNoteDraft.trim();
-                                    // preserve internal prefixes
-                                    if (ln?.note && String(ln.note).startsWith("__") && !note.startsWith("__")) {
-                                      // keep geometry note as-is for special tools; for plain lines replace user text
-                                      const n = String(ln.note);
-                                      if (n.startsWith("__diag:") || n.startsWith("__ray:") || n.startsWith("__hline:")) {
-                                        // append user text after
-                                        note = n.includes("|txt=") ? n.replace(/\|txt=.*$/, `|txt=${note}`) : `${n}|txt=${note}`;
-                                      } else if (!n.match(/^__(fib|channel|dpr|path|curve|avp|avwap|frvp|long|short|fibt)/)) {
-                                        note = moveNoteDraft.trim();
-                                      } else {
-                                        note = n; // don't overwrite special notes with plain text only
-                                      }
-                                    }
-                                    {
-                                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                                      let noteOut: string | null = moveNoteDraft.trim() || null;
-                                      if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
-                                        const p = parseChannelNote(cur.note);
-                                        if (p) noteOut = buildChannelNote({ ...p, text: moveNoteDraft.trim() || undefined });
-                                      } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
-                                        const base = cur.note.replace(/\|txt=[^|]*/g, "");
-                                        noteOut = moveNoteDraft.trim() ? `${base}|txt=${moveNoteDraft.trim()}` : base;
-                                      }
-                                      await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
-                                      setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
-                                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                                    }
-                                  } else {
-                                    await supabase.from("alarms").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
-                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: moveNoteDraft.trim() || null } : a)));
-                                  }
-                                } catch {}
-                              }
-                              setMoveNoteOpen(false);
-                              setStatusMsg("Note saved");
+                              void saveMoveNote();
                             }
                             if (e.key === "Escape") setMoveNoteOpen(false);
                           }}
@@ -23067,37 +23154,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <div className="flex gap-1 mt-1.5">
                           <button
                             type="button"
-                            onClick={async () => {
-                              const id = movingIdRef.current;
-                              const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
-                              if (id) {
-                                try {
-                                  const text = moveNoteDraft.trim();
-                                  if (typ === "line") {
-                                    const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                                    let noteOut: string | null = text || null;
-                                    if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
-                                      const p = parseChannelNote(cur.note);
-                                      if (p) {
-                                        noteOut = buildChannelNote({ ...p, text: text || undefined });
-                                      }
-                                    } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
-                                      // preserve structural note; store user text as trailing txt=
-                                      const base = cur.note.replace(/\|txt=[^|]*/g, "");
-                                      noteOut = text ? `${base}|txt=${text}` : base;
-                                    }
-                                    await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
-                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
-                                    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                                  } else {
-                                    await supabase.from("alarms").update({ note: text || null }).eq("id", id);
-                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: text || null } : a)));
-                                  }
-                                } catch {}
-                              }
-                              setMoveNoteOpen(false);
-                              setStatusMsg("Note saved");
-                            }}
+                            onClick={() => { void saveMoveNote(); }}
                             className="flex-1 text-[10px] py-1 rounded bg-orange-500/90 text-black font-semibold hover:bg-orange-400"
                           >Save</button>
                           <button type="button" onClick={() => setMoveNoteOpen(false)} className="px-2 text-[10px] py-1 rounded bg-gray-800 text-gray-400 hover:text-gray-200">✕</button>
