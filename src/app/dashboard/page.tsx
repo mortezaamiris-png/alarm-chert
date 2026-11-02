@@ -3447,10 +3447,160 @@ function IndChip({
   );
 }
 
+
+/** Build main price series for a chart type + set its data. Returns the series. */
+function buildMainPriceSeries(
+  chart: any,
+  ctype: string,
+  candles: any[],
+  precision: number,
+  minMove: number,
+  interval: string
+): any {
+  const dataSrc = transformCandlesForType(ctype, candles);
+  const withFuture = appendFutureWhitespace(dataSrc, String(interval));
+  const closePts = () =>
+    withFuture
+      .filter((c: any) => c.open != null || c.close != null || c.value != null)
+      .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any;
+  let series: any;
+  if (ctype === "line" || ctype === "step") {
+    series = chart.addLineSeries({
+      color: "#3b82f6",
+      lineWidth: 2,
+      lineType: ctype === "step" ? 1 : 0,
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    } as any);
+    series.setData(closePts());
+  } else if (ctype === "area") {
+    series = chart.addAreaSeries({
+      lineColor: "#3b82f6",
+      topColor: "rgba(59,130,246,0.35)",
+      bottomColor: "rgba(59,130,246,0.02)",
+      lineWidth: 2,
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    series.setData(closePts());
+  } else if (ctype === "baseline") {
+    const closes = candles.map((c: any) => c.close).filter((v: any) => v != null);
+    const base = closes.length ? closes.reduce((a: number, b: number) => a + b, 0) / closes.length : 0;
+    series = chart.addBaselineSeries({
+      baseValue: { type: "price", price: base },
+      topLineColor: "#089981",
+      topFillColor1: "rgba(8,153,129,0.35)",
+      topFillColor2: "rgba(8,153,129,0.02)",
+      bottomLineColor: "#f23645",
+      bottomFillColor1: "rgba(242,54,69,0.02)",
+      bottomFillColor2: "rgba(242,54,69,0.35)",
+      lineWidth: 2,
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    } as any);
+    series.setData(closePts());
+  } else if (ctype === "columns") {
+    series = chart.addHistogramSeries({
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    } as any);
+    series.setData(
+      withFuture
+        .filter((c: any) => c.close != null)
+        .map((c: any) => ({
+          time: c.time,
+          value: c.close,
+          color: c.close >= (c.open ?? c.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+        })) as any
+    );
+  } else if (ctype === "bars" || ctype === "highlow") {
+    series = chart.addBarSeries({
+      upColor: "#089981",
+      downColor: "#f23645",
+      thinBars: ctype === "highlow",
+      openVisible: ctype === "bars",
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    } as any);
+    series.setData(
+      withFuture
+        .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
+        .map((c: any) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })) as any
+    );
+  } else if (ctype === "hlcarea") {
+    series = chart.addAreaSeries({
+      lineColor: "#3b82f6",
+      topColor: "rgba(59,130,246,0.28)",
+      bottomColor: "rgba(59,130,246,0.02)",
+      lineWidth: 1,
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    series.setData(
+      withFuture
+        .filter((c: any) => c.close != null || c.value != null)
+        .map((c: any) => {
+          if (c.value != null && c.open == null) return { time: c.time, value: c.value };
+          const h = Number(c.high ?? c.close);
+          const l = Number(c.low ?? c.close);
+          const cl = Number(c.close ?? c.value);
+          return { time: c.time, value: (h + l + cl) / 3 };
+        }) as any
+    );
+  } else if (ctype === "renko" || ctype === "linebreak" || ctype === "kagi") {
+    series = chart.addCandlestickSeries({
+      upColor: "#089981",
+      downColor: "#f23645",
+      borderUpColor: "#089981",
+      borderDownColor: "#f23645",
+      wickUpColor: "#089981",
+      wickDownColor: "#f23645",
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    series.setData(
+      withFuture
+        .filter((c: any) => c.open != null && c.close != null)
+        .map((c: any) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high ?? Math.max(c.open, c.close),
+          low: c.low ?? Math.min(c.open, c.close),
+          close: c.close,
+        })) as any
+    );
+  } else {
+    // candles | hollow | heikin
+    const hollow = ctype === "hollow";
+    series = chart.addCandlestickSeries({
+      upColor: hollow ? "transparent" : "#089981",
+      downColor: hollow ? "transparent" : "#f23645",
+      borderUpColor: "#089981",
+      borderDownColor: "#f23645",
+      wickUpColor: "#089981",
+      wickDownColor: "#f23645",
+      priceFormat: { type: "price", precision, minMove },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    series.setData(withFuture as any);
+  }
+  return series;
+}
+
 export default function DashboardPage() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null>(null);
+  /** Tracks which chartType the current main series was created for */
+  const seriesChartTypeRef = useRef<string>("candles");
   const futureSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
@@ -11424,7 +11574,118 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
 
-          series.setData(appendFutureWhitespace(candles, fetchIv) as any);
+          // Chart type changed → must swap series type (Line/Area/Bars/Candles/…)
+          // Otherwise setData crashes or hangs with incompatible payload.
+          const ctypeNow = String(chartTypeRef.current || "candles");
+          const prevCtype = String(seriesChartTypeRef.current || "");
+          if (prevCtype !== ctypeNow) {
+            try { chart.removeSeries(series); } catch {}
+            try {
+              const newSer = buildMainPriceSeries(
+                chart,
+                ctypeNow,
+                candles,
+                precision,
+                minMove,
+                fetchIv
+              );
+              // re-attach autoscale provider
+              try {
+                newSer.applyOptions({
+                  autoscaleInfoProvider: (original: any) => {
+                    const ov = priceRangeOverrideRef.current;
+                    if (ov && ov.to > ov.from) {
+                      return { priceRange: { minValue: ov.from, maxValue: ov.to } };
+                    }
+                    try {
+                      return typeof original === "function" ? original() : original;
+                    } catch {
+                      return null;
+                    }
+                  },
+                } as any);
+              } catch {}
+              seriesRef.current = newSer;
+              seriesChartTypeRef.current = ctypeNow;
+              series = newSer;
+            } catch (err) {
+              console.error("chart type switch failed", err);
+              setStatusMsg("Chart type switch failed");
+            }
+          } else {
+            // Same type — transform (heikin/renko/…) + setData safely
+            try {
+              const dataSrc = transformCandlesForType(ctypeNow, candles);
+              const withF = appendFutureWhitespace(dataSrc, fetchIv);
+              if (ctypeNow === "line" || ctypeNow === "step" || ctypeNow === "area" || ctypeNow === "baseline") {
+                series.setData(
+                  withF
+                    .filter((c: any) => c.open != null || c.close != null || c.value != null)
+                    .map((c: any) => ({ time: c.time, value: c.close ?? c.value })) as any
+                );
+              } else if (ctypeNow === "columns") {
+                series.setData(
+                  withF
+                    .filter((c: any) => c.close != null)
+                    .map((c: any) => ({
+                      time: c.time,
+                      value: c.close,
+                      color: c.close >= (c.open ?? c.close) ? "rgba(8,153,129,0.7)" : "rgba(242,54,69,0.7)",
+                    })) as any
+                );
+              } else if (ctypeNow === "hlcarea") {
+                series.setData(
+                  withF
+                    .filter((c: any) => c.close != null || c.value != null)
+                    .map((c: any) => {
+                      if (c.value != null && c.open == null) return { time: c.time, value: c.value };
+                      const h = Number(c.high ?? c.close);
+                      const l = Number(c.low ?? c.close);
+                      const cl = Number(c.close ?? c.value);
+                      return { time: c.time, value: (h + l + cl) / 3 };
+                    }) as any
+                );
+              } else if (ctypeNow === "bars" || ctypeNow === "highlow") {
+                series.setData(
+                  withF
+                    .filter((c: any) => c.open != null && c.high != null && c.low != null && c.close != null)
+                    .map((c: any) => ({
+                      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+                    })) as any
+                );
+              } else if (ctypeNow === "renko" || ctypeNow === "linebreak" || ctypeNow === "kagi") {
+                series.setData(
+                  withF
+                    .filter((c: any) => c.open != null && c.close != null)
+                    .map((c: any) => ({
+                      time: c.time,
+                      open: c.open,
+                      high: c.high ?? Math.max(c.open, c.close),
+                      low: c.low ?? Math.min(c.open, c.close),
+                      close: c.close,
+                    })) as any
+                );
+              } else {
+                // candles / hollow / heikin — apply hollow options if needed
+                if (ctypeNow === "hollow" || ctypeNow === "candles" || ctypeNow === "heikin") {
+                  const hollow = ctypeNow === "hollow";
+                  try {
+                    series.applyOptions({
+                      upColor: hollow ? "transparent" : "#089981",
+                      downColor: hollow ? "transparent" : "#f23645",
+                      borderUpColor: "#089981",
+                      borderDownColor: "#f23645",
+                      wickUpColor: "#089981",
+                      wickDownColor: "#f23645",
+                    });
+                  } catch {}
+                }
+                series.setData(withF as any);
+              }
+            } catch (err) {
+              console.error("setData chart type failed", err);
+            }
+          }
           try { syncFutureAxis(candles, fetchIv); } catch {}
 
           chart.applyOptions({
@@ -11952,6 +12213,7 @@ priced.sort((a, b) => a.price - b.price);
       try { syncFutureAxis(candles, String(intervalRef.current)); } catch {}
       lastLoadedSymbolRef.current = fetchSym;
       seriesRef.current = series;
+      seriesChartTypeRef.current = String(chartTypeRef.current || chartType || "candles");
       pinnedToRightRef.current = true;
       setShowGoLive(false);
 
