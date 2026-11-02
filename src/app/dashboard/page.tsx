@@ -18907,7 +18907,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       } catch {}
 
-      // Only exit MOVE selection on empty chart left-click (not when clicking another/same line)
+      // Only exit MOVE on empty chart — keep selection when clicking on/near any line or the selected one
       if (modeRef.current === "move" && movingIdRef.current) {
         let nearLine = false;
         try {
@@ -18921,60 +18921,55 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             if (cx != null && cy != null) {
               const px = cx - rect.left;
               const py = cy - rect.top;
-              if (px >= 0 && py >= 0 && px <= rect.width && py <= rect.height) {
-                const HIT_KEEP = 16;
-                const symU = String(symbolRef.current || "").toUpperCase();
-                const lines = (linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU);
-                for (const l of lines) {
-                  try {
-                    const n0 = typeof l.note === "string" ? l.note : "";
-                    if (n0.startsWith("__rect:") || n0.startsWith("__brush:") || n0.startsWith("__callout:")) continue;
-                    // horizontal
-                    if (!isDiagonalLine(l) && !(n0.startsWith("__ray:") || n0.startsWith("__vline") || movingVLineRef.current && String(l.id) === String(movingIdRef.current))) {
-                      if (l.end_time == null || Number(l.end_time) === Number(l.start_time) || (l.end_price == null && !n0.startsWith("__diag:"))) {
-                        // plain H line or ray
-                        const y = ser.priceToCoordinate(Number(l.price));
-                        if (y != null && Math.abs(py - Number(y)) <= HIT_KEEP) {
-                          // ray: only from origin to the right
-                          if (n0.startsWith("__ray:") || (l.start_time != null && l.end_time == null)) {
-                            const x0 = l.start_time != null ? chart.timeScale().timeToCoordinate(Number(l.start_time) as any) : null;
-                            if (x0 == null || px >= Number(x0) - 8) { nearLine = true; break; }
-                          } else if (!(n0.startsWith("__vline") || (l.start_time != null && l.end_time != null && Number(l.start_time) === Number(l.end_time) && l.end_price != null))) {
-                            nearLine = true; break;
-                          }
-                        }
-                      }
-                    }
-                    // vertical
-                    if (n0.startsWith("__vline") || (l.start_time != null && l.end_time != null && Number(l.start_time) === Number(l.end_time))) {
-                      const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
-                      if (x0 != null && Math.abs(px - Number(x0)) <= HIT_KEEP) { nearLine = true; break; }
-                    }
-                    // diagonal
-                    if (isDiagonalLine(l) || n0.startsWith("__diag:")) {
-                      const x0 = chart.timeScale().timeToCoordinate(Number(l.start_time) as any);
-                      const x1 = chart.timeScale().timeToCoordinate(Number(l.end_time) as any);
-                      const y0 = ser.priceToCoordinate(Number(l.price));
-                      const y1 = ser.priceToCoordinate(Number(l.end_price));
-                      if (x0 != null && x1 != null && y0 != null && y1 != null) {
-                        const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
-                        const len2 = dx * dx + dy * dy || 1;
-                        let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
-                        t = Math.max(0, Math.min(1, t));
-                        const d = Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
-                        if (d <= HIT_KEEP) { nearLine = true; break; }
-                      }
-                    }
-                  } catch {}
+              const HIT_KEEP = 22;
+              const distH = (price: number) => {
+                const y = ser.priceToCoordinate(Number(price));
+                return y == null ? 9999 : Math.abs(py - Number(y));
+              };
+              const distV = (time: number) => {
+                const x = chart.timeScale().timeToCoordinate(Number(time) as any);
+                return x == null ? 9999 : Math.abs(px - Number(x));
+              };
+              const distSeg = (t0: number, p0: number, t1: number, p1: number) => {
+                const x0 = chart.timeScale().timeToCoordinate(Number(t0) as any);
+                const x1 = chart.timeScale().timeToCoordinate(Number(t1) as any);
+                const y0 = ser.priceToCoordinate(Number(p0));
+                const y1 = ser.priceToCoordinate(Number(p1));
+                if (x0 == null || x1 == null || y0 == null || y1 == null) return 9999;
+                const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+                const len2 = dx * dx + dy * dy || 1;
+                let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
+                t = Math.max(0, Math.min(1, t));
+                return Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
+              };
+              // Prefer currently selected object
+              const mid = String(movingIdRef.current);
+              const selL = (linesRef.current || []).find((x: any) => String(x.id) === mid);
+              const selA = (alarmsRef.current || []).find((x: any) => String(x.id) === mid);
+              const checkObj = (obj: any, isAlarm: boolean) => {
+                if (!obj) return false;
+                const n0 = typeof obj.note === "string" ? obj.note : "";
+                if (n0.startsWith("__vline") || (obj.start_time != null && obj.end_time != null && Number(obj.start_time) === Number(obj.end_time) && !isDiagonalLine(obj))) {
+                  if (distV(Number(obj.start_time)) <= HIT_KEEP) return true;
+                }
+                if (isDiagonalLine(obj) || n0.startsWith("__diag:")) {
+                  if (distSeg(Number(obj.start_time), Number(obj.price), Number(obj.end_time), Number(obj.end_price)) <= HIT_KEEP) return true;
+                }
+                // horizontal / ray / default: price Y
+                if (distH(Number(obj.price)) <= HIT_KEEP) return true;
+                if (obj.end_price != null && distH(Number(obj.end_price)) <= HIT_KEEP) return true;
+                return false;
+              };
+              if (checkObj(selL, false) || checkObj(selA, true)) {
+                nearLine = true;
+              } else {
+                for (const l of linesRef.current || []) {
+                  if (checkObj(l, false)) { nearLine = true; break; }
                 }
                 if (!nearLine) {
-                  for (const a of (alarmsRef.current || [])) {
-                    try {
-                      if (String(a.symbol || "").toUpperCase() !== symU) continue;
-                      if (a.triggered || a.is_active === false) continue;
-                      const y = ser.priceToCoordinate(Number(a.price));
-                      if (y != null && Math.abs(py - Number(y)) <= HIT_KEEP) { nearLine = true; break; }
-                    } catch {}
+                  for (const a of alarmsRef.current || []) {
+                    if (a.triggered || a.is_active === false) continue;
+                    if (checkObj(a, true)) { nearLine = true; break; }
                   }
                 }
               }
@@ -22380,7 +22375,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   type="button"
                   title="Color"
                   onClick={() => setOpenMenu((m) => (m === "__style_color__" ? null : "__style_color__"))}
-                  className={mode === "move" ? "w-7 h-7 rounded-md border border-gray-500/80 shadow-sm shrink-0" : "w-8 h-8 rounded-md border-2 border-gray-500 shadow shrink-0"}
+                  className={mode === "move" ? "w-7 h-7 rounded-md border border-gray-600/80 shadow-sm shrink-0 flex items-center justify-center" : "w-8 h-8 rounded-md border-2 border-gray-500 shadow shrink-0"}
                   style={{ background: drawColor }}
                 />
                 {openMenu === "__style_color__" && (
@@ -22735,7 +22730,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           setStatusMsg("Convert failed");
                         }
                       }}
-                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-amber-300/90 hover:border-amber-500/50 hover:text-amber-200 flex items-center justify-center transition-colors"
+                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10 hover:text-orange-400 flex items-center justify-center transition-colors"
                     >
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -22777,7 +22772,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       }
                       setStatusMsg("Deleted");
                     }}
-                    className="w-7 h-7 rounded-md border border-red-900/40 bg-gray-900 text-red-400/90 hover:bg-red-950/50 hover:text-red-300 flex items-center justify-center transition-colors"
+                    className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-400 hover:border-red-500 hover:bg-red-500/10 hover:text-red-500 flex items-center justify-center transition-colors"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="3 6 5 6 21 6" />
