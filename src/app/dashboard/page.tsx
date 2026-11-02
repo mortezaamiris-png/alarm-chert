@@ -970,16 +970,18 @@ function placeChannelHandles(
     el.setAttribute("data-t", String(n.t));
     el.setAttribute("data-p", String(n.p));
     const isAct = active === n.key;
-    const size = isAct ? 16 : 12;
-    const border = isAct ? "#f97316" : "#3b82f6";
+    const size = n.shape === "square" ? (isAct ? 16 : 14) : (isAct ? 16 : 12);
+    const border = isAct ? "#f97316" : "#60a5fa";
     if (n.shape === "square") {
       el.style.cssText =
-        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:rgba(15,23,42,0.85);` +
-        `transform:translate(-50%,-50%);z-index:45;pointer-events:auto;cursor:move;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
+        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:rgba(15,23,42,0.95);` +
+        `transform:translate(-50%,-50%);z-index:55;pointer-events:auto;cursor:ns-resize;border-radius:2px;` +
+        `box-shadow:0 0 0 1px rgba(0,0,0,0.6),0 0 6px rgba(96,165,250,0.45);display:block;`;
     } else {
       el.style.cssText =
-        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:transparent;border-radius:9999px;` +
-        `transform:translate(-50%,-50%);z-index:45;pointer-events:auto;cursor:move;box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
+        `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:rgba(15,23,42,0.5);border-radius:9999px;` +
+        `transform:translate(-50%,-50%);z-index:55;pointer-events:auto;cursor:move;` +
+        `box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
     }
     host.appendChild(el);
   }
@@ -6331,25 +6333,28 @@ export default function DashboardPage() {
         const y = ser.priceToCoordinate(price);
         if (y == null) { el.style.display = "none"; return; }
 
-        // X: ~50 bars before the last VISIBLE candle
+        // X: near the right side of the visible plot (~50 bars before last visible)
+        const cont = chartContainerRef.current;
+        let axisW = 72;
+        try {
+          const w = (chart.priceScale("right") as any)?.width?.();
+          if (typeof w === "number" && w > 40) axisW = Math.ceil(w);
+        } catch {}
+        const plotW = cont ? Math.max(100, cont.clientWidth - axisW) : 600;
         let x: number | null = null;
         try {
           const vr = chart.timeScale().getVisibleLogicalRange?.();
-          if (vr && Number.isFinite(vr.to)) {
-            const logical = Math.max(vr.from ?? 0, Number(vr.to) - 50);
+          if (vr && Number.isFinite(Number(vr.to))) {
+            const logical = Number(vr.to) - 50;
             const coord = chart.timeScale().logicalToCoordinate?.(logical as any);
             if (coord != null && !Number.isNaN(Number(coord))) x = Number(coord);
           }
         } catch {}
-        if (x == null) {
-          const cont = chartContainerRef.current;
-          let axisW = 72;
-          try {
-            const w = (chart.priceScale("right") as any)?.width?.();
-            if (typeof w === "number" && w > 40) axisW = Math.ceil(w);
-          } catch {}
-          x = cont ? Math.max(40, cont.clientWidth - axisW - 80) : 400;
-        }
+        // Always keep marker on the RIGHT half of the plot (never left side)
+        const minRight = plotW * 0.72;
+        const maxRight = plotW - 12;
+        if (x == null || x < minRight) x = (minRight + maxRight) / 2;
+        x = Math.min(maxRight, Math.max(minRight, x));
         place(Number(x), Number(y));
       } catch {
         el.style.display = "none";
@@ -8680,7 +8685,7 @@ priced.sort((a, b) => a.price - b.price);
                         lab.setAttribute("data-t", String(tMid));
                         lab.setAttribute("data-p", String(pBot));
                         lab.textContent = cfg.text;
-                        lab.style.cssText = `position:absolute;left:${Number(x)}px;top:${Number(yBot) + 6}px;transform:translateX(-50%);font-size:${cfg.textSize || 14}px;color:${cfg.color || color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;white-space:nowrap;`;
+                        lab.style.cssText = `position:absolute;left:${Number(x)}px;top:${Number(yBot) + 8}px;transform:translateX(-50%);font-size:${cfg.textSize || 13}px;font-weight:600;color:${cfg.color || color || "#e5e7eb"};pointer-events:none;z-index:40;text-shadow:0 1px 3px #000,0 0 6px #000;white-space:nowrap;background:rgba(0,0,0,0.35);padding:1px 6px;border-radius:4px;`;
                         host.appendChild(lab);
                       }
                     } catch {}
@@ -9031,14 +9036,24 @@ priced.sort((a, b) => a.price - b.price);
     });
     // Re-place channel handles if currently editing a channel (cleared above)
     try {
-      if (modeRef.current === "move" && movingIdRef.current) {
-        const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingIdRef.current));
+      const mdCh = moveDiagRef.current as any;
+      const chId = (mdCh && mdCh.isChannel && mdCh.id) ? mdCh.id : (
+        modeRef.current === "move" && movingIdRef.current ? movingIdRef.current : null
+      );
+      if (chId) {
+        const ln = (linesRef.current || []).find((x) => String(x.id) === String(chId));
         if (ln && typeof ln.note === "string" && ln.note.startsWith("__channel:")) {
           const p = parseChannelNote(ln.note);
           if (p) {
+            // Prefer live geometry from moveDiag if available
+            const t1 = mdCh && mdCh.isChannel && mdCh.pointA ? mdCh.pointA.time : p.t1;
+            const p1 = mdCh && mdCh.isChannel && mdCh.pointA ? mdCh.pointA.price : p.p1;
+            const t2 = mdCh && mdCh.isChannel && mdCh.pointB ? mdCh.pointB.time : p.t2;
+            const p2 = mdCh && mdCh.isChannel && mdCh.pointB ? mdCh.pointB.price : p.p2;
+            const off = mdCh && mdCh.isChannel && mdCh.channelOffset != null ? Number(mdCh.channelOffset) : p.offset;
             placeChannelHandles(vlineOverlayRef.current, {
-              t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
-            }, (moveDiagRef.current as any)?.channelHandle || null);
+              t1, p1, t2, p2, offset: off,
+            }, mdCh?.channelHandle || null);
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
             if (chart2 && ser2) {
@@ -9050,6 +9065,8 @@ priced.sort((a, b) => a.price - b.price);
                   el.style.display = "block";
                   el.style.left = `${Number(x)}px`;
                   el.style.top = `${Number(y)}px`;
+                } else {
+                  el.style.display = "none";
                 }
               });
             }
@@ -15895,6 +15912,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       channelOffset: p.offset,
                       channelHandle: null as any,
                     } as any;
+                    movingIdRef.current = l.id;
+                    modeRef.current = "move";
                     try {
                       try { vlineOverlayRef.current?.querySelectorAll("[data-fibtz-preview]").forEach((el) => el.remove()); } catch {}
       if (handleAElRef.current) handleAElRef.current.style.display = "none";
@@ -15949,13 +15968,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 setStatusMsg("Drag the circles to move endpoints");
               } else if (best.isV) {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move vertical line");
+                setStatusMsg("Vertical line selected — drag to move");
               } else if (isArrowSel) {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move arrow (any direction)");
+                setStatusMsg("Arrow selected — drag to move");
               } else if (best.isRay) {
                 moveDiagRef.current = null;
-                setStatusMsg("Click chart to move ray");
+                setStatusMsg("Ray selected — drag to move");
               } else {
                 moveDiagRef.current = null;
                 try {
@@ -16511,161 +16530,23 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             return;
           }
 
-          // ── Horizontal / vertical / ray single-click move ──
-          clickLockRef.current = true;
+          // Move mode: click empty chart only DESELECTS — never relocates the line.
+          // Line is moved only by grabbing/dragging its body (body-drag handlers).
           try {
-            if (typ === "line") {
-              const isV = movingVLineRef.current;
-              const isRay = movingRayRef.current && !isV;
-              const tMove = resolveTime(param);
-              if (isV) {
-                // Vertical line: move only in time; keep both ends on same timestamp
-                if (tMove == null || Number.isNaN(tMove)) {
-                  setStatusMsg("Could not read time");
-                } else {
-                  const bars = candlesRef.current;
-                  let lo = Infinity, hi = -Infinity;
-                  try {
-                    const pr = (series.priceScale() as any).getVisibleRange?.();
-                    if (pr && pr.from != null && pr.to != null && Number(pr.to) > Number(pr.from)) {
-                      lo = Number(pr.from);
-                      hi = Number(pr.to);
-                    }
-                  } catch {}
-                  if (!(hi > lo)) {
-                    for (const c of bars) {
-                      if (c.low < lo) lo = c.low;
-                      if (c.high > hi) hi = c.high;
-                    }
-                  }
-                  if (!(hi > lo)) {
-                    lo = fp * 0.98;
-                    hi = fp * 1.02;
-                  }
-                  const pad = (hi - lo) * 0.08;
-                  const patch: any = {
-                    start_time: tMove,
-                    end_time: tMove,
-                    price: lo - pad,
-                    end_price: hi + pad,
-                    note: "__vline__",
-                  };
-                  try {
-                    await supabase.from("chart_lines").update(patch).eq("id", id);
-                  } catch {}
-                  setLines((prev) =>
-                    prev.map((l) =>
-                      l.id === id
-                        ? {
-                            ...l,
-                            start_time: tMove,
-                            end_time: tMove,
-                            price: lo - pad,
-                            end_price: hi + pad,
-                            note: "__vline__",
-                          }
-                        : l
-                    )
-                  );
-                  setStatusMsg("Vertical line moved");
-                }
-              } else {
-              // Ray vs arrow: different geometry
-              const cur = (linesRef.current || []).find((x) => x.id === id);
-              const isArrowMove =
-                !!cur &&
-                typeof cur.note === "string" &&
-                (cur.note === "__arrow_up__" ||
-                  cur.note === "__arrow_down__" ||
-                  cur.note === "__arrow_marker__" ||
-                  cur.note.startsWith("__arrow"));
-              const patch: any = { price: fp };
-              if (isRay && tMove != null && !Number.isNaN(tMove)) {
-                patch.start_time = tMove;
-                if (isArrowMove) {
-                  // Arrow is a point — keep both times equal
-                  patch.end_time = tMove;
-                  patch.end_price = fp;
-                } else {
-                  // Half-line (ray): origin + price only — never set end_time=start_time
-                  // (that would turn it into a vertical line)
-                  patch.end_time = null;
-                  patch.end_price = null;
-                  if (cur?.note?.startsWith("__ray:")) {
-                    patch.note = `__ray:${tMove}`;
-                  }
-                }
-              }
-              const { error } = await supabase.from("chart_lines").update(patch).eq("id", id);
-              if (error && patch.start_time != null && !isArrowMove) {
-                await supabase
-                  .from("chart_lines")
-                  .update({ price: fp, note: `__ray:${patch.start_time}` })
-                  .eq("id", id);
-              }
-              setLines((prev) =>
-                prev.map((l) =>
-                  l.id === id
-                    ? {
-                        ...l,
-                        price: fp,
-                        start_time:
-                          isRay && tMove != null ? tMove : l.start_time,
-                        end_time: isArrowMove
-                          ? tMove != null
-                            ? tMove
-                            : l.end_time
-                          : isRay
-                          ? null
-                          : l.end_time,
-                        end_price: isArrowMove
-                          ? fp
-                          : isRay
-                          ? null
-                          : l.end_price,
-                        note:
-                          isRay && !isArrowMove && tMove != null && l.note?.startsWith("__ray:")
-                            ? `__ray:${tMove}`
-                            : l.note,
-                      }
-                    : l
-                )
-              );
-              setStatusMsg(isArrowMove ? "Arrow moved" : isRay ? "Ray moved" : "Line moved");
-              }
-            } else if (typ === "alarm") {
-              const isRayAl = movingRayRef.current;
-              const tMove = resolveTime(param);
-              const patch: any = { price: fp };
-              if (isRayAl && tMove != null && !Number.isNaN(tMove)) {
-                patch.start_time = tMove;
-              }
-              await supabase.from("alarms").update(patch).eq("id", id);
-              setAlarms((prev) =>
-                prev.map((a) =>
-                  a.id === id
-                    ? {
-                        ...a,
-                        price: fp,
-                        start_time:
-                          isRayAl && tMove != null ? tMove : a.start_time,
-                      }
-                    : a
-                )
-              );
-              setStatusMsg(isRayAl ? "Ray alarm moved" : "Alarm moved");
-            }
+            moveDiagRef.current = null;
+            setMovingId(null);
+            setMovingType(null);
+            setMode("none");
+            clearPreview();
             movingRayRef.current = false;
             movingVLineRef.current = false;
-          } catch {
-            setStatusMsg("Move failed");
-          }
-          moveDiagRef.current = null;
-          setMovingId(null);
-          setMovingType(null);
-          setMode("none");
-          clearPreview();
-          setTimeout(() => { clickLockRef.current = false; }, 300);
+            try {
+              if (selMarkerRef.current) selMarkerRef.current.style.display = "none";
+              vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove());
+            } catch {}
+            setStatusMsg("");
+          } catch {}
+          clickLockRef.current = false;
           return;
         }
 
@@ -20184,34 +20065,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
         await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
         setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
-        // keep channel handles after re-render
-        setTimeout(() => {
-          try {
-            if (modeRef.current === "move" && cur && typeof cur.note === "string" && String(noteOut || "").startsWith("__channel:")) {
-              const p = parseChannelNote(noteOut);
-              if (p) {
-                placeChannelHandles(vlineOverlayRef.current, {
-                  t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
-                });
-                const chart2 = chartRef.current;
-                const ser2 = seriesRef.current;
-                if (chart2 && ser2) {
-                  vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                    const el = h as HTMLElement;
-                    const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                    const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                    if (x != null && y != null) {
-                      el.style.display = "block";
-                      el.style.left = `${Number(x)}px`;
-                      el.style.top = `${Number(y)}px`;
-                    }
-                  });
-                }
-              }
+        // keep channel selected + handles after re-render
+        try {
+          if (String(noteOut || "").startsWith("__channel:")) {
+            const p = parseChannelNote(noteOut);
+            if (p) {
+              moveDiagRef.current = {
+                id,
+                phase: "pick",
+                pointA: { time: p.t1, price: p.p1 },
+                pointB: { time: p.t2, price: p.p2 },
+                color: p.color || "#787b86",
+                width: p.width || 2,
+                dash: p.dash || "solid",
+                isChannel: true,
+                channelOffset: p.offset,
+                channelHandle: null as any,
+              } as any;
+              movingIdRef.current = id as any;
+              modeRef.current = "move";
             }
-            renderAllLinesAndAlarmsRef.current?.();
-          } catch {}
-        }, 30);
+          }
+        } catch {}
+        setTimeout(() => {
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        }, 40);
       } else {
         await supabase.from("alarms").update({ note: text || null }).eq("id", id);
         setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: text || null } : a)));
@@ -26914,7 +26792,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           setDrawColor(a.color || DEFAULT_ALARM_COLOR);
                           setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
+                          setStatusMsg("Drag the circles or body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
@@ -27716,6 +27594,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               channelOffset: p.offset,
                               channelHandle: null as any,
                             } as any;
+                            movingIdRef.current = l.id;
+                            modeRef.current = "move";
                             try {
                               if (handleAElRef.current) handleAElRef.current.style.display = "none";
                               if (handleBElRef.current) handleBElRef.current.style.display = "none";
@@ -27971,7 +27851,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           setDrawColor(l.color || DEFAULT_LINE_COLOR);
                           setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Tap a circle to move — empty chart or ✓ Done");
+                          setStatusMsg("Drag the circles or body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
