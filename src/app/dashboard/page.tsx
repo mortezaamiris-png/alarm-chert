@@ -4440,17 +4440,12 @@ export default function DashboardPage() {
           },
         } as any);
       } else if (mode === "draw" || mode === "ray" || mode === "alarm" || mode === "alarm-ray") {
+        // No orange dashed "preview" line — normal crosshair only
         chart.applyOptions({
           crosshair: {
             mode: CrosshairMode.Normal,
-            vertLine: { visible: false, labelVisible: false },
-            horzLine: {
-              visible: true,
-              labelVisible: true,
-              width: 1,
-              style: LineStyle.Dashed,
-              color: "rgba(249, 115, 22, 0.85)",
-            },
+            vertLine: { visible: true, labelVisible: true, color: "rgba(156,163,175,0.45)" },
+            horzLine: { visible: true, labelVisible: true, color: "rgba(156,163,175,0.45)" },
           },
         } as any);
       } else {
@@ -6258,8 +6253,8 @@ export default function DashboardPage() {
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
       el.style.borderColor = isActive ? "#f97316" : "#ffffff";
-      el.style.width = isActive ? "18px" : "14px";
-      el.style.height = isActive ? "18px" : "14px";
+      el.style.width = isActive ? "26px" : "22px";
+      el.style.height = isActive ? "26px" : "22px";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -6944,9 +6939,10 @@ export default function DashboardPage() {
           noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:") ||
           noteStr.startsWith("__diag:") || isDiagonalLine(l);
         // Curve/path/etc: keep original style while moving (only show handles)
-        const color = (isMoving && !softMove) ? "#f59e0b" : (l.color || DEFAULT_LINE_COLOR);
-        const width = (isMoving && !softMove) ? 3 : ((l.width as 1 | 2 | 3) || 2);
-        const style = (isMoving && !softMove) ? MOVE_STYLE : toLineStyle(l.dash || l.style);
+        // Keep original appearance while selected (no orange dashed "preview")
+        const color = l.color || DEFAULT_LINE_COLOR;
+        const width = ((l.width as 1 | 2 | 3) || 2);
+        const style = toLineStyle(l.dash || l.style);
         // Title only when note exists (no "Line xxx" label)
         const noteClean = (() => {
           if (!l.note) return "";
@@ -8933,13 +8929,11 @@ priced.sort((a, b) => a.price - b.price);
         const isHL = highlightAlarmId === a.id ||
           (highlightPrice != null && Math.abs(a.price - highlightPrice) < a.price * 1e-9 + 1e-8);
         if (isHL) hlDrawnOnActive = true;
-        const color = isMoving
-          ? "#f59e0b"
-          : isHL
+        const color = isHL
           ? "#eab308"
           : a.color || DEFAULT_ALARM_COLOR;
-        const width = (isMoving || isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
-        const style = isMoving || isHL ? LineStyle.Dashed : toLineStyle(a.dash);
+        const width = (isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
+        const style = isHL ? LineStyle.Dashed : toLineStyle(a.dash);
         const noteCleanA =
           a.note &&
           !String(a.note).startsWith("__diag:") &&
@@ -8967,7 +8961,7 @@ priced.sort((a, b) => a.price - b.price);
           const ls: any = chart.addLineSeries({
             color,
             lineWidth: width,
-            lineStyle: isMoving || isHL ? LineStyle.Dashed : LineStyle.Solid,
+            lineStyle: isHL ? LineStyle.Dashed : LineStyle.Solid,
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
@@ -14147,7 +14141,29 @@ priced.sort((a, b) => a.price - b.price);
         // Don't steal events from handles / menus / while drawing a new tool
         const t = e.target as HTMLElement | null;
         if (!t) return;
-        if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id]")) return;
+        if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-line-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id]")) return;
+        // If pointer is near an active diagonal endpoint handle, prefer handle drag
+        try {
+          const md = moveDiagRef.current;
+          if (md && modeRef.current === "move" && md.phase === "pick") {
+            const cont = chartContainerRef.current;
+            const chart = chartRef.current;
+            const ser = seriesRef.current;
+            if (cont && chart && ser) {
+              const rect = cont.getBoundingClientRect();
+              const px = e.clientX - rect.left;
+              const py = e.clientY - rect.top;
+              const nearPt = (pt: { time: number; price: number } | null | undefined) => {
+                if (!pt) return false;
+                const x = chart.timeScale().timeToCoordinate(pt.time as any);
+                const y = ser.priceToCoordinate(pt.price);
+                if (x == null || y == null) return false;
+                return Math.hypot(px - Number(x), py - Number(y)) <= 28;
+              };
+              if (nearPt(md.pointA) || nearPt(md.pointB) || nearPt(md.pointC as any)) return;
+            }
+          }
+        } catch {}
         // Clicking price labels on the right axis must NOT grab lines — only the line body on the plot
         try {
           const cont = chartContainerRef.current;
@@ -21886,20 +21902,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <div
                 ref={handleAElRef}
                 data-line-handle="a"
-                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
+                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
-                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
+                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
-                className="absolute w-4 h-4 rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", transform: "translate(-50%, -50%)", background: "rgba(0,0,0,0.35)", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)", zIndex: 45, pointerEvents: "auto", touchAction: "none" }}
+                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
               />
 
               {statusMsg === "Loading..." && (
