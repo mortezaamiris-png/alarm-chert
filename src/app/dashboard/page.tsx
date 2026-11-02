@@ -11518,7 +11518,7 @@ priced.sort((a, b) => a.price - b.price);
       if (chartRef.current && seriesRef.current) {
         try {
           const chart = chartRef.current;
-          const series = seriesRef.current;
+          let series: any = seriesRef.current;
 
           // 1) Paint candles FIRST so TF/symbol switch feels instant
           const symbolChanged =
