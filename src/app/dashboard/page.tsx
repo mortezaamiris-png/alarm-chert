@@ -15665,6 +15665,25 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setMode("move");
             setMovingId(best.id);
             setMovingType(best.kind);
+            try {
+              if (best.kind === "line") {
+                const L = list.find((x) => x.id === best!.id);
+                if (L) {
+                  setDrawColor(L.color || DEFAULT_LINE_COLOR);
+                  setDrawWidth(((L.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                  setDrawDash((L.dash === "dashed" || L.style === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
+                }
+              } else {
+                const A = alarmList.find((x) => x.id === best!.id);
+                if (A) {
+                  setDrawColor(A.color || DEFAULT_ALARM_COLOR);
+                  setDrawWidth(((A.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                  setDrawDash((A.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
+                }
+              }
+              setMoveStyleOpen(false);
+              setMoveNoteOpen(false);
+            } catch {}
             movingVLineRef.current = best.isV;
             movingRayRef.current = best.isRay;
             // Always clear previous special move state so other lines are not blocked by a leftover curve/path/channel ref
@@ -22356,8 +22375,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           {mode === "move" && movingId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
             if (!ln || typeof ln.note !== "string") return false;
-            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:") ||
-              ln.note.startsWith("__curve:") || ln.note.startsWith("__path:");
+            // Curve/path use the main edit toolbar below; only channel/dpr keep this bar
+            return ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:");
           })() && (
             <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
               {(() => {
@@ -22465,9 +22484,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm-diag" ||
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+              // channel/dpr keep their own bar; curve/path + all other lines use this main toolbar
               return !!(ln && typeof ln.note === "string" && (
-                ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:") ||
-                ln.note.startsWith("__curve:") || ln.note.startsWith("__path:")
+                ln.note.startsWith("__channel:") || ln.note.startsWith("__dpr:")
               ));
             })()))) && (
             <div
@@ -26593,6 +26612,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMode("move");
                         setMovingId(a.id);
                         setMovingType("alarm");
+                        setDrawColor(a.color || DEFAULT_ALARM_COLOR);
+                        setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                        setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
+                        setMoveStyleOpen(false);
+                        setMoveNoteOpen(false);
                         movingRayRef.current =
                           a.start_time != null && !isDiagonalLine(a as any);
                         if (isDiagonalLine(a as any)) {
