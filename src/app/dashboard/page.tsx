@@ -22342,27 +22342,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     type="button"
                     onClick={() => {
                       setDrawWidth(w);
-                      const md = moveDiagRef.current;
-                      if (mode === "move" && md) {
-                        md.width = w;
-                        try {
-                          previewDiagSeriesRef.current?.applyOptions({ lineWidth: Math.max(2, w) as 1 | 2 | 3 | 4 });
-                        } catch {}
-                      }
-                      // Live size for selected arrow / line / alarm (immediate UI)
-                      if (mode === "move" && movingId) {
-                        if (movingType === "line") {
-                          setLines((prev) =>
-                            prev.map((l) => (l.id === movingId ? { ...l, width: w } : l))
-                          );
-                          void updateLineWidth(movingId, w);
-                        } else if (movingType === "alarm") {
-                          setAlarms((prev) =>
-                            prev.map((a) => (a.id === movingId ? { ...a, width: w } : a))
-                          );
-                          void updateAlarmWidth(movingId, w);
-                        }
-                      }
                     }}
                     className={`w-7 h-7 rounded text-xs ${
                       drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"
@@ -22375,19 +22354,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <button
                 type="button"
                 onClick={() => {
-                  setDrawDash((d) => {
-                    const next = d === "solid" ? "dashed" : "solid";
-                    const md = moveDiagRef.current;
-                    if (mode === "move" && md) {
-                      md.dash = next;
-                      try {
-                        previewDiagSeriesRef.current?.applyOptions({
-                          lineStyle: next === "dashed" ? LineStyle.Dashed : LineStyle.Solid,
-                        });
-                      } catch {}
-                    }
-                    return next;
-                  });
+                  setDrawDash((d) => (d === "solid" ? "dashed" : "solid"));
                 }}
                 className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300"
               >
