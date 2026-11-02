@@ -6306,37 +6306,32 @@ export default function DashboardPage() {
         const x1 = chart.timeScale().timeToCoordinate(md.pointB.time as any);
         const y1 = ser.priceToCoordinate(md.pointB.price);
         if (x0 != null && y0 != null && x1 != null && y1 != null) {
-          place((Number(x0) + Number(x1)) / 2, (Number(y0) + Number(y1)) / 2);
+          // prefer the right-side endpoint (toward price scale)
+          if (Number(x1) >= Number(x0)) place(Number(x1), Number(y1));
+          else place(Number(x0), Number(y0));
           return;
         }
       }
-      // Horizontal / ray / alarm: marker at 30% of chart width on the price
+      // Horizontal / ray / alarm: marker on the RIGHT near price scale
       let price: number | null = null;
-      let time: number | null = null;
       if (movingType === "line") {
         const l = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-        if (l) {
-          price = Number(l.price);
-          time = l.start_time != null ? Number(l.start_time) : null;
-        }
+        if (l) price = Number(l.price);
       } else if (movingType === "alarm") {
         const a = (alarmsRef.current || []).find((x) => String(x.id) === String(movingId));
-        if (a) {
-          price = Number(a.price);
-          time = a.start_time != null ? Number(a.start_time) : null;
-        }
+        if (a) price = Number(a.price);
       }
       if (price == null || Number.isNaN(price)) { el.style.display = "none"; return; }
       const y = ser.priceToCoordinate(price);
       if (y == null) { el.style.display = "none"; return; }
-      let x: number | null = null;
-      if (time != null) {
-        try { x = chart.timeScale().timeToCoordinate(time as any); } catch {}
-      }
-      if (x == null) {
-        const cont = chartContainerRef.current;
-        x = cont ? cont.clientWidth * 0.28 : 120;
-      }
+      const cont = chartContainerRef.current;
+      // right side of plot, just left of price axis
+      let axisW = 72;
+      try {
+        const w = (chart.priceScale("right") as any)?.width?.();
+        if (typeof w === "number" && w > 40) axisW = Math.ceil(w);
+      } catch {}
+      const x = cont ? Math.max(40, cont.clientWidth - axisW - 18) : 400;
       place(Number(x), Number(y));
     } catch {
       el.style.display = "none";
@@ -8563,9 +8558,10 @@ priced.sort((a, b) => a.price - b.price);
                     levels = [...levels, { v: 1, on: true, color: cfg.color, width: cfg.width, dash: cfg.dash }];
                   const seriesList: any[] = [];
                   for (const lv of levels) {
-                    const col = lv.color || cfg.color || "#787b86";
-                    const w = Math.max(1, Math.min(4, lv.width || cfg.width || 1)) as 1 | 2 | 3 | 4;
-                    const dash = (lv.dash || cfg.dash) === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
+                    // Prefer live line color/width (from toolbar) over per-level defaults
+                    const col = color || lv.color || cfg.color || "#787b86";
+                    const w = Math.max(1, Math.min(4, width || lv.width || cfg.width || 1)) as 1 | 2 | 3 | 4;
+                    const dash = (l.dash || lv.dash || cfg.dash) === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
                     const s = chart2.addLineSeries({
                       color: col,
                       lineWidth: w,
@@ -8629,16 +8625,20 @@ priced.sort((a, b) => a.price - b.price);
                   if (cfg.text) {
                     try {
                       const host = vlineOverlayRef.current;
-                      const x = chart2.timeScale().timeToCoordinate(Math.min(t1, t2) as any);
-                      const y = seriesRef.current?.priceToCoordinate(priceAt(Math.min(t1, t2), 0.5));
-                      if (host && x != null && y != null) {
+                      // place label BELOW the channel (lowest of the two boundary prices at mid-time)
+                      const tMid = (t1 + t2) / 2;
+                      const pTop = Math.max(priceAt(tMid, 0), priceAt(tMid, 1));
+                      const pBot = Math.min(priceAt(tMid, 0), priceAt(tMid, 1));
+                      const x = chart2.timeScale().timeToCoordinate(tMid as any);
+                      const yBot = seriesRef.current?.priceToCoordinate(pBot);
+                      if (host && x != null && yBot != null) {
                         const lab = document.createElement("div");
                         lab.setAttribute("data-channel-id", String(l.id));
                         lab.setAttribute("data-channel-label", "1");
-                        lab.setAttribute("data-t", String(Math.min(t1, t2)));
-                        lab.setAttribute("data-p", String(priceAt(Math.min(t1, t2), 0.5)));
+                        lab.setAttribute("data-t", String(tMid));
+                        lab.setAttribute("data-p", String(pBot));
                         lab.textContent = cfg.text;
-                        lab.style.cssText = `position:absolute;left:${Number(x) + 6}px;top:${Number(y)}px;font-size:${cfg.textSize || 14}px;color:${cfg.color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;`;
+                        lab.style.cssText = `position:absolute;left:${Number(x)}px;top:${Number(yBot) + 6}px;transform:translateX(-50%);font-size:${cfg.textSize || 14}px;color:${cfg.color || color};pointer-events:none;z-index:8;text-shadow:0 1px 2px #000;white-space:nowrap;`;
                         host.appendChild(lab);
                       }
                     } catch {}
@@ -20095,20 +20095,95 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   };
   const updateLineColor = async (id: string, color: string) => {
     pushUndo();
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, color } : l)));
-    await supabase.from("chart_lines").update({ color }).eq("id", id);
+    setLines((prev) => prev.map((l) => {
+      if (String(l.id) !== String(id)) return l;
+      if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+        const p = parseChannelNote(l.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, color }));
+          const note = buildChannelNote({ ...p, color, levels });
+          return { ...l, color, note };
+        }
+      }
+      return { ...l, color };
+    }));
+    try {
+      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+      if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+        const p = parseChannelNote(cur.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, color }));
+          const note = buildChannelNote({ ...p, color, levels });
+          await supabase.from("chart_lines").update({ color, note }).eq("id", id);
+        } else {
+          await supabase.from("chart_lines").update({ color }).eq("id", id);
+        }
+      } else {
+        await supabase.from("chart_lines").update({ color }).eq("id", id);
+      }
+    } catch {}
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateLineWidth = async (id: string, width: number) => {
     pushUndo();
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, width } : l)));
-    await supabase.from("chart_lines").update({ width }).eq("id", id);
+    setLines((prev) => prev.map((l) => {
+      if (String(l.id) !== String(id)) return l;
+      if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+        const p = parseChannelNote(l.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, width }));
+          const note = buildChannelNote({ ...p, width, levels });
+          return { ...l, width, note };
+        }
+      }
+      return { ...l, width };
+    }));
+    try {
+      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+      if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+        const p = parseChannelNote(cur.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, width }));
+          const note = buildChannelNote({ ...p, width, levels });
+          await supabase.from("chart_lines").update({ width, note }).eq("id", id);
+        } else {
+          await supabase.from("chart_lines").update({ width }).eq("id", id);
+        }
+      } else {
+        await supabase.from("chart_lines").update({ width }).eq("id", id);
+      }
+    } catch {}
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateLineDash = async (id: string, dash: string) => {
     pushUndo();
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, dash } : l)));
-    await supabase.from("chart_lines").update({ dash }).eq("id", id);
+    setLines((prev) => prev.map((l) => {
+      if (String(l.id) !== String(id)) return l;
+      if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+        const p = parseChannelNote(l.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, dash }));
+          const note = buildChannelNote({ ...p, dash, levels });
+          return { ...l, dash, note };
+        }
+      }
+      return { ...l, dash };
+    }));
+    try {
+      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+      if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+        const p = parseChannelNote(cur.note);
+        if (p) {
+          const levels = (p.levels || []).map((lv) => ({ ...lv, dash }));
+          const note = buildChannelNote({ ...p, dash, levels });
+          await supabase.from("chart_lines").update({ dash, note }).eq("id", id);
+        } else {
+          await supabase.from("chart_lines").update({ dash }).eq("id", id);
+        }
+      } else {
+        await supabase.from("chart_lines").update({ dash }).eq("id", id);
+      }
+    } catch {}
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateRectFill = async (id: string, fill: string, fillOpacity?: number) => {
@@ -22961,8 +23036,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                         note = n; // don't overwrite special notes with plain text only
                                       }
                                     }
-                                    await supabase.from("chart_lines").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
-                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: moveNoteDraft.trim() || null } : l)));
+                                    {
+                                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                                      let noteOut: string | null = moveNoteDraft.trim() || null;
+                                      if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+                                        const p = parseChannelNote(cur.note);
+                                        if (p) noteOut = buildChannelNote({ ...p, text: moveNoteDraft.trim() || undefined });
+                                      } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
+                                        const base = cur.note.replace(/\|txt=[^|]*/g, "");
+                                        noteOut = moveNoteDraft.trim() ? `${base}|txt=${moveNoteDraft.trim()}` : base;
+                                      }
+                                      await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
+                                      setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
+                                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                                    }
                                   } else {
                                     await supabase.from("alarms").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
                                     setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: moveNoteDraft.trim() || null } : a)));
@@ -22985,12 +23072,26 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               const typ = movingTypeRef.current === "alarm" ? "alarm" : "line";
                               if (id) {
                                 try {
+                                  const text = moveNoteDraft.trim();
                                   if (typ === "line") {
-                                    await supabase.from("chart_lines").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
-                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: moveNoteDraft.trim() || null } : l)));
+                                    const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                                    let noteOut: string | null = text || null;
+                                    if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+                                      const p = parseChannelNote(cur.note);
+                                      if (p) {
+                                        noteOut = buildChannelNote({ ...p, text: text || undefined });
+                                      }
+                                    } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
+                                      // preserve structural note; store user text as trailing txt=
+                                      const base = cur.note.replace(/\|txt=[^|]*/g, "");
+                                      noteOut = text ? `${base}|txt=${text}` : base;
+                                    }
+                                    await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
+                                    setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
+                                    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                                   } else {
-                                    await supabase.from("alarms").update({ note: moveNoteDraft.trim() || null }).eq("id", id);
-                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: moveNoteDraft.trim() || null } : a)));
+                                    await supabase.from("alarms").update({ note: text || null }).eq("id", id);
+                                    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: text || null } : a)));
                                   }
                                 } catch {}
                               }
