@@ -3576,14 +3576,15 @@ function buildMainPriceSeries(
           close: c.close,
         })) as any
     );
-  } else if (ctype === "volcandles") {
-    // Wicks only from LWC; bodies drawn on volume-candle canvas (width ∝ volume)
+  } else if (ctype === "volcandles" || ctype === "footprint") {
+    // Wicks/thin body from LWC; footprint or vol bodies drawn on canvas
+    const isFoot = ctype === "footprint";
     series = chart.addCandlestickSeries({
-      upColor: "rgba(0,0,0,0)",
-      downColor: "rgba(0,0,0,0)",
-      borderVisible: false,
-      borderUpColor: "rgba(0,0,0,0)",
-      borderDownColor: "rgba(0,0,0,0)",
+      upColor: isFoot ? "rgba(8,153,129,0.15)" : "rgba(0,0,0,0)",
+      downColor: isFoot ? "rgba(242,54,69,0.15)" : "rgba(0,0,0,0)",
+      borderVisible: !isFoot ? false : true,
+      borderUpColor: isFoot ? "rgba(8,153,129,0.4)" : "rgba(0,0,0,0)",
+      borderDownColor: isFoot ? "rgba(242,54,69,0.4)" : "rgba(0,0,0,0)",
       wickUpColor: "#089981",
       wickDownColor: "#f23645",
       priceFormat: { type: "price", precision, minMove },
@@ -3610,6 +3611,387 @@ function buildMainPriceSeries(
   return series;
 }
 
+
+
+/** Map chart interval → lower TF for footprint intrabar aggregation */
+function footprintLowerInterval(iv: string): string {
+  const v = String(iv || "15");
+  if (v === "1" || v === "1m") return "1";
+  if (v === "3" || v === "5" || v === "5m") return "1";
+  if (v === "15" || v === "15m" || v === "30" || v === "30m") return "1";
+  if (v === "60" || v === "1h" || v === "120") return "5";
+  if (v === "240" || v === "4h") return "15";
+  if (v === "D" || v === "1D" || v === "1d") return "60";
+  if (v === "W" || v === "1W" || v === "M") return "240";
+  return "1";
+}
+
+function footprintRowSize(candles: any[], atrLen = 14): number {
+  if (!candles.length) return 1;
+  const n = Math.min(candles.length, Math.max(5, atrLen + 5));
+  const slice = candles.slice(-n);
+  let sum = 0;
+  let cnt = 0;
+  for (let i = 1; i < slice.length; i++) {
+    const h = Number(slice[i].high);
+    const l = Number(slice[i].low);
+    const pc = Number(slice[i - 1].close);
+    if (![h, l, pc].every(Number.isFinite)) continue;
+    sum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+    cnt++;
+  }
+  const atr = cnt ? sum / cnt : Number(slice[slice.length - 1]?.close) * 0.001 || 1;
+  // ~0.2 * ATR as TV auto row size, clamp reasonably
+  const step = Math.max(atr * 0.2, Number(slice[slice.length - 1]?.close) * 1e-5 || 1e-8);
+  // nice round
+  const mag = Math.pow(10, Math.floor(Math.log10(step)));
+  const norm = step / mag;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return nice * mag;
+}
+
+type FootLevel = { price: number; buy: number; sell: number };
+type FootprintBar = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  levels: FootLevel[];
+  poc: number;
+  vaHigh: number;
+  vaLow: number;
+  delta: number;
+  total: number;
+  buyVol: number;
+  sellVol: number;
+  buyImb: number[]; // level indices
+  sellImb: number[];
+};
+
+/** Build footprint bars by aggregating lower-TF klines into price rows */
+function buildFootprintBars(
+  mainCandles: any[],
+  lowerCandles: any[],
+  rowSize: number,
+  imbalancePct = 300
+): FootprintBar[] {
+  if (!mainCandles.length || !lowerCandles.length || !(rowSize > 0)) return [];
+  const lower = lowerCandles
+    .map((c) => ({
+      time: Number(c.time),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Math.max(0, Number(c.volume) || 0),
+    }))
+    .filter((c) => c.time > 0 && Number.isFinite(c.close))
+    .sort((a, b) => a.time - b.time);
+
+  let li = 0;
+  const out: FootprintBar[] = [];
+  const thr = Math.max(1, imbalancePct) / 100;
+
+  for (let mi = 0; mi < mainCandles.length; mi++) {
+    const m = mainCandles[mi];
+    const t0 = Number(m.time);
+    const t1 = mi + 1 < mainCandles.length ? Number(mainCandles[mi + 1].time) : t0 + 1e15;
+    const map = new Map<number, { buy: number; sell: number }>();
+    let prevClose: number | null = null;
+    let prevSide: "buy" | "sell" = "buy";
+
+    while (li < lower.length && lower[li].time < t0) li++;
+    let j = li;
+    while (j < lower.length && lower[j].time < t1) {
+      const b = lower[j];
+      let side: "buy" | "sell";
+      if (b.close > b.open) side = "buy";
+      else if (b.close < b.open) side = "sell";
+      else if (prevClose != null) {
+        if (b.close > prevClose) side = "buy";
+        else if (b.close < prevClose) side = "sell";
+        else side = prevSide;
+      } else side = "buy";
+      prevClose = b.close;
+      prevSide = side;
+
+      // assign volume to close price row (and spread a bit across high-low for better fill)
+      const prices = [b.close, b.open, (b.high + b.low) / 2];
+      const weights = [0.5, 0.25, 0.25];
+      for (let k = 0; k < prices.length; k++) {
+        const row = Math.round(prices[k] / rowSize) * rowSize;
+        const cell = map.get(row) || { buy: 0, sell: 0 };
+        const add = b.volume * weights[k];
+        if (side === "buy") cell.buy += add;
+        else cell.sell += add;
+        map.set(row, cell);
+      }
+      j++;
+    }
+    li = j;
+
+    const levels: FootLevel[] = Array.from(map.entries())
+      .map(([price, v]) => ({ price, buy: v.buy, sell: v.sell }))
+      .sort((a, b) => a.price - b.price);
+
+    // If no lower data, synthesize one level from main bar volume
+    if (!levels.length) {
+      const mid = (Number(m.high) + Number(m.low)) / 2;
+      const row = Math.round(mid / rowSize) * rowSize;
+      const vol = Math.max(0, Number(m.volume) || 0);
+      const up = Number(m.close) >= Number(m.open);
+      levels.push({ price: row, buy: up ? vol : vol * 0.35, sell: up ? vol * 0.35 : vol });
+    }
+
+    let total = 0, buyVol = 0, sellVol = 0, poc = levels[0].price, pocVol = -1;
+    for (const lv of levels) {
+      const t = lv.buy + lv.sell;
+      total += t;
+      buyVol += lv.buy;
+      sellVol += lv.sell;
+      if (t > pocVol) { pocVol = t; poc = lv.price; }
+    }
+
+    // Value area ~70% around POC
+    const target = total * 0.7;
+    let vaVol = 0;
+    const byDist = levels
+      .map((lv, idx) => ({ idx, d: Math.abs(lv.price - poc), t: lv.buy + lv.sell }))
+      .sort((a, b) => a.d - b.d || b.t - a.t);
+    const inVa = new Set<number>();
+    for (const x of byDist) {
+      inVa.add(x.idx);
+      vaVol += x.t;
+      if (vaVol >= target) break;
+    }
+    let vaHigh = poc, vaLow = poc;
+    for (const idx of inVa) {
+      vaHigh = Math.max(vaHigh, levels[idx].price);
+      vaLow = Math.min(vaLow, levels[idx].price);
+    }
+
+    // Imbalances: buy at level i vs sell at level i-1
+    const buyImb: number[] = [];
+    const sellImb: number[] = [];
+    for (let i = 0; i < levels.length; i++) {
+      if (i > 0) {
+        const buy = levels[i].buy;
+        const sellBelow = levels[i - 1].sell;
+        if (sellBelow > 0 && buy >= thr * sellBelow) buyImb.push(i);
+        else if (sellBelow === 0 && buy > 0) buyImb.push(i);
+      }
+      if (i + 1 < levels.length) {
+        const sell = levels[i].sell;
+        const buyAbove = levels[i + 1].buy;
+        if (buyAbove > 0 && sell >= thr * buyAbove) sellImb.push(i);
+        else if (buyAbove === 0 && sell > 0) sellImb.push(i);
+      }
+    }
+
+    out.push({
+      time: t0,
+      open: Number(m.open),
+      high: Number(m.high),
+      low: Number(m.low),
+      close: Number(m.close),
+      levels,
+      poc,
+      vaHigh,
+      vaLow,
+      delta: buyVol - sellVol,
+      total,
+      buyVol,
+      sellVol,
+      buyImb,
+      sellImb,
+    });
+  }
+  return out;
+}
+
+function paintFootprintOverlay(opts: {
+  canvas: HTMLCanvasElement | null;
+  chart: any;
+  series: any;
+  footprints: FootprintBar[] | null;
+  active: boolean;
+}) {
+  const { canvas, chart, series, footprints, active } = opts;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.clientWidth || 0;
+  const h = canvas.clientHeight || 0;
+  if (w < 2 || h < 2) return;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  ctx.clearRect(0, 0, w, h);
+  if (!active || !chart || !series || !footprints?.length) return;
+
+  let barSpacing = 8;
+  try {
+    const bs = (chart.timeScale() as any)?.getBarSpacing?.();
+    if (typeof bs === "number" && bs > 0) barSpacing = bs;
+  } catch {}
+  // need enough width to show cells
+  if (barSpacing < 6) return;
+
+  const cellMaxW = Math.min(48, Math.max(10, barSpacing * 0.42));
+
+  for (const fp of footprints) {
+    let x: number | null = null;
+    try { x = chart.timeScale().timeToCoordinate(fp.time as any); } catch { x = null; }
+    if (x == null || Number.isNaN(Number(x))) continue;
+    const cx = Number(x);
+    if (cx < -80 || cx > w + 80) continue;
+
+    let maxSide = 1;
+    for (const lv of fp.levels) {
+      maxSide = Math.max(maxSide, lv.buy, lv.sell);
+    }
+
+    // thin candle body in center
+    const yo = series.priceToCoordinate(fp.open);
+    const yc = series.priceToCoordinate(fp.close);
+    const yh = series.priceToCoordinate(fp.high);
+    const yl = series.priceToCoordinate(fp.low);
+    if (yo == null || yc == null) continue;
+    const bullish = fp.close >= fp.open;
+    const bodyTop = Math.min(Number(yo), Number(yc));
+    const bodyBot = Math.max(Number(yo), Number(yc));
+    // wick
+    if (yh != null && yl != null) {
+      ctx.strokeStyle = bullish ? "#089981" : "#f23645";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, Number(yh));
+      ctx.lineTo(cx, Number(yl));
+      ctx.stroke();
+    }
+    // slim body
+    ctx.fillStyle = bullish ? "rgba(8,153,129,0.85)" : "rgba(242,54,69,0.85)";
+    ctx.fillRect(cx - 1.5, bodyTop, 3, Math.max(1, bodyBot - bodyTop));
+
+    // footprint levels
+    for (let i = 0; i < fp.levels.length; i++) {
+      const lv = fp.levels[i];
+      const yy = series.priceToCoordinate(lv.price);
+      if (yy == null) continue;
+      const y = Number(yy);
+      const rowH = Math.max(3, Math.min(14, barSpacing * 0.35));
+
+      // sell left
+      const sellW = (lv.sell / maxSide) * cellMaxW;
+      const buyW = (lv.buy / maxSide) * cellMaxW;
+      const sellRatio = maxSide > 0 ? lv.sell / maxSide : 0;
+      const buyRatio = maxSide > 0 ? lv.buy / maxSide : 0;
+
+      // gradient-ish
+      const sellAlpha = 0.25 + 0.55 * sellRatio;
+      const buyAlpha = 0.25 + 0.55 * buyRatio;
+
+      if (sellW > 0.5) {
+        ctx.fillStyle = `rgba(242,54,69,${sellAlpha.toFixed(3)})`;
+        ctx.fillRect(cx - 2 - sellW, y - rowH / 2, sellW, rowH);
+      }
+      if (buyW > 0.5) {
+        ctx.fillStyle = `rgba(8,153,129,${buyAlpha.toFixed(3)})`;
+        ctx.fillRect(cx + 2, y - rowH / 2, buyW, rowH);
+      }
+
+      // imbalance markers
+      if (fp.buyImb.includes(i)) {
+        ctx.strokeStyle = "#22c55e";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + 2 + buyW + 1, y - rowH / 2);
+        ctx.lineTo(cx + 2 + buyW + 1, y + rowH / 2);
+        ctx.stroke();
+      }
+      if (fp.sellImb.includes(i)) {
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx - 2 - sellW - 1, y - rowH / 2);
+        ctx.lineTo(cx - 2 - sellW - 1, y + rowH / 2);
+        ctx.stroke();
+      }
+
+      // volume numbers when bar is wide enough
+      if (barSpacing >= 18) {
+        ctx.font = "9px ui-sans-serif,system-ui,sans-serif";
+        ctx.textBaseline = "middle";
+        if (lv.sell > 0 && sellW > 8) {
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.textAlign = "right";
+          ctx.fillText(formatFootVol(lv.sell), cx - 3, y);
+        }
+        if (lv.buy > 0 && buyW > 8) {
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.textAlign = "left";
+          ctx.fillText(formatFootVol(lv.buy), cx + 3, y);
+        }
+      }
+    }
+
+    // POC line
+    const yPoc = series.priceToCoordinate(fp.poc);
+    if (yPoc != null) {
+      ctx.strokeStyle = "rgba(250,204,21,0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - cellMaxW - 4, Number(yPoc));
+      ctx.lineTo(cx + cellMaxW + 4, Number(yPoc));
+      ctx.stroke();
+    }
+
+    // VA lines
+    const yVah = series.priceToCoordinate(fp.vaHigh);
+    const yVal = series.priceToCoordinate(fp.vaLow);
+    ctx.strokeStyle = "rgba(148,163,184,0.55)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 2]);
+    if (yVah != null) {
+      ctx.beginPath();
+      ctx.moveTo(cx - cellMaxW - 2, Number(yVah));
+      ctx.lineTo(cx + cellMaxW + 2, Number(yVah));
+      ctx.stroke();
+    }
+    if (yVal != null) {
+      ctx.beginPath();
+      ctx.moveTo(cx - cellMaxW - 2, Number(yVal));
+      ctx.lineTo(cx + cellMaxW + 2, Number(yVal));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // summary under candle
+    if (yl != null && barSpacing >= 12) {
+      const yInfo = Number(yl) + 12;
+      if (yInfo < h - 4) {
+        ctx.font = "9px ui-sans-serif,system-ui,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        const dStr = (fp.delta >= 0 ? "+" : "") + formatFootVol(fp.delta);
+        ctx.fillStyle = fp.delta >= 0 ? "rgba(8,153,129,0.95)" : "rgba(242,54,69,0.95)";
+        ctx.fillText(dStr, cx, yInfo);
+        ctx.fillStyle = "rgba(148,163,184,0.9)";
+        ctx.fillText(formatFootVol(fp.total), cx, yInfo + 11);
+      }
+    }
+  }
+}
+
+function formatFootVol(v: number): string {
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  if (a >= 10) return v.toFixed(0);
+  return v.toFixed(2);
+}
 
 /** Paint volume-candle bodies (width ∝ volume) onto a canvas over the chart */
 function paintVolumeCandleBodies(opts: {
@@ -3694,6 +4076,9 @@ export default function DashboardPage() {
   /** Tracks which chartType the current main series was created for */
   const seriesChartTypeRef = useRef<string>("candles");
   const volCandleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const footprintCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const footprintDataRef = useRef<FootprintBar[] | null>(null);
+  const footprintLoadingRef = useRef(false);
   const futureSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const previewLineRef = useRef<IPriceLine | null>(null);
@@ -3847,7 +4232,7 @@ export default function DashboardPage() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   /** Chart series style */
   const [chartType, setChartType] = useState<
-    | "candles" | "hollow" | "volcandles" | "bars" | "line" | "step" | "area" | "baseline"
+    | "candles" | "hollow" | "volcandles" | "footprint" | "bars" | "line" | "step" | "area" | "baseline"
     | "columns" | "highlow" | "hlcarea" | "heikin" | "renko" | "linebreak" | "kagi"
   >(() => loadLS("chart_type", "candles"));
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
@@ -9560,6 +9945,15 @@ priced.sort((a, b) => a.price - b.price);
             active: String(chartTypeRef.current) === "volcandles",
           });
         } catch {}
+        try {
+          paintFootprintOverlay({
+            canvas: footprintCanvasRef.current,
+            chart: chartRef.current,
+            series: seriesRef.current,
+            footprints: footprintDataRef.current,
+            active: String(chartTypeRef.current) === "footprint",
+          });
+        } catch {}
         // Fib/diag handles must track chart on every pan frame
         syncMoveHandlesNow();
         // Reposition DOM rectangles while panning
@@ -11711,6 +12105,11 @@ priced.sort((a, b) => a.price - b.price);
               seriesRef.current = newSer;
               seriesChartTypeRef.current = ctypeNow;
               series = newSer;
+              try {
+                if (ctypeNow === "footprint") {
+                  chart.timeScale().applyOptions({ barSpacing: Math.max(10, chart.timeScale().options?.().barSpacing || 10) });
+                }
+              } catch {}
             } catch (err) {
               console.error("chart type switch failed", err);
               setStatusMsg("Chart type switch failed");
@@ -11813,6 +12212,69 @@ priced.sort((a, b) => a.price - b.price);
                 active: String(chartTypeRef.current) === "volcandles",
               });
             });
+          } catch {}
+
+
+          // Volume footprint: fetch lower TF and build levels
+          try {
+            if (String(chartTypeRef.current) === "footprint") {
+              const myGen = gen;
+              const lowIv = footprintLowerInterval(fetchIv);
+              void (async () => {
+                try {
+                  if (footprintLoadingRef.current) return;
+                  footprintLoadingRef.current = true;
+                  // Need more lower bars than main
+                  const mult = Math.max(3, Math.ceil(intervalToSeconds(fetchIv) / Math.max(1, intervalToSeconds(lowIv))));
+                  const limit = Math.min(5000, Math.max(500, candles.length * mult + 50));
+                  let url = `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(lowIv)}&limit=${limit}`;
+                  const res = await fetch(url, { cache: "no-store" });
+                  const raw = await res.json();
+                  const rows = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+                  if (myGen !== loadGenRef.current) return;
+                  const lower = rows
+                    .map((r: any) => {
+                      const time = Math.floor(
+                        Number(r.time || r[0] || r.openTime || r.t) /
+                          (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+                      );
+                      return {
+                        time,
+                        open: parseFloat(r.open ?? r[1]),
+                        high: parseFloat(r.high ?? r[2]),
+                        low: parseFloat(r.low ?? r[3]),
+                        close: parseFloat(r.close ?? r[4]),
+                        volume: parseFloat(r.volume ?? r[5] ?? 0),
+                      };
+                    })
+                    .filter((c: any) => c.time && !Number.isNaN(c.close))
+                    .sort((a: any, b: any) => a.time - b.time);
+                  const step = footprintRowSize(candles);
+                  const fps = buildFootprintBars(candles, lower, step, 300);
+                  footprintDataRef.current = fps;
+                  paintFootprintOverlay({
+                    canvas: footprintCanvasRef.current,
+                    chart: chartRef.current,
+                    series: seriesRef.current,
+                    footprints: fps,
+                    active: true,
+                  });
+                } catch (e) {
+                  console.error("footprint build failed", e);
+                } finally {
+                  footprintLoadingRef.current = false;
+                }
+              })();
+            } else {
+              footprintDataRef.current = null;
+              try {
+                const c = footprintCanvasRef.current;
+                if (c) {
+                  const ctx = c.getContext("2d");
+                  if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+                }
+              } catch {}
+            }
           } catch {}
 
           chart.applyOptions({
@@ -12207,6 +12669,57 @@ priced.sort((a, b) => a.price - b.price);
       seriesChartTypeRef.current = String(chartTypeRef.current || chartType || "candles");
       pinnedToRightRef.current = true;
       setShowGoLive(false);
+
+      // Footprint on first chart create
+      try {
+        if (String(chartTypeRef.current) === "footprint") {
+          const myGen = gen;
+          const lowIv = footprintLowerInterval(fetchIv);
+          void (async () => {
+            try {
+              footprintLoadingRef.current = true;
+              const mult = Math.max(3, Math.ceil(intervalToSeconds(fetchIv) / Math.max(1, intervalToSeconds(lowIv))));
+              const limit = Math.min(5000, Math.max(500, candles.length * mult + 50));
+              const url = `/api/kline?symbol=${encodeURIComponent(fetchSym)}&interval=${encodeURIComponent(lowIv)}&limit=${limit}`;
+              const res = await fetch(url, { cache: "no-store" });
+              const raw = await res.json();
+              const rows = Array.isArray(raw) ? raw : raw?.data || raw?.result?.list || raw?.candles || [];
+              if (myGen !== loadGenRef.current) return;
+              const lower = rows
+                .map((r: any) => {
+                  const time = Math.floor(
+                    Number(r.time || r[0] || r.openTime || r.t) /
+                      (String(r.time || r[0] || "").length > 12 ? 1000 : 1)
+                  );
+                  return {
+                    time,
+                    open: parseFloat(r.open ?? r[1]),
+                    high: parseFloat(r.high ?? r[2]),
+                    low: parseFloat(r.low ?? r[3]),
+                    close: parseFloat(r.close ?? r[4]),
+                    volume: parseFloat(r.volume ?? r[5] ?? 0),
+                  };
+                })
+                .filter((c: any) => c.time && !Number.isNaN(c.close))
+                .sort((a: any, b: any) => a.time - b.time);
+              const step = footprintRowSize(candles);
+              const fps = buildFootprintBars(candles, lower, step, 300);
+              footprintDataRef.current = fps;
+              paintFootprintOverlay({
+                canvas: footprintCanvasRef.current,
+                chart: chartRef.current,
+                series: seriesRef.current,
+                footprints: fps,
+                active: true,
+              });
+            } catch (e) {
+              console.error("footprint build failed", e);
+            } finally {
+              footprintLoadingRef.current = false;
+            }
+          })();
+        }
+      } catch {}
 
       // اسکرول روی محور قیمت → زوم عمودی | بقیه چارت → افقی (پیش‌فرض LWC)
       try {
@@ -20971,7 +21484,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 <rect x="14" y="8" width="7" height="13" rx="1" />
               </svg>
               <span className="font-medium capitalize">{({
-                candles: "Candles", hollow: "Hollow", volcandles: "Vol candles", bars: "Bars", line: "Line", step: "Step",
+                candles: "Candles", hollow: "Hollow", volcandles: "Vol candles", footprint: "Footprint", bars: "Bars", line: "Line", step: "Step",
                 area: "Area", baseline: "Baseline", hlcarea: "HLC area", columns: "Columns",
                 highlow: "High-low", heikin: "Heikin", renko: "Renko", linebreak: "Line break", kagi: "Kagi",
               } as Record<string, string>)[chartType] || chartType}</span>
@@ -20990,6 +21503,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   ["candles", "Candles"],
                   ["hollow", "Hollow candles"],
                   ["volcandles", "Volume candles"],
+                  ["footprint", "Volume footprint"],
                   ["bars", "Bars"],
                   ["line", "Line"],
                   ["step", "Step line"],
@@ -22341,6 +22855,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ref={volCandleCanvasRef}
                 className="absolute inset-0 pointer-events-none rounded-xl"
                 style={{ zIndex: 12, width: "100%", height: "100%" }}
+              />
+              <canvas
+                ref={footprintCanvasRef}
+                className="absolute inset-0 pointer-events-none rounded-xl"
+                style={{ zIndex: 13, width: "100%", height: "100%" }}
               />
               <div
                 ref={vlineOverlayRef}
