@@ -1824,10 +1824,16 @@ function saveLS(key: string, value: unknown) {
 }
 
 function getPrecision(price: number) {
-  if (price < 0.01) return { precision: 6, minMove: 0.000001 };
-  if (price < 1) return { precision: 5, minMove: 0.00001 };
-  if (price < 100) return { precision: 4, minMove: 0.0001 };
-  if (price < 1000) return { precision: 3, minMove: 0.001 };
+  const p = Math.abs(Number(price)) || 0;
+  // Micro-cap / high-decimal coins need more digits on the price axis
+  if (p > 0 && p < 1e-8) return { precision: 12, minMove: 1e-12 };
+  if (p > 0 && p < 1e-6) return { precision: 10, minMove: 1e-10 };
+  if (p > 0 && p < 1e-4) return { precision: 8, minMove: 1e-8 };
+  if (p < 0.01) return { precision: 6, minMove: 0.000001 };
+  if (p < 1) return { precision: 5, minMove: 0.00001 };
+  if (p < 100) return { precision: 4, minMove: 0.0001 };
+  if (p < 1000) return { precision: 3, minMove: 0.001 };
+  if (p < 10000) return { precision: 2, minMove: 0.01 };
   return { precision: 2, minMove: 0.01 };
 }
 function hexToRgba(hex: string, alpha = 1) {
@@ -3626,10 +3632,21 @@ function footprintLowerInterval(iv: string): string {
   return "1";
 }
 
+
+function quantizeFootPrice(price: number, rowSize: number): number {
+  if (!(rowSize > 0) || !Number.isFinite(price)) return Number(price) || 0;
+  const q = Math.round(Number(price) / rowSize) * rowSize;
+  // trim binary float noise relative to row size
+  const decimals = Math.min(12, Math.max(0, -Math.floor(Math.log10(rowSize)) + 2));
+  const f = Math.pow(10, decimals);
+  return Math.round(q * f) / f;
+}
+
 function footprintRowSize(candles: any[], atrLen = 14): number {
-  if (!candles.length) return 1;
+  if (!candles.length) return 1e-6;
   const n = Math.min(candles.length, Math.max(5, atrLen + 5));
   const slice = candles.slice(-n);
+  const lastPx = Math.abs(Number(slice[slice.length - 1]?.close)) || 1;
   let sum = 0;
   let cnt = 0;
   for (let i = 1; i < slice.length; i++) {
@@ -3640,14 +3657,18 @@ function footprintRowSize(candles: any[], atrLen = 14): number {
     sum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
     cnt++;
   }
-  const atr = cnt ? sum / cnt : Number(slice[slice.length - 1]?.close) * 0.001 || 1;
-  // ~0.2 * ATR as TV auto row size, clamp reasonably
-  const step = Math.max(atr * 0.2, Number(slice[slice.length - 1]?.close) * 1e-5 || 1e-8);
-  // nice round
-  const mag = Math.pow(10, Math.floor(Math.log10(step)));
+  const atr = cnt ? sum / cnt : lastPx * 0.001;
+  // ~0.2 * ATR, never larger than ~2% of price, never zero
+  let step = Math.max(atr * 0.2, lastPx * 1e-6, 1e-12);
+  step = Math.min(step, lastPx * 0.02 || step);
+  if (!(step > 0) || !Number.isFinite(step)) step = lastPx * 0.001 || 1e-8;
+  const log = Math.log10(step);
+  if (!Number.isFinite(log)) return lastPx * 0.001 || 1e-8;
+  const mag = Math.pow(10, Math.floor(log));
   const norm = step / mag;
   const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
-  return nice * mag;
+  const out = nice * mag;
+  return Number.isFinite(out) && out > 0 ? out : lastPx * 0.001 || 1e-8;
 }
 
 type FootLevel = { price: number; buy: number; sell: number };
@@ -3720,7 +3741,8 @@ function buildFootprintBars(
       const prices = [b.close, b.open, (b.high + b.low) / 2];
       const weights = [0.5, 0.25, 0.25];
       for (let k = 0; k < prices.length; k++) {
-        const row = Math.round(prices[k] / rowSize) * rowSize;
+        // quantize without float drift on micro prices
+        const row = quantizeFootPrice(prices[k], rowSize);
         const cell = map.get(row) || { buy: 0, sell: 0 };
         const add = b.volume * weights[k];
         if (side === "buy") cell.buy += add;
@@ -3738,7 +3760,7 @@ function buildFootprintBars(
     // If no lower data, synthesize one level from main bar volume
     if (!levels.length) {
       const mid = (Number(m.high) + Number(m.low)) / 2;
-      const row = Math.round(mid / rowSize) * rowSize;
+      const row = quantizeFootPrice(mid, rowSize);
       const vol = Math.max(0, Number(m.volume) || 0);
       const up = Number(m.close) >= Number(m.open);
       levels.push({ price: row, buy: up ? vol : vol * 0.35, sell: up ? vol * 0.35 : vol });
