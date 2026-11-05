@@ -44,6 +44,10 @@ interface Alarm {
   start_time?: number | null;
   end_time?: number | null;
   end_price?: number | null;
+  /** true = fire once then deactivate; false = keep firing (with cooldown) */
+  once?: boolean | null;
+  /** true = delete alarm row after it triggers */
+  delete_after?: boolean | null;
 }
 
 interface WatchList {
@@ -2602,6 +2606,27 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
   }
 }
 
+
+/** Encode once/delete_after into alarm note without losing user text */
+function encodeAlarmCfg(note: string | null | undefined, once: boolean, deleteAfter: boolean): string {
+  const base = (note || "").replace(/\s*\|\|__cfg:[^|]*$/g, "").trim();
+  const cfg = `__cfg:once=${once ? 1 : 0}|del=${deleteAfter ? 1 : 0}`;
+  return base ? `${base}||${cfg}` : cfg;
+}
+function parseAlarmCfg(note: string | null | undefined): { once: boolean; deleteAfter: boolean; text: string } {
+  const raw = String(note || "");
+  const m = raw.match(/\|\|?__cfg:once=(\d)\|del=(\d)/);
+  let once = true;
+  let deleteAfter = false;
+  let text = raw;
+  if (m) {
+    once = m[1] === "1";
+    deleteAfter = m[2] === "1";
+    text = raw.replace(/\|\|?__cfg:once=\d\|del=\d/, "").trim();
+  }
+  return { once, deleteAfter, text };
+}
+
 function getConditionSymbol(c: string) {
   return c === "above" ? "≥" : c === "below" ? "≤" : "≈";
 }
@@ -4618,6 +4643,10 @@ export default function DashboardPage() {
   const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [moveStyleOpen, setMoveStyleOpen] = useState(false);
+  const [moveAlarmOpen, setMoveAlarmOpen] = useState(false);
+  const [moveAlarmCond, setMoveAlarmCond] = useState<"cross" | "above" | "below">("cross");
+  const [moveAlarmOnce, setMoveAlarmOnce] = useState(true);
+  const [moveAlarmDelete, setMoveAlarmDelete] = useState(false);
   const [moveBarPos, setMoveBarPos] = useState<{ x: number; y: number } | null>(null);
   const [moveNoteOpen, setMoveNoteOpen] = useState(false);
   const [moveNoteDraft, setMoveNoteDraft] = useState("");
@@ -20180,9 +20209,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         setPosToolsOpen(false);
       }
       // Line/alarm style & note popovers: close when clicking outside
-      if ((moveStyleOpen || moveNoteOpen) && !el.closest?.("[data-menu]") && !el.closest?.("[data-note-edit]") && !el.closest?.("[data-move-bar]")) {
+      if ((moveStyleOpen || moveNoteOpen || moveAlarmOpen) && !el.closest?.("[data-menu]") && !el.closest?.("[data-note-edit]") && !el.closest?.("[data-move-bar]")) {
         setMoveStyleOpen(false);
         setMoveNoteOpen(false);
+        setMoveAlarmOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -20899,60 +20929,85 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
    * (Previously client marked triggered without notifying Telegram → missed messages.)
    */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
-    // فقط یک‌بار برای هر آلارم
-    if (
-      notifiedAlarmsRef.current.has(a.id) ||
-      triggeringAlarmsRef.current.has(a.id)
-    ) {
-      return;
-    }
-    triggeringAlarmsRef.current.add(a.id);
+    const cfg = parseAlarmCfg(a.note);
+    const isOnce = a.once != null ? !!a.once : cfg.once;
+    const doDelete = a.delete_after != null ? !!a.delete_after : cfg.deleteAfter;
 
+    // Cooldown / in-flight guards
+    if (triggeringAlarmsRef.current.has(a.id)) return;
+    if (isOnce && notifiedAlarmsRef.current.has(a.id)) return;
+    // Always-mode: short cooldown so same tick cannot multi-fire
+    if (!isOnce && notifiedAlarmsRef.current.has(a.id)) return;
+
+    triggeringAlarmsRef.current.add(a.id);
     const nowIso = new Date().toISOString();
 
-    // Claim اتمیک در DB — اگر کرون زودتر زده باشد، نوتیف دوم نده (مشکل iPad)
     let claimed = false;
     try {
-      const { data: row } = await supabase
-        .from("alarms")
-        .update({
-          triggered: true,
-          is_active: false,
-          last_price: price,
-          triggered_at: nowIso,
-        })
-        .eq("id", a.id)
-        .eq("triggered", false)
-        .select("id")
-        .maybeSingle();
-      claimed = !!(row && (row as any).id);
+      if (isOnce || doDelete) {
+        const { data: row } = await supabase
+          .from("alarms")
+          .update({
+            triggered: true,
+            is_active: false,
+            last_price: price,
+            triggered_at: nowIso,
+          })
+          .eq("id", a.id)
+          .eq("triggered", false)
+          .select("id")
+          .maybeSingle();
+        claimed = !!(row && (row as any).id);
+      } else {
+        // Always: stay active, only stamp last_price
+        const { data: row } = await supabase
+          .from("alarms")
+          .update({
+            last_price: price,
+            triggered_at: nowIso,
+          })
+          .eq("id", a.id)
+          .eq("is_active", true)
+          .select("id")
+          .maybeSingle();
+        claimed = !!(row && (row as any).id) || true; // still notify even if soft
+      }
     } catch {
-      claimed = false;
+      claimed = true; // notify locally anyway
     }
 
-    // UI را در هر حالت آپدیت کن
-    setAlarms((p) =>
-      p.map((x) =>
-        x.id === a.id
-          ? {
-              ...x,
-              triggered: true,
-              is_active: false,
-              last_price: price,
-              triggered_at: nowIso,
-            }
-          : x
-      )
-    );
-    notifiedAlarmsRef.current.add(a.id);
+    if (doDelete) {
+      setAlarms((p) => p.filter((x) => String(x.id) !== String(a.id)));
+      try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
+    } else if (isOnce) {
+      setAlarms((p) =>
+        p.map((x) =>
+          x.id === a.id
+            ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
+            : x
+        )
+      );
+    } else {
+      setAlarms((p) =>
+        p.map((x) =>
+          x.id === a.id ? { ...x, last_price: price, triggered_at: nowIso } : x
+        )
+      );
+    }
 
-    if (!claimed) {
-      // سرور/کرون قبلاً نوتیف فرستاده — دوباره نده
+    notifiedAlarmsRef.current.add(a.id);
+    // Always mode: clear notify flag after 15s so it can fire again on next cross
+    if (!isOnce && !doDelete) {
+      setTimeout(() => {
+        try { notifiedAlarmsRef.current.delete(a.id); } catch {}
+      }, 15000);
+    }
+
+    if (!claimed && isOnce) {
       triggeringAlarmsRef.current.delete(a.id);
       return;
     }
 
-    // سایت باز است → همیشه نوتیف + صدای بیپ روی کامپیوتر
     showLocalNotification(
       `${a.symbol}`,
       alarmNotifyBody(a, price),
@@ -24197,7 +24252,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     <button
                       type="button"
                       title="Line style"
-                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); }}
+                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); setMoveAlarmOpen(false); }}
                       className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -24355,75 +24410,207 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </div>
                     )}
                   </div>
-                  {/* Convert line → alarm */}
-                  {movingType === "line" && (
+                  {/* Alarm options — condition / once-always / delete-after */}
+                  <div className="relative" data-menu>
                     <button
                       type="button"
-                      title="Convert to alarm"
-                      onClick={async () => {
-                        const id = movingIdRef.current;
-                        if (!id) return;
-                        const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                        if (!l) return;
-                        try {
-                          pushUndo();
-                          const session = (await supabase.auth.getSession()).data.session;
-                          const uid = session?.user?.id;
-                          const isDiag = isDiagonalLine(l) || (typeof l.note === "string" && l.note.startsWith("__diag:"));
-                          const isRay = typeof l.note === "string" && l.note.startsWith("__ray:");
-                          const row: any = {
-                            symbol: String(l.symbol || symbolRef.current || "").toUpperCase(),
-                            price: Number(l.price),
-                            condition: "cross",
-                            is_active: true,
-                            triggered: false,
-                            color: l.color || DEFAULT_ALARM_COLOR,
-                            width: l.width || 2,
-                            dash: l.dash || l.style || "solid",
-                            note: null,
-                          };
-                          if (uid) row.user_id = uid;
-                          if (isDiag) {
-                            row.start_time = l.start_time;
-                            row.end_time = l.end_time;
-                            row.end_price = l.end_price;
-                            row.note = `__diag:${l.start_time}:${l.end_time}:${l.end_price}`;
-                          } else if (isRay || (l.start_time != null && (l.end_time == null || l.end_price == null))) {
-                            row.start_time = l.start_time;
-                            row.note = `__ray:${l.start_time}`;
-                          }
-                          const { data, error } = await supabase.from("alarms").insert([row]).select().single();
-                          if (!error && data) {
-                            setAlarms((prev) => [{ ...(data as any) }, ...prev]);
-                            // remove original line
-                            try { await deleteLine(id); } catch {
-                              setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
-                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                      title="Alarm"
+                      onClick={() => {
+                        const open = !moveAlarmOpen;
+                        setMoveAlarmOpen(open);
+                        setMoveStyleOpen(false);
+                        setMoveNoteOpen(false);
+                        if (open) {
+                          const id = movingIdRef.current;
+                          const typ = movingTypeRef.current;
+                          if (typ === "alarm" && id) {
+                            const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                            if (al) {
+                              const cfg = parseAlarmCfg(al.note);
+                              setMoveAlarmCond((al.condition as any) || "cross");
+                              setMoveAlarmOnce(al.once != null ? !!al.once : cfg.once);
+                              setMoveAlarmDelete(al.delete_after != null ? !!al.delete_after : cfg.deleteAfter);
                             }
-                            setMovingId(null);
-                            setMovingType(null);
-                            setMode("none");
-                            moveDiagRef.current = null;
-                            setMoveStyleOpen(false);
-                            setMoveNoteOpen(false);
-                            clearPreview();
-                            setStatusMsg("Converted to alarm");
-                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                           } else {
-                            setStatusMsg("Convert failed");
+                            setMoveAlarmCond("cross");
+                            setMoveAlarmOnce(true);
+                            setMoveAlarmDelete(false);
                           }
-                        } catch {
-                          setStatusMsg("Convert failed");
                         }
                       }}
-                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10 hover:text-orange-400 flex items-center justify-center transition-colors"
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                        moveAlarmOpen || movingType === "alarm"
+                          ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
+                          : "border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
+                      }`}
                     >
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                       </svg>
                     </button>
-                  )}
+                    {moveAlarmOpen && (
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[180px]">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
+                        <div className="flex flex-col gap-0.5 mb-2">
+                          {([
+                            { id: "cross", label: "Cross", icon: "≈" },
+                            { id: "above", label: "Above", icon: "≥" },
+                            { id: "below", label: "Below", icon: "≤" },
+                          ] as const).map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setMoveAlarmCond(c.id)}
+                              className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                                moveAlarmCond === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                              }`}
+                            >
+                              <span className="w-4 text-center">{moveAlarmCond === c.id ? "✓" : ""}</span>
+                              <span>{c.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="border-t border-gray-700 my-1.5" />
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Trigger</div>
+                        <div className="flex gap-1 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => setMoveAlarmOnce(true)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Once</button>
+                          <button
+                            type="button"
+                            onClick={() => setMoveAlarmOnce(false)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Always</button>
+                        </div>
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">After trigger</div>
+                        <div className="flex gap-1 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => setMoveAlarmDelete(false)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmDelete ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Keep</button>
+                          <button
+                            type="button"
+                            onClick={() => setMoveAlarmDelete(true)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmDelete ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Delete</button>
+                        </div>
+                        <button
+                          type="button"
+                          className="w-full mt-1 py-1.5 rounded bg-orange-500 text-black text-xs font-semibold hover:bg-orange-400"
+                          onClick={async () => {
+                            const id = movingIdRef.current;
+                            const typ = movingTypeRef.current;
+                            if (!id) return;
+                            const cfgNote = (base: string | null | undefined) =>
+                              encodeAlarmCfg(base, moveAlarmOnce, moveAlarmDelete);
+
+                            // Already an alarm → update settings
+                            if (typ === "alarm") {
+                              try {
+                                const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                                const note = cfgNote(al ? parseAlarmCfg(al.note).text : null);
+                                const patch: any = {
+                                  condition: moveAlarmCond,
+                                  note,
+                                  once: moveAlarmOnce,
+                                  delete_after: moveAlarmDelete,
+                                };
+                                setAlarms((prev) => prev.map((a) => String(a.id) === String(id) ? { ...a, ...patch } : a));
+                                try {
+                                  const { error } = await supabase.from("alarms").update({
+                                    condition: moveAlarmCond,
+                                    note,
+                                  }).eq("id", id);
+                                  // optional columns if schema has them
+                                  if (!error) {
+                                    try { await supabase.from("alarms").update({ once: moveAlarmOnce, delete_after: moveAlarmDelete } as any).eq("id", id); } catch {}
+                                  }
+                                } catch {}
+                                setMoveAlarmOpen(false);
+                                setStatusMsg(`Alarm: ${moveAlarmCond} · ${moveAlarmOnce ? "Once" : "Always"} · ${moveAlarmDelete ? "Delete" : "Keep"}`);
+                              } catch {
+                                setStatusMsg("Alarm update failed");
+                              }
+                              return;
+                            }
+
+                            // Line → convert to alarm with chosen settings
+                            const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                            if (!l) return;
+                            try {
+                              pushUndo();
+                              const session = (await supabase.auth.getSession()).data.session;
+                              const uid = session?.user?.id;
+                              const isDiag = isDiagonalLine(l) || (typeof l.note === "string" && l.note.startsWith("__diag:"));
+                              const isRay = typeof l.note === "string" && l.note.startsWith("__ray:");
+                              let baseNote: string | null = null;
+                              const row: any = {
+                                symbol: String(l.symbol || symbolRef.current || "").toUpperCase(),
+                                price: Number(l.price),
+                                condition: moveAlarmCond,
+                                is_active: true,
+                                triggered: false,
+                                color: l.color || DEFAULT_ALARM_COLOR,
+                                width: l.width || 2,
+                                dash: l.dash || l.style || "solid",
+                                note: null as string | null,
+                              };
+                              if (uid) row.user_id = uid;
+                              if (isDiag) {
+                                row.start_time = l.start_time;
+                                row.end_time = l.end_time;
+                                row.end_price = l.end_price;
+                                baseNote = `__diag:${l.start_time}:${l.end_time}:${l.end_price}`;
+                              } else if (isRay || (l.start_time != null && (l.end_time == null || l.end_price == null))) {
+                                row.start_time = l.start_time;
+                                baseNote = `__ray:${l.start_time}`;
+                              }
+                              row.note = cfgNote(baseNote);
+                              const { data, error } = await supabase.from("alarms").insert([row]).select().single();
+                              if (!error && data) {
+                                const saved: any = {
+                                  ...(data as any),
+                                  condition: moveAlarmCond,
+                                  once: moveAlarmOnce,
+                                  delete_after: moveAlarmDelete,
+                                  note: row.note,
+                                };
+                                setAlarms((prev) => [saved, ...prev]);
+                                try { await deleteLine(id); } catch {
+                                  setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                                  try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                                }
+                                // Stay selected as the new alarm so user can tweak further
+                                setMovingId(String(saved.id));
+                                movingIdRef.current = String(saved.id);
+                                setMovingType("alarm");
+                                movingTypeRef.current = "alarm";
+                                setMode("move");
+                                modeRef.current = "move";
+                                moveDiagRef.current = null;
+                                setMoveStyleOpen(false);
+                                setMoveNoteOpen(false);
+                                setMoveAlarmOpen(false);
+                                clearPreview();
+                                setStatusMsg(`Alarm set · ${moveAlarmCond} · ${moveAlarmOnce ? "Once" : "Always"}`);
+                                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                              } else {
+                                setStatusMsg("Convert failed");
+                              }
+                            } catch {
+                              setStatusMsg("Convert failed");
+                            }
+                          }}
+                        >
+                          {movingType === "alarm" ? "Apply" : "Set alarm"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   {/* Trash */}
                   <button
                     type="button"
