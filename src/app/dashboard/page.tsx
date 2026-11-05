@@ -2144,6 +2144,84 @@ function calcBollinger(
   return { basis, upper, lower };
 }
 
+/** Ichimoku Cloud (TradingView / Pine Script equivalent)
+ * conversion = avg(highest(high, conv), lowest(low, conv))
+ * base       = avg(highest(high, base), lowest(low, base))
+ * leadA      = avg(conversion, base)  plotted `displacement` bars ahead
+ * leadB      = avg(highest(high, leadB), lowest(low, leadB)) plotted ahead
+ * lagging    = close plotted `displacement` bars behind
+ */
+function calcIchimoku(
+  candles: { time: number; open?: number; high: number; low: number; close: number }[],
+  conversionPeriods = 9,
+  basePeriods = 26,
+  leadBPeriods = 52,
+  displacement = 26,
+  barSec = 60
+) {
+  const n = candles.length;
+  const convP = Math.max(1, conversionPeriods);
+  const baseP = Math.max(1, basePeriods);
+  const leadBP = Math.max(1, leadBPeriods);
+  const disp = Math.max(1, displacement);
+  const highAt = (i: number) => Number(candles[i].high);
+  const lowAt = (i: number) => Number(candles[i].low);
+  const closeAt = (i: number) => Number(candles[i].close);
+  const donchian = (i: number, len: number): number | null => {
+    if (i < len - 1) return null;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = 0; j < len; j++) {
+      const h = highAt(i - j), l = lowAt(i - j);
+      if (h > hi) hi = h;
+      if (l < lo) lo = l;
+    }
+    if (!(hi > -Infinity) || !(lo < Infinity)) return null;
+    return (hi + lo) / 2;
+  };
+  const conversion: { time: number; value: number }[] = [];
+  const base: { time: number; value: number }[] = [];
+  const lagging: { time: number; value: number }[] = [];
+  const leadA: { time: number; value: number }[] = [];
+  const leadB: { time: number; value: number }[] = [];
+  // lag offset in Pine: plot(close, offset = -displacement + 1) → shift back (disp - 1) bars
+  // lead offset: offset = displacement - 1 → shift forward (disp - 1) bars
+  const lagBars = disp - 1;
+  const leadBars = disp - 1;
+  for (let i = 0; i < n; i++) {
+    const t = Number(candles[i].time);
+    const c = donchian(i, convP);
+    const b = donchian(i, baseP);
+    if (c != null) conversion.push({ time: t, value: c });
+    if (b != null) base.push({ time: t, value: b });
+    // Lagging Span: close of bar i is drawn at time of bar (i - lagBars)
+    if (i >= lagBars) {
+      const tLag = Number(candles[i - lagBars].time);
+      lagging.push({ time: tLag, value: closeAt(i) });
+    }
+    // Leading spans: value at bar i is drawn at time of bar (i + leadBars)
+    // For future beyond last bar, synthesize times with barSec
+    if (c != null && b != null) {
+      const la = (c + b) / 2;
+      let tLead: number;
+      if (i + leadBars < n) tLead = Number(candles[i + leadBars].time);
+      else tLead = Number(candles[n - 1].time) + (i + leadBars - (n - 1)) * barSec;
+      leadA.push({ time: tLead, value: la });
+    }
+    const lb = donchian(i, leadBP);
+    if (lb != null) {
+      let tLead: number;
+      if (i + leadBars < n) tLead = Number(candles[i + leadBars].time);
+      else tLead = Number(candles[n - 1].time) + (i + leadBars - (n - 1)) * barSec;
+      leadB.push({ time: tLead, value: lb });
+    }
+  }
+  // Sort lead series by time (should already be ordered)
+  leadA.sort((a, b) => a.time - b.time);
+  leadB.sort((a, b) => a.time - b.time);
+  return { conversion, base, lagging, leadA, leadB };
+}
+
+
 /** Zero-median RSI series for a value stream */
 function calcZRsiFromValues(values: number[], length: number): (number | null)[] {
   const p = Math.max(2, length);
@@ -4183,6 +4261,10 @@ export default function DashboardPage() {
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const bbSeriesRef = useRef<{ basis: any; upper: any; lower: any } | null>(null);
+  const ichiSeriesRef = useRef<{
+    conv: any; base: any; lag: any; leadA: any; leadB: any;
+  } | null>(null);
+  const ichiCloudRef = useRef<{ leadA: { time: number; value: number }[]; leadB: { time: number; value: number }[] } | null>(null);
   const harsiSeriesRef = useRef<any>(null);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
@@ -5003,6 +5085,29 @@ export default function DashboardPage() {
   const [bbLowerColor, setBbLowerColor] = useState(() => loadLS("bb_lc", "#089981"));
 
   // HARSI oscillator
+
+  // Ichimoku Cloud
+  const [showIchimoku, setShowIchimoku] = useState(() => loadLS("ind_ichi", false));
+  const [ichiVisible, setIchiVisible] = useState(() => loadLS("vis_ichi", true));
+  const [ichiConv, setIchiConv] = useState(() => loadLS("ichi_conv", 9));
+  const [ichiBase, setIchiBase] = useState(() => loadLS("ichi_base", 26));
+  const [ichiLeadB, setIchiLeadB] = useState(() => loadLS("ichi_leadb", 52));
+  const [ichiDisp, setIchiDisp] = useState(() => loadLS("ichi_disp", 26));
+  const [ichiConvColor, setIchiConvColor] = useState(() => loadLS("ichi_c_conv", "#2962FF"));
+  const [ichiBaseColor, setIchiBaseColor] = useState(() => loadLS("ichi_c_base", "#B71C1C"));
+  const [ichiLagColor, setIchiLagColor] = useState(() => loadLS("ichi_c_lag", "#43A047"));
+  const [ichiLeadAColor, setIchiLeadAColor] = useState(() => loadLS("ichi_c_leada", "#A5D6A7"));
+  const [ichiLeadBColor, setIchiLeadBColor] = useState(() => loadLS("ichi_c_leadb", "#EF9A9A"));
+  const [ichiCloudBull, setIchiCloudBull] = useState(() => loadLS("ichi_cloud_bull", "rgba(67,160,71,0.25)"));
+  const [ichiCloudBear, setIchiCloudBear] = useState(() => loadLS("ichi_cloud_bear", "rgba(244,67,54,0.25)"));
+  const [ichiShowConv, setIchiShowConv] = useState(() => loadLS("ichi_show_conv", true));
+  const [ichiShowBase, setIchiShowBase] = useState(() => loadLS("ichi_show_base", true));
+  const [ichiShowLag, setIchiShowLag] = useState(() => loadLS("ichi_show_lag", true));
+  const [ichiShowLeadA, setIchiShowLeadA] = useState(() => loadLS("ichi_show_leada", true));
+  const [ichiShowLeadB, setIchiShowLeadB] = useState(() => loadLS("ichi_show_leadb", true));
+  const [ichiShowCloud, setIchiShowCloud] = useState(() => loadLS("ichi_show_cloud", true));
+  const [ichiSettings, setIchiSettings] = useState(false);
+  const [ichiSettingsTab, setIchiSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
   const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
   const [harsiVisible, setHarsiVisible] = useState(() => loadLS("vis_harsi", true));
   const [harsiSettings, setHarsiSettings] = useState(false);
@@ -5616,7 +5721,21 @@ export default function DashboardPage() {
     saveLS("bb_len", bbLength); saveLS("bb_mult", bbMult);
     saveLS("bb_bc", bbBasisColor); saveLS("bb_uc", bbUpperColor); saveLS("bb_lc", bbLowerColor);
   }, [showBB, bbVisible, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor]);
-  // HARSI same bug
+  useEffect(() => {
+    saveLS("ind_ichi", showIchimoku); saveLS("vis_ichi", ichiVisible);
+    saveLS("ichi_conv", ichiConv); saveLS("ichi_base", ichiBase);
+    saveLS("ichi_leadb", ichiLeadB); saveLS("ichi_disp", ichiDisp);
+    saveLS("ichi_c_conv", ichiConvColor); saveLS("ichi_c_base", ichiBaseColor);
+    saveLS("ichi_c_lag", ichiLagColor); saveLS("ichi_c_leada", ichiLeadAColor);
+    saveLS("ichi_c_leadb", ichiLeadBColor);
+    saveLS("ichi_cloud_bull", ichiCloudBull); saveLS("ichi_cloud_bear", ichiCloudBear);
+    saveLS("ichi_show_conv", ichiShowConv); saveLS("ichi_show_base", ichiShowBase);
+    saveLS("ichi_show_lag", ichiShowLag); saveLS("ichi_show_leada", ichiShowLeadA);
+    saveLS("ichi_show_leadb", ichiShowLeadB); saveLS("ichi_show_cloud", ichiShowCloud);
+  }, [showIchimoku, ichiVisible, ichiConv, ichiBase, ichiLeadB, ichiDisp,
+    ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
+    ichiCloudBull, ichiCloudBear, ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud]);
+// HARSI same bug
   useEffect(() => {
     saveLS("ind_harsi", showHARSI); saveLS("vis_harsi", harsiVisible);
     saveLS("harsi_len", harsiLen); saveLS("harsi_sm", harsiSmooth);
@@ -7488,6 +7607,7 @@ export default function DashboardPage() {
       const chart2 = chartRef.current;
       const ser = seriesRef.current;
       if (!host || !chart2) return;
+      try { (window as any).__paintIchiCloud?.(); } catch {}
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const child of Array.from(host.children) as HTMLElement[]) {
         if (child.dataset.vlineId) {
@@ -11262,13 +11382,136 @@ priced.sort((a, b) => a.price - b.price);
   }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
 
   
+
+  const removeIchimoku = useCallback(() => {
+    const s = ichiSeriesRef.current;
+    if (s) {
+      try { chartRef.current?.removeSeries(s.conv); } catch {}
+      try { chartRef.current?.removeSeries(s.base); } catch {}
+      try { chartRef.current?.removeSeries(s.lag); } catch {}
+      try { chartRef.current?.removeSeries(s.leadA); } catch {}
+      try { chartRef.current?.removeSeries(s.leadB); } catch {}
+      ichiSeriesRef.current = null;
+    }
+    ichiCloudRef.current = null;
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-ichi-cloud]").forEach((el) => el.remove());
+    } catch {}
+  }, []);
+
+  const paintIchiCloud = useCallback(() => {
+    try {
+      const host = vlineOverlayRef.current;
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart || !ser) return;
+      host.querySelectorAll("[data-ichi-cloud]").forEach((el) => el.remove());
+      if (!showIchimoku || !ichiVisible || !ichiShowCloud || hideIndicators) return;
+      const data = ichiCloudRef.current;
+      if (!data || !data.leadA.length || !data.leadB.length) return;
+      // Merge by time for polygon strips
+      const mapA = new Map(data.leadA.map((p) => [p.time, p.value]));
+      const mapB = new Map(data.leadB.map((p) => [p.time, p.value]));
+      const times = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort((a, b) => a - b);
+      // Build contiguous segments where both exist
+      type Pt = { x: number; yA: number; yB: number; bull: boolean };
+      const pts: Pt[] = [];
+      for (const t of times) {
+        const a = mapA.get(t);
+        const b = mapB.get(t);
+        if (a == null || b == null) continue;
+        let x: number | null = null;
+        try { x = chart.timeScale().timeToCoordinate(t as any) as any; } catch {}
+        if (x == null || Number.isNaN(Number(x))) continue;
+        const yA = ser.priceToCoordinate(a);
+        const yB = ser.priceToCoordinate(b);
+        if (yA == null || yB == null) continue;
+        pts.push({ x: Number(x), yA: Number(yA), yB: Number(yB), bull: a >= b });
+      }
+      if (pts.length < 2) return;
+      // Split into runs of same bull/bear for fill color
+      let run: Pt[] = [pts[0]];
+      const flush = () => {
+        if (run.length < 2) return;
+        const bull = run[0].bull;
+        let d = `M ${run[0].x} ${run[0].yA}`;
+        for (let i = 1; i < run.length; i++) d += ` L ${run[i].x} ${run[i].yA}`;
+        for (let i = run.length - 1; i >= 0; i--) d += ` L ${run[i].x} ${run[i].yB}`;
+        d += " Z";
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("data-ichi-cloud", "1");
+        svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:3;overflow:visible;";
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", d);
+        path.setAttribute("fill", bull ? ichiCloudBull : ichiCloudBear);
+        path.setAttribute("stroke", "none");
+        svg.appendChild(path);
+        host.appendChild(svg);
+      };
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i].bull !== run[0].bull) {
+          flush();
+          run = [pts[i - 1], pts[i]]; // connect at boundary
+        } else {
+          run.push(pts[i]);
+        }
+      }
+      flush();
+    } catch {}
+  }, [showIchimoku, ichiVisible, ichiShowCloud, hideIndicators, ichiCloudBull, ichiCloudBear]);
+
+  const applyIchimoku = useCallback(() => {
+    removeIchimoku();
+    if (!showIchimoku || !ichiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    let barSec = 60;
+    try { barSec = intervalToSeconds(String(intervalRef.current)) || 60; } catch {}
+    const data = calcIchimoku(candles, ichiConv, ichiBase, ichiLeadB, ichiDisp, barSec);
+    ichiCloudRef.current = { leadA: data.leadA, leadB: data.leadB };
+    try {
+      const mk = (color: string, visible: boolean) =>
+        chart.addLineSeries({
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          visible,
+        });
+      const conv = mk(ichiConvColor, ichiShowConv);
+      const base = mk(ichiBaseColor, ichiShowBase);
+      const lag = mk(ichiLagColor, ichiShowLag);
+      const leadA = mk(ichiLeadAColor, ichiShowLeadA);
+      const leadB = mk(ichiLeadBColor, ichiShowLeadB);
+      if (ichiShowConv) conv.setData(data.conversion as any);
+      if (ichiShowBase) base.setData(data.base as any);
+      if (ichiShowLag) lag.setData(data.lagging as any);
+      if (ichiShowLeadA) leadA.setData(data.leadA as any);
+      if (ichiShowLeadB) leadB.setData(data.leadB as any);
+      ichiSeriesRef.current = { conv, base, lag, leadA, leadB };
+      requestAnimationFrame(() => {
+        try { paintIchiCloud(); } catch {}
+      });
+    } catch {}
+  }, [
+    showIchimoku, ichiVisible, hideIndicators, ichiConv, ichiBase, ichiLeadB, ichiDisp,
+    ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
+    ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud,
+    removeIchimoku, paintIchiCloud,
+  ]);
+
   useEffect(() => { applyBB(); }, [applyBB]);
   useEffect(() => { applyHARSI(); }, [applyHARSI]);
+  useEffect(() => { applyIchimoku(); }, [applyIchimoku]);
+  useEffect(() => {
+    try { (window as any).__paintIchiCloud = paintIchiCloud; } catch {}
+  }, [paintIchiCloud]);
 
   const rebuildIndicators = useCallback(() => {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
-    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI]);
+    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI(); applyIchimoku();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI, applyIchimoku]);
 
   // Double-click hide/show oscillators — placed after apply* so functions exist
   useEffect(() => {
@@ -12106,6 +12349,8 @@ priced.sort((a, b) => a.price - b.price);
                 try { bb.upper?.setData([]); } catch {}
                 try { bb.lower?.setData([]); } catch {}
               }
+              try { removeIchimoku(); } catch {}
+              try { ichiSeriesRef.current = null; } catch {}
             } catch {}
             // Drop manual zoom from previous coin — keep the stable autoscaleInfoProvider
             // (it only applies override when priceRangeOverrideRef is set)
@@ -20851,6 +21096,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     setShowMACD(false);
     setShowStoch(false);
     setShowBB(false);
+    setShowIchimoku(false);
     setShowHARSI(false);
   };
   const clearMeasure = () => {
@@ -21491,6 +21737,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
                   { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
                   { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
+                  { key: "ichi", label: "Ichimoku", on: showIchimoku, set: setShowIchimoku, group: "main" },
                   { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
                   { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
                   { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
@@ -23209,6 +23456,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
                 onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
             )}
+            {showIndChips && !hideIndicators && showIchimoku && (
+              <IndChip label="Ichimoku" visible={ichiVisible} onToggleVisible={() => setIchiVisible((v) => !v)}
+                onSettings={() => { setIchiSettings((v) => !v); setIchiSettingsTab("inputs"); }}
+                onRemove={() => { setShowIchimoku(false); removeIchimoku(); }} />
+            )}
             {showIndChips && !hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
                 onSettings={() => setRsiSettings((v) => !v)} onRemove={() => { setShowRSI(false); removeRSI(); }} />
@@ -24271,6 +24523,112 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <button type="button" onClick={() => setBbSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
             </div>
           )}
+
+          {ichiSettings && showIchimoku && (
+            <div data-ind-panel className="absolute top-2 left-28 z-30 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-72 text-sm overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
+                <p className="font-medium text-gray-100">Ichimoku</p>
+                <button type="button" onClick={() => setIchiSettings(false)} className="text-gray-400 hover:text-white text-lg leading-none px-1">×</button>
+              </div>
+              <div className="flex border-b border-gray-700 text-xs">
+                {(["inputs", "style", "visibility"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setIchiSettingsTab(tab)}
+                    className={`flex-1 py-2 capitalize ${ichiSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 max-h-[60vh] overflow-y-auto">
+                {ichiSettingsTab === "inputs" && (
+                  <div className="space-y-2">
+                    {[
+                      { label: "Conversion Line Length", val: ichiConv, set: setIchiConv, min: 1 },
+                      { label: "Base Line Length", val: ichiBase, set: setIchiBase, min: 1 },
+                      { label: "Leading Span B Length", val: ichiLeadB, set: setIchiLeadB, min: 1 },
+                      { label: "Lagging Span", val: ichiDisp, set: setIchiDisp, min: 1 },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-gray-300 flex-1">{row.label}</span>
+                        <input
+                          type="number"
+                          min={row.min}
+                          value={row.val}
+                          onChange={(e) => row.set(Math.max(row.min, parseInt(e.target.value, 10) || row.min))}
+                          className="w-16 bg-gray-800 rounded px-1.5 py-1 text-xs text-right"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ichiSettingsTab === "style" && (
+                  <div className="space-y-2.5">
+                    {[
+                      { label: "Conversion Line", show: ichiShowConv, setShow: setIchiShowConv, col: ichiConvColor, setCol: setIchiConvColor },
+                      { label: "Base Line", show: ichiShowBase, setShow: setIchiShowBase, col: ichiBaseColor, setCol: setIchiBaseColor },
+                      { label: "Lagging Span", show: ichiShowLag, setShow: setIchiShowLag, col: ichiLagColor, setCol: setIchiLagColor },
+                      { label: "Leading Span A", show: ichiShowLeadA, setShow: setIchiShowLeadA, col: ichiLeadAColor, setCol: setIchiLeadAColor },
+                      { label: "Leading Span B", show: ichiShowLeadB, setShow: setIchiShowLeadB, col: ichiLeadBColor, setCol: setIchiLeadBColor },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center gap-2">
+                        <input type="checkbox" checked={row.show} onChange={(e) => row.setShow(e.target.checked)} className="rounded" />
+                        <span className="text-xs text-gray-300 flex-1">{row.label}</span>
+                        <input type="color" value={row.col.startsWith("#") ? row.col : "#888888"} onChange={(e) => row.setCol(e.target.value)} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" />
+                      </div>
+                    ))}
+                    <div className="border-t border-gray-700 pt-2 mt-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <input type="checkbox" checked={ichiShowCloud} onChange={(e) => setIchiShowCloud(e.target.checked)} className="rounded" />
+                        <span className="text-xs text-gray-300">Cloud Fill</span>
+                      </div>
+                      <div className="flex items-center gap-2 mb-1 pl-5">
+                        <span className="text-[11px] text-gray-500 w-14">Color 0</span>
+                        <input type="color" value="#43A047" onChange={(e) => {
+                          const hex = e.target.value;
+                          const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                          setIchiCloudBull(`rgba(${r},${g},${b},0.25)`);
+                        }} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" title="Bullish cloud" />
+                        <span className="text-[10px] text-gray-500">Bull</span>
+                      </div>
+                      <div className="flex items-center gap-2 pl-5">
+                        <span className="text-[11px] text-gray-500 w-14">Color 1</span>
+                        <input type="color" value="#F44336" onChange={(e) => {
+                          const hex = e.target.value;
+                          const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                          setIchiCloudBear(`rgba(${r},${g},${b},0.25)`);
+                        }} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" title="Bearish cloud" />
+                        <span className="text-[10px] text-gray-500">Bear</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {ichiSettingsTab === "visibility" && (
+                  <div className="space-y-2 text-xs text-gray-400">
+                    <p>Ichimoku is an overlay indicator and is shown on all standard timeframes when enabled.</p>
+                    <label className="flex items-center gap-2 text-gray-300">
+                      <input type="checkbox" checked={ichiVisible} onChange={(e) => setIchiVisible(e.target.checked)} />
+                      Visible on chart
+                    </label>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2 mt-4 pt-2 border-t border-gray-700">
+                  <button type="button" onClick={() => {
+                    setIchiConv(9); setIchiBase(26); setIchiLeadB(52); setIchiDisp(26);
+                    setIchiConvColor("#2962FF"); setIchiBaseColor("#B71C1C");
+                    setIchiLagColor("#43A047"); setIchiLeadAColor("#A5D6A7"); setIchiLeadBColor("#EF9A9A");
+                    setIchiCloudBull("rgba(67,160,71,0.25)"); setIchiCloudBear("rgba(244,67,54,0.25)");
+                    setIchiShowConv(true); setIchiShowBase(true); setIchiShowLag(true);
+                    setIchiShowLeadA(true); setIchiShowLeadB(true); setIchiShowCloud(true);
+                  }} className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-white/5">Defaults</button>
+                  <button type="button" onClick={() => setIchiSettings(false)} className="text-xs px-3 py-1 rounded bg-orange-500 text-black font-medium hover:bg-orange-400">Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {harsiSettings && showHARSI && (
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
               <p className="font-medium mb-2">HARSI</p>
