@@ -4342,6 +4342,8 @@ export default function DashboardPage() {
   const alarmLocalEditRef = useRef<Map<string, number>>(new Map());
   /** Sticky price overrides until DB confirms the same value (prevents snap-back) */
   const alarmPriceOverrideRef = useRef<Map<string, number>>(new Map());
+  /** Sticky full geometry for ray/diag alarm moves */
+  const alarmGeomOverrideRef = useRef<Map<string, { price: number; start_time?: number | null; end_time?: number | null; end_price?: number | null; note?: string | null }>>(new Map());
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
   const hideLinesRef = useRef(false);
@@ -9960,13 +9962,20 @@ priced.sort((a, b) => a.price - b.price);
       try {
         const isMoving = String(movingId) === String(a.id) && movingType === "alarm";
         // Sticky override wins over any stale state/DB value
+        const geomOv = (() => {
+          try { return alarmGeomOverrideRef.current.get(String(a.id)) || null; } catch { return null; }
+        })();
         const drawPrice = (() => {
+          if (geomOv && geomOv.price != null && Number.isFinite(geomOv.price)) return Number(geomOv.price);
           try {
             const ov = alarmPriceOverrideRef.current.get(String(a.id));
             if (ov != null && Number.isFinite(ov)) return Number(ov);
           } catch {}
           return Number(a.price);
         })();
+        const drawStartT = geomOv?.start_time != null ? Number(geomOv.start_time) : (a.start_time != null ? Number(a.start_time) : null);
+        const drawEndT = geomOv?.end_time != null ? Number(geomOv.end_time) : (a.end_time != null ? Number(a.end_time) : null);
+        const drawEndP = geomOv?.end_price != null ? Number(geomOv.end_price) : (a.end_price != null ? Number(a.end_price) : null);
         const isHL = highlightAlarmId === a.id ||
           (highlightPrice != null && Math.abs(drawPrice - highlightPrice) < drawPrice * 1e-9 + 1e-8);
         if (isHL) hlDrawnOnActive = true;
@@ -9988,12 +9997,12 @@ priced.sort((a, b) => a.price - b.price);
           ? "◀ SELECTED"
           : noteCleanA || "";
 
-        if (isDiagonalLine(a)) {
+        if (isDiagonalLine(a) || (drawStartT != null && drawEndT != null && drawEndP != null && Number.isFinite(drawEndP))) {
           // Diagonal alarm: ONLY the slanted segment — no horizontal helper line
-          const st = Number(a.start_time);
-          const et = Number(a.end_time);
-          const sp = Number(a.price);
-          const ep = Number(a.end_price);
+          const st = drawStartT != null ? drawStartT : Number(a.start_time);
+          const et = drawEndT != null ? drawEndT : Number(a.end_time);
+          const sp = drawPrice;
+          const ep = drawEndP != null ? drawEndP : Number(a.end_price);
           const t0 = Math.min(st, et);
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
@@ -10018,9 +10027,9 @@ priced.sort((a, b) => a.price - b.price);
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
           (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
         ) {
-          let t0 = Number(a.start_time);
+          let t0 = drawStartT != null ? Number(drawStartT) : Number(a.start_time);
           if ((!t0 || Number.isNaN(t0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
-            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0]);
+            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0].split("||")[0]);
           }
           if (!Number.isNaN(t0) && t0 > 0) {
             const bars = candlesRef.current || [];
@@ -15702,13 +15711,14 @@ priced.sort((a, b) => a.price - b.price);
           } else if (bd.type === "diag") {
             const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
             const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
-            const ls = chartLinesRef.current.get(bd.id);
-            if (ls) {
-              const pts = [
-                { time: Math.min(t0, t1) as any, value: t0 <= t1 ? p0 : p1 },
-                { time: Math.max(t0, t1) as any, value: t0 <= t1 ? p1 : p0 },
-              ];
-              ls.setData(pts);
+            (bd as any)._liveGeom = { t0, p0, t1, p1 };
+            // Try both line id and alarm-diag key
+            const ls =
+              chartLinesRef.current.get(bd.id) ||
+              chartLinesRef.current.get(`alarm-diag-${bd.id}`);
+            if (ls && typeof (ls as any).setData === "function") {
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              (ls as any).setData(denseDiagPoints(t0, t1, t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0, barSec));
             }
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
             if (cur) {
@@ -15717,8 +15727,14 @@ priced.sort((a, b) => a.price - b.price);
             if (bd.kind === "alarm") {
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) { curA.start_time = t0; curA.price = p0; (curA as any).end_time = t1; (curA as any).end_price = p1; }
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), p0);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: p0, start_time: t0, end_time: t1, end_price: p1,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
             }
-            // update handles if any
             try {
               const md = moveDiagRef.current as any;
               if (md) { md.pointA = { time: t0, price: p0 }; md.pointB = { time: t1, price: p1 }; }
@@ -15819,21 +15835,50 @@ priced.sort((a, b) => a.price - b.price);
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) {
                 curA.price = newP;
-                if (newT != null) curA.start_time = newT;
+                if (newT != null) {
+                  curA.start_time = newT;
+                  if (typeof curA.note === "string" && String(curA.note).startsWith("__ray:")) {
+                    const cfg = parseAlarmCfg(curA.note);
+                    curA.note = encodeAlarmCfg(`__ray:${newT}`, cfg.once, cfg.deleteAfter);
+                  }
+                }
               }
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), newP);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: newP, start_time: newT, end_time: null, end_price: null,
+                  note: newT != null ? `__ray:${newT}` : undefined,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
             }
             (bd as any)._liveP = newP;
             (bd as any)._liveT = newT;
+            // Update ray series in place (not just a temp H price line)
             try {
-              if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
-              (bd as any)._pl = ser.createPriceLine({
-                price: newP,
-                color: "#f0b90b",
-                lineWidth: 2,
-                lineStyle: LineStyle.Solid,
-                axisLabelVisible: true,
-                title: "",
-              });
+              const rayLs =
+                chartLinesRef.current.get(`alarm-ray-${bd.id}`) ||
+                chartLinesRef.current.get(bd.id);
+              if (rayLs && typeof (rayLs as any).setData === "function" && newT != null) {
+                const bars = candlesRef.current || [];
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                const lastT = bars.length ? Number(bars[bars.length - 1].time) : newT;
+                const rayEnd = Math.max(lastT, newT) + Math.max(FUTURE_BARS, 200) * barSec;
+                (rayLs as any).setData([
+                  { time: newT as any, value: newP },
+                  { time: rayEnd as any, value: newP },
+                ]);
+              } else {
+                if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                (bd as any)._pl = ser.createPriceLine({
+                  price: newP,
+                  color: "#f0b90b",
+                  lineWidth: 2,
+                  lineStyle: LineStyle.Solid,
+                  axisLabelVisible: true,
+                  title: "",
+                });
+              }
             } catch {}
           }
         } catch {}
@@ -15901,18 +15946,38 @@ priced.sort((a, b) => a.price - b.price);
                 await supabase.from("chart_lines").update(patch).eq("id", bd.id);
               }
             } else if (bd.kind === "alarm") {
+              const live = (bd as any)._liveGeom;
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-              if (curA) {
+              const t0 = live ? live.t0 : (curA ? Number(curA.start_time) : null);
+              const p0 = live ? live.p0 : (curA ? Number(curA.price) : null);
+              const t1 = live ? live.t1 : (curA ? Number((curA as any).end_time) : null);
+              const p1 = live ? live.p1 : (curA ? Number((curA as any).end_price) : null);
+              if (curA && t0 != null && p0 != null) {
+                const cfg = parseAlarmCfg(curA.note);
                 const patch: any = {
-                  start_time: curA.start_time, price: curA.price,
-                  end_time: (curA as any).end_time, end_price: (curA as any).end_price,
+                  start_time: t0, price: p0,
+                  end_time: t1, end_price: p1,
+                  note: encodeAlarmCfg(`__diag:${t0}:${t1}:${p1}`, cfg.once, cfg.deleteAfter),
                 };
+                curA.start_time = t0; curA.price = p0;
+                (curA as any).end_time = t1; (curA as any).end_price = p1;
+                curA.note = patch.note;
                 try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
-                try { if (patch.price != null) alarmPriceOverrideRef.current.set(String(bd.id), Number(patch.price)); } catch {}
+                try {
+                  alarmPriceOverrideRef.current.set(String(bd.id), Number(p0));
+                  alarmGeomOverrideRef.current.set(String(bd.id), {
+                    price: Number(p0), start_time: t0, end_time: t1, end_price: p1, note: patch.note,
+                  });
+                } catch {}
                 setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
                 try {
                   const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
-                  if (error) console.warn("alarm diag move save failed", error);
+                  if (error) {
+                    // fallback without note
+                    await supabase.from("alarms").update({
+                      start_time: t0, price: p0, end_time: t1, end_price: p1,
+                    }).eq("id", bd.id);
+                  }
                 } catch (e) { console.warn("alarm diag move", e); }
               }
             }
@@ -15972,21 +16037,36 @@ priced.sort((a, b) => a.price - b.price);
                 await supabase.from("chart_lines").update(patch).eq("id", bd.id);
               }
             } else {
-              const patch: any = { price: newP };
-              if (newT != null) patch.start_time = newT;
+              const patch: any = { price: Number(newP) };
+              if (newT != null) {
+                patch.start_time = newT;
+                const curA0 = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                const cfg = parseAlarmCfg(curA0?.note);
+                patch.note = encodeAlarmCfg(`__ray:${newT}`, cfg.once, cfg.deleteAfter);
+              }
               try {
                 const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
                 if (curA) {
                   curA.price = newP;
-                  if (newT != null) curA.start_time = newT;
+                  if (newT != null) {
+                    curA.start_time = newT;
+                    if (patch.note) curA.note = patch.note;
+                  }
                 }
               } catch {}
               try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
-              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), newP);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: newP, start_time: newT, end_time: null, end_price: null, note: patch.note,
+                });
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
               try {
-                const { error } = await supabase.from("alarms").update({ ...patch, price: Number(newP) }).eq("id", bd.id);
-                if (error) console.warn("alarm ray move save failed", error);
+                const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                if (error) {
+                  await supabase.from("alarms").update({ price: Number(newP), start_time: newT }).eq("id", bd.id);
+                }
               } catch (e) { console.warn("alarm ray move", e); }
             }
           }
@@ -16013,10 +16093,11 @@ priced.sort((a, b) => a.price - b.price);
             try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
           } catch {}
         } else if (bd.type === "diag") {
-          // keep selected but phase=pick, solid style via softMove
+          // keep selected but phase=pick; delayed paint so geom override sticks
           try {
             const md = moveDiagRef.current as any;
             if (md) md.phase = "pick";
+            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
           } catch {}
         }
         // curve: keep handles (already softMove)
@@ -21174,12 +21255,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               }
               const editedAt = alarmLocalEditRef.current.get(String(local.id)) || 0;
               const overrideP = alarmPriceOverrideRef.current.get(String(local.id));
-              const preferLocal = (editedAt > 0 && (Date.now() - editedAt) < 120000) || overrideP != null;
+              const geomOv = alarmGeomOverrideRef.current.get(String(local.id));
+              const preferLocal = (editedAt > 0 && (Date.now() - editedAt) < 120000) || overrideP != null || geomOv != null;
               // Clear override only when DB has caught up to the moved price
               if (overrideP != null && db.price != null && Math.abs(Number(db.price) - Number(overrideP)) / Math.max(Math.abs(Number(overrideP)), 1e-12) < 1e-8) {
                 try { alarmPriceOverrideRef.current.delete(String(local.id)); } catch {}
               }
-              const finalPrice = overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price));
+              const finalPrice = (geomOv && geomOv.price != null) ? geomOv.price
+                : (overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price)));
+              const finalStart = (geomOv && geomOv.start_time != null) ? geomOv.start_time
+                : (preferLocal ? local.start_time : (db.start_time ?? local.start_time));
+              const finalEnd = (geomOv && geomOv.end_time != null) ? geomOv.end_time
+                : (preferLocal ? (local as any).end_time : (db.end_time ?? (local as any).end_time));
+              const finalEndP = (geomOv && geomOv.end_price != null) ? geomOv.end_price
+                : (preferLocal ? (local as any).end_price : (db.end_price ?? (local as any).end_price));
               const cfgL = parseAlarmCfg(local.note);
               const cfgD = parseAlarmCfg(db.note);
               // Prefer explicit local delete_after / note cfg; delete=true means remove when triggered
@@ -21194,9 +21283,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ...local,
                 ...db,
                 price: finalPrice,
-                start_time: preferLocal ? local.start_time : (db.start_time ?? local.start_time),
-                end_time: preferLocal ? (local as any).end_time : (db.end_time ?? (local as any).end_time),
-                end_price: preferLocal ? (local as any).end_price : (db.end_price ?? (local as any).end_price),
+                start_time: finalStart,
+                end_time: finalEnd,
+                end_price: finalEndP,
                 dash: preferLocal ? (local as any).dash : ((db as any).dash ?? (local as any).dash),
                 width: preferLocal ? local.width : (db.width ?? local.width),
                 color: preferLocal ? local.color : (db.color ?? local.color),
