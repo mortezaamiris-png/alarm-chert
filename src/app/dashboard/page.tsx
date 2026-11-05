@@ -2630,7 +2630,9 @@ function didCross(
   );
 }
 function toLineStyle(dash?: string | null) {
-  return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
+  if (dash === "dashed") return LineStyle.Dashed;
+  if (dash === "dotted") return LineStyle.Dotted;
+  return LineStyle.Solid;
 }
 
 /**
@@ -9899,7 +9901,20 @@ priced.sort((a, b) => a.price - b.price);
     let hlDrawnOnActive = false;
     if (hideAlarms) {
       // skip drawing alarms when eye-hide alarms is on
-    } else currentAlarms.forEach((a) => {
+    } else {
+    // Prefer alarmsRef so body-drag / style edits apply immediately (not stale React state)
+    const alarmsDrawList = (() => {
+      try {
+        const symU = (symbolRef.current || "").toUpperCase();
+        const src = (alarmsRef.current && alarmsRef.current.length) ? alarmsRef.current : (currentAlarms as any[]);
+        return (src || []).filter((a: any) =>
+          String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered
+        );
+      } catch {
+        return currentAlarms;
+      }
+    })();
+    alarmsDrawList.forEach((a: any) => {
       try {
         const isMoving = movingId === a.id && movingType === "alarm";
         const isHL = highlightAlarmId === a.id ||
@@ -9933,11 +9948,11 @@ priced.sort((a, b) => a.price - b.price);
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          // Diag alarms: solid continuous (no dashed gaps on higher TF)
+          // Diag alarms: respect dash style (dotted / dashed / solid)
           const ls: any = chart.addLineSeries({
             color,
             lineWidth: width,
-            lineStyle: isHL ? LineStyle.Dashed : LineStyle.Solid,
+            lineStyle: isHL ? LineStyle.Dashed : toLineStyle(a.dash),
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
@@ -9997,6 +10012,7 @@ priced.sort((a, b) => a.price - b.price);
         }
       } catch {}
     });
+    } // end else !hideAlarms
 
     // History / temp highlight: yellow dashed HORIZONTAL line (full)
     // Paint true-vertical DOM lines
@@ -15835,19 +15851,27 @@ priced.sort((a, b) => a.price - b.price);
                   end_time: (curA as any).end_time, end_price: (curA as any).end_price,
                 };
                 setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-                await supabase.from("alarms").update(patch).eq("id", bd.id);
+                try { await supabase.from("alarms").update(patch).eq("id", bd.id); } catch {}
               }
             }
           } else if (bd.type === "h") {
             const newP = (bd as any)._liveP ?? bd.orig.p;
             if (bd.kind === "line") {
+              try {
+                const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (cur) cur.price = newP;
+              } catch {}
               setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
               if (!String(bd.id).startsWith("local-")) {
-                await supabase.from("chart_lines").update({ price: newP }).eq("id", bd.id);
+                try { await supabase.from("chart_lines").update({ price: newP }).eq("id", bd.id); } catch {}
               }
             } else {
+              try {
+                const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (curA) curA.price = newP;
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
-              await supabase.from("alarms").update({ price: newP }).eq("id", bd.id);
+              try { await supabase.from("alarms").update({ price: newP }).eq("id", bd.id); } catch {}
             }
           } else if (bd.type === "v") {
             const newT = (bd as any)._liveT ?? bd.orig.t;
@@ -15871,11 +15895,20 @@ priced.sort((a, b) => a.price - b.price);
             } else {
               const patch: any = { price: newP };
               if (newT != null) patch.start_time = newT;
+              try {
+                const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (curA) {
+                  curA.price = newP;
+                  if (newT != null) curA.start_time = newT;
+                }
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              await supabase.from("alarms").update(patch).eq("id", bd.id);
+              try { await supabase.from("alarms").update(patch).eq("id", bd.id); } catch {}
             }
           }
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          // second paint after React state flush
+          try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 30); } catch {}
           setStatusMsg("Moved");
         } catch {
           setStatusMsg("Move failed");
@@ -24142,6 +24175,35 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 } catch {}
                                 if (movingId && movingType === "line") {
                                   setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, dash: st, style: st } : l)));
+                                  try {
+                                    const ls = chartLinesRef.current.get(movingId);
+                                    if (ls && typeof (ls as any).applyOptions === "function") {
+                                      (ls as any).applyOptions({ lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid });
+                                    }
+                                  } catch {}
+                                } else if (movingId && movingType === "alarm") {
+                                  setAlarms((prev) => prev.map((a) => (a.id === movingId ? { ...a, dash: st } : a)));
+                                  try {
+                                    const al = (alarmsRef.current || []).find((x) => String(x.id) === String(movingId));
+                                    if (al) (al as any).dash = st;
+                                  } catch {}
+                                  void updateAlarmDash(movingId, st);
+                                  // Live update horizontal price line
+                                  try {
+                                    const pl = alarmLinesRef.current.get(`alarm-${movingId}`);
+                                    if (pl && typeof (pl as any).applyOptions === "function") {
+                                      (pl as any).applyOptions({
+                                        lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                      });
+                                    }
+                                    const ray = chartLinesRef.current.get(`alarm-ray-${movingId}`);
+                                    if (ray && typeof (ray as any).applyOptions === "function") {
+                                      (ray as any).applyOptions({
+                                        lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                      });
+                                    }
+                                  } catch {}
+                                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                                 }
                               }}
                               className={`flex-1 h-7 rounded-md text-[10px] ${drawDash === st ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
