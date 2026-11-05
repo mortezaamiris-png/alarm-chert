@@ -5106,6 +5106,34 @@ export default function DashboardPage() {
   const [ichiShowLeadA, setIchiShowLeadA] = useState(() => loadLS("ichi_show_leada", true));
   const [ichiShowLeadB, setIchiShowLeadB] = useState(() => loadLS("ichi_show_leadb", true));
   const [ichiShowCloud, setIchiShowCloud] = useState(() => loadLS("ichi_show_cloud", true));
+  const [ichiShowKumoUp, setIchiShowKumoUp] = useState(() => loadLS("ichi_show_kumoup", false));
+  const [ichiShowKumoDn, setIchiShowKumoDn] = useState(() => loadLS("ichi_show_kumodn", false));
+  const [ichiKumoUpColor, setIchiKumoUpColor] = useState(() => loadLS("ichi_c_kumoup", "#2962FF"));
+  const [ichiKumoDnColor, setIchiKumoDnColor] = useState(() => loadLS("ichi_c_kumodn", "#2962FF"));
+  const [ichiLabelsScale, setIchiLabelsScale] = useState(() => loadLS("ichi_lbl_scale", true));
+  const [ichiValuesStatus, setIchiValuesStatus] = useState(() => loadLS("ichi_val_status", true));
+  const [ichiInputsStatus, setIchiInputsStatus] = useState(() => loadLS("ichi_inp_status", true));
+  const [ichiVisTicks, setIchiVisTicks] = useState(() => loadLS("ichi_vis_ticks", true));
+  const [ichiVisSeconds, setIchiVisSeconds] = useState(() => loadLS("ichi_vis_sec", true));
+  const [ichiVisMinutes, setIchiVisMinutes] = useState(() => loadLS("ichi_vis_min", true));
+  const [ichiVisHours, setIchiVisHours] = useState(() => loadLS("ichi_vis_hr", true));
+  const [ichiVisDays, setIchiVisDays] = useState(() => loadLS("ichi_vis_day", true));
+  const [ichiVisWeeks, setIchiVisWeeks] = useState(() => loadLS("ichi_vis_wk", true));
+  const [ichiVisMonths, setIchiVisMonths] = useState(() => loadLS("ichi_vis_mo", true));
+  const [ichiVisRanges, setIchiVisRanges] = useState(() => loadLS("ichi_vis_rng", true));
+  const [ichiMinS, setIchiMinS] = useState(() => loadLS("ichi_min_s", 1));
+  const [ichiMaxS, setIchiMaxS] = useState(() => loadLS("ichi_max_s", 59));
+  const [ichiMinM, setIchiMinM] = useState(() => loadLS("ichi_min_m", 1));
+  const [ichiMaxM, setIchiMaxM] = useState(() => loadLS("ichi_max_m", 59));
+  const [ichiMinH, setIchiMinH] = useState(() => loadLS("ichi_min_h", 1));
+  const [ichiMaxH, setIchiMaxH] = useState(() => loadLS("ichi_max_h", 24));
+  const [ichiMinD, setIchiMinD] = useState(() => loadLS("ichi_min_d", 1));
+  const [ichiMaxD, setIchiMaxD] = useState(() => loadLS("ichi_max_d", 366));
+  const [ichiMinW, setIchiMinW] = useState(() => loadLS("ichi_min_w", 1));
+  const [ichiMaxW, setIchiMaxW] = useState(() => loadLS("ichi_max_w", 52));
+  const [ichiMinMo, setIchiMinMo] = useState(() => loadLS("ichi_min_mo", 1));
+  const [ichiMaxMo, setIchiMaxMo] = useState(() => loadLS("ichi_max_mo", 12));
+  const [ichiDefaultsOpen, setIchiDefaultsOpen] = useState(false);
   const [ichiSettings, setIchiSettings] = useState(false);
   const [ichiSettingsTab, setIchiSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
   const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
@@ -11463,6 +11491,27 @@ priced.sort((a, b) => a.price - b.price);
   const applyIchimoku = useCallback(() => {
     removeIchimoku();
     if (!showIchimoku || !ichiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    // Visibility by timeframe (TradingView-style)
+    try {
+      const iv = String(intervalRef.current || "60");
+      let ok = true;
+      if (iv === "D" || iv === "1D") {
+        ok = ichiVisDays && 1 >= ichiMinD && 1 <= ichiMaxD;
+      } else if (iv === "W" || iv === "1W") {
+        ok = ichiVisWeeks && 1 >= ichiMinW && 1 <= ichiMaxW;
+      } else if (iv === "M" || iv === "1M") {
+        ok = ichiVisMonths && 1 >= ichiMinMo && 1 <= ichiMaxMo;
+      } else {
+        const n = Number(iv);
+        if (!Number.isNaN(n) && n >= 60) {
+          const hours = n / 60;
+          ok = ichiVisHours && hours >= ichiMinH && hours <= ichiMaxH;
+        } else if (!Number.isNaN(n) && n > 0) {
+          ok = ichiVisMinutes && n >= ichiMinM && n <= ichiMaxM;
+        }
+      }
+      if (!ok) return;
+    } catch {}
     const chart = chartRef.current;
     const candles = candlesRef.current;
     let barSec = 60;
@@ -11475,7 +11524,7 @@ priced.sort((a, b) => a.price - b.price);
           color,
           lineWidth: 1,
           priceLineVisible: false,
-          lastValueVisible: false,
+          lastValueVisible: !!ichiLabelsScale,
           crosshairMarkerVisible: false,
           visible,
         });
@@ -11498,6 +11547,8 @@ priced.sort((a, b) => a.price - b.price);
     showIchimoku, ichiVisible, hideIndicators, ichiConv, ichiBase, ichiLeadB, ichiDisp,
     ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
     ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud,
+    ichiLabelsScale, ichiVisMinutes, ichiVisHours, ichiVisDays, ichiVisWeeks, ichiVisMonths,
+    ichiMinM, ichiMaxM, ichiMinH, ichiMaxH, ichiMinD, ichiMaxD, ichiMinW, ichiMaxW, ichiMinMo, ichiMaxMo,
     removeIchimoku, paintIchiCloud,
   ]);
 
@@ -24525,105 +24576,231 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           )}
 
           {ichiSettings && showIchimoku && (
-            <div data-ind-panel className="absolute top-2 left-28 z-30 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-72 text-sm overflow-hidden">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
-                <p className="font-medium text-gray-100">Ichimoku</p>
-                <button type="button" onClick={() => setIchiSettings(false)} className="text-gray-400 hover:text-white text-lg leading-none px-1">×</button>
+            <div data-ind-panel className="absolute top-2 left-28 z-30 bg-[#1e222d] border border-[#363a45] rounded-lg shadow-2xl w-[340px] text-sm overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#363a45]">
+                <p className="font-semibold text-[15px] text-gray-100">Ichimoku</p>
+                <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }} className="text-gray-400 hover:text-white text-lg leading-none px-1">×</button>
               </div>
-              <div className="flex border-b border-gray-700 text-xs">
+              <div className="flex border-b border-[#363a45] text-[13px]">
                 {(["inputs", "style", "visibility"] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
-                    onClick={() => setIchiSettingsTab(tab)}
-                    className={`flex-1 py-2 capitalize ${ichiSettingsTab === tab ? "text-white border-b-2 border-orange-500" : "text-gray-500 hover:text-gray-300"}`}
+                    onClick={() => { setIchiSettingsTab(tab); setIchiDefaultsOpen(false); }}
+                    className={`flex-1 py-2.5 capitalize tracking-wide ${ichiSettingsTab === tab ? "text-white border-b-2 border-[#f7931a]" : "text-gray-500 hover:text-gray-300"}`}
                   >
-                    {tab}
+                    {tab === "inputs" ? "Inputs" : tab === "style" ? "Style" : "Visibility"}
                   </button>
                 ))}
               </div>
-              <div className="p-3 max-h-[60vh] overflow-y-auto">
+              <div className="p-3 max-h-[min(62vh,520px)] overflow-y-auto">
                 {ichiSettingsTab === "inputs" && (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {[
-                      { label: "Conversion Line Length", val: ichiConv, set: setIchiConv, min: 1 },
-                      { label: "Base Line Length", val: ichiBase, set: setIchiBase, min: 1 },
-                      { label: "Leading Span B Length", val: ichiLeadB, set: setIchiLeadB, min: 1 },
-                      { label: "Lagging Span", val: ichiDisp, set: setIchiDisp, min: 1 },
+                      { label: "Conversion Line Length", val: ichiConv, set: setIchiConv },
+                      { label: "Base Line Length", val: ichiBase, set: setIchiBase },
+                      { label: "Leading Span B Length", val: ichiLeadB, set: setIchiLeadB },
+                      { label: "Lagging Span", val: ichiDisp, set: setIchiDisp },
                     ].map((row) => (
-                      <div key={row.label} className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-gray-300 flex-1">{row.label}</span>
+                      <div key={row.label} className="flex items-center justify-between gap-3">
+                        <span className="text-[13px] text-gray-300">{row.label}</span>
                         <input
                           type="number"
-                          min={row.min}
+                          min={1}
                           value={row.val}
-                          onChange={(e) => row.set(Math.max(row.min, parseInt(e.target.value, 10) || row.min))}
-                          className="w-16 bg-gray-800 rounded px-1.5 py-1 text-xs text-right"
+                          onChange={(e) => row.set(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                          className="w-[72px] bg-[#2a2e39] border border-[#363a45] rounded px-2 py-1.5 text-[13px] text-right text-gray-100"
                         />
                       </div>
                     ))}
                   </div>
                 )}
+
                 {ichiSettingsTab === "style" && (
                   <div className="space-y-2.5">
-                    {[
+                    {([
                       { label: "Conversion Line", show: ichiShowConv, setShow: setIchiShowConv, col: ichiConvColor, setCol: setIchiConvColor },
                       { label: "Base Line", show: ichiShowBase, setShow: setIchiShowBase, col: ichiBaseColor, setCol: setIchiBaseColor },
                       { label: "Lagging Span", show: ichiShowLag, setShow: setIchiShowLag, col: ichiLagColor, setCol: setIchiLagColor },
                       { label: "Leading Span A", show: ichiShowLeadA, setShow: setIchiShowLeadA, col: ichiLeadAColor, setCol: setIchiLeadAColor },
                       { label: "Leading Span B", show: ichiShowLeadB, setShow: setIchiShowLeadB, col: ichiLeadBColor, setCol: setIchiLeadBColor },
-                    ].map((row) => (
+                      { label: "Kumo Cloud Upper Line", show: ichiShowKumoUp, setShow: setIchiShowKumoUp, col: ichiKumoUpColor, setCol: setIchiKumoUpColor },
+                      { label: "Kumo Cloud Lower Line", show: ichiShowKumoDn, setShow: setIchiShowKumoDn, col: ichiKumoDnColor, setCol: setIchiKumoDnColor },
+                    ] as const).map((row) => (
                       <div key={row.label} className="flex items-center gap-2">
-                        <input type="checkbox" checked={row.show} onChange={(e) => row.setShow(e.target.checked)} className="rounded" />
-                        <span className="text-xs text-gray-300 flex-1">{row.label}</span>
-                        <input type="color" value={row.col.startsWith("#") ? row.col : "#888888"} onChange={(e) => row.setCol(e.target.value)} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" />
+                        <input type="checkbox" checked={row.show} onChange={(e) => row.setShow(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        <span className="text-[13px] text-gray-200 flex-1">{row.label}</span>
+                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative shrink-0" title="Color">
+                          <input type="color" value={row.col.startsWith("#") ? row.col.slice(0, 7) : "#888888"} onChange={(e) => row.setCol(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          <span className="block w-full h-full" style={{ background: row.col }} />
+                        </label>
+                        <span className="w-8 h-7 rounded border border-[#363a45] flex items-center justify-center shrink-0" title="Line style">
+                          <span className="block w-4 border-t-2" style={{ borderColor: row.col }} />
+                        </span>
+                        <span className="w-8 h-7 rounded border border-[#363a45] flex items-center justify-center text-gray-500 text-xs shrink-0" title="Plot type">~</span>
                       </div>
                     ))}
-                    <div className="border-t border-gray-700 pt-2 mt-1">
+
+                    <div className="pt-1">
                       <div className="flex items-center gap-2 mb-2">
-                        <input type="checkbox" checked={ichiShowCloud} onChange={(e) => setIchiShowCloud(e.target.checked)} className="rounded" />
-                        <span className="text-xs text-gray-300">Cloud Fill</span>
+                        <input type="checkbox" checked={ichiShowCloud} onChange={(e) => setIchiShowCloud(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        <span className="text-[13px] text-gray-200">Cloud Fill</span>
                       </div>
-                      <div className="flex items-center gap-2 mb-1 pl-5">
-                        <span className="text-[11px] text-gray-500 w-14">Color 0</span>
-                        <input type="color" value="#43A047" onChange={(e) => {
-                          const hex = e.target.value;
-                          const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-                          setIchiCloudBull(`rgba(${r},${g},${b},0.25)`);
-                        }} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" title="Bullish cloud" />
-                        <span className="text-[10px] text-gray-500">Bull</span>
+                      <div className="flex items-center gap-3 pl-6 mb-1.5">
+                        <span className="text-[12px] text-gray-500 w-14">Color 0</span>
+                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative" style={{ backgroundImage: "linear-gradient(45deg,#333 25%,transparent 25%),linear-gradient(-45deg,#333 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#333 75%),linear-gradient(-45deg,transparent 75%,#333 75%)", backgroundSize: "8px 8px", backgroundPosition: "0 0,0 4px,4px -4px,-4px 0" }}>
+                          <input type="color" defaultValue="#43A047" onChange={(e) => {
+                            const hex = e.target.value;
+                            const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                            setIchiCloudBull(`rgba(${r},${g},${b},0.35)`);
+                          }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          <span className="block w-full h-full" style={{ background: ichiCloudBull }} />
+                        </label>
                       </div>
-                      <div className="flex items-center gap-2 pl-5">
-                        <span className="text-[11px] text-gray-500 w-14">Color 1</span>
-                        <input type="color" value="#F44336" onChange={(e) => {
-                          const hex = e.target.value;
-                          const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-                          setIchiCloudBear(`rgba(${r},${g},${b},0.25)`);
-                        }} className="w-7 h-6 rounded cursor-pointer bg-transparent border-0" title="Bearish cloud" />
-                        <span className="text-[10px] text-gray-500">Bear</span>
+                      <div className="flex items-center gap-3 pl-6">
+                        <span className="text-[12px] text-gray-500 w-14">Color 1</span>
+                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative" style={{ backgroundImage: "linear-gradient(45deg,#333 25%,transparent 25%),linear-gradient(-45deg,#333 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#333 75%),linear-gradient(-45deg,transparent 75%,#333 75%)", backgroundSize: "8px 8px", backgroundPosition: "0 0,0 4px,4px -4px,-4px 0" }}>
+                          <input type="color" defaultValue="#F44336" onChange={(e) => {
+                            const hex = e.target.value;
+                            const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                            setIchiCloudBear(`rgba(${r},${g},${b},0.35)`);
+                          }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          <span className="block w-full h-full" style={{ background: ichiCloudBear }} />
+                        </label>
                       </div>
+                    </div>
+
+                    <div className="border-t border-[#363a45] mt-3 pt-2">
+                      <p className="text-[10px] tracking-wider text-gray-500 mb-2">OUTPUT VALUES</p>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[13px] text-gray-300">Precision</span>
+                        <span className="text-[12px] px-2 py-1 rounded border border-[#363a45] text-gray-400 bg-[#2a2e39]">Default</span>
+                      </div>
+                      <label className="flex items-center gap-2 mb-1.5 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiLabelsScale} onChange={(e) => setIchiLabelsScale(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Labels on price scale
+                      </label>
+                      <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiValuesStatus} onChange={(e) => setIchiValuesStatus(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Values in status line
+                      </label>
+                    </div>
+                    <div className="border-t border-[#363a45] mt-3 pt-2">
+                      <p className="text-[10px] tracking-wider text-gray-500 mb-2">INPUT VALUES</p>
+                      <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiInputsStatus} onChange={(e) => setIchiInputsStatus(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Inputs in status line
+                      </label>
                     </div>
                   </div>
                 )}
+
                 {ichiSettingsTab === "visibility" && (
-                  <div className="space-y-2 text-xs text-gray-400">
-                    <p>Ichimoku is an overlay indicator and is shown on all standard timeframes when enabled.</p>
-                    <label className="flex items-center gap-2 text-gray-300">
-                      <input type="checkbox" checked={ichiVisible} onChange={(e) => setIchiVisible(e.target.checked)} />
-                      Visible on chart
+                  <div className="space-y-2.5">
+                    <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                      <input type="checkbox" checked={ichiVisTicks} onChange={(e) => setIchiVisTicks(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                      Ticks
+                    </label>
+                    {([
+                      { label: "Seconds", on: ichiVisSeconds, setOn: setIchiVisSeconds, min: ichiMinS, max: ichiMaxS, setMin: setIchiMinS, setMax: setIchiMaxS, absMin: 1, absMax: 59 },
+                      { label: "Minutes", on: ichiVisMinutes, setOn: setIchiVisMinutes, min: ichiMinM, max: ichiMaxM, setMin: setIchiMinM, setMax: setIchiMaxM, absMin: 1, absMax: 59 },
+                      { label: "Hours", on: ichiVisHours, setOn: setIchiVisHours, min: ichiMinH, max: ichiMaxH, setMin: setIchiMinH, setMax: setIchiMaxH, absMin: 1, absMax: 24 },
+                      { label: "Days", on: ichiVisDays, setOn: setIchiVisDays, min: ichiMinD, max: ichiMaxD, setMin: setIchiMinD, setMax: setIchiMaxD, absMin: 1, absMax: 366 },
+                      { label: "Weeks", on: ichiVisWeeks, setOn: setIchiVisWeeks, min: ichiMinW, max: ichiMaxW, setMin: setIchiMinW, setMax: setIchiMaxW, absMin: 1, absMax: 52 },
+                      { label: "Months", on: ichiVisMonths, setOn: setIchiVisMonths, min: ichiMinMo, max: ichiMaxMo, setMin: setIchiMinMo, setMax: setIchiMaxMo, absMin: 1, absMax: 12 },
+                    ] as const).map((row) => (
+                      <div key={row.label} className="flex items-center gap-2">
+                        <input type="checkbox" checked={row.on} onChange={(e) => row.setOn(e.target.checked)} className="accent-[#2962FF] w-4 h-4 shrink-0" />
+                        <span className="text-[13px] text-gray-200 w-[70px] shrink-0">{row.label}</span>
+                        <input type="number" min={row.absMin} max={row.absMax} value={row.min} disabled={!row.on}
+                          onChange={(e) => row.setMin(Math.max(row.absMin, Math.min(row.max, parseInt(e.target.value, 10) || row.absMin)))}
+                          className="w-12 bg-[#2a2e39] border border-[#363a45] rounded px-1 py-1 text-[12px] text-center disabled:opacity-40" />
+                        <input type="range" min={row.absMin} max={row.absMax} value={row.min} disabled={!row.on}
+                          onChange={(e) => row.setMin(Math.min(row.max, parseInt(e.target.value, 10)))}
+                          className="w-14 accent-gray-400 disabled:opacity-40" />
+                        <input type="range" min={row.absMin} max={row.absMax} value={row.max} disabled={!row.on}
+                          onChange={(e) => row.setMax(Math.max(row.min, parseInt(e.target.value, 10)))}
+                          className="w-14 accent-gray-400 disabled:opacity-40" />
+                        <input type="number" min={row.absMin} max={row.absMax} value={row.max} disabled={!row.on}
+                          onChange={(e) => row.setMax(Math.min(row.absMax, Math.max(row.min, parseInt(e.target.value, 10) || row.absMax)))}
+                          className="w-12 bg-[#2a2e39] border border-[#363a45] rounded px-1 py-1 text-[12px] text-center disabled:opacity-40" />
+                      </div>
+                    ))}
+                    <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                      <input type="checkbox" checked={ichiVisRanges} onChange={(e) => setIchiVisRanges(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                      Ranges
                     </label>
                   </div>
                 )}
-                <div className="flex justify-end gap-2 mt-4 pt-2 border-t border-gray-700">
-                  <button type="button" onClick={() => {
-                    setIchiConv(9); setIchiBase(26); setIchiLeadB(52); setIchiDisp(26);
-                    setIchiConvColor("#2962FF"); setIchiBaseColor("#B71C1C");
-                    setIchiLagColor("#43A047"); setIchiLeadAColor("#A5D6A7"); setIchiLeadBColor("#EF9A9A");
-                    setIchiCloudBull("rgba(67,160,71,0.25)"); setIchiCloudBear("rgba(244,67,54,0.25)");
-                    setIchiShowConv(true); setIchiShowBase(true); setIchiShowLag(true);
-                    setIchiShowLeadA(true); setIchiShowLeadB(true); setIchiShowCloud(true);
-                  }} className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-white/5">Defaults</button>
-                  <button type="button" onClick={() => setIchiSettings(false)} className="text-xs px-3 py-1 rounded bg-orange-500 text-black font-medium hover:bg-orange-400">Ok</button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-t border-[#363a45] bg-[#1e222d] relative">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIchiDefaultsOpen((v) => !v)}
+                    className="text-[13px] px-2.5 py-1.5 rounded border border-[#363a45] text-gray-300 hover:bg-white/5 inline-flex items-center gap-1"
+                  >
+                    Defaults
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  {ichiDefaultsOpen && (
+                    <div className="absolute bottom-full left-0 mb-1 min-w-[160px] rounded-md border border-[#363a45] bg-[#1e222d] shadow-xl py-1 z-40">
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-[13px] text-gray-200 hover:bg-white/5"
+                        onClick={() => {
+                          setIchiConv(9); setIchiBase(26); setIchiLeadB(52); setIchiDisp(26);
+                          setIchiConvColor("#2962FF"); setIchiBaseColor("#B71C1C");
+                          setIchiLagColor("#43A047"); setIchiLeadAColor("#A5D6A7"); setIchiLeadBColor("#EF9A9A");
+                          setIchiCloudBull("rgba(67,160,71,0.35)"); setIchiCloudBear("rgba(244,67,54,0.35)");
+                          setIchiShowConv(true); setIchiShowBase(true); setIchiShowLag(true);
+                          setIchiShowLeadA(true); setIchiShowLeadB(true); setIchiShowCloud(true);
+                          setIchiShowKumoUp(false); setIchiShowKumoDn(false);
+                          setIchiKumoUpColor("#2962FF"); setIchiKumoDnColor("#2962FF");
+                          setIchiLabelsScale(true); setIchiValuesStatus(true); setIchiInputsStatus(true);
+                          setIchiVisTicks(true); setIchiVisSeconds(true); setIchiVisMinutes(true);
+                          setIchiVisHours(true); setIchiVisDays(true); setIchiVisWeeks(true);
+                          setIchiVisMonths(true); setIchiVisRanges(true);
+                          setIchiMinS(1); setIchiMaxS(59); setIchiMinM(1); setIchiMaxM(59);
+                          setIchiMinH(1); setIchiMaxH(24); setIchiMinD(1); setIchiMaxD(366);
+                          setIchiMinW(1); setIchiMaxW(52); setIchiMinMo(1); setIchiMaxMo(12);
+                          setIchiDefaultsOpen(false);
+                          setStatusMsg("Ichimoku settings reset");
+                        }}
+                      >
+                        Reset settings
+                      </button>
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-[13px] text-gray-200 hover:bg-white/5"
+                        onClick={() => {
+                          try {
+                            const def = {
+                              conv: ichiConv, base: ichiBase, leadB: ichiLeadB, disp: ichiDisp,
+                              convColor: ichiConvColor, baseColor: ichiBaseColor, lagColor: ichiLagColor,
+                              leadAColor: ichiLeadAColor, leadBColor: ichiLeadBColor,
+                              cloudBull: ichiCloudBull, cloudBear: ichiCloudBear,
+                              showConv: ichiShowConv, showBase: ichiShowBase, showLag: ichiShowLag,
+                              showLeadA: ichiShowLeadA, showLeadB: ichiShowLeadB, showCloud: ichiShowCloud,
+                              showKumoUp: ichiShowKumoUp, showKumoDn: ichiShowKumoDn,
+                            };
+                            localStorage.setItem("ichi_user_default", JSON.stringify(def));
+                            setStatusMsg("Saved as default");
+                          } catch { setStatusMsg("Save default failed"); }
+                          setIchiDefaultsOpen(false);
+                        }}
+                      >
+                        Save as default
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }}
+                    className="text-[13px] px-3 py-1.5 rounded border border-[#363a45] text-gray-300 hover:bg-white/5">Cancel</button>
+                  <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }}
+                    className="text-[13px] px-4 py-1.5 rounded bg-white text-black font-medium hover:bg-gray-200">Ok</button>
                 </div>
               </div>
             </div>
