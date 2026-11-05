@@ -4309,6 +4309,8 @@ export default function DashboardPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const linesRef = useRef<ChartLine[]>([]);
   const alarmsRef = useRef<Alarm[]>([]);
+  /** Recent local edits to alarms — poll must not overwrite these for a short window */
+  const alarmLocalEditRef = useRef<Map<string, number>>(new Map());
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
   const hideLinesRef = useRef(false);
@@ -15851,8 +15853,12 @@ priced.sort((a, b) => a.price - b.price);
                   start_time: curA.start_time, price: curA.price,
                   end_time: (curA as any).end_time, end_price: (curA as any).end_price,
                 };
+                try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
                 setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-                try { await supabase.from("alarms").update(patch).eq("id", bd.id); } catch {}
+                try {
+                  const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                  if (error) console.warn("alarm diag move save failed", error);
+                } catch (e) { console.warn("alarm diag move", e); }
               }
             }
           } else if (bd.type === "h") {
@@ -15871,8 +15877,12 @@ priced.sort((a, b) => a.price - b.price);
                 const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
                 if (curA) curA.price = newP;
               } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
-              try { await supabase.from("alarms").update({ price: newP }).eq("id", bd.id); } catch {}
+              try {
+                const { error } = await supabase.from("alarms").update({ price: newP }).eq("id", bd.id);
+                if (error) console.warn("alarm move save failed", error);
+              } catch (e) { console.warn("alarm move save", e); }
             }
           } else if (bd.type === "v") {
             const newT = (bd as any)._liveT ?? bd.orig.t;
@@ -15903,12 +15913,15 @@ priced.sort((a, b) => a.price - b.price);
                   if (newT != null) curA.start_time = newT;
                 }
               } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              try { await supabase.from("alarms").update(patch).eq("id", bd.id); } catch {}
+              try {
+                const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                if (error) console.warn("alarm ray move save failed", error);
+              } catch (e) { console.warn("alarm ray move", e); }
             }
           }
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-          // second paint after React state flush
           try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 30); } catch {}
           setStatusMsg("Moved");
         } catch {
@@ -20102,7 +20115,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen && !lineToolsOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen && !lineToolsOpen && !moveStyleOpen && !moveNoteOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -20128,6 +20141,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       }
       if (posToolsOpen && !el.closest?.("[data-menu]")) {
         setPosToolsOpen(false);
+      }
+      // Line/alarm style & note popovers: close when clicking outside
+      if ((moveStyleOpen || moveNoteOpen) && !el.closest?.("[data-menu]") && !el.closest?.("[data-note-edit]") && !el.closest?.("[data-move-bar]")) {
+        setMoveStyleOpen(false);
+        setMoveNoteOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -20177,6 +20195,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     stochSettings,
     hideMenuOpen,
     trashMenuOpen,
+    moveStyleOpen,
+    moveNoteOpen,
     editingNoteId,
     noteDraft,
     editingNoteType,
@@ -21001,13 +21021,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   }
                 }
               }
+              const editedAt = alarmLocalEditRef.current.get(String(local.id)) || 0;
+              const preferLocal = editedAt > 0 && (Date.now() - editedAt) < 90000;
               return {
                 ...local,
                 ...db,
-                // keep local diagonal geometry if DB row stripped columns
-                start_time: db.start_time ?? local.start_time,
-                end_time: db.end_time ?? local.end_time,
-                end_price: db.end_price ?? local.end_price,
+                // keep local price/geometry after user drag so poll cannot snap back
+                price: preferLocal ? local.price : (db.price ?? local.price),
+                start_time: preferLocal ? local.start_time : (db.start_time ?? local.start_time),
+                end_time: preferLocal ? (local as any).end_time : (db.end_time ?? (local as any).end_time),
+                end_price: preferLocal ? (local as any).end_price : (db.end_price ?? (local as any).end_price),
+                dash: preferLocal ? (local as any).dash : ((db as any).dash ?? (local as any).dash),
+                width: preferLocal ? local.width : (db.width ?? local.width),
+                color: preferLocal ? local.color : (db.color ?? local.color),
                 triggered: !!db.triggered,
                 is_active: !!db.is_active && !db.triggered,
               };
@@ -21793,6 +21819,81 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             )}
           </div>
 
+          {/* Chart type (Candles / Line / Area / Heikin) */}
+          <div className="relative">
+            <button
+              type="button"
+              title="Chart type"
+              onClick={() => {
+                setShowChartTypeMenu((v) => !v);
+                setShowIndicatorMenu(false);
+                setTfMenuOpen(false);
+                setTzMenuOpen(false);
+                setOpenMenu(null);
+              }}
+              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
+                showChartTypeMenu
+                  ? "bg-orange-500/20 border-orange-500 text-orange-300 shadow-lg"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="18" rx="1" />
+                <rect x="14" y="8" width="7" height="13" rx="1" />
+              </svg>
+              <span className="font-medium capitalize">{({
+                candles: "Candles", hollow: "Hollow", volcandles: "Vol candles", footprint: "Footprint", bars: "Bars", line: "Line", step: "Step",
+                area: "Area", baseline: "Baseline", hlcarea: "HLC area", columns: "Columns",
+                highlow: "High-low", heikin: "Heikin", renko: "Renko", linebreak: "Line break", kagi: "Kagi",
+              } as Record<string, string>)[chartType] || chartType}</span>
+            </button>
+            {showChartTypeMenu && (
+              <div
+                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[170px]"
+                style={{
+                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
+                  background: "rgba(20,20,22,0.42)",
+                  backdropFilter: "blur(40px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                }}
+              >
+                {([
+                  ["candles", "Candles"],
+                  ["hollow", "Hollow candles"],
+                  ["volcandles", "Volume candles"],
+                  ["footprint", "Volume footprint"],
+                  ["bars", "Bars"],
+                  ["line", "Line"],
+                  ["step", "Step line"],
+                  ["area", "Area"],
+                  ["baseline", "Baseline"],
+                  ["hlcarea", "HLC area"],
+                  ["columns", "Columns"],
+                  ["highlow", "High-low"],
+                  ["heikin", "Heikin Ashi"],
+                  ["renko", "Renko"],
+                  ["linebreak", "Line break"],
+                  ["kagi", "Kagi"],
+                ] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      setChartType(k);
+                      setShowChartTypeMenu(false);
+                      setTimeout(() => loadCandlesRef.current?.(), 0);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                      chartType === k ? "text-orange-300" : "text-gray-200"
+                    }`}
+                  >
+                    <span className="w-3 text-orange-400">{chartType === k ? "✓" : ""}</span>
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {/* Indicators — next to timeframe tools */}
           <div className="relative" data-ind-panel>
             <button
@@ -21869,81 +21970,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             )}
           </div>
 
-          {/* Chart type (Candles / Line / Area / Heikin) */}
-          <div className="relative">
-            <button
-              type="button"
-              title="Chart type"
-              onClick={() => {
-                setShowChartTypeMenu((v) => !v);
-                setShowIndicatorMenu(false);
-                setTfMenuOpen(false);
-                setTzMenuOpen(false);
-                setOpenMenu(null);
-              }}
-              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
-                showChartTypeMenu
-                  ? "bg-orange-500/20 border-orange-500 text-orange-300 shadow-lg"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="7" height="18" rx="1" />
-                <rect x="14" y="8" width="7" height="13" rx="1" />
-              </svg>
-              <span className="font-medium capitalize">{({
-                candles: "Candles", hollow: "Hollow", volcandles: "Vol candles", footprint: "Footprint", bars: "Bars", line: "Line", step: "Step",
-                area: "Area", baseline: "Baseline", hlcarea: "HLC area", columns: "Columns",
-                highlow: "High-low", heikin: "Heikin", renko: "Renko", linebreak: "Line break", kagi: "Kagi",
-              } as Record<string, string>)[chartType] || chartType}</span>
-            </button>
-            {showChartTypeMenu && (
-              <div
-                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[170px]"
-                style={{
-                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                  background: "rgba(20,20,22,0.42)",
-                  backdropFilter: "blur(40px) saturate(200%)",
-                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                }}
-              >
-                {([
-                  ["candles", "Candles"],
-                  ["hollow", "Hollow candles"],
-                  ["volcandles", "Volume candles"],
-                  ["footprint", "Volume footprint"],
-                  ["bars", "Bars"],
-                  ["line", "Line"],
-                  ["step", "Step line"],
-                  ["area", "Area"],
-                  ["baseline", "Baseline"],
-                  ["hlcarea", "HLC area"],
-                  ["columns", "Columns"],
-                  ["highlow", "High-low"],
-                  ["heikin", "Heikin Ashi"],
-                  ["renko", "Renko"],
-                  ["linebreak", "Line break"],
-                  ["kagi", "Kagi"],
-                ] as const).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => {
-                      setChartType(k);
-                      setShowChartTypeMenu(false);
-                      setTimeout(() => loadCandlesRef.current?.(), 0);
-                    }}
-                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
-                      chartType === k ? "text-orange-300" : "text-gray-200"
-                    }`}
-                  >
-                    <span className="w-3 text-orange-400">{chartType === k ? "✓" : ""}</span>
-                    <span>{label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
 
           {/* Undo / Redo */}
           <div className="flex items-center gap-0.5 ml-1" data-hist={histTick}>
@@ -24209,7 +24235,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               }}
                               className={`flex-1 h-7 rounded-md text-[10px] ${drawDash === st ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                             >
-                              {st === "solid" ? "———" : st === "dashed" ? "— —" : "····"}
+                              {st === "solid" ? (
+                                <span className="block w-7 border-t-2 border-current" />
+                              ) : st === "dashed" ? (
+                                <span className="block w-7 border-t-2 border-dashed border-current" />
+                              ) : (
+                                <span className="tracking-widest text-[11px] leading-none">···</span>
+                              )}
                             </button>
                           ))}
                         </div>
