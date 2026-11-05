@@ -20942,9 +20942,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     triggeringAlarmsRef.current.add(a.id);
     const nowIso = new Date().toISOString();
 
-    let claimed = false;
+    let claimed = true;
     try {
-      if (isOnce || doDelete) {
+      if (doDelete) {
+        // Delete after trigger → remove row
         const { data: row } = await supabase
           .from("alarms")
           .update({
@@ -20954,59 +20955,49 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             triggered_at: nowIso,
           })
           .eq("id", a.id)
-          .eq("triggered", false)
           .select("id")
           .maybeSingle();
-        claimed = !!(row && (row as any).id);
+        claimed = !!(row && (row as any).id) || true;
+        try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
       } else {
-        // Always: stay active, only stamp last_price
-        const { data: row } = await supabase
+        // KEEP line on chart — never deactivate / never mark triggered for display filter
+        await supabase
           .from("alarms")
           .update({
             last_price: price,
             triggered_at: nowIso,
+            // stay active so line remains drawn
+            is_active: true,
+            triggered: false,
           })
-          .eq("id", a.id)
-          .eq("is_active", true)
-          .select("id")
-          .maybeSingle();
-        claimed = !!(row && (row as any).id) || true; // still notify even if soft
+          .eq("id", a.id);
+        claimed = true;
       }
     } catch {
-      claimed = true; // notify locally anyway
+      claimed = true;
     }
 
     if (doDelete) {
       setAlarms((p) => p.filter((x) => String(x.id) !== String(a.id)));
-      try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
-    } else if (isOnce) {
-      setAlarms((p) =>
-        p.map((x) =>
-          x.id === a.id
-            ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
-            : x
-        )
-      );
     } else {
+      // Keep: line stays visible; only update last_price
       setAlarms((p) =>
         p.map((x) =>
-          x.id === a.id ? { ...x, last_price: price, triggered_at: nowIso } : x
+          String(x.id) === String(a.id)
+            ? { ...x, last_price: price, triggered_at: nowIso, is_active: true, triggered: false }
+            : x
         )
       );
     }
 
     notifiedAlarmsRef.current.add(a.id);
-    // Always mode: clear notify flag after 15s so it can fire again on next cross
+    // Always + Keep: allow re-fire after cooldown
     if (!isOnce && !doDelete) {
       setTimeout(() => {
         try { notifiedAlarmsRef.current.delete(a.id); } catch {}
       }, 15000);
     }
-
-    if (!claimed && isOnce) {
-      triggeringAlarmsRef.current.delete(a.id);
-      return;
-    }
+    // Once + Keep: stay in notified set forever (this session) so it won't fire again
 
     showLocalNotification(
       `${a.symbol}`,
@@ -21070,13 +21061,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           .limit(200);
         if (allAlarms && alive) {
           const normalizeAlarm = (row: Alarm): Alarm => {
-            if (isDiagonalLine(row)) return row;
-            if (row.note?.startsWith("__diag:")) {
-              const body = row.note.replace(/^__diag:/, "").split("|")[0];
+            let out: Alarm = { ...row };
+            if (row.note?.startsWith("__diag:") || (typeof row.note === "string" && row.note.includes("__diag:"))) {
+              const body = String(row.note).replace(/^__diag:/, "").split("|")[0].split("||")[0];
               const parts = body.split(":");
               if (parts.length >= 3) {
-                return {
-                  ...row,
+                out = {
+                  ...out,
                   start_time: Number(parts[0]),
                   end_time: Number(parts[1]),
                   end_price: Number(parts[2]),
@@ -21084,11 +21075,27 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               }
             }
             // Ray half-line encoded in note
-            if (row.start_time == null && row.note?.startsWith("__ray:")) {
-              const n = Number(row.note.replace("__ray:", ""));
-              if (!Number.isNaN(n)) return { ...row, start_time: n };
+            if (out.start_time == null && out.note?.startsWith("__ray:")) {
+              const n = Number(String(out.note).replace("__ray:", "").split("|")[0].split("||")[0]);
+              if (!Number.isNaN(n)) out = { ...out, start_time: n };
             }
-            return row;
+            // once / delete_after from note cfg
+            try {
+              const cfg = parseAlarmCfg(out.note);
+              out = {
+                ...out,
+                once: out.once != null ? out.once : cfg.once,
+                delete_after: out.delete_after != null ? out.delete_after : cfg.deleteAfter,
+              };
+              // Keep-mode: never treat as inactive/triggered just because server flipped flags
+              if (out.delete_after === false || (out.delete_after == null && cfg.deleteAfter === false)) {
+                // keep visible on chart
+                if (cfg.once || out.once) {
+                  // once+keep still stays on chart
+                }
+              }
+            } catch {}
+            return out;
           };
           setAlarms((prev) => {
             const byId = new Map(allAlarms.map((a: any) => [a.id, normalizeAlarm(a as Alarm)]));
@@ -21126,6 +21133,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 try { alarmPriceOverrideRef.current.delete(String(local.id)); } catch {}
               }
               const finalPrice = overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price));
+              const cfgL = parseAlarmCfg(local.note);
+              const cfgD = parseAlarmCfg(db.note);
+              const keepLine = (local.delete_after === false) || (local.delete_after == null && cfgL.deleteAfter === false) ||
+                               (db.delete_after === false) || (db.delete_after == null && cfgD.deleteAfter === false);
+              // Keep → always stay visible on chart (ignore server triggered/is_active for drawing)
+              const triggered = keepLine ? false : !!db.triggered;
+              const is_active = keepLine ? true : (!!db.is_active && !db.triggered);
               return {
                 ...local,
                 ...db,
@@ -21136,8 +21150,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 dash: preferLocal ? (local as any).dash : ((db as any).dash ?? (local as any).dash),
                 width: preferLocal ? local.width : (db.width ?? local.width),
                 color: preferLocal ? local.color : (db.color ?? local.color),
-                triggered: !!db.triggered,
-                is_active: !!db.is_active && !db.triggered,
+                note: preferLocal && local.note ? local.note : (db.note ?? local.note),
+                once: local.once != null ? local.once : (db.once != null ? db.once : cfgL.once),
+                delete_after: local.delete_after != null ? local.delete_after : (db.delete_after != null ? db.delete_after : cfgL.deleteAfter),
+                triggered,
+                is_active,
               };
             });
             // add any new alarms from DB not in local
@@ -24472,19 +24489,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           ))}
                         </div>
                         <div className="border-t border-gray-700 my-1.5" />
-                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Trigger</div>
-                        <div className="flex gap-1 mb-2">
-                          <button
-                            type="button"
-                            onClick={() => setMoveAlarmOnce(true)}
-                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
-                          >Once</button>
-                          <button
-                            type="button"
-                            onClick={() => setMoveAlarmOnce(false)}
-                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
-                          >Always</button>
-                        </div>
                         <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">After trigger</div>
                         <div className="flex gap-1 mb-2">
                           <button
@@ -24494,9 +24498,27 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           >Keep</button>
                           <button
                             type="button"
-                            onClick={() => setMoveAlarmDelete(true)}
+                            onClick={() => {
+                              setMoveAlarmDelete(true);
+                              setMoveAlarmOnce(true); // delete implies once
+                            }}
                             className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmDelete ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
                           >Delete</button>
+                        </div>
+                        <div className={`text-[9px] uppercase tracking-wide mb-1.5 ${moveAlarmDelete ? "text-gray-600" : "text-gray-500"}`}>Trigger</div>
+                        <div className={`flex gap-1 mb-2 ${moveAlarmDelete ? "opacity-40 pointer-events-none" : ""}`}>
+                          <button
+                            type="button"
+                            disabled={moveAlarmDelete}
+                            onClick={() => setMoveAlarmOnce(true)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Once</button>
+                          <button
+                            type="button"
+                            disabled={moveAlarmDelete}
+                            onClick={() => setMoveAlarmOnce(false)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Always</button>
                         </div>
                         <button
                           type="button"
