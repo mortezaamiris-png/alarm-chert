@@ -2630,8 +2630,9 @@ function didCross(
   );
 }
 function toLineStyle(dash?: string | null) {
-  if (dash === "dashed") return LineStyle.Dashed;
-  if (dash === "dotted") return LineStyle.Dotted;
+  // TradingView-like: dashed = long dashes, dotted = sparse dots (clearly different)
+  if (dash === "dashed") return LineStyle.LargeDashed;
+  if (dash === "dotted") return LineStyle.SparseDotted;
   return LineStyle.Solid;
 }
 
@@ -22257,7 +22258,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 setMode("none");
                 setDiagStart(null);
               }}
-              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 transition-colors"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
@@ -22280,7 +22281,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setMovingId(null);
                   setMovingType(null);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22308,7 +22309,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap chart for full-line alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22328,7 +22329,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap chart for ray alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm-ray"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22349,7 +22350,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap two points for diagonal alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm-diag"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22380,7 +22381,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setPosToolsOpen(false);
                   setAlarmMenuOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline" || mode === "channel" || mode === "curve"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22516,7 +22517,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setFibToolsOpen((v) => !v);
                   setDrawToolsOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "fib-tz" || mode === "fib-tbt" || mode === "avp" || mode === "avwap" || mode === "frvp"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22703,7 +22704,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setPosToolsOpen(false);
                   setAlarmMenuOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "dpr" || mode === "brush" || mode === "path" || mode === "long-pos" || mode === "short-pos"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22942,7 +22943,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setStatusMsg("Measure: tap first point");
                 }
               }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                 mode === "measure"
                   ? "bg-orange-500/20 border-orange-500 text-orange-300"
                   : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22963,7 +22964,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 type="button"
                 title="Hide"
                 onClick={() => { setHideMenuOpen((v) => !v); setTrashMenuOpen(false); }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   hideLines || hideIndicators || hideAlarms || hideMenuOpen
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -23058,7 +23059,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 type="button"
                 title="Delete"
                 onClick={() => { setTrashMenuOpen((v) => !v); setHideMenuOpen(false); }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   trashMenuOpen
                     ? "bg-red-500/20 border-red-500 text-red-300"
                     : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-red-950/50 hover:border-red-700 hover:text-red-400"
@@ -23146,7 +23147,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               type="button"
               title={favToolsVisible ? "Hide favorite tools bar" : "Show favorite tools bar"}
               onClick={() => setFavToolsVisible((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors mb-1 ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 mb-1 ${
                 favToolsVisible && favTools.length
                   ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
                   : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-amber-300"
@@ -23164,7 +23165,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               type="button"
               title={showBottomLists ? "Hide lists" : "Show lists"}
               onClick={() => setShowBottomLists((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                 showBottomLists
                   ? "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                   : "bg-orange-500/15 border-orange-500/50 text-orange-300"
@@ -24170,7 +24171,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 if (md) md.dash = st;
                                 try {
                                   previewDiagSeriesRef.current?.applyOptions({
-                                    lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                    lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
                                   });
                                 } catch {}
                                 if (movingId && movingType === "line") {
@@ -24178,7 +24179,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                   try {
                                     const ls = chartLinesRef.current.get(movingId);
                                     if (ls && typeof (ls as any).applyOptions === "function") {
-                                      (ls as any).applyOptions({ lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid });
+                                      (ls as any).applyOptions({ lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid });
                                     }
                                   } catch {}
                                 } else if (movingId && movingType === "alarm") {
@@ -24193,13 +24194,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                     const pl = alarmLinesRef.current.get(`alarm-${movingId}`);
                                     if (pl && typeof (pl as any).applyOptions === "function") {
                                       (pl as any).applyOptions({
-                                        lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                        lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
                                       });
                                     }
                                     const ray = chartLinesRef.current.get(`alarm-ray-${movingId}`);
                                     if (ray && typeof (ray as any).applyOptions === "function") {
                                       (ray as any).applyOptions({
-                                        lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                        lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
                                       });
                                     }
                                   } catch {}
@@ -24208,7 +24209,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               }}
                               className={`flex-1 h-7 rounded-md text-[10px] ${drawDash === st ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                             >
-                              {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                              {st === "solid" ? "———" : st === "dashed" ? "— —" : "····"}
                             </button>
                           ))}
                         </div>
