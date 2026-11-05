@@ -4311,6 +4311,8 @@ export default function DashboardPage() {
   const alarmsRef = useRef<Alarm[]>([]);
   /** Recent local edits to alarms — poll must not overwrite these for a short window */
   const alarmLocalEditRef = useRef<Map<string, number>>(new Map());
+  /** Sticky price overrides until DB confirms the same value (prevents snap-back) */
+  const alarmPriceOverrideRef = useRef<Map<string, number>>(new Map());
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
   const hideLinesRef = useRef(false);
@@ -7290,6 +7292,10 @@ export default function DashboardPage() {
             end_price: md2.pointB.price,
           };
           if (typ === "alarm") {
+            try {
+              if (patch.price != null) alarmPriceOverrideRef.current.set(String(id), Number(patch.price));
+              alarmLocalEditRef.current.set(String(id), Date.now());
+            } catch {}
             await supabase.from("alarms").update(patch).eq("id", id);
             setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, ...patch } : a)));
           } else {
@@ -9919,9 +9925,17 @@ priced.sort((a, b) => a.price - b.price);
     })();
     alarmsDrawList.forEach((a: any) => {
       try {
-        const isMoving = movingId === a.id && movingType === "alarm";
+        const isMoving = String(movingId) === String(a.id) && movingType === "alarm";
+        // Sticky override wins over any stale state/DB value
+        const drawPrice = (() => {
+          try {
+            const ov = alarmPriceOverrideRef.current.get(String(a.id));
+            if (ov != null && Number.isFinite(ov)) return Number(ov);
+          } catch {}
+          return Number(a.price);
+        })();
         const isHL = highlightAlarmId === a.id ||
-          (highlightPrice != null && Math.abs(a.price - highlightPrice) < a.price * 1e-9 + 1e-8);
+          (highlightPrice != null && Math.abs(drawPrice - highlightPrice) < drawPrice * 1e-9 + 1e-8);
         if (isHL) hlDrawnOnActive = true;
         const color = isHL
           ? "#eab308"
@@ -9991,14 +10005,14 @@ priced.sort((a, b) => a.price - b.price);
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData([
-              { time: t0 as any, value: Number(a.price) },
-              { time: rayEnd as any, value: Number(a.price) },
+              { time: t0 as any, value: drawPrice },
+              { time: rayEnd as any, value: drawPrice },
             ]);
             chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
-              price: Number(a.price),
+              price: drawPrice,
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
@@ -10007,7 +10021,7 @@ priced.sort((a, b) => a.price - b.price);
           }
         } else {
           const pl = series.createPriceLine({
-            price: a.price, color, lineWidth: width,
+            price: drawPrice, color, lineWidth: width,
             lineStyle: style,
             axisLabelVisible: true, title: title || "",
           });
@@ -15725,20 +15739,27 @@ priced.sort((a, b) => a.price - b.price);
                 } catch {}
               } catch {}
             } else {
-              // alarm H
+              // alarm H — mutate ref + sticky override + live price line (no snap-back)
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) curA.price = newP;
               (bd as any)._liveP = newP;
+              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
               try {
-                if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
-                (bd as any)._pl = ser.createPriceLine({
-                  price: newP,
-                  color: "#f0b90b",
-                  lineWidth: 2,
-                  lineStyle: LineStyle.Solid,
-                  axisLabelVisible: true,
-                  title: "",
-                });
+                const pl = alarmLinesRef.current.get(`alarm-${bd.id}`);
+                if (pl && typeof (pl as any).applyOptions === "function") {
+                  (pl as any).applyOptions({ price: newP, color: "#f0b90b" });
+                } else {
+                  if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                  (bd as any)._pl = ser.createPriceLine({
+                    price: newP,
+                    color: "#f0b90b",
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: "",
+                  });
+                }
               } catch {}
             }
           } else if (bd.type === "v") {
@@ -15854,6 +15875,7 @@ priced.sort((a, b) => a.price - b.price);
                   end_time: (curA as any).end_time, end_price: (curA as any).end_price,
                 };
                 try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+                try { if (patch.price != null) alarmPriceOverrideRef.current.set(String(bd.id), Number(patch.price)); } catch {}
                 setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
                 try {
                   const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
@@ -15878,10 +15900,23 @@ priced.sort((a, b) => a.price - b.price);
                 if (curA) curA.price = newP;
               } catch {}
               try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
+              // Keep price line at newP immediately (before React re-render)
+              try {
+                const ser2 = seriesRef.current;
+                const pl = alarmLinesRef.current.get(`alarm-${bd.id}`);
+                if (pl && typeof (pl as any).applyOptions === "function") {
+                  (pl as any).applyOptions({ price: newP });
+                }
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
               try {
-                const { error } = await supabase.from("alarms").update({ price: newP }).eq("id", bd.id);
-                if (error) console.warn("alarm move save failed", error);
+                const { error } = await supabase.from("alarms").update({ price: Number(newP) }).eq("id", bd.id);
+                if (error) {
+                  console.warn("alarm move save failed", error);
+                  // Fallback: try again without extra fields
+                  try { await supabase.from("alarms").update({ price: Number(newP) }).eq("id", bd.id); } catch {}
+                }
               } catch (e) { console.warn("alarm move save", e); }
             }
           } else if (bd.type === "v") {
@@ -15914,9 +15949,10 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch {}
               try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
               try {
-                const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                const { error } = await supabase.from("alarms").update({ ...patch, price: Number(newP) }).eq("id", bd.id);
                 if (error) console.warn("alarm ray move save failed", error);
               } catch (e) { console.warn("alarm ray move", e); }
             }
@@ -15940,7 +15976,8 @@ priced.sort((a, b) => a.price - b.price);
             moveDiagRef.current = null;
             movingVLineRef.current = false;
             movingRayRef.current = false;
-            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            // Delayed re-render so sticky override + setAlarms settle (prevents alarm snap-back)
+            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
           } catch {}
         } else if (bd.type === "diag") {
           // keep selected but phase=pick, solid style via softMove
@@ -20508,24 +20545,29 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       if (a) {
         setAlarms(
           (a as Alarm[]).map((row) => {
-            if (isDiagonalLine(row)) return row;
-            if (row.note?.startsWith("__diag:")) {
+            let out: any = row;
+            if (isDiagonalLine(row)) out = row;
+            else if (row.note?.startsWith("__diag:")) {
               const body = row.note.replace(/^__diag:/, "").split("|")[0];
               const parts = body.split(":");
               if (parts.length >= 3) {
-                return {
+                out = {
                   ...row,
                   start_time: Number(parts[0]),
                   end_time: Number(parts[1]),
                   end_price: Number(parts[2]),
                 };
               }
-            }
-            if (row.note?.startsWith("__ray:") && row.start_time == null) {
+            } else if (row.note?.startsWith("__ray:") && row.start_time == null) {
               const n = Number(row.note.replace("__ray:", ""));
-              if (!Number.isNaN(n)) return { ...row, start_time: n };
+              if (!Number.isNaN(n)) out = { ...row, start_time: n };
             }
-            return row;
+            // Sticky price override (user just moved this alarm)
+            try {
+              const ov = alarmPriceOverrideRef.current.get(String(out.id));
+              if (ov != null && Number.isFinite(ov)) out = { ...out, price: ov };
+            } catch {}
+            return out;
           })
         );
       } else {
@@ -21022,12 +21064,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 }
               }
               const editedAt = alarmLocalEditRef.current.get(String(local.id)) || 0;
-              const preferLocal = editedAt > 0 && (Date.now() - editedAt) < 90000;
+              const overrideP = alarmPriceOverrideRef.current.get(String(local.id));
+              const preferLocal = (editedAt > 0 && (Date.now() - editedAt) < 120000) || overrideP != null;
+              // Clear override only when DB has caught up to the moved price
+              if (overrideP != null && db.price != null && Math.abs(Number(db.price) - Number(overrideP)) / Math.max(Math.abs(Number(overrideP)), 1e-12) < 1e-8) {
+                try { alarmPriceOverrideRef.current.delete(String(local.id)); } catch {}
+              }
+              const finalPrice = overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price));
               return {
                 ...local,
                 ...db,
-                // keep local price/geometry after user drag so poll cannot snap back
-                price: preferLocal ? local.price : (db.price ?? local.price),
+                price: finalPrice,
                 start_time: preferLocal ? local.start_time : (db.start_time ?? local.start_time),
                 end_time: preferLocal ? (local as any).end_time : (db.end_time ?? (local as any).end_time),
                 end_price: preferLocal ? (local as any).end_price : (db.end_price ?? (local as any).end_price),
