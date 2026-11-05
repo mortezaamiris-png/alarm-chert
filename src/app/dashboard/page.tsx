@@ -2609,20 +2609,24 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
 
 /** Encode once/delete_after into alarm note without losing user text */
 function encodeAlarmCfg(note: string | null | undefined, once: boolean, deleteAfter: boolean): string {
-  const base = (note || "").replace(/\s*\|\|__cfg:[^|]*$/g, "").trim();
+  const base = (note || "")
+    .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
+    .replace(/\|+$/g, "")
+    .trim();
   const cfg = `__cfg:once=${once ? 1 : 0}|del=${deleteAfter ? 1 : 0}`;
   return base ? `${base}||${cfg}` : cfg;
 }
 function parseAlarmCfg(note: string | null | undefined): { once: boolean; deleteAfter: boolean; text: string } {
   const raw = String(note || "");
-  const m = raw.match(/\|\|?__cfg:once=(\d)\|del=(\d)/);
+  // Match "__cfg:once=0|del=1" at start or after || or |
+  const m = raw.match(/(?:^|\|\|?)__cfg:once=(\d)\|del=(\d)/);
   let once = true;
   let deleteAfter = false;
   let text = raw;
   if (m) {
     once = m[1] === "1";
     deleteAfter = m[2] === "1";
-    text = raw.replace(/\|\|?__cfg:once=\d\|del=\d/, "").trim();
+    text = raw.replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/, "").replace(/\|+$/, "").trim();
   }
   return { once, deleteAfter, text };
 }
@@ -17794,6 +17798,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setMovingId(null);
             setMovingType(null);
             setMode("none");
+            setMoveStyleOpen(false);
+            setMoveNoteOpen(false);
+            setMoveAlarmOpen(false);
             clearPreview();
             movingRayRef.current = false;
             movingVLineRef.current = false;
@@ -20264,6 +20271,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     trashMenuOpen,
     moveStyleOpen,
     moveNoteOpen,
+    moveAlarmOpen,
     editingNoteId,
     noteDraft,
     editingNoteType,
@@ -20930,8 +20938,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
    */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
     const cfg = parseAlarmCfg(a.note);
+    // Note __cfg is source of truth for Delete/Keep (always written on Apply)
     const isOnce = a.once != null ? !!a.once : cfg.once;
-    const doDelete = a.delete_after != null ? !!a.delete_after : cfg.deleteAfter;
+    const doDelete = cfg.deleteAfter || !!a.delete_after;
 
     // Cooldown / in-flight guards
     if (triggeringAlarmsRef.current.has(a.id)) return;
@@ -20978,7 +20987,45 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     }
 
     if (doDelete) {
-      setAlarms((p) => p.filter((x) => String(x.id) !== String(a.id)));
+      // Remove from chart + state; keep a history entry via triggered flag if needed
+      setAlarms((p) =>
+        p
+          .map((x) =>
+            String(x.id) === String(a.id)
+              ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
+              : x
+          )
+          .filter((x) => String(x.id) !== String(a.id) || false) // drop it from active list
+      );
+      // Force remove price line from chart
+      try {
+        const pl = alarmLinesRef.current.get(`alarm-${a.id}`);
+        if (pl && seriesRef.current) {
+          try { seriesRef.current.removePriceLine(pl); } catch {}
+          alarmLinesRef.current.delete(`alarm-${a.id}`);
+        }
+        const ray = chartLinesRef.current.get(`alarm-ray-${a.id}`);
+        if (ray && chartRef.current) {
+          try { chartRef.current.removeSeries(ray as any); } catch {}
+          chartLinesRef.current.delete(`alarm-ray-${a.id}`);
+        }
+        const diag = chartLinesRef.current.get(String(a.id));
+        if (diag && chartRef.current) {
+          try { chartRef.current.removeSeries(diag as any); } catch {}
+          chartLinesRef.current.delete(String(a.id));
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      // Ensure DB row is gone / marked triggered for history
+      try {
+        await supabase.from("alarms").update({
+          triggered: true,
+          is_active: false,
+          last_price: price,
+          triggered_at: nowIso,
+        }).eq("id", a.id);
+      } catch {}
+      try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
     } else {
       // Keep: line stays visible; only update last_price
       setAlarms((p) =>
@@ -21135,9 +21182,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               const finalPrice = overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price));
               const cfgL = parseAlarmCfg(local.note);
               const cfgD = parseAlarmCfg(db.note);
-              const keepLine = (local.delete_after === false) || (local.delete_after == null && cfgL.deleteAfter === false) ||
-                               (db.delete_after === false) || (db.delete_after == null && cfgD.deleteAfter === false);
-              // Keep → always stay visible on chart (ignore server triggered/is_active for drawing)
+              // Prefer explicit local delete_after / note cfg; delete=true means remove when triggered
+              const delFlag = local.delete_after != null ? !!local.delete_after
+                : (db.delete_after != null ? !!db.delete_after
+                  : (cfgL.deleteAfter || cfgD.deleteAfter));
+              const keepLine = !delFlag;
+              // Keep → stay visible; Delete + triggered → hide
               const triggered = keepLine ? false : !!db.triggered;
               const is_active = keepLine ? true : (!!db.is_active && !db.triggered);
               return {
@@ -24541,19 +24591,25 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                   once: moveAlarmOnce,
                                   delete_after: moveAlarmDelete,
                                 };
+                                // Mutate ref immediately so next tick/trigger sees Delete/Keep
+                                if (al) {
+                                  (al as any).condition = moveAlarmCond;
+                                  (al as any).note = note;
+                                  (al as any).once = moveAlarmOnce;
+                                  (al as any).delete_after = moveAlarmDelete;
+                                }
                                 setAlarms((prev) => prev.map((a) => String(a.id) === String(id) ? { ...a, ...patch } : a));
                                 try {
-                                  const { error } = await supabase.from("alarms").update({
+                                  await supabase.from("alarms").update({
                                     condition: moveAlarmCond,
                                     note,
                                   }).eq("id", id);
-                                  // optional columns if schema has them
-                                  if (!error) {
-                                    try { await supabase.from("alarms").update({ once: moveAlarmOnce, delete_after: moveAlarmDelete } as any).eq("id", id); } catch {}
-                                  }
+                                  try {
+                                    await supabase.from("alarms").update({ once: moveAlarmOnce, delete_after: moveAlarmDelete } as any).eq("id", id);
+                                  } catch {}
                                 } catch {}
                                 setMoveAlarmOpen(false);
-                                setStatusMsg(`Alarm: ${moveAlarmCond} · ${moveAlarmOnce ? "Once" : "Always"} · ${moveAlarmDelete ? "Delete" : "Keep"}`);
+                                setStatusMsg(`Alarm: ${moveAlarmCond} · ${moveAlarmDelete ? "Delete" : "Keep"} · ${moveAlarmOnce ? "Once" : "Always"}`);
                               } catch {
                                 setStatusMsg("Alarm update failed");
                               }
