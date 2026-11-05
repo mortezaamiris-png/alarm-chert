@@ -7915,17 +7915,11 @@ export default function DashboardPage() {
         const style = toLineStyle(l.dash || l.style);
         // Title only when note exists (no "Line xxx" label)
         const noteClean = (() => {
-          if (!l.note) return "";
-          const s = String(l.note);
-          if (s === "__vline__" || s.startsWith("__vline__:")) return "";
-          if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
-            const idx = s.indexOf("|");
-            return idx >= 0 ? s.slice(idx + 1).trim() : "";
-          }
-          if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
-          if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__channel:") || s.startsWith("__dpr:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
-          if (s.startsWith("__")) return "";
-          return s;
+          try {
+            const t = userFacingNote(l.note);
+            if (!t || t.startsWith("__") || t.includes("__cfg")) return "";
+            return t;
+          } catch { return ""; }
         })();
         // Never label special drawings as MOVING on the price axis (causes a phantom H-line look)
         const title = (isMoving && !softMove) ? "MOVING" : noteClean;
@@ -9995,13 +9989,15 @@ priced.sort((a, b) => a.price - b.price);
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isHL ? LineStyle.Dashed : toLineStyle(a.dash);
-        const noteCleanA =
-          a.note &&
-          !String(a.note).startsWith("__diag:") &&
-          !String(a.note).startsWith("__ray:") &&
-          a.note !== "Diag"
-            ? String(a.note)
-            : null;
+        // Only user-written note on axis — never __cfg / __diag / __ray markers
+        const noteCleanA = (() => {
+          try {
+            const t = userFacingNote(a.note);
+            if (!t || t.startsWith("__")) return null;
+            if (t.includes("__cfg")) return null;
+            return t;
+          } catch { return null; }
+        })();
         const title = isMoving
           ? "MOVING"
           : isHL
@@ -21975,7 +21971,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   }, [alarms, symbolUpper, historyMode]);
 
   return (
-    <div className="min-h-screen bg-[#0b0e11] text-gray-100 p-3">
+    <div className="h-[100dvh] max-h-[100dvh] overflow-hidden bg-[#0b0e11] text-gray-100 p-2 sm:p-3 flex flex-col">
       <style>{`
         @keyframes tfPop{
           0%{opacity:0;transform:translateY(10px) scale(0.85)}
@@ -22000,7 +21996,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       `}</style>
       {/* Header — symbol search + timeframes + indicators on the left */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
+      <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
         <input
           value={symbol}
           onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -22532,14 +22528,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           </div>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-1 min-h-0 overflow-hidden">
         {/* Left tools — fully hidden when collapsed (chart expands like side list) */}
         {showToolsPanel && (
           <div
             className="flex flex-col gap-1.5 shrink-0 self-stretch"
             style={{
-              minHeight: 420,
-              height: showBottomLists ? 640 : "calc(100vh - 120px)",
+              height: "100%",
+              minHeight: 0,
             }}
           >
             {/* Hide tools — same idea as « Hide on coin list */}
@@ -23480,8 +23476,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         {/* Chart — multi-pane layout */}
         <div
           ref={layoutWrapRef}
-          className="flex-1 min-w-0 relative"
-          style={{ height: showBottomLists ? 640 : "calc(100vh - 120px)", minHeight: 640 }}
+          className="flex-1 min-w-0 min-h-0 relative"
+          style={{ height: "100%", minHeight: 0 }}
         >
           <div
             className={
@@ -27810,9 +27806,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           <div
             className="w-48 shrink-0 bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden flex flex-col"
             style={{
-              height: showBottomLists ? 640 : "calc(100vh - 120px)",
-              maxHeight: showBottomLists ? 640 : "calc(100vh - 120px)",
-              minHeight: 640,
+              height: "100%",
+              maxHeight: "100%",
+              minHeight: 0,
             }}
           >
             <div className="px-2 py-1.5 border-b border-gray-800 flex flex-col gap-1.5">
@@ -28582,7 +28578,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
       {/* Bottom lists (toggle is on left toolbar) */}
       {showBottomLists && (
-      <div className="mt-2 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
+      <div className="mt-2 shrink-0 max-h-[28vh] overflow-y-auto grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
           <h3 className="text-sm font-medium text-green-400 mb-2">
             Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
