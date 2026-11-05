@@ -2455,9 +2455,20 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__fibtz:")) return "Fib time zone";
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
-    const idx = s.indexOf("|");
-    if (idx >= 0) return s.slice(idx + 1).trim();
-    return "";
+    // strip geometry + optional ||__cfg
+    let rest = s.replace(/^__diag:[^|]*/, "").replace(/^__ray:[^|]*/, "");
+    rest = rest.replace(/^[|]+/, "").replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/, "").trim();
+    return rest;
+  }
+  // Strip alarm config marker from any note
+  if (s.includes("__cfg:")) {
+    const cleaned = s
+      .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
+      .replace(/\|+$/g, "")
+      .trim();
+    if (!cleaned || cleaned === s.replace(/\|+/g, "").trim() && cleaned.startsWith("__")) return "";
+    if (cleaned.startsWith("__")) return "";
+    return cleaned;
   }
   return s;
 }
@@ -28593,38 +28604,127 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ? `↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
                       : formatPrice(a.price)}
                   </span>
-                  {/* Condition next to price */}
+                  {/* Alarm settings (bell) — same as line toolbar */}
                   <div className="relative shrink-0" data-menu>
                     <button
                       type="button"
-                      onClick={() => setOpenMenu(openMenu === `a-cond-${a.id}` ? null : `a-cond-${a.id}`)}
-                      className={`px-1 py-0.5 rounded border text-[10px] transition-all ${
-                        openMenu === `a-cond-${a.id}`
-                          ? "bg-orange-500 text-black border-orange-400"
-                          : "bg-gray-900/95 border-gray-600 text-gray-300"
+                      title="Alarm settings"
+                      onClick={() => setOpenMenu(openMenu === `a-bell-${a.id}` ? null : `a-bell-${a.id}`)}
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
+                        openMenu === `a-bell-${a.id}`
+                          ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                          : "bg-gray-900/95 border-gray-600 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
                       }`}
                     >
-                      {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
                     </button>
-                      {openMenu === `a-cond-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[100px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                        }}>
-                          {(["cross", "above", "below"] as const).map((c) => (
-                            <button key={c} type="button"
-                              onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{a.condition === c ? "✓" : ""}</span>
-                              {c === "cross" ? "Cross" : c === "above" ? "Above" : "Below"}
-                            </button>
-                          ))}
+                    {openMenu === `a-bell-${a.id}` && (() => {
+                      const cfg = parseAlarmCfg(a.note);
+                      const cond = (a.condition as "cross" | "above" | "below") || "cross";
+                      const once = a.once != null ? !!a.once : cfg.once;
+                      const del = a.delete_after != null ? !!a.delete_after : cfg.deleteAfter;
+                      return (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 left-0 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[180px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
+                          <div className="flex flex-col gap-0.5 mb-2">
+                            {([
+                              { id: "cross", label: "Cross" },
+                              { id: "above", label: "Above" },
+                              { id: "below", label: "Below" },
+                            ] as const).map((c) => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={async () => {
+                                  const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, once, del);
+                                  setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, condition: c.id, note, once, delete_after: del } : x));
+                                  try {
+                                    const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                    if (al) { (al as any).condition = c.id; (al as any).note = note; }
+                                  } catch {}
+                                  await updateAlarmCondition(a.id, c.id);
+                                  try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                                }}
+                                className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                                  cond === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                                }`}
+                              >
+                                <span className="w-4 text-center">{cond === c.id ? "✓" : ""}</span>
+                                <span>{c.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <div className="border-t border-gray-700 my-1.5" />
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">After trigger</div>
+                          <div className="flex gap-1 mb-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, once, false);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, delete_after: false, note, once } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).delete_after = false; (al as any).note = note; (al as any).once = once; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${!del ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Keep</button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, true, true);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, delete_after: true, once: true, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).delete_after = true; (al as any).once = true; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${del ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Delete</button>
+                          </div>
+                          <div className={`text-[9px] uppercase tracking-wide mb-1.5 ${del ? "text-gray-600" : "text-gray-500"}`}>Trigger</div>
+                          <div className={`flex gap-1 ${del ? "opacity-40 pointer-events-none" : ""}`}>
+                            <button
+                              type="button"
+                              disabled={del}
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, true, del);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, once: true, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).once = true; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${once ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Once</button>
+                            <button
+                              type="button"
+                              disabled={del}
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, false, del);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, once: false, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).once = false; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${!once ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Always</button>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      );
+                    })()}
+                  </div>
                   {/* Note centered — click to edit */}
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === a.id && editingNoteType === "alarm" ? (
@@ -28652,9 +28752,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:") && userFacingNote(a.note)
-                          ? userFacingNote(a.note)
-                          : "Note"}
+                        {userFacingNote(a.note) ? userFacingNote(a.note) : "Note"}
                       </button>
                     )}
                   </div>
@@ -28724,32 +28822,33 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `a-style-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.92)",
-                          backdropFilter: "blur(24px)",
-                        }}>
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
-                          {LINE_WIDTHS.map((w) => (
-                            <button key={w} type="button"
-                              onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
-                              W{w}
-                            </button>
-                          ))}
-                          <div className="border-t border-white/10 my-1" />
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
-                          {(["solid", "dashed"] as const).map((d) => (
-                            <button key={d} type="button"
-                              onClick={() => { pushUndo(); updateAlarmDash(a.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
-                              {d === "solid" ? "—— Solid" : "- - Dash"}
-                            </button>
-                          ))}
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[120px]">
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mb-1">Width</div>
+                          <div className="flex gap-1 mb-2">
+                            {LINE_WIDTHS.map((w) => (
+                              <button key={w} type="button"
+                                onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); }}
+                                className={`w-8 h-7 rounded-md text-xs font-medium ${(a.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >{w}</button>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mb-1">Style</div>
+                          <div className="flex gap-1">
+                            {(["solid", "dashed", "dotted"] as const).map((d) => (
+                              <button key={d} type="button"
+                                onClick={() => { pushUndo(); updateAlarmDash(a.id, d); }}
+                                className={`flex-1 h-7 rounded-md flex items-center justify-center ${((a.dash as string) || "solid") === d ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >
+                                {d === "solid" ? (
+                                  <span className="block w-5 border-t-2 border-current" />
+                                ) : d === "dashed" ? (
+                                  <span className="block w-5 border-t-2 border-dashed border-current" />
+                                ) : (
+                                  <span className="tracking-widest text-[11px]">···</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
