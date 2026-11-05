@@ -5134,6 +5134,14 @@ export default function DashboardPage() {
   const [ichiMinMo, setIchiMinMo] = useState(() => loadLS("ichi_min_mo", 1));
   const [ichiMaxMo, setIchiMaxMo] = useState(() => loadLS("ichi_max_mo", 12));
   const [ichiDefaultsOpen, setIchiDefaultsOpen] = useState(false);
+  const [ichiPlotMenu, setIchiPlotMenu] = useState<string | null>(null);
+  type IchiPlotKind = "line" | "line_breaks" | "step" | "step_breaks" | "step_diamonds" | "histogram" | "cross" | "area" | "area_breaks" | "columns" | "circles";
+  const [ichiPlotTypes, setIchiPlotTypes] = useState<Record<string, IchiPlotKind>>(() => {
+    try { return JSON.parse(localStorage.getItem("ichi_plot_types") || "{}"); } catch { return {}; }
+  });
+  const [ichiPriceLines, setIchiPriceLines] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("ichi_price_lines") || "{}"); } catch { return {}; }
+  });
   const [ichiSettings, setIchiSettings] = useState(false);
   const [ichiSettingsTab, setIchiSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
   const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
@@ -11519,20 +11527,20 @@ priced.sort((a, b) => a.price - b.price);
     const data = calcIchimoku(candles, ichiConv, ichiBase, ichiLeadB, ichiDisp, barSec);
     ichiCloudRef.current = { leadA: data.leadA, leadB: data.leadB };
     try {
-      const mk = (color: string, visible: boolean) =>
+      const mk = (color: string, visible: boolean, key: string) =>
         chart.addLineSeries({
           color,
           lineWidth: 1,
-          priceLineVisible: false,
+          priceLineVisible: !!ichiPriceLines[key],
           lastValueVisible: !!ichiLabelsScale,
           crosshairMarkerVisible: false,
           visible,
         });
-      const conv = mk(ichiConvColor, ichiShowConv);
-      const base = mk(ichiBaseColor, ichiShowBase);
-      const lag = mk(ichiLagColor, ichiShowLag);
-      const leadA = mk(ichiLeadAColor, ichiShowLeadA);
-      const leadB = mk(ichiLeadBColor, ichiShowLeadB);
+      const conv = mk(ichiConvColor, ichiShowConv, "conv");
+      const base = mk(ichiBaseColor, ichiShowBase, "base");
+      const lag = mk(ichiLagColor, ichiShowLag, "lag");
+      const leadA = mk(ichiLeadAColor, ichiShowLeadA, "leada");
+      const leadB = mk(ichiLeadBColor, ichiShowLeadB, "leadb");
       if (ichiShowConv) conv.setData(data.conversion as any);
       if (ichiShowBase) base.setData(data.base as any);
       if (ichiShowLag) lag.setData(data.lagging as any);
@@ -11547,7 +11555,7 @@ priced.sort((a, b) => a.price - b.price);
     showIchimoku, ichiVisible, hideIndicators, ichiConv, ichiBase, ichiLeadB, ichiDisp,
     ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
     ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud,
-    ichiLabelsScale, ichiVisMinutes, ichiVisHours, ichiVisDays, ichiVisWeeks, ichiVisMonths,
+    ichiLabelsScale, ichiPriceLines, ichiVisMinutes, ichiVisHours, ichiVisDays, ichiVisWeeks, ichiVisMonths,
     ichiMinM, ichiMaxM, ichiMinH, ichiMaxH, ichiMinD, ichiMaxD, ichiMinW, ichiMaxW, ichiMinMo, ichiMaxMo,
     removeIchimoku, paintIchiCloud,
   ]);
@@ -24619,27 +24627,114 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 {ichiSettingsTab === "style" && (
                   <div className="space-y-2.5">
                     {([
-                      { label: "Conversion Line", show: ichiShowConv, setShow: setIchiShowConv, col: ichiConvColor, setCol: setIchiConvColor },
-                      { label: "Base Line", show: ichiShowBase, setShow: setIchiShowBase, col: ichiBaseColor, setCol: setIchiBaseColor },
-                      { label: "Lagging Span", show: ichiShowLag, setShow: setIchiShowLag, col: ichiLagColor, setCol: setIchiLagColor },
-                      { label: "Leading Span A", show: ichiShowLeadA, setShow: setIchiShowLeadA, col: ichiLeadAColor, setCol: setIchiLeadAColor },
-                      { label: "Leading Span B", show: ichiShowLeadB, setShow: setIchiShowLeadB, col: ichiLeadBColor, setCol: setIchiLeadBColor },
-                      { label: "Kumo Cloud Upper Line", show: ichiShowKumoUp, setShow: setIchiShowKumoUp, col: ichiKumoUpColor, setCol: setIchiKumoUpColor },
-                      { label: "Kumo Cloud Lower Line", show: ichiShowKumoDn, setShow: setIchiShowKumoDn, col: ichiKumoDnColor, setCol: setIchiKumoDnColor },
-                    ] as const).map((row) => (
-                      <div key={row.label} className="flex items-center gap-2">
+                      { key: "conv", label: "Conversion Line", show: ichiShowConv, setShow: setIchiShowConv, col: ichiConvColor, setCol: setIchiConvColor },
+                      { key: "base", label: "Base Line", show: ichiShowBase, setShow: setIchiShowBase, col: ichiBaseColor, setCol: setIchiBaseColor },
+                      { key: "lag", label: "Lagging Span", show: ichiShowLag, setShow: setIchiShowLag, col: ichiLagColor, setCol: setIchiLagColor },
+                      { key: "leada", label: "Leading Span A", show: ichiShowLeadA, setShow: setIchiShowLeadA, col: ichiLeadAColor, setCol: setIchiLeadAColor },
+                      { key: "leadb", label: "Leading Span B", show: ichiShowLeadB, setShow: setIchiShowLeadB, col: ichiLeadBColor, setCol: setIchiLeadBColor },
+                      { key: "kumoup", label: "Kumo Cloud Upper Line", show: ichiShowKumoUp, setShow: setIchiShowKumoUp, col: ichiKumoUpColor, setCol: setIchiKumoUpColor },
+                      { key: "kumodn", label: "Kumo Cloud Lower Line", show: ichiShowKumoDn, setShow: setIchiShowKumoDn, col: ichiKumoDnColor, setCol: setIchiKumoDnColor },
+                    ] as const).map((row) => {
+                      const plot = (ichiPlotTypes[row.key] || "line") as string;
+                      const priceOn = !!ichiPriceLines[row.key];
+                      const plotIcon = (() => {
+                        switch (plot) {
+                          case "histogram": case "columns": return "▮";
+                          case "cross": return "+";
+                          case "circles": return "○";
+                          case "area": case "area_breaks": return "▣";
+                          case "step": case "step_breaks": case "step_diamonds": return "⌐";
+                          default: return "∿";
+                        }
+                      })();
+                      return (
+                      <div key={row.key} className="flex items-center gap-2 relative">
                         <input type="checkbox" checked={row.show} onChange={(e) => row.setShow(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
-                        <span className="text-[13px] text-gray-200 flex-1">{row.label}</span>
-                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative shrink-0" title="Color">
-                          <input type="color" value={row.col.startsWith("#") ? row.col.slice(0, 7) : "#888888"} onChange={(e) => row.setCol(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                          <span className="block w-full h-full" style={{ background: row.col }} />
+                        <span className="text-[13px] text-gray-200 flex-1 truncate">{row.label}</span>
+                        {/* Single combined color + line preview (TV style) */}
+                        <label
+                          className="h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative shrink-0 flex items-center gap-1.5 px-1.5 bg-[#2a2e39]"
+                          title="Color"
+                        >
+                          <input
+                            type="color"
+                            value={row.col.startsWith("#") ? row.col.slice(0, 7) : "#888888"}
+                            onChange={(e) => row.setCol(e.target.value)}
+                            className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                          />
+                          <span className="w-4 h-4 rounded-sm border border-black/20 shrink-0" style={{ background: row.col }} />
+                          <span className="w-4 border-t-2 shrink-0" style={{ borderColor: row.col }} />
                         </label>
-                        <span className="w-8 h-7 rounded border border-[#363a45] flex items-center justify-center shrink-0" title="Line style">
-                          <span className="block w-4 border-t-2" style={{ borderColor: row.col }} />
-                        </span>
-                        <span className="w-8 h-7 rounded border border-[#363a45] flex items-center justify-center text-gray-500 text-xs shrink-0" title="Plot type">~</span>
+                        {/* Plot type button */}
+                        <button
+                          type="button"
+                          title="Plot type"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIchiPlotMenu((m) => (m === row.key ? null : row.key));
+                            setIchiDefaultsOpen(false);
+                          }}
+                          className={`w-8 h-7 rounded border flex items-center justify-center text-sm shrink-0 ${ichiPlotMenu === row.key ? "border-orange-500 text-orange-400 bg-orange-500/10" : "border-[#363a45] text-gray-400 hover:text-gray-200"}`}
+                        >
+                          {plotIcon}
+                        </button>
+                        {ichiPlotMenu === row.key && (
+                          <div
+                            className="absolute right-0 top-8 z-50 min-w-[200px] rounded-md border border-[#363a45] bg-[#1e222d] shadow-2xl py-1 text-[13px]"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-between px-3 py-2 border-b border-[#363a45]">
+                              <span className="text-gray-300">Price line</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIchiPriceLines((prev) => {
+                                    const next = { ...prev, [row.key]: !priceOn };
+                                    try { localStorage.setItem("ichi_price_lines", JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                }}
+                                className={`w-9 h-5 rounded-full relative transition-colors ${priceOn ? "bg-[#2962FF]" : "bg-gray-600"}`}
+                              >
+                                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${priceOn ? "left-4" : "left-0.5"}`} />
+                              </button>
+                            </div>
+                            {([
+                              { id: "line", label: "Line", icon: "∿" },
+                              { id: "line_breaks", label: "Line with breaks", icon: "∿·" },
+                              { id: "step", label: "Step line", icon: "⌐" },
+                              { id: "step_breaks", label: "Step line with breaks", icon: "⌐·" },
+                              { id: "step_diamonds", label: "Step line with diamonds", icon: "⌐◆" },
+                              { id: "histogram", label: "Histogram", icon: "▮" },
+                              { id: "cross", label: "Cross", icon: "+" },
+                              { id: "area", label: "Area", icon: "▣" },
+                              { id: "area_breaks", label: "Area with breaks", icon: "▣·" },
+                              { id: "columns", label: "Columns", icon: "▥" },
+                              { id: "circles", label: "Circles", icon: "○" },
+                            ] as const).map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className={`w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 ${plot === opt.id ? "bg-white/10 text-white" : "text-gray-300"}`}
+                                onClick={() => {
+                                  setIchiPlotTypes((prev) => {
+                                    const next = { ...prev, [row.key]: opt.id };
+                                    try { localStorage.setItem("ichi_plot_types", JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                  setIchiPlotMenu(null);
+                                  setStatusMsg(`${row.label}: ${opt.label}`);
+                                }}
+                              >
+                                <span className="w-5 text-center text-gray-400">{opt.icon}</span>
+                                <span>{opt.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    ))}
+                      );
+                    })}
 
                     <div className="pt-1">
                       <div className="flex items-center gap-2 mb-2">
