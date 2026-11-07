@@ -7112,12 +7112,18 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
+      // Stable hollow circle — fixed size, no blink from size toggling
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
       el.style.borderColor = isActive ? "#f97316" : "#ffffff";
-      el.style.width = isActive ? "26px" : "22px";
-      el.style.height = isActive ? "26px" : "22px";
+      el.style.borderWidth = "2px";
+      el.style.background = "rgba(15,15,18,0.55)";
+      el.style.width = "22px";
+      el.style.height = "22px";
+      el.style.opacity = "1";
+      el.style.visibility = "visible";
+      el.style.transition = "none";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -8937,6 +8943,7 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
         } else if (isDiagonalLine(l)) {
+          // endpoints are DOM handles only — never series point markers
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
@@ -8953,6 +8960,7 @@ priced.sort((a, b) => a.price - b.price);
             lineWidth: width,
             lineStyle: LineStyle.Solid,
             priceLineVisible: false,
+            pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
@@ -10026,6 +10034,7 @@ priced.sort((a, b) => a.price - b.price);
             lineWidth: width,
             lineStyle: isHL ? LineStyle.Dashed : toLineStyle(a.dash),
             priceLineVisible: false,
+            pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
@@ -10185,14 +10194,20 @@ priced.sort((a, b) => a.price - b.price);
         const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
           const x = timeToX(pt.time);
           const y = ser2.priceToCoordinate(pt.price);
-          // Keep last position if temporarily unresolvable — avoids jump
+          // Keep last position if temporarily unresolvable — avoids jump/blink
           if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
           el.style.display = "block";
+          el.style.visibility = "visible";
+          el.style.opacity = "1";
+          el.style.transition = "none";
           el.style.left = `${Number(x)}px`;
           el.style.top = `${Number(y)}px`;
           el.style.borderColor = active ? "#f97316" : "#ffffff";
-          el.style.width = active ? "18px" : "14px";
-          el.style.height = active ? "18px" : "14px";
+          el.style.borderWidth = "2px";
+          el.style.background = "rgba(15,15,18,0.55)";
+          // Fixed size hollow circle — never toggle size (was causing blink)
+          el.style.width = "22px";
+          el.style.height = "22px";
         };
         place(elA, md.pointA, md.phase === "drag-a");
         place(elB, md.pointB, md.phase === "drag-b");
@@ -21464,6 +21479,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       }
       // series (diag / ray / channel legs / etc.)
+      // Channels store an ARRAY of series under the line id
       if (chart) {
         const keys = [
           sid,
@@ -21475,13 +21491,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           `ch-${sid}-mid`,
           `channel-${sid}`,
         ];
-        // also any key containing the id
+        const dropSeries = (ls: any) => {
+          if (!ls) return;
+          if (Array.isArray(ls)) {
+            for (const s of ls) {
+              try { chart.removeSeries(s as any); } catch {}
+            }
+          } else {
+            try { chart.removeSeries(ls as any); } catch {}
+          }
+        };
         for (const [k, ls] of Array.from(chartLinesRef.current.entries())) {
           if (String(k) === sid || String(k).includes(sid) || keys.includes(String(k))) {
-            try { chart.removeSeries(ls as any); } catch {}
+            dropSeries(ls);
             chartLinesRef.current.delete(k);
           }
         }
+        // also strip any remaining channel fill / label DOM
+        try {
+          const host = vlineOverlayRef.current;
+          if (host) {
+            host.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"]`).forEach((el) => {
+              try { el.remove(); } catch {}
+            });
+          }
+        } catch {}
       }
       // channel / curve / path handles on overlay — wipe all ch-handles then re-render survivors
       try {
@@ -21534,8 +21568,36 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     const sid = String(id);
     try { deletedIdsRef.current.add(sid); } catch {}
     try { pushUndo(); } catch {}
+    // Mutate linesRef immediately so renderAll cannot resurrect
+    try {
+      linesRef.current = (linesRef.current || []).filter((l: any) => String(l.id) !== sid);
+    } catch {}
     setLines((prev) => prev.filter((l) => String(l.id) !== sid));
+    try {
+      if (String(selectedChannelId) === sid) setSelectedChannelId(null);
+    } catch {}
     removeChartArtifacts(sid, "line");
+    // Second pass after React state settles
+    try {
+      setTimeout(() => {
+        try {
+          const host = vlineOverlayRef.current;
+          host?.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-ch-handle]`).forEach((el) => el.remove());
+          // remove any leftover series array for this id
+          const chart = chartRef.current;
+          const held = chartLinesRef.current.get(sid);
+          if (chart && held) {
+            if (Array.isArray(held)) {
+              for (const s of held) { try { chart.removeSeries(s as any); } catch {} }
+            } else {
+              try { chart.removeSeries(held as any); } catch {}
+            }
+            chartLinesRef.current.delete(sid);
+          }
+          renderAllLinesAndAlarmsRef.current?.();
+        } catch {}
+      }, 40);
+    } catch {}
     if (!sid.startsWith("local-")) {
       try {
         const { error } = await supabase.from("chart_lines").delete().eq("id", id);
