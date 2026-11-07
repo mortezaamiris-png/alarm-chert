@@ -5725,13 +5725,43 @@ export default function DashboardPage() {
   }, [chartLayout, showBottomLists]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
-  // Keyboard Undo / Redo
+  // Keyboard Undo / Redo + Delete selected line/alarm
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+
+      // Delete / Backspace → remove selected line or alarm
+      if ((e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const id = movingIdRef.current;
+        const typ = movingTypeRef.current;
+        if (id && (modeRef.current === "move" || typ === "line" || typ === "alarm")) {
+          e.preventDefault();
+          try {
+            try { pushUndo(); } catch {}
+            if (typ === "alarm") {
+              setAlarms((prev) => prev.filter((x) => String(x.id) !== String(id)));
+              try { void supabase.from("alarms").delete().eq("id", id); } catch {}
+            } else {
+              setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+              try { void supabase.from("chart_lines").delete().eq("id", id); } catch {}
+            }
+            moveDiagRef.current = null;
+            setMovingId(null);
+            setMovingType(null);
+            setMode("none");
+            setMoveStyleOpen(false);
+            setMoveNoteOpen(false);
+            setMoveAlarmOpen(false);
+            setStatusMsg("Deleted");
+            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 30); } catch {}
+          } catch {}
+          return;
+        }
+      }
+
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
       if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undoChart();
@@ -24222,7 +24252,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             })()))) && (
             <div
               data-move-bar
-              className={`absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto ${mode === "move" ? "px-2 py-1.5" : "px-3 py-2"}`}
+              className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto px-2 py-1.5"
               style={
                 mode === "move" && moveBarPos
                   ? { left: moveBarPos.x, top: moveBarPos.y, bottom: "auto" }
@@ -24339,42 +24369,96 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               </div>
               {mode !== "move" && (
               <>
-              <div className="flex gap-1">
-                {LINE_WIDTHS.map((w) => (
+              {/* Style (width + dash) — same look as selected-line toolbar */}
+              <div className="relative" data-menu>
+                <button
+                  type="button"
+                  title="Line style"
+                  onClick={() => setOpenMenu((m) => (m === "__draw_style__" ? null : "__draw_style__"))}
+                  className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <path d="M4 7h16" />
+                    <path d="M4 12h10" strokeDasharray="4 3" />
+                    <path d="M4 17h7" strokeDasharray="2 2" />
+                  </svg>
+                </button>
+                {openMenu === "__draw_style__" && (
+                  <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[120px]">
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Width</div>
+                    <div className="flex gap-1 mb-2">
+                      {LINE_WIDTHS.map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() => setDrawWidth(w)}
+                          className={`w-8 h-7 rounded-md text-xs font-medium ${drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                        >{w}</button>
+                      ))}
+                    </div>
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Style</div>
+                    <div className="flex gap-1">
+                      {(["solid", "dashed", "dotted"] as const).map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setDrawDash(d)}
+                          className={`flex-1 h-7 rounded-md flex items-center justify-center ${drawDash === d ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                        >
+                          {d === "solid" ? (
+                            <span className="block w-5 border-t-2 border-current" />
+                          ) : d === "dashed" ? (
+                            <span className="block w-5 border-t-2 border-dashed border-current" />
+                          ) : (
+                            <span className="tracking-widest text-[11px]">···</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Alarm condition as bell (not Cross dropdown) */}
+              {(mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag") && (
+                <div className="relative" data-menu>
                   <button
-                    key={w}
                     type="button"
-                    onClick={() => {
-                      setDrawWidth(w);
-                    }}
-                    className={`w-7 h-7 rounded text-xs ${
-                      drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"
+                    title={`Condition: ${condition}`}
+                    onClick={() => setOpenMenu((m) => (m === "__draw_cond__" ? null : "__draw_cond__"))}
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                      openMenu === "__draw_cond__"
+                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                        : "border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500/50"
                     }`}
                   >
-                    {w}
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    </svg>
                   </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setDrawDash((d) => (d === "solid" ? "dashed" : "solid"));
-                }}
-                className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300"
-              >
-                {drawDash === "solid" ? "——" : "- -"}
-              </button>
-              {(mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag") && (
-                <select
-                  value={condition}
-                  onChange={(e) => setCondition(e.target.value as any)}
-                  className="bg-gray-800 rounded px-1.5 py-1 text-xs"
-                  title="Trigger condition"
-                >
-                  <option value="cross">Cross</option>
-                  <option value="above">Above</option>
-                  <option value="below">Below</option>
-                </select>
+                  {openMenu === "__draw_cond__" && (
+                    <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[140px]">
+                      <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
+                      {([
+                        { id: "cross", label: "Cross" },
+                        { id: "above", label: "Above" },
+                        { id: "below", label: "Below" },
+                      ] as const).map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => { setCondition(c.id); setOpenMenu(null); }}
+                          className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                            condition === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                          }`}
+                        >
+                          <span className="w-4 text-center">{condition === c.id ? "✓" : ""}</span>
+                          {c.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
               {previewPrice != null && (
                 <span className="text-xs text-orange-300 font-mono">{formatPrice(previewPrice)}</span>
