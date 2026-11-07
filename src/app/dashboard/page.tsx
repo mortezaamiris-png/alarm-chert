@@ -7299,31 +7299,58 @@ export default function DashboardPage() {
         if (md2.phase === "drag-a") md2.pointA = { time, price: Number(price) };
         else if (md2.phase === "drag-b") md2.pointB = { time, price: Number(price) };
         else if (md2.phase === "drag-c" && md2.pointC) md2.pointC = { time, price: Number(price) };
-        // live update original line if possible
+
+        const id = md2.id;
+        const t0 = Number(md2.pointA.time);
+        const p0 = Number(md2.pointA.price);
+        const t1 = Number(md2.pointB.time);
+        const p1 = Number(md2.pointB.price);
+
+        // Mutate refs only during drag (no React setState → no flicker / no series recreate)
         try {
-          const id = md2.id;
-          setLines((prev) =>
-            prev.map((l) => {
-              if (String(l.id) !== String(id)) return l;
-              return {
-                ...l,
-                price: md2.pointA.price,
-                start_time: md2.pointA.time,
-                end_time: md2.pointB.time,
-                end_price: md2.pointB.price,
-              };
-            })
-          );
+          const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+          if (cur) {
+            cur.price = p0;
+            cur.start_time = t0;
+            cur.end_time = t1;
+            cur.end_price = p1;
+          }
+          const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+          if (curA) {
+            curA.price = p0;
+            curA.start_time = t0;
+            (curA as any).end_time = t1;
+            (curA as any).end_price = p1;
+          }
         } catch {}
+
+        // Live update the actual diagonal series
+        try {
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const ls =
+            chartLinesRef.current.get(id) ||
+            chartLinesRef.current.get(String(id)) ||
+            chartLinesRef.current.get(`alarm-diag-${id}`);
+          if (ls && typeof (ls as any).setData === "function") {
+            const tt0 = Math.min(t0, t1);
+            const tt1 = Math.max(t0, t1);
+            const vv0 = t0 <= t1 ? p0 : p1;
+            const vv1 = t0 <= t1 ? p1 : p0;
+            (ls as any).setData(denseDiagPoints(tt0, tt1, vv0, vv1, barSec));
+          }
+        } catch {}
+
+        // Move hollow endpoint handles
         try {
           positionHandles(md2.pointA, md2.pointB, which, md2.pointC || null);
         } catch {}
-        // keep dashed preview in sync if present
+
+        // Keep preview series in sync if any
         try {
           if (previewDiagSeriesRef.current) {
             const pts = [
-              { time: md2.pointA.time as any, value: md2.pointA.price },
-              { time: md2.pointB.time as any, value: md2.pointB.price },
+              { time: t0 as any, value: p0 },
+              { time: t1 as any, value: p1 },
             ].sort((x, y) => Number(x.time) - Number(y.time));
             previewDiagSeriesRef.current.setData(pts);
           }
@@ -15963,15 +15990,29 @@ priced.sort((a, b) => a.price - b.price);
             }
             if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
           } else if (bd.type === "diag") {
+            const live = (bd as any)._liveGeom;
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-            if (bd.kind === "line" && cur) {
-              const patch: any = {
-                start_time: cur.start_time, price: cur.price,
-                end_time: cur.end_time, end_price: cur.end_price,
-              };
-              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              if (!String(bd.id).startsWith("local-")) {
-                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+            if (bd.kind === "line") {
+              const t0 = live ? live.t0 : (cur ? Number(cur.start_time) : null);
+              const p0 = live ? live.p0 : (cur ? Number(cur.price) : null);
+              const t1 = live ? live.t1 : (cur ? Number(cur.end_time) : null);
+              const p1 = live ? live.p1 : (cur ? Number(cur.end_price) : null);
+              if (t0 != null && p0 != null && t1 != null && p1 != null) {
+                const patch: any = {
+                  start_time: t0, price: p0,
+                  end_time: t1, end_price: p1,
+                };
+                if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
+                  patch.note = `__diag:${t0}:${t1}:${p1}`;
+                }
+                if (cur) {
+                  cur.start_time = t0; cur.price = p0; cur.end_time = t1; cur.end_price = p1;
+                  if (patch.note) cur.note = patch.note;
+                }
+                setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+                if (!String(bd.id).startsWith("local-")) {
+                  try { await supabase.from("chart_lines").update(patch).eq("id", bd.id); } catch {}
+                }
               }
             } else if (bd.kind === "alarm") {
               const live = (bd as any)._liveGeom;
@@ -16121,11 +16162,31 @@ priced.sort((a, b) => a.price - b.price);
             try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
           } catch {}
         } else if (bd.type === "diag") {
-          // keep selected but phase=pick; delayed paint so geom override sticks
+          // keep selected + restore hollow endpoints for further edit
           try {
             const md = moveDiagRef.current as any;
-            if (md) md.phase = "pick";
-            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
+            const live = (bd as any)._liveGeom;
+            if (md) {
+              md.phase = "pick";
+              if (live) {
+                md.pointA = { time: live.t0, price: live.p0 };
+                md.pointB = { time: live.t1, price: live.p1 };
+              }
+              try {
+                positionHandles(md.pointA, md.pointB, null, md.pointC || null);
+              } catch {}
+            }
+            try {
+              setTimeout(() => {
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                try {
+                  const md3 = moveDiagRef.current as any;
+                  if (md3 && md3.pointA && md3.pointB) {
+                    positionHandles(md3.pointA, md3.pointB, null, md3.pointC || null);
+                  }
+                } catch {}
+              }, 50);
+            } catch {}
           } catch {}
         }
         // curve: keep handles (already softMove)
@@ -17335,7 +17396,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     null
                   );
                 } catch {}
-                setStatusMsg("Drag the circles to move endpoints");
+                setStatusMsg("Drag endpoints or body to move");
               } else if (best.isV) {
                 moveDiagRef.current = null;
                 setStatusMsg("Vertical line selected — drag to move");
@@ -23786,19 +23847,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ref={handleAElRef}
                 data-line-handle="a"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
