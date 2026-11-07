@@ -4353,6 +4353,8 @@ export default function DashboardPage() {
   const alarmLocalEditRef = useRef<Map<string, number>>(new Map());
   /** Sticky price overrides until DB confirms the same value (prevents snap-back) */
   const alarmPriceOverrideRef = useRef<Map<string, number>>(new Map());
+  /** IDs deleted this session — poll/realtime must not resurrect them */
+  const deletedIdsRef = useRef<Set<string>>(new Set());
   /** Sticky full geometry for ray/diag alarm moves */
   const alarmGeomOverrideRef = useRef<Map<string, { price: number; start_time?: number | null; end_time?: number | null; end_price?: number | null; note?: string | null }>>(new Map());
   useEffect(() => { linesRef.current = lines; }, [lines]);
@@ -5725,43 +5727,13 @@ export default function DashboardPage() {
   }, [chartLayout, showBottomLists]);
   const chartTypeRef = useRef(chartType);
   useEffect(() => { chartTypeRef.current = chartType; }, [chartType]);
-  // Keyboard Undo / Redo + Delete selected line/alarm
+  // Keyboard Undo / Redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
-
-      // Delete / Backspace → remove selected line or alarm
-      if ((e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const id = movingIdRef.current;
-        const typ = movingTypeRef.current;
-        if (id && (modeRef.current === "move" || typ === "line" || typ === "alarm")) {
-          e.preventDefault();
-          try {
-            try { pushUndo(); } catch {}
-            if (typ === "alarm") {
-              setAlarms((prev) => prev.filter((x) => String(x.id) !== String(id)));
-              try { void supabase.from("alarms").delete().eq("id", id); } catch {}
-            } else {
-              setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
-              try { void supabase.from("chart_lines").delete().eq("id", id); } catch {}
-            }
-            moveDiagRef.current = null;
-            setMovingId(null);
-            setMovingType(null);
-            setMode("none");
-            setMoveStyleOpen(false);
-            setMoveNoteOpen(false);
-            setMoveAlarmOpen(false);
-            setStatusMsg("Deleted");
-            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 30); } catch {}
-          } catch {}
-          return;
-        }
-      }
-
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
       if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undoChart();
@@ -20704,7 +20676,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const a = alarmsRes.data;
       if (a) {
         setAlarms(
-          (a as Alarm[]).map((row) => {
+          (a as Alarm[])
+            .filter((row) => !deletedIdsRef.current.has(String((row as any).id)))
+            .map((row) => {
             let out: any = row;
             if (isDiagonalLine(row)) out = row;
             else if (row.note?.startsWith("__diag:")) {
@@ -20736,7 +20710,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const l = linesRes.data;
       if (l) {
         setLines(
-          (l as ChartLine[]).map((row) => {
+          (l as ChartLine[])
+            .filter((row) => !deletedIdsRef.current.has(String(row.id)))
+            .map((row) => {
             if (isDiagonalLine(row)) return row;
             if (row.note === "__vline__" || (typeof row.note === "string" && row.note.startsWith("__vline__:"))) {
               let st = row.start_time != null ? Number(row.start_time) : null;
@@ -21267,9 +21243,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             return out;
           };
           setAlarms((prev) => {
-            const byId = new Map(allAlarms.map((a: any) => [a.id, normalizeAlarm(a as Alarm)]));
+            const byId = new Map(
+              allAlarms
+                .filter((a: any) => !deletedIdsRef.current.has(String(a.id)))
+                .map((a: any) => [a.id, normalizeAlarm(a as Alarm)])
+            );
             // merge: prefer DB state for is_active / triggered
-            const merged = prev.map((local) => {
+            const merged = prev
+              .filter((local) => !deletedIdsRef.current.has(String(local.id)))
+              .map((local) => {
               const db = byId.get(local.id);
               if (!db) return local;
               if (db.triggered && !local.triggered) {
@@ -21466,16 +21448,144 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     };
   }, [refreshLiveCandles, triggerAlarmLocal]);
 
+  const removeChartArtifacts = useCallback((id: string, kind: "alarm" | "line") => {
+    try {
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      const sid = String(id);
+      // price lines
+      if (ser) {
+        for (const key of [`alarm-${sid}`, sid, `line-${sid}`]) {
+          const pl = alarmLinesRef.current.get(key);
+          if (pl) {
+            try { ser.removePriceLine(pl); } catch {}
+            alarmLinesRef.current.delete(key);
+          }
+        }
+      }
+      // series (diag / ray / channel legs / etc.)
+      if (chart) {
+        const keys = [
+          sid,
+          `alarm-diag-${sid}`,
+          `alarm-ray-${sid}`,
+          `line-${sid}`,
+          `ch-${sid}-a`,
+          `ch-${sid}-b`,
+          `ch-${sid}-mid`,
+          `channel-${sid}`,
+        ];
+        // also any key containing the id
+        for (const [k, ls] of Array.from(chartLinesRef.current.entries())) {
+          if (String(k) === sid || String(k).includes(sid) || keys.includes(String(k))) {
+            try { chart.removeSeries(ls as any); } catch {}
+            chartLinesRef.current.delete(k);
+          }
+        }
+      }
+      // channel / curve / path handles on overlay — wipe all ch-handles then re-render survivors
+      try {
+        const host = vlineOverlayRef.current;
+        if (host) {
+          host.querySelectorAll("[data-ch-handle]").forEach((el) => {
+            try { el.remove(); } catch {}
+          });
+          host.querySelectorAll(
+            `[data-curve-id="${sid}"],[data-path-id="${sid}"],[data-channel-id="${sid}"],[data-line-id="${sid}"],[data-curve-handle],[data-path-handle],[data-dpr-handle]`
+          ).forEach((el) => {
+            try { el.remove(); } catch {}
+          });
+        }
+      } catch {}
+      // hollow circle handles
+      try {
+        if (handleAElRef.current) handleAElRef.current.style.display = "none";
+        if (handleBElRef.current) handleBElRef.current.style.display = "none";
+        if (handleCElRef.current) handleCElRef.current.style.display = "none";
+        if (selMarkerRef.current) selMarkerRef.current.style.display = "none";
+      } catch {}
+      try { clearPreview(); } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    } catch {}
+  }, []);
+
   const deleteAlarm = async (id: string) => {
-    pushUndo();
-    setAlarms((prev) => prev.filter((a) => a.id !== id));
-    await supabase.from("alarms").delete().eq("id", id);
+    const sid = String(id);
+    try { deletedIdsRef.current.add(sid); } catch {}
+    try { pushUndo(); } catch {}
+    setAlarms((prev) => prev.filter((a) => String(a.id) !== sid));
+    removeChartArtifacts(sid, "alarm");
+    try {
+      const { error } = await supabase.from("alarms").delete().eq("id", id);
+      if (error) {
+        console.warn("deleteAlarm failed", error);
+        // retry with string id
+        try { await supabase.from("alarms").delete().eq("id", sid); } catch {}
+      }
+    } catch (e) {
+      console.warn("deleteAlarm exception", e);
+    }
+    // keep tombstone a while so poll cannot resurrect
+    setTimeout(() => {
+      try { deletedIdsRef.current.delete(sid); } catch {}
+    }, 60000);
   };
   const deleteLine = async (id: string) => {
-    pushUndo();
-    setLines((prev) => prev.filter((l) => l.id !== id));
-    await supabase.from("chart_lines").delete().eq("id", id);
+    const sid = String(id);
+    try { deletedIdsRef.current.add(sid); } catch {}
+    try { pushUndo(); } catch {}
+    setLines((prev) => prev.filter((l) => String(l.id) !== sid));
+    removeChartArtifacts(sid, "line");
+    if (!sid.startsWith("local-")) {
+      try {
+        const { error } = await supabase.from("chart_lines").delete().eq("id", id);
+        if (error) {
+          console.warn("deleteLine failed", error);
+          try { await supabase.from("chart_lines").delete().eq("id", sid); } catch {}
+        }
+      } catch (e) {
+        console.warn("deleteLine exception", e);
+      }
+    }
+    setTimeout(() => {
+      try { deletedIdsRef.current.delete(sid); } catch {}
+    }, 60000);
   };
+
+  // Keyboard Delete / Backspace for selected line or alarm
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+      const id = movingIdRef.current;
+      const typ = movingTypeRef.current;
+      if (!id) return;
+      if (!(modeRef.current === "move" || typ === "line" || typ === "alarm")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const sid = String(id);
+      const kind = typ === "alarm" ? "alarm" : "line";
+      // clear selection UI first
+      try {
+        moveDiagRef.current = null;
+        setMovingId(null);
+        setMovingType(null);
+        setMode("none");
+        setMoveStyleOpen(false);
+        setMoveNoteOpen(false);
+        setMoveAlarmOpen(false);
+      } catch {}
+      void (async () => {
+        if (kind === "alarm") await deleteAlarm(sid);
+        else await deleteLine(sid);
+        setStatusMsg("Deleted");
+      })();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [deleteAlarm, deleteLine]);
   const deleteAllLines = async () => {
     const list = lines.filter((l) => l.symbol.toUpperCase() === symbolUpper);
     if (!list.length) return;
