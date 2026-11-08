@@ -2384,6 +2384,33 @@ function showLocalNotification(
 
 
 
+
+function lineListMeta(l: { note?: string | null; price?: number; end_price?: number | null; start_time?: number | null; end_time?: number | null }): { icon: string; label: string; showPrice: boolean } {
+  const n = typeof l.note === "string" ? l.note : "";
+  if (n.startsWith("__fibext:")) return { icon: "Fe", label: "Fib Ext", showPrice: false };
+  if (n.startsWith("__fibtbt:")) return { icon: "║t", label: "Fib TBT", showPrice: false };
+  if (n.startsWith("__fibtz:")) return { icon: "║", label: "Fib TZ", showPrice: false };
+  if (n.startsWith("__fib:")) return { icon: "F", label: "Fib", showPrice: false };
+  if (n.startsWith("__rect:")) return { icon: "□", label: "Rectangle", showPrice: false };
+  if (n.startsWith("__brush:")) return { icon: "✎", label: "Brush", showPrice: false };
+  if (n.startsWith("__path:")) return { icon: "⬠", label: "Path", showPrice: false };
+  if (n.startsWith("__curve:")) return { icon: "∿", label: "Curve", showPrice: false };
+  if (n.startsWith("__dpr:")) return { icon: "⬚", label: "Date range", showPrice: false };
+  if (n.startsWith("__channel:")) return { icon: "⫽", label: "Channel", showPrice: false };
+  if (n.startsWith("__avp:")) return { icon: "▣", label: "AVP", showPrice: false };
+  if (n.startsWith("__avwap:")) return { icon: "V", label: "AVWAP", showPrice: false };
+  if (n.startsWith("__frvp:")) return { icon: "▦", label: "FRVP", showPrice: false };
+  if (n.startsWith("__long:")) return { icon: "L", label: "Long", showPrice: false };
+  if (n.startsWith("__short:")) return { icon: "S", label: "Short", showPrice: false };
+  if (n === "__vline__") return { icon: "|", label: "Vertical", showPrice: false };
+  if (n.startsWith("__arrow")) return { icon: "↗", label: "Arrow", showPrice: false };
+  if (n.startsWith("__callout")) return { icon: "T", label: "Callout", showPrice: false };
+  if (isDiagonalLine(l as any) || n.startsWith("__diag:")) return { icon: "/", label: "Diag", showPrice: true };
+  if (n.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l as any)))
+    return { icon: "→", label: "Ray", showPrice: true };
+  return { icon: "—", label: "H-Line", showPrice: true };
+}
+
 const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "draw": { label: "Horizontal line", icon: "—" },
   "ray": { label: "Horizontal ray", icon: "→" },
@@ -7116,11 +7143,13 @@ export default function DashboardPage() {
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
-      el.style.borderColor = isActive ? "#f97316" : "#ffffff";
+      el.style.borderColor = isActive ? "#f97316" : "#2962FF";
       el.style.borderWidth = "2px";
-      el.style.background = "rgba(15,15,18,0.55)";
-      el.style.width = "22px";
-      el.style.height = "22px";
+      el.style.borderStyle = "solid";
+      el.style.background = "#0b0e11";
+      el.style.width = "12px";
+      el.style.height = "12px";
+      el.style.boxShadow = isActive ? "0 0 0 2px rgba(249,115,22,0.35)" : "0 0 0 1px rgba(41,98,255,0.35)";
       el.style.opacity = "1";
       el.style.visibility = "visible";
       el.style.transition = "none";
@@ -10229,12 +10258,14 @@ priced.sort((a, b) => a.price - b.price);
           el.style.transition = "none";
           el.style.left = `${Number(x)}px`;
           el.style.top = `${Number(y)}px`;
-          el.style.borderColor = active ? "#f97316" : "#ffffff";
+          el.style.borderColor = active ? "#f97316" : "#2962FF";
           el.style.borderWidth = "2px";
-          el.style.background = "rgba(15,15,18,0.55)";
-          // Fixed size hollow circle — never toggle size (was causing blink)
-          el.style.width = "22px";
-          el.style.height = "22px";
+          el.style.borderStyle = "solid";
+          el.style.background = "#0b0e11";
+          // Fixed size TV-style hollow circle — never toggle size
+          el.style.width = "12px";
+          el.style.height = "12px";
+          el.style.boxShadow = active ? "0 0 0 2px rgba(249,115,22,0.35)" : "0 0 0 1px rgba(41,98,255,0.35)";
         };
         place(elA, md.pointA, md.phase === "drag-a");
         place(elB, md.pointB, md.phase === "drag-b");
@@ -21974,9 +22005,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
 
-  const convertLineToAlarm = async (line: ChartLine) => {
+  const convertLineToAlarm = async (
+    line: ChartLine,
+    opts?: { condition?: "cross" | "above" | "below"; once?: boolean; deleteAfter?: boolean }
+  ) => {
     try {
       const chosenColor = line.color || DEFAULT_LINE_COLOR;
+      const cond = opts?.condition || "cross";
+      const once = opts?.once !== false;
+      const deleteAfter = !!opts?.deleteAfter;
       // Resolve diagonal / ray geometry (columns or note fallback)
       let startTime = line.start_time ?? null;
       let endTime = line.end_time ?? null;
@@ -22015,13 +22052,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const payload: any = {
         symbol: line.symbol,
         price: line.price,
-        condition: "cross",
+        condition: cond,
         is_active: true,
         triggered: false,
         color: chosenColor,
         width: line.width || 2,
         dash: line.dash || "solid",
-        note: noteClean,
+        once,
+        delete_after: deleteAfter,
+        note: isDiag
+          ? encodeAlarmCfg(`__diag:${startTime}:${endTime}:${endPrice}`, once, deleteAfter)
+          : isRay
+          ? encodeAlarmCfg(`__ray:${startTime}`, once, deleteAfter)
+          : encodeAlarmCfg(noteClean, once, deleteAfter),
       };
       if (isDiag) {
         payload.start_time = startTime;
@@ -23855,24 +23898,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 className="absolute inset-0 overflow-hidden rounded-xl"
                 style={{ zIndex: 28, pointerEvents: "none" }}
               />
-              {/* Hollow circle handles — same coordinate space as chart */}
+              {/* TradingView-style endpoint handles (blue hollow dots) */}
               <div
                 ref={handleAElRef}
                 data-line-handle="a"
-                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                className="absolute rounded-full cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
-                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                className="absolute rounded-full cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
-                className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                className="absolute rounded-full cursor-grab active:cursor-grabbing"
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
@@ -29285,38 +29328,26 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-mono font-medium shrink-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
-                    {typeof l.note === "string" && l.note.startsWith("__fibext:")
-                      ? "Fib Ext"
-                      : typeof l.note === "string" && l.note.startsWith("__fibtbt:")
-                      ? "Fib TBT"
-                      : typeof l.note === "string" && l.note.startsWith("__fibtz:")
-                      ? "Fib TZ"
-                      : typeof l.note === "string" && l.note.startsWith("__fib:")
-                      ? "Fib"
-                      : typeof l.note === "string" && l.note.startsWith("__rect:")
-                      ? "Rectangle"
-                      : typeof l.note === "string" && l.note.startsWith("__brush:")
-                      ? "Brush"
-                      : typeof l.note === "string" && l.note.startsWith("__dpr:")
-                      ? "Date and price range"
-                      : typeof l.note === "string" && l.note.startsWith("__channel:")
-                      ? "Parallel channel"
-                      : typeof l.note === "string" && l.note.startsWith("__avp:")
-                      ? "Anchored VP"
-                      : typeof l.note === "string" && l.note.startsWith("__avwap:")
-                      ? "Anchored VWAP"
-                      : typeof l.note === "string" && l.note.startsWith("__frvp:")
-                      ? "Fixed Range VP"
-                      : l.note === "__vline__"
-                      ? "Vertical"
-                      : isDiagonalLine(l)
-                      ? `↗ ${formatPrice(l.price)}→${formatPrice(Number(l.end_price))}`
-                      : formatPrice(l.price)}
-                    {isDiagonalLine(l) ? <span className="text-[10px] text-orange-400/80 ml-1">Diag</span> : null}
-                    {l.note === "__vline__" ? <span className="text-[10px] text-orange-400/80 ml-1">V</span> : null}
-
-                  </span>
+                  {(() => {
+                    const meta = lineListMeta(l);
+                    return (
+                      <span className="flex items-center gap-1.5 shrink-0 min-w-0" style={{ color: l.color || DEFAULT_LINE_COLOR }}>
+                        <span
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-gray-800/90 border border-gray-700 text-[13px] font-semibold leading-none"
+                          title={meta.label}
+                        >{meta.icon}</span>
+                        {meta.showPrice ? (
+                          isDiagonalLine(l) ? (
+                            <span className="font-mono text-xs truncate">{formatPrice(l.price)}→{formatPrice(Number(l.end_price))}</span>
+                          ) : (
+                            <span className="font-mono text-xs">{formatPrice(l.price)}</span>
+                          )
+                        ) : (
+                          <span className="text-xs text-gray-400 truncate max-w-[7rem]">{meta.label}</span>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === l.id && editingNoteType === "line" ? (
                       <input
@@ -29879,9 +29910,92 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && (l.note.startsWith("__brush:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:") || l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) && (
-                      <button type="button" onClick={() => convertLineToAlarm(l)} className="text-xs text-green-400 px-1">Alarm</button>
-                    )}
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        title="Convert to alarm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenMenu(openMenu === `l-alarm-${l.id}` ? null : `l-alarm-${l.id}`);
+                        }}
+                        className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
+                          openMenu === `l-alarm-${l.id}`
+                            ? "bg-orange-500 text-black border-orange-400"
+                            : "bg-gray-900/95 border-gray-600 text-gray-300 hover:bg-white/10 hover:text-orange-300"
+                        }`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                        </svg>
+                      </button>
+                      {openMenu === `l-alarm-${l.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-700 rounded-xl p-2.5 shadow-2xl min-w-[160px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
+                          <div className="flex flex-col gap-0.5 mb-2">
+                            {(["cross", "above", "below"] as const).map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => {
+                                  pushUndo();
+                                  void convertLineToAlarm(l, { condition: c, once: true, deleteAfter: false });
+                                  setOpenMenu(null);
+                                }}
+                                className="text-left px-2 py-1.5 text-xs rounded-md hover:bg-orange-500/20 text-gray-200 capitalize"
+                              >
+                                {c === "cross" ? "✓ Cross" : c === "above" ? "Above" : "Below"}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">After trigger</div>
+                          <div className="flex gap-1 mb-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                pushUndo();
+                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: false });
+                                setOpenMenu(null);
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md bg-orange-500 text-black font-medium"
+                            >Keep</button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                pushUndo();
+                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: true });
+                                setOpenMenu(null);
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md bg-gray-800 text-gray-200 hover:bg-gray-700"
+                            >Delete</button>
+                          </div>
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Trigger</div>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                pushUndo();
+                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: false });
+                                setOpenMenu(null);
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md bg-orange-500 text-black font-medium"
+                            >Once</button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                pushUndo();
+                                void convertLineToAlarm(l, { condition: "cross", once: false, deleteAfter: false });
+                                setOpenMenu(null);
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md bg-gray-800 text-gray-200 hover:bg-gray-700"
+                            >Always</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                       </>
                     )}
                     <button
