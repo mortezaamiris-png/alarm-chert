@@ -2688,6 +2688,50 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
 
 
 /** Encode once/delete_after into alarm note without losing user text */
+
+function upsertDiagNoteLabel(
+  host: HTMLElement | null,
+  chart: any,
+  series: any,
+  id: string,
+  t0: number,
+  t1: number,
+  v0: number,
+  v1: number,
+  note: string | null | undefined
+) {
+  if (!host || !chart || !series) return;
+  const txt = userFacingNote(note);
+  const existing = host.querySelector(`[data-diag-note="${id}"]`) as HTMLElement | null;
+  if (!txt) {
+    try { existing?.remove(); } catch {}
+    return;
+  }
+  const midT = (Number(t0) + Number(t1)) / 2;
+  const midP = (Number(v0) + Number(v1)) / 2;
+  let mx: any = null, my: any = null;
+  try { mx = chart.timeScale().timeToCoordinate(midT as any); } catch {}
+  try { my = series.priceToCoordinate(midP); } catch {}
+  if (mx == null || my == null) {
+    if (existing) existing.style.visibility = "hidden";
+    return;
+  }
+  const el = existing || document.createElement("div");
+  if (!existing) {
+    el.dataset.diagNote = String(id);
+    el.style.cssText = [
+      "position:absolute;transform:translate(-50%,0);pointer-events:none;z-index:24;",
+      "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
+      "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
+    ].join("");
+    host.appendChild(el);
+  }
+  el.style.visibility = "visible";
+  el.style.left = `${Number(mx)}px`;
+  el.style.top = `${Number(my) + 12}px`;
+  if (el.textContent !== txt) el.textContent = txt;
+}
+
 function encodeAlarmCfg(note: string | null | undefined, once: boolean, deleteAfter: boolean): string {
   const base = (note || "")
     .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
@@ -7731,7 +7775,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-dpr-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
-      vlineOverlayRef.current?.querySelectorAll("[data-diag-note]").forEach((el) => el.remove());
+      /* diag notes: upsert in place (no wipe → no blink) */
       vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-frvp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
@@ -7868,13 +7912,35 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
+        } else if (child.dataset.vlineNote) {
+          try {
+            const item = vlineItemsRef.current.find((v) => String(v.id) === String(child.dataset.vlineNote));
+            if (!item) { child.style.visibility = "hidden"; continue; }
+            let x: number | null = null;
+            try { x = chart2.timeScale().timeToCoordinate(item.time as any); } catch { x = null; }
+            if (x == null || Number.isNaN(Number(x))) {
+              child.style.visibility = "hidden";
+            } else {
+              child.style.visibility = "visible";
+              child.style.left = `${Number(x) + 8}px`;
+            }
+          } catch { child.style.visibility = "hidden"; }
         } else if (child.dataset.diagNote && ser) {
           try {
             const id = child.dataset.diagNote;
+            let st: number | null = null, et: number | null = null, sp: number | null = null, ep: number | null = null;
             const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
-            if (!ln || !isDiagonalLine(ln)) { child.style.visibility = "hidden"; continue; }
-            const st = Number(ln.start_time), et = Number(ln.end_time);
-            const sp = Number(ln.price), ep = Number(ln.end_price);
+            if (ln && isDiagonalLine(ln)) {
+              st = Number(ln.start_time); et = Number(ln.end_time);
+              sp = Number(ln.price); ep = Number(ln.end_price);
+            } else {
+              const al = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+              if (al) {
+                const g = resolveDiagGeom(al as any);
+                if (g) { st = g.t0; et = g.t1; sp = g.p0; ep = g.p1; }
+              }
+            }
+            if (st == null || et == null || sp == null || ep == null) { child.style.visibility = "hidden"; continue; }
             const midT = (st + et) / 2;
             const midP = (sp + ep) / 2;
             const mx = chart2.timeScale().timeToCoordinate(midT as any);
@@ -9137,29 +9203,8 @@ priced.sort((a, b) => a.price - b.price);
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
-          // Note under middle of diagonal (user text after |)
-          try {
-            const txt = userFacingNote(l.note);
-            const hostN = vlineOverlayRef.current;
-            if (txt && hostN && chart && series) {
-              const midT = (t0 + t1) / 2;
-              const midP = (v0 + v1) / 2;
-              const mx = chart.timeScale().timeToCoordinate(midT as any);
-              const my = series.priceToCoordinate(midP);
-              if (mx != null && my != null) {
-                const lab = document.createElement("div");
-                lab.dataset.diagNote = String(l.id);
-                lab.style.cssText = [
-                  `position:absolute;left:${Number(mx)}px;top:${Number(my) + 12}px;`,
-                  "transform:translate(-50%,0);pointer-events:none;z-index:24;",
-                  "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
-                  "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
-                ].join("");
-                lab.textContent = txt;
-                hostN.appendChild(lab);
-              }
-            }
-          } catch {}
+          // Note under middle of diagonal — upsert (no blink)
+          try { upsertDiagNoteLabel(vlineOverlayRef.current, chart, series, String(l.id), t0, t1, v0, v1, l.note); } catch {}
           if (isArrow) {
             // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
             try {
@@ -10237,30 +10282,29 @@ priced.sort((a, b) => a.price - b.price);
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
-          // Note under middle of alarm diagonal only
-          try {
-            const txtA = userFacingNote(a.note);
-            const hostA = vlineOverlayRef.current;
-            if (txtA && hostA && chart && series) {
-              const midT = (t0 + t1) / 2;
-              const midP = (v0 + v1) / 2;
-              const mx = chart.timeScale().timeToCoordinate(midT as any);
-              const my = series.priceToCoordinate(midP);
-              if (mx != null && my != null) {
-                const lab = document.createElement("div");
-                lab.dataset.diagNote = String(a.id);
-                lab.style.cssText = [
-                  `position:absolute;left:${Number(mx)}px;top:${Number(my) + 12}px;`,
-                  "transform:translate(-50%,0);pointer-events:none;z-index:24;",
-                  "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
-                  "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
-                ].join("");
-                lab.textContent = txtA;
-                hostA.appendChild(lab);
-              }
-            }
-          } catch {}
+          // Note under middle of alarm diagonal — upsert (no blink)
+          try { upsertDiagNoteLabel(vlineOverlayRef.current, chart, series, String(a.id), t0, t1, v0, v1, a.note); } catch {}
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
+        } else if (
+          (typeof a.note === "string" && (a.note === "__vline__" || a.note.startsWith("__vline__:"))) ||
+          (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time) && !isDiagonalLine(a) && a.end_price == null)
+        ) {
+          // Vertical alarm — same DOM overlay as vertical lines
+          let t = drawStartT != null ? Number(drawStartT) : (a.start_time != null ? Number(a.start_time) : null);
+          if ((!(t > 0) || t == null) && typeof a.note === "string" && a.note.startsWith("__vline__:")) {
+            const n = Number(String(a.note).replace(/^__vline__:/, "").split("|")[0]);
+            if (!Number.isNaN(n) && n > 0) t = n;
+          }
+          if (t != null && t > 0 && !Number.isNaN(t)) {
+            vlineItemsRef.current.push({
+              id: `alarm-v-${a.id}`,
+              time: t,
+              color: color,
+              width: Math.max(1, Number(width) || 2),
+              dash: isMoving ? "dashed" : String(a.dash || "solid"),
+              note: userFacingNote(a.note) || "",
+            });
+          }
         } else if (
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
           (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
@@ -22200,16 +22244,36 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         endPrice != null &&
         Number(endTime) !== Number(startTime);
       // Half-line (ray): has origin time but is NOT a diagonal
-      const isRay = !isDiag && startTime != null;
+      const isRay = !isDiag && startTime != null && !(line.note === "__vline__" || (typeof line.note === "string" && line.note.startsWith("__vline__:")));
+      // Vertical line
+      let vTime: number | null = null;
+      if (line.note === "__vline__" || (typeof line.note === "string" && line.note.startsWith("__vline__:"))) {
+        vTime = startTime != null ? Number(startTime) : null;
+        if ((vTime == null || !(vTime > 0)) && typeof line.note === "string" && line.note.startsWith("__vline__:")) {
+          const n = Number(String(line.note).replace(/^__vline__:/, "").split("|")[0]);
+          if (!Number.isNaN(n) && n > 0) vTime = n;
+        }
+        if ((vTime == null || !(vTime > 0)) && line.end_time != null) vTime = Number(line.end_time);
+      } else if (
+        startTime != null && endTime != null && Number(startTime) === Number(endTime) &&
+        !isDiag
+      ) {
+        vTime = Number(startTime);
+      }
+      const isV = vTime != null && vTime > 0 && !isDiag;
+      const userTxt = userFacingNote(line.note);
       const noteClean =
         line.note &&
         !line.note.startsWith("__diag:") &&
-        !line.note.startsWith("__ray:")
+        !line.note.startsWith("__ray:") &&
+        !line.note.startsWith("__vline__")
           ? line.note
           : isDiag
-          ? "Diag"
+          ? (userTxt || null)
           : isRay
           ? null
+          : isV
+          ? (userTxt || null)
           : line.note || null;
 
       const payload: any = {
@@ -22224,7 +22288,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         once,
         delete_after: deleteAfter,
         note: isDiag
-          ? encodeAlarmCfg(`__diag:${startTime}:${endTime}:${endPrice}`, once, deleteAfter)
+          ? encodeAlarmCfg(`__diag:${startTime}:${endTime}:${endPrice}` + (userTxt ? `|${userTxt}` : ""), once, deleteAfter)
+          : isV
+          ? encodeAlarmCfg(`__vline__:${vTime}` + (userTxt ? `|${userTxt}` : ""), once, deleteAfter)
           : isRay
           ? encodeAlarmCfg(`__ray:${startTime}`, once, deleteAfter)
           : encodeAlarmCfg(noteClean, once, deleteAfter),
@@ -22233,10 +22299,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         payload.start_time = startTime;
         payload.end_time = endTime;
         payload.end_price = endPrice;
+      } else if (isV) {
+        payload.start_time = vTime;
+        payload.end_time = vTime;
       } else if (isRay) {
         // Keep half-line geometry on the alarm (column + note backup)
         payload.start_time = startTime;
-        payload.note = `__ray:${startTime}`;
+        payload.note = encodeAlarmCfg(`__ray:${startTime}`, once, deleteAfter);
       }
       (payload as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
           let { data, error } = await supabase.from("alarms").insert([payload]).select().single();
