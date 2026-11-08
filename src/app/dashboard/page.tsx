@@ -10290,12 +10290,12 @@ priced.sort((a, b) => a.price - b.price);
           (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time) && !isDiagonalLine(a) && a.end_price == null)
         ) {
           // Vertical alarm — same DOM overlay as vertical lines
-          let t = drawStartT != null ? Number(drawStartT) : (a.start_time != null ? Number(a.start_time) : null);
-          if ((!(t > 0) || t == null) && typeof a.note === "string" && a.note.startsWith("__vline__:")) {
+          let t: number | null = drawStartT != null ? Number(drawStartT) : (a.start_time != null ? Number(a.start_time) : null);
+          if ((t == null || !(t > 0) || Number.isNaN(t)) && typeof a.note === "string" && a.note.startsWith("__vline__:")) {
             const n = Number(String(a.note).replace(/^__vline__:/, "").split("|")[0]);
             if (!Number.isNaN(n) && n > 0) t = n;
           }
-          if (t != null && t > 0 && !Number.isNaN(t)) {
+          if (t != null && !Number.isNaN(t) && t > 0) {
             vlineItemsRef.current.push({
               id: `alarm-v-${a.id}`,
               time: t,
