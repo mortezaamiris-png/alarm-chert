@@ -7464,11 +7464,9 @@ export default function DashboardPage() {
             try {
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
               const cfg = parseAlarmCfg(curA?.note);
-              patch.note = encodeAlarmCfg(
-                `__diag:${patch.start_time}:${patch.end_time}:${patch.end_price}`,
-                cfg.once,
-                cfg.deleteAfter
-              );
+              const userTxt = userFacingNote(curA?.note);
+              const baseNote = `__diag:${patch.start_time}:${patch.end_time}:${patch.end_price}` + (userTxt ? `|${userTxt}` : "");
+              patch.note = encodeAlarmCfg(baseNote, cfg.once, cfg.deleteAfter);
               if (curA) Object.assign(curA, patch);
             } catch {}
             try {
@@ -8102,7 +8100,9 @@ export default function DashboardPage() {
           return s;
         })();
         // Never label special drawings as MOVING on the price axis (causes a phantom H-line look)
-        const title = (isMoving && !softMove) ? "MOVING" : noteClean;
+        // Diagonal: note only under the line + list Note column — NEVER on price-axis tag
+        const isDiagTitle = isDiagonalLine(l) || noteStr.startsWith("__diag:") || noteStr.includes("__diag:");
+        const title = isDiagTitle ? "" : ((isMoving && !softMove) ? "MOVING" : noteClean);
         const isArrowMark =
           typeof l.note === "string" &&
           (l.note === "__arrow_up__" ||
@@ -9130,7 +9130,7 @@ priced.sort((a, b) => a.price - b.price);
             pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
-            title: title || "",
+            title: "",
             // prevent diagonal from pulling price scale / stretching candles
             autoscaleInfoProvider: () => null as any,
           });
@@ -10195,18 +10195,21 @@ priced.sort((a, b) => a.price - b.price);
           : a.color || DEFAULT_ALARM_COLOR;
         const width = (isHL ? 3 : ((a.width as 1 | 2 | 3) || 2)) as 1 | 2 | 3;
         const style = isHL ? LineStyle.Dashed : toLineStyle(a.dash);
+        const isDiagAlarm =
+          isDiagonalLine(a) ||
+          (typeof a.note === "string" && (a.note.startsWith("__diag:") || a.note.includes("__diag:")));
+        // Diag alarm: no price-axis title (note only under the line). H-line alarm can show short label.
         const noteCleanA =
-          a.note &&
-          !String(a.note).startsWith("__diag:") &&
-          !String(a.note).startsWith("__ray:") &&
-          a.note !== "Diag"
-            ? String(a.note)
-            : null;
-        const title = isMoving
+          isDiagAlarm
+            ? ""
+            : (userFacingNote(a.note) || "");
+        const title = isDiagAlarm
+          ? ""
+          : isMoving
           ? "MOVING"
           : isHL
           ? "◀ SELECTED"
-          : noteCleanA || "";
+          : (noteCleanA || "");
 
         if (isDiagonalLine(a) || (drawStartT != null && drawEndT != null && drawEndP != null && Number.isFinite(drawEndP))) {
           // Diagonal alarm: ONLY the slanted segment — no horizontal helper line
@@ -16225,10 +16228,12 @@ priced.sort((a, b) => a.price - b.price);
               const p1 = live ? live.p1 : (curA ? Number((curA as any).end_price) : null);
               if (curA && t0 != null && p0 != null) {
                 const cfg = parseAlarmCfg(curA.note);
+                const userTxt = userFacingNote(curA.note);
+                const baseNote = `__diag:${t0}:${t1}:${p1}` + (userTxt ? `|${userTxt}` : "");
                 const patch: any = {
                   start_time: t0, price: p0,
                   end_time: t1, end_price: p1,
-                  note: encodeAlarmCfg(`__diag:${t0}:${t1}:${p1}`, cfg.once, cfg.deleteAfter),
+                  note: encodeAlarmCfg(baseNote, cfg.once, cfg.deleteAfter),
                 };
                 curA.start_time = t0; curA.price = p0;
                 (curA as any).end_time = t1; (curA as any).end_price = p1;
@@ -30121,20 +30126,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                         </svg>
                       </button>
-                      {openMenu === `l-alarm-${l.id}` && (() => {
-                        const draftKey = `lAlarmDraft_${l.id}`;
-                        const draft = (window as any)[draftKey] || { condition: "cross" as "cross"|"above"|"below", once: true, deleteAfter: false };
-                        const setDraft = (patch: Partial<typeof draft>) => {
-                          (window as any)[draftKey] = { ...draft, ...patch };
-                          setOpenMenu(`l-alarm-${l.id}`); // re-render
-                        };
-                        return (
+                      {openMenu === `l-alarm-${l.id}` && (
                         <div
                           className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-700 rounded-xl p-2.5 shadow-2xl min-w-[170px]"
+                          data-menu
+                          data-alarm-convert={l.id}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
-                          <div className="flex flex-col gap-0.5 mb-2">
+                          <div className="flex flex-col gap-0.5 mb-2" data-ac-cond>
                             {([
                               { id: "cross", label: "Cross" },
                               { id: "above", label: "Above" },
@@ -30143,59 +30143,118 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               <button
                                 key={c.id}
                                 type="button"
-                                onClick={() => setDraft({ condition: c.id })}
-                                className={`text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 ${
-                                  draft.condition === c.id ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"
-                                }`}
+                                data-val={c.id}
+                                data-default={c.id === "cross" ? "1" : "0"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                  root?.querySelectorAll("[data-ac-cond] button").forEach((b) => {
+                                    b.className = "text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 text-gray-200 hover:bg-white/5";
+                                    const sp = b.querySelector("span");
+                                    if (sp) sp.textContent = "";
+                                  });
+                                  const btn = e.currentTarget as HTMLElement;
+                                  btn.className = "text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 bg-orange-500/25 text-orange-300";
+                                  const sp = btn.querySelector("span");
+                                  if (sp) sp.textContent = "✓";
+                                  root && (root.dataset.condition = c.id);
+                                }}
+                                className={`text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 ${c.id === "cross" ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"}`}
                               >
-                                <span className="w-3">{draft.condition === c.id ? "✓" : ""}</span>
+                                <span className="w-3">{c.id === "cross" ? "✓" : ""}</span>
                                 {c.label}
                               </button>
                             ))}
                           </div>
                           <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">After trigger</div>
-                          <div className="flex gap-1 mb-2">
+                          <div className="flex gap-1 mb-2" data-ac-after>
                             <button
                               type="button"
-                              onClick={() => setDraft({ deleteAfter: false })}
-                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${!draft.deleteAfter ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                              data-val="keep"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.deleteAfter = "0";
+                                root?.querySelectorAll("[data-ac-after] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "keep"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
                             >Keep</button>
                             <button
                               type="button"
-                              onClick={() => setDraft({ deleteAfter: true })}
-                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${draft.deleteAfter ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                              data-val="delete"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.deleteAfter = "1";
+                                root?.querySelectorAll("[data-ac-after] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "delete"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200"
                             >Delete</button>
                           </div>
                           <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Trigger</div>
-                          <div className="flex gap-1 mb-2.5">
+                          <div className="flex gap-1 mb-2.5" data-ac-trig>
                             <button
                               type="button"
-                              onClick={() => setDraft({ once: true })}
-                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${draft.once ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                              data-val="once"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.once = "1";
+                                root?.querySelectorAll("[data-ac-trig] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "once"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
                             >Once</button>
                             <button
                               type="button"
-                              onClick={() => setDraft({ once: false })}
-                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${!draft.once ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                              data-val="always"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.once = "0";
+                                root?.querySelectorAll("[data-ac-trig] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "always"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200"
                             >Always</button>
                           </div>
                           <button
                             type="button"
-                            onClick={() => {
-                              pushUndo();
-                              void convertLineToAlarm(l, {
-                                condition: draft.condition,
-                                once: draft.once,
-                                deleteAfter: draft.deleteAfter,
-                              });
-                              try { delete (window as any)[draftKey]; } catch {}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                              const condition = (root?.dataset.condition || "cross") as "cross" | "above" | "below";
+                              const once = root?.dataset.once !== "0";
+                              const deleteAfter = root?.dataset.deleteAfter === "1";
                               setOpenMenu(null);
+                              // Defer heavy work so UI stays responsive
+                              setTimeout(() => {
+                                try { pushUndo(); } catch {}
+                                void convertLineToAlarm(l, { condition, once, deleteAfter });
+                              }, 0);
                             }}
                             className="w-full text-sm py-2 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
                           >Apply</button>
                         </div>
-                        );
-                      })()}
+                      )}
                     </div>
                       </>
                     )}
