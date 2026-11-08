@@ -44,6 +44,10 @@ interface Alarm {
   start_time?: number | null;
   end_time?: number | null;
   end_price?: number | null;
+  /** true = fire once then deactivate; false = keep firing (with cooldown) */
+  once?: boolean | null;
+  /** true = delete alarm row after it triggers */
+  delete_after?: boolean | null;
 }
 
 interface WatchList {
@@ -2144,6 +2148,84 @@ function calcBollinger(
   return { basis, upper, lower };
 }
 
+/** Ichimoku Cloud (TradingView / Pine Script equivalent)
+ * conversion = avg(highest(high, conv), lowest(low, conv))
+ * base       = avg(highest(high, base), lowest(low, base))
+ * leadA      = avg(conversion, base)  plotted `displacement` bars ahead
+ * leadB      = avg(highest(high, leadB), lowest(low, leadB)) plotted ahead
+ * lagging    = close plotted `displacement` bars behind
+ */
+function calcIchimoku(
+  candles: { time: number; open?: number; high: number; low: number; close: number }[],
+  conversionPeriods = 9,
+  basePeriods = 26,
+  leadBPeriods = 52,
+  displacement = 26,
+  barSec = 60
+) {
+  const n = candles.length;
+  const convP = Math.max(1, conversionPeriods);
+  const baseP = Math.max(1, basePeriods);
+  const leadBP = Math.max(1, leadBPeriods);
+  const disp = Math.max(1, displacement);
+  const highAt = (i: number) => Number(candles[i].high);
+  const lowAt = (i: number) => Number(candles[i].low);
+  const closeAt = (i: number) => Number(candles[i].close);
+  const donchian = (i: number, len: number): number | null => {
+    if (i < len - 1) return null;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = 0; j < len; j++) {
+      const h = highAt(i - j), l = lowAt(i - j);
+      if (h > hi) hi = h;
+      if (l < lo) lo = l;
+    }
+    if (!(hi > -Infinity) || !(lo < Infinity)) return null;
+    return (hi + lo) / 2;
+  };
+  const conversion: { time: number; value: number }[] = [];
+  const base: { time: number; value: number }[] = [];
+  const lagging: { time: number; value: number }[] = [];
+  const leadA: { time: number; value: number }[] = [];
+  const leadB: { time: number; value: number }[] = [];
+  // lag offset in Pine: plot(close, offset = -displacement + 1) → shift back (disp - 1) bars
+  // lead offset: offset = displacement - 1 → shift forward (disp - 1) bars
+  const lagBars = disp - 1;
+  const leadBars = disp - 1;
+  for (let i = 0; i < n; i++) {
+    const t = Number(candles[i].time);
+    const c = donchian(i, convP);
+    const b = donchian(i, baseP);
+    if (c != null) conversion.push({ time: t, value: c });
+    if (b != null) base.push({ time: t, value: b });
+    // Lagging Span: close of bar i is drawn at time of bar (i - lagBars)
+    if (i >= lagBars) {
+      const tLag = Number(candles[i - lagBars].time);
+      lagging.push({ time: tLag, value: closeAt(i) });
+    }
+    // Leading spans: value at bar i is drawn at time of bar (i + leadBars)
+    // For future beyond last bar, synthesize times with barSec
+    if (c != null && b != null) {
+      const la = (c + b) / 2;
+      let tLead: number;
+      if (i + leadBars < n) tLead = Number(candles[i + leadBars].time);
+      else tLead = Number(candles[n - 1].time) + (i + leadBars - (n - 1)) * barSec;
+      leadA.push({ time: tLead, value: la });
+    }
+    const lb = donchian(i, leadBP);
+    if (lb != null) {
+      let tLead: number;
+      if (i + leadBars < n) tLead = Number(candles[i + leadBars].time);
+      else tLead = Number(candles[n - 1].time) + (i + leadBars - (n - 1)) * barSec;
+      leadB.push({ time: tLead, value: lb });
+    }
+  }
+  // Sort lead series by time (should already be ordered)
+  leadA.sort((a, b) => a.time - b.time);
+  leadB.sort((a, b) => a.time - b.time);
+  return { conversion, base, lagging, leadA, leadB };
+}
+
+
 /** Zero-median RSI series for a value stream */
 function calcZRsiFromValues(values: number[], length: number): (number | null)[] {
   const p = Math.max(2, length);
@@ -2373,15 +2455,20 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__fibtz:")) return "Fib time zone";
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
-    const idx = s.indexOf("|");
-    if (idx >= 0) {
-      let rest = s.slice(idx + 1).trim();
-      if (rest.startsWith("txt=")) {
-        try { rest = decodeURIComponent(rest.slice(4)); } catch { rest = rest.slice(4); }
-      }
-      return rest;
-    }
-    return "";
+    // strip geometry + optional ||__cfg
+    let rest = s.replace(/^__diag:[^|]*/, "").replace(/^__ray:[^|]*/, "");
+    rest = rest.replace(/^[|]+/, "").replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/, "").trim();
+    return rest;
+  }
+  // Strip alarm config marker from any note
+  if (s.includes("__cfg:")) {
+    const cleaned = s
+      .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
+      .replace(/\|+$/g, "")
+      .trim();
+    if (!cleaned || cleaned === s.replace(/\|+/g, "").trim() && cleaned.startsWith("__")) return "";
+    if (cleaned.startsWith("__")) return "";
+    return cleaned;
   }
   return s;
 }
@@ -2530,6 +2617,31 @@ async function ensurePushSubscription(): Promise<"ok" | "denied" | "unsupported"
   }
 }
 
+
+/** Encode once/delete_after into alarm note without losing user text */
+function encodeAlarmCfg(note: string | null | undefined, once: boolean, deleteAfter: boolean): string {
+  const base = (note || "")
+    .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
+    .replace(/\|+$/g, "")
+    .trim();
+  const cfg = `__cfg:once=${once ? 1 : 0}|del=${deleteAfter ? 1 : 0}`;
+  return base ? `${base}||${cfg}` : cfg;
+}
+function parseAlarmCfg(note: string | null | undefined): { once: boolean; deleteAfter: boolean; text: string } {
+  const raw = String(note || "");
+  // Match "__cfg:once=0|del=1" at start or after || or |
+  const m = raw.match(/(?:^|\|\|?)__cfg:once=(\d)\|del=(\d)/);
+  let once = true;
+  let deleteAfter = false;
+  let text = raw;
+  if (m) {
+    once = m[1] === "1";
+    deleteAfter = m[2] === "1";
+    text = raw.replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/, "").replace(/\|+$/, "").trim();
+  }
+  return { once, deleteAfter, text };
+}
+
 function getConditionSymbol(c: string) {
   return c === "above" ? "≥" : c === "below" ? "≤" : "≈";
 }
@@ -2558,7 +2670,10 @@ function didCross(
   );
 }
 function toLineStyle(dash?: string | null) {
-  return dash === "dashed" ? LineStyle.Dashed : LineStyle.Solid;
+  // TradingView-like: dashed = long dashes, dotted = sparse dots (clearly different)
+  if (dash === "dashed") return LineStyle.LargeDashed;
+  if (dash === "dotted") return LineStyle.SparseDotted;
+  return LineStyle.Solid;
 }
 
 /**
@@ -4141,7 +4256,7 @@ export default function DashboardPage() {
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
-    phase: "pick" | "drag-a" | "drag-b" | "drag-c" | "drag-body";
+    phase: "pick" | "drag-a" | "drag-b" | "drag-c";
     pointA: { time: number; price: number };
     pointB: { time: number; price: number };
     pointC?: { time: number; price: number };
@@ -4153,15 +4268,6 @@ export default function DashboardPage() {
     isAvp?: boolean;
     isFrvp?: boolean;
     isChannel?: boolean;
-    isCurve?: boolean;
-    isPath?: boolean;
-    isDpr?: boolean;
-    noHandles?: boolean;
-    curveCtrls?: { time: number; price: number }[];
-    curveHandle?: number | null;
-    pathHandle?: number | null;
-    bodyStart?: { time: number; price: number } | null;
-    bodyOrig?: any;
   } | null>(null);
   /** Unified continuous body-drag for any line/alarm (TV-style grab & move) */
   const bodyDragRef = useRef<{
@@ -4198,6 +4304,10 @@ export default function DashboardPage() {
   const pivotSeriesRef = useRef<any[]>([]);
   const trendSeriesRef = useRef<any[]>([]);
   const bbSeriesRef = useRef<{ basis: any; upper: any; lower: any } | null>(null);
+  const ichiSeriesRef = useRef<{
+    conv: any; base: any; lag: any; leadA: any; leadB: any;
+  } | null>(null);
+  const ichiCloudRef = useRef<{ leadA: { time: number; value: number }[]; leadB: { time: number; value: number }[] } | null>(null);
   const harsiSeriesRef = useRef<any>(null);
   const tcpLinesRef = useRef<IPriceLine[]>([]);
   const paneLegendRef = useRef<HTMLDivElement | null>(null);
@@ -4239,6 +4349,14 @@ export default function DashboardPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const linesRef = useRef<ChartLine[]>([]);
   const alarmsRef = useRef<Alarm[]>([]);
+  /** Recent local edits to alarms — poll must not overwrite these for a short window */
+  const alarmLocalEditRef = useRef<Map<string, number>>(new Map());
+  /** Sticky price overrides until DB confirms the same value (prevents snap-back) */
+  const alarmPriceOverrideRef = useRef<Map<string, number>>(new Map());
+  /** IDs deleted this session — poll/realtime must not resurrect them */
+  const deletedIdsRef = useRef<Set<string>>(new Set());
+  /** Sticky full geometry for ray/diag alarm moves */
+  const alarmGeomOverrideRef = useRef<Map<string, { price: number; start_time?: number | null; end_time?: number | null; end_price?: number | null; note?: string | null }>>(new Map());
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { alarmsRef.current = alarms; }, [alarms]);
   const hideLinesRef = useRef(false);
@@ -4544,6 +4662,10 @@ export default function DashboardPage() {
   const posDragMovedRef = useRef(false);
   const [lineToolsOpen, setLineToolsOpen] = useState(false);
   const [moveStyleOpen, setMoveStyleOpen] = useState(false);
+  const [moveAlarmOpen, setMoveAlarmOpen] = useState(false);
+  const [moveAlarmCond, setMoveAlarmCond] = useState<"cross" | "above" | "below">("cross");
+  const [moveAlarmOnce, setMoveAlarmOnce] = useState(true);
+  const [moveAlarmDelete, setMoveAlarmDelete] = useState(false);
   const [moveBarPos, setMoveBarPos] = useState<{ x: number; y: number } | null>(null);
   const [moveNoteOpen, setMoveNoteOpen] = useState(false);
   const [moveNoteDraft, setMoveNoteDraft] = useState("");
@@ -5018,6 +5140,65 @@ export default function DashboardPage() {
   const [bbLowerColor, setBbLowerColor] = useState(() => loadLS("bb_lc", "#089981"));
 
   // HARSI oscillator
+
+  // Ichimoku Cloud
+  const [showIchimoku, setShowIchimoku] = useState(() => loadLS("ind_ichi", false));
+  const [ichiVisible, setIchiVisible] = useState(() => loadLS("vis_ichi", true));
+  const [ichiConv, setIchiConv] = useState(() => loadLS("ichi_conv", 9));
+  const [ichiBase, setIchiBase] = useState(() => loadLS("ichi_base", 26));
+  const [ichiLeadB, setIchiLeadB] = useState(() => loadLS("ichi_leadb", 52));
+  const [ichiDisp, setIchiDisp] = useState(() => loadLS("ichi_disp", 26));
+  const [ichiConvColor, setIchiConvColor] = useState(() => loadLS("ichi_c_conv", "#2962FF"));
+  const [ichiBaseColor, setIchiBaseColor] = useState(() => loadLS("ichi_c_base", "#B71C1C"));
+  const [ichiLagColor, setIchiLagColor] = useState(() => loadLS("ichi_c_lag", "#43A047"));
+  const [ichiLeadAColor, setIchiLeadAColor] = useState(() => loadLS("ichi_c_leada", "#A5D6A7"));
+  const [ichiLeadBColor, setIchiLeadBColor] = useState(() => loadLS("ichi_c_leadb", "#EF9A9A"));
+  const [ichiCloudBull, setIchiCloudBull] = useState(() => loadLS("ichi_cloud_bull", "rgba(67,160,71,0.25)"));
+  const [ichiCloudBear, setIchiCloudBear] = useState(() => loadLS("ichi_cloud_bear", "rgba(244,67,54,0.25)"));
+  const [ichiShowConv, setIchiShowConv] = useState(() => loadLS("ichi_show_conv", true));
+  const [ichiShowBase, setIchiShowBase] = useState(() => loadLS("ichi_show_base", true));
+  const [ichiShowLag, setIchiShowLag] = useState(() => loadLS("ichi_show_lag", true));
+  const [ichiShowLeadA, setIchiShowLeadA] = useState(() => loadLS("ichi_show_leada", true));
+  const [ichiShowLeadB, setIchiShowLeadB] = useState(() => loadLS("ichi_show_leadb", true));
+  const [ichiShowCloud, setIchiShowCloud] = useState(() => loadLS("ichi_show_cloud", true));
+  const [ichiShowKumoUp, setIchiShowKumoUp] = useState(() => loadLS("ichi_show_kumoup", false));
+  const [ichiShowKumoDn, setIchiShowKumoDn] = useState(() => loadLS("ichi_show_kumodn", false));
+  const [ichiKumoUpColor, setIchiKumoUpColor] = useState(() => loadLS("ichi_c_kumoup", "#2962FF"));
+  const [ichiKumoDnColor, setIchiKumoDnColor] = useState(() => loadLS("ichi_c_kumodn", "#2962FF"));
+  const [ichiLabelsScale, setIchiLabelsScale] = useState(() => loadLS("ichi_lbl_scale", true));
+  const [ichiValuesStatus, setIchiValuesStatus] = useState(() => loadLS("ichi_val_status", true));
+  const [ichiInputsStatus, setIchiInputsStatus] = useState(() => loadLS("ichi_inp_status", true));
+  const [ichiVisTicks, setIchiVisTicks] = useState(() => loadLS("ichi_vis_ticks", true));
+  const [ichiVisSeconds, setIchiVisSeconds] = useState(() => loadLS("ichi_vis_sec", true));
+  const [ichiVisMinutes, setIchiVisMinutes] = useState(() => loadLS("ichi_vis_min", true));
+  const [ichiVisHours, setIchiVisHours] = useState(() => loadLS("ichi_vis_hr", true));
+  const [ichiVisDays, setIchiVisDays] = useState(() => loadLS("ichi_vis_day", true));
+  const [ichiVisWeeks, setIchiVisWeeks] = useState(() => loadLS("ichi_vis_wk", true));
+  const [ichiVisMonths, setIchiVisMonths] = useState(() => loadLS("ichi_vis_mo", true));
+  const [ichiVisRanges, setIchiVisRanges] = useState(() => loadLS("ichi_vis_rng", true));
+  const [ichiMinS, setIchiMinS] = useState(() => loadLS("ichi_min_s", 1));
+  const [ichiMaxS, setIchiMaxS] = useState(() => loadLS("ichi_max_s", 59));
+  const [ichiMinM, setIchiMinM] = useState(() => loadLS("ichi_min_m", 1));
+  const [ichiMaxM, setIchiMaxM] = useState(() => loadLS("ichi_max_m", 59));
+  const [ichiMinH, setIchiMinH] = useState(() => loadLS("ichi_min_h", 1));
+  const [ichiMaxH, setIchiMaxH] = useState(() => loadLS("ichi_max_h", 24));
+  const [ichiMinD, setIchiMinD] = useState(() => loadLS("ichi_min_d", 1));
+  const [ichiMaxD, setIchiMaxD] = useState(() => loadLS("ichi_max_d", 366));
+  const [ichiMinW, setIchiMinW] = useState(() => loadLS("ichi_min_w", 1));
+  const [ichiMaxW, setIchiMaxW] = useState(() => loadLS("ichi_max_w", 52));
+  const [ichiMinMo, setIchiMinMo] = useState(() => loadLS("ichi_min_mo", 1));
+  const [ichiMaxMo, setIchiMaxMo] = useState(() => loadLS("ichi_max_mo", 12));
+  const [ichiDefaultsOpen, setIchiDefaultsOpen] = useState(false);
+  const [ichiPlotMenu, setIchiPlotMenu] = useState<string | null>(null);
+  type IchiPlotKind = "line" | "line_breaks" | "step" | "step_breaks" | "step_diamonds" | "histogram" | "cross" | "area" | "area_breaks" | "columns" | "circles";
+  const [ichiPlotTypes, setIchiPlotTypes] = useState<Record<string, IchiPlotKind>>(() => {
+    try { return JSON.parse(localStorage.getItem("ichi_plot_types") || "{}"); } catch { return {}; }
+  });
+  const [ichiPriceLines, setIchiPriceLines] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("ichi_price_lines") || "{}"); } catch { return {}; }
+  });
+  const [ichiSettings, setIchiSettings] = useState(false);
+  const [ichiSettingsTab, setIchiSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
   const [showHARSI, setShowHARSI] = useState(() => loadLS("ind_harsi", false));
   const [harsiVisible, setHarsiVisible] = useState(() => loadLS("vis_harsi", true));
   const [harsiSettings, setHarsiSettings] = useState(false);
@@ -5631,7 +5812,21 @@ export default function DashboardPage() {
     saveLS("bb_len", bbLength); saveLS("bb_mult", bbMult);
     saveLS("bb_bc", bbBasisColor); saveLS("bb_uc", bbUpperColor); saveLS("bb_lc", bbLowerColor);
   }, [showBB, bbVisible, bbLength, bbMult, bbBasisColor, bbUpperColor, bbLowerColor]);
-  // HARSI same bug
+  useEffect(() => {
+    saveLS("ind_ichi", showIchimoku); saveLS("vis_ichi", ichiVisible);
+    saveLS("ichi_conv", ichiConv); saveLS("ichi_base", ichiBase);
+    saveLS("ichi_leadb", ichiLeadB); saveLS("ichi_disp", ichiDisp);
+    saveLS("ichi_c_conv", ichiConvColor); saveLS("ichi_c_base", ichiBaseColor);
+    saveLS("ichi_c_lag", ichiLagColor); saveLS("ichi_c_leada", ichiLeadAColor);
+    saveLS("ichi_c_leadb", ichiLeadBColor);
+    saveLS("ichi_cloud_bull", ichiCloudBull); saveLS("ichi_cloud_bear", ichiCloudBear);
+    saveLS("ichi_show_conv", ichiShowConv); saveLS("ichi_show_base", ichiShowBase);
+    saveLS("ichi_show_lag", ichiShowLag); saveLS("ichi_show_leada", ichiShowLeadA);
+    saveLS("ichi_show_leadb", ichiShowLeadB); saveLS("ichi_show_cloud", ichiShowCloud);
+  }, [showIchimoku, ichiVisible, ichiConv, ichiBase, ichiLeadB, ichiDisp,
+    ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
+    ichiCloudBull, ichiCloudBear, ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud]);
+// HARSI same bug
   useEffect(() => {
     saveLS("ind_harsi", showHARSI); saveLS("vis_harsi", harsiVisible);
     saveLS("harsi_len", harsiLen); saveLS("harsi_sm", harsiSmooth);
@@ -6888,16 +7083,6 @@ export default function DashboardPage() {
     active?: "a" | "b" | "c" | null,
     pointC?: { time: number; price: number } | null
   ) => {
-    // Trendline body-move only: never show endpoint circles
-    try {
-      const md = moveDiagRef.current as any;
-      if (md && md.noHandles) {
-        if (handleAElRef.current) handleAElRef.current.style.display = "none";
-        if (handleBElRef.current) handleBElRef.current.style.display = "none";
-        if (handleCElRef.current) handleCElRef.current.style.display = "none";
-        return;
-      }
-    } catch {}
     const chart = chartRef.current;
     const series = seriesRef.current;
     const elA = handleAElRef.current;
@@ -6927,22 +7112,18 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
+      // Stable hollow circle — fixed size, no blink from size toggling
       el.style.display = "block";
-      el.style.visibility = "visible";
-      el.style.opacity = "1";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
-      // Fixed size — size change caused blink; only border color marks active
+      el.style.borderColor = isActive ? "#f97316" : "#ffffff";
+      el.style.borderWidth = "2px";
+      el.style.background = "rgba(15,15,18,0.55)";
       el.style.width = "22px";
       el.style.height = "22px";
-      el.style.borderColor = isActive ? "#f97316" : "#ffffff";
-      el.style.borderWidth = isActive ? "3px" : "2px";
-      el.style.background = "rgba(15,15,18,0.75)";
-      el.style.boxShadow = isActive
-        ? "0 0 0 1px rgba(0,0,0,0.6), 0 0 0 4px rgba(249,115,22,0.35)"
-        : "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 4px rgba(255,255,255,0.08)";
+      el.style.opacity = "1";
+      el.style.visibility = "visible";
       el.style.transition = "none";
-      el.style.animation = "none";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -7084,9 +7265,7 @@ export default function DashboardPage() {
       if ((md as any).isCurve || (md as any).isPath || (md as any).isChannel || (md as any).isDpr) return;
       e.preventDefault();
       e.stopPropagation();
-      try { (e as any).stopImmediatePropagation?.(); } catch {}
       md.phase = which === "a" ? "drag-a" : which === "b" ? "drag-b" : "drag-c";
-      bodyDragRef.current = null; // never let body-drag fight endpoint drag
       const target = e.currentTarget as HTMLElement;
       try { target.setPointerCapture(e.pointerId); } catch {}
       const onMove = (ev: PointerEvent) => {
@@ -7100,21 +7279,14 @@ export default function DashboardPage() {
         const py = ev.clientY - rect.top;
         let price = ser.coordinateToPrice(py);
         if (price == null || Number.isNaN(Number(price))) return;
-        // Resolve time: prefer logical index, allow beyond last candle (extrapolate)
+        // snap time to nearest candle
         let time: number | null = null;
         try {
           const logical = chart.timeScale().coordinateToLogical(px);
           const candles = candlesRef.current || [];
-          const barSec = intervalToSeconds(String(intervalRef.current));
           if (logical != null && candles.length) {
-            const n = candles.length;
-            if (logical > n - 1) {
-              time = Number(candles[n - 1].time) + Math.round((Number(logical) - (n - 1)) * barSec);
-            } else if (logical < 0) {
-              time = Number(candles[0].time) + Math.round(Number(logical) * barSec);
-            } else {
-              time = Number(candles[Math.max(0, Math.min(n - 1, Math.round(Number(logical))))].time);
-            }
+            const idx = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
+            time = Number(candles[idx].time);
           }
         } catch {}
         if (time == null) {
@@ -7127,55 +7299,58 @@ export default function DashboardPage() {
         if (md2.phase === "drag-a") md2.pointA = { time, price: Number(price) };
         else if (md2.phase === "drag-b") md2.pointB = { time, price: Number(price) };
         else if (md2.phase === "drag-c" && md2.pointC) md2.pointC = { time, price: Number(price) };
-        // LIVE update the drawn series only — never setLines during drag (that re-renders & blinks)
+
+        const id = md2.id;
+        const t0 = Number(md2.pointA.time);
+        const p0 = Number(md2.pointA.price);
+        const t1 = Number(md2.pointB.time);
+        const p1 = Number(md2.pointB.price);
+
+        // Mutate refs only during drag (no React setState → no flicker / no series recreate)
         try {
-          const id = String(md2.id);
-          const typ = movingTypeRef.current;
-          const key = typ === "alarm" ? `alarm-diag-${id}` : id;
-          const ls = chartLinesRef.current.get(key) || chartLinesRef.current.get(id);
-          if (ls && typeof ls.setData === "function") {
-            const t0 = Number(md2.pointA.time);
-            const t1 = Number(md2.pointB.time);
-            const v0 = Number(md2.pointA.price);
-            const v1 = Number(md2.pointB.price);
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            const data = denseDiagPoints(
-              Math.min(t0, t1),
-              Math.max(t0, t1),
-              t0 <= t1 ? v0 : v1,
-              t0 <= t1 ? v1 : v0,
-              barSec
-            );
-            ls.setData(data as any);
+          const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+          if (cur) {
+            cur.price = p0;
+            cur.start_time = t0;
+            cur.end_time = t1;
+            cur.end_price = p1;
           }
-          // mutate linesRef / alarmsRef in place so up-handler sees latest
-          if (typ === "alarm") {
-            const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === id);
-            if (curA) {
-              curA.price = md2.pointA.price;
-              curA.start_time = md2.pointA.time;
-              (curA as any).end_time = md2.pointB.time;
-              (curA as any).end_price = md2.pointB.price;
-            }
-          } else {
-            const cur = (linesRef.current || []).find((x: any) => String(x.id) === id);
-            if (cur) {
-              cur.price = md2.pointA.price;
-              cur.start_time = md2.pointA.time;
-              cur.end_time = md2.pointB.time;
-              cur.end_price = md2.pointB.price;
-            }
+          const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+          if (curA) {
+            curA.price = p0;
+            curA.start_time = t0;
+            (curA as any).end_time = t1;
+            (curA as any).end_price = p1;
           }
         } catch {}
+
+        // Live update the actual diagonal series
+        try {
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const ls =
+            chartLinesRef.current.get(id) ||
+            chartLinesRef.current.get(String(id)) ||
+            chartLinesRef.current.get(`alarm-diag-${id}`);
+          if (ls && typeof (ls as any).setData === "function") {
+            const tt0 = Math.min(t0, t1);
+            const tt1 = Math.max(t0, t1);
+            const vv0 = t0 <= t1 ? p0 : p1;
+            const vv1 = t0 <= t1 ? p1 : p0;
+            (ls as any).setData(denseDiagPoints(tt0, tt1, vv0, vv1, barSec));
+          }
+        } catch {}
+
+        // Move hollow endpoint handles
         try {
           positionHandles(md2.pointA, md2.pointB, which, md2.pointC || null);
         } catch {}
-        // keep dashed preview in sync if present
+
+        // Keep preview series in sync if any
         try {
           if (previewDiagSeriesRef.current) {
             const pts = [
-              { time: md2.pointA.time as any, value: md2.pointA.price },
-              { time: md2.pointB.time as any, value: md2.pointB.price },
+              { time: t0 as any, value: p0 },
+              { time: t1 as any, value: p1 },
             ].sort((x, y) => Number(x.time) - Number(y.time));
             previewDiagSeriesRef.current.setData(pts);
           }
@@ -7198,6 +7373,10 @@ export default function DashboardPage() {
             end_price: md2.pointB.price,
           };
           if (typ === "alarm") {
+            try {
+              if (patch.price != null) alarmPriceOverrideRef.current.set(String(id), Number(patch.price));
+              alarmLocalEditRef.current.set(String(id), Date.now());
+            } catch {}
             await supabase.from("alarms").update(patch).eq("id", id);
             setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, ...patch } : a)));
           } else {
@@ -7388,9 +7567,6 @@ export default function DashboardPage() {
     try {
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
     } catch {}
-    try {
-      vlineOverlayRef.current?.querySelectorAll("[data-diag-note]").forEach((el) => el.remove());
-    } catch {}
 
     // Freeze visible window — adding line series with future times must not scroll the chart
     let savedRange: { from: number; to: number } | null = null;
@@ -7559,6 +7735,7 @@ export default function DashboardPage() {
       const chart2 = chartRef.current;
       const ser = seriesRef.current;
       if (!host || !chart2) return;
+      try { (window as any).__paintIchiCloud?.(); } catch {}
       const hostW = host.clientWidth || host.getBoundingClientRect().width || 800;
       for (const child of Array.from(host.children) as HTMLElement[]) {
         if (child.dataset.vlineId) {
@@ -8793,6 +8970,7 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
         } else if (isDiagonalLine(l)) {
+          // endpoints are DOM handles only — never series point markers
           // Segment only: exactly point A → point B (no extension / no ray)
           const st = Number(l.start_time);
           const et = Number(l.end_time);
@@ -8809,6 +8987,7 @@ priced.sort((a, b) => a.price - b.price);
             lineWidth: width,
             lineStyle: LineStyle.Solid,
             priceLineVisible: false,
+            pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
@@ -8818,64 +8997,6 @@ priced.sort((a, b) => a.price - b.price);
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
-          // Note text: middle of the segment, BELOW the line
-          try {
-            let noteTxt = "";
-            if (typeof l.note === "string") {
-              if (l.note.startsWith("__diag:") || l.note.startsWith("__ray:")) {
-                const pipe = l.note.indexOf("|");
-                if (pipe >= 0) {
-                  let rest = l.note.slice(pipe + 1).trim();
-                  if (rest.startsWith("txt=")) {
-                    try { rest = decodeURIComponent(rest.slice(4)); } catch { rest = rest.slice(4); }
-                  }
-                  noteTxt = rest;
-                }
-              } else if (!l.note.startsWith("__") && l.note.trim()) {
-                noteTxt = l.note.trim();
-              }
-            }
-            if (!noteTxt && noteClean && noteClean !== "MOVING" && noteClean !== "Diag") {
-              noteTxt = String(noteClean).trim();
-            }
-            const hostNote = vlineOverlayRef.current;
-            if (noteTxt && hostNote && chart) {
-              const midT = (t0 + t1) / 2;
-              const midP = (v0 + v1) / 2;
-              let mx: number | null = null;
-              let my: number | null = null;
-              try {
-                const _mx = chart.timeScale().timeToCoordinate(midT as any);
-                const _my = series.priceToCoordinate(midP);
-                if (_mx != null && _my != null) {
-                  mx = Number(_mx);
-                  my = Number(_my);
-                }
-              } catch {}
-              // fallback endpoints average in screen space
-              if (mx == null || my == null) {
-                const x0 = chart.timeScale().timeToCoordinate(t0 as any);
-                const x1 = chart.timeScale().timeToCoordinate(t1 as any);
-                const y0 = series.priceToCoordinate(v0);
-                const y1 = series.priceToCoordinate(v1);
-                if (x0 != null && x1 != null && y0 != null && y1 != null) {
-                  mx = (Number(x0) + Number(x1)) / 2;
-                  my = (Number(y0) + Number(y1)) / 2;
-                }
-              }
-              if (mx != null && my != null) {
-                const lab = document.createElement("div");
-                lab.dataset.diagNote = String(l.id);
-                lab.textContent = noteTxt;
-                lab.style.cssText =
-                  `position:absolute;left:${mx}px;top:${my + 10}px;` +
-                  `transform:translate(-50%,0);padding:2px 7px;font-size:11px;line-height:1.25;` +
-                  `color:#e5e7eb;background:rgba(15,18,22,0.88);border:1px solid rgba(255,255,255,0.12);` +
-                  `border-radius:4px;white-space:nowrap;pointer-events:none;z-index:18;`;
-                hostNote.appendChild(lab);
-              }
-            }
-          } catch {}
           if (isArrow) {
             // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
             try {
@@ -9872,11 +9993,39 @@ priced.sort((a, b) => a.price - b.price);
     let hlDrawnOnActive = false;
     if (hideAlarms) {
       // skip drawing alarms when eye-hide alarms is on
-    } else currentAlarms.forEach((a) => {
+    } else {
+    // Prefer alarmsRef so body-drag / style edits apply immediately (not stale React state)
+    const alarmsDrawList = (() => {
       try {
-        const isMoving = movingId === a.id && movingType === "alarm";
+        const symU = (symbolRef.current || "").toUpperCase();
+        const src = (alarmsRef.current && alarmsRef.current.length) ? alarmsRef.current : (currentAlarms as any[]);
+        return (src || []).filter((a: any) =>
+          String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered
+        );
+      } catch {
+        return currentAlarms;
+      }
+    })();
+    alarmsDrawList.forEach((a: any) => {
+      try {
+        const isMoving = String(movingId) === String(a.id) && movingType === "alarm";
+        // Sticky override wins over any stale state/DB value
+        const geomOv = (() => {
+          try { return alarmGeomOverrideRef.current.get(String(a.id)) || null; } catch { return null; }
+        })();
+        const drawPrice = (() => {
+          if (geomOv && geomOv.price != null && Number.isFinite(geomOv.price)) return Number(geomOv.price);
+          try {
+            const ov = alarmPriceOverrideRef.current.get(String(a.id));
+            if (ov != null && Number.isFinite(ov)) return Number(ov);
+          } catch {}
+          return Number(a.price);
+        })();
+        const drawStartT = geomOv?.start_time != null ? Number(geomOv.start_time) : (a.start_time != null ? Number(a.start_time) : null);
+        const drawEndT = geomOv?.end_time != null ? Number(geomOv.end_time) : (a.end_time != null ? Number(a.end_time) : null);
+        const drawEndP = geomOv?.end_price != null ? Number(geomOv.end_price) : (a.end_price != null ? Number(a.end_price) : null);
         const isHL = highlightAlarmId === a.id ||
-          (highlightPrice != null && Math.abs(a.price - highlightPrice) < a.price * 1e-9 + 1e-8);
+          (highlightPrice != null && Math.abs(drawPrice - highlightPrice) < drawPrice * 1e-9 + 1e-8);
         if (isHL) hlDrawnOnActive = true;
         const color = isHL
           ? "#eab308"
@@ -9896,22 +10045,23 @@ priced.sort((a, b) => a.price - b.price);
           ? "◀ SELECTED"
           : noteCleanA || "";
 
-        if (isDiagonalLine(a)) {
+        if (isDiagonalLine(a) || (drawStartT != null && drawEndT != null && drawEndP != null && Number.isFinite(drawEndP))) {
           // Diagonal alarm: ONLY the slanted segment — no horizontal helper line
-          const st = Number(a.start_time);
-          const et = Number(a.end_time);
-          const sp = Number(a.price);
-          const ep = Number(a.end_price);
+          const st = drawStartT != null ? drawStartT : Number(a.start_time);
+          const et = drawEndT != null ? drawEndT : Number(a.end_time);
+          const sp = drawPrice;
+          const ep = drawEndP != null ? drawEndP : Number(a.end_price);
           const t0 = Math.min(st, et);
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          // Diag alarms: solid continuous (no dashed gaps on higher TF)
+          // Diag alarms: respect dash style (dotted / dashed / solid)
           const ls: any = chart.addLineSeries({
             color,
             lineWidth: width,
-            lineStyle: isHL ? LineStyle.Dashed : LineStyle.Solid,
+            lineStyle: isHL ? LineStyle.Dashed : toLineStyle(a.dash),
             priceLineVisible: false,
+            pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             title: title || "",
@@ -9926,9 +10076,9 @@ priced.sort((a, b) => a.price - b.price);
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
           (a.start_time != null && (a.end_time == null || a.end_price == null) && !isDiagonalLine(a))
         ) {
-          let t0 = Number(a.start_time);
+          let t0 = drawStartT != null ? Number(drawStartT) : Number(a.start_time);
           if ((!t0 || Number.isNaN(t0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
-            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0]);
+            t0 = Number(String(a.note).replace(/^__ray:/, "").split("|")[0].split("||")[0]);
           }
           if (!Number.isNaN(t0) && t0 > 0) {
             const bars = candlesRef.current || [];
@@ -9946,14 +10096,14 @@ priced.sort((a, b) => a.price - b.price);
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData([
-              { time: t0 as any, value: Number(a.price) },
-              { time: rayEnd as any, value: Number(a.price) },
+              { time: t0 as any, value: drawPrice },
+              { time: rayEnd as any, value: drawPrice },
             ]);
             chartLinesRef.current.set(`alarm-ray-${a.id}`, ls);
             rayItemsRef.current.push({
               id: `alarm-ray-${a.id}`,
               time: t0,
-              price: Number(a.price),
+              price: drawPrice,
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(a.dash || "solid"),
@@ -9962,7 +10112,7 @@ priced.sort((a, b) => a.price - b.price);
           }
         } else {
           const pl = series.createPriceLine({
-            price: a.price, color, lineWidth: width,
+            price: drawPrice, color, lineWidth: width,
             lineStyle: style,
             axisLabelVisible: true, title: title || "",
           });
@@ -9970,6 +10120,7 @@ priced.sort((a, b) => a.price - b.price);
         }
       } catch {}
     });
+    } // end else !hideAlarms
 
     // History / temp highlight: yellow dashed HORIZONTAL line (full)
     // Paint true-vertical DOM lines
@@ -10070,14 +10221,20 @@ priced.sort((a, b) => a.price - b.price);
         const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
           const x = timeToX(pt.time);
           const y = ser2.priceToCoordinate(pt.price);
-          // Keep last position if temporarily unresolvable — avoids jump
+          // Keep last position if temporarily unresolvable — avoids jump/blink
           if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
           el.style.display = "block";
+          el.style.visibility = "visible";
+          el.style.opacity = "1";
+          el.style.transition = "none";
           el.style.left = `${Number(x)}px`;
           el.style.top = `${Number(y)}px`;
           el.style.borderColor = active ? "#f97316" : "#ffffff";
-          el.style.width = active ? "18px" : "14px";
-          el.style.height = active ? "18px" : "14px";
+          el.style.borderWidth = "2px";
+          el.style.background = "rgba(15,15,18,0.55)";
+          // Fixed size hollow circle — never toggle size (was causing blink)
+          el.style.width = "22px";
+          el.style.height = "22px";
         };
         place(elA, md.pointA, md.phase === "drag-a");
         place(elB, md.pointB, md.phase === "drag-b");
@@ -11391,13 +11548,159 @@ priced.sort((a, b) => a.price - b.price);
   }, [showStoch, stochVisible, hideIndicators, stochRsiLen, stochLen, stochK, stochD, stochKColor, stochDColor, removeStoch, updateMargins]);
 
   
+
+  const removeIchimoku = useCallback(() => {
+    const s = ichiSeriesRef.current;
+    if (s) {
+      try { chartRef.current?.removeSeries(s.conv); } catch {}
+      try { chartRef.current?.removeSeries(s.base); } catch {}
+      try { chartRef.current?.removeSeries(s.lag); } catch {}
+      try { chartRef.current?.removeSeries(s.leadA); } catch {}
+      try { chartRef.current?.removeSeries(s.leadB); } catch {}
+      ichiSeriesRef.current = null;
+    }
+    ichiCloudRef.current = null;
+    try {
+      vlineOverlayRef.current?.querySelectorAll("[data-ichi-cloud]").forEach((el) => el.remove());
+    } catch {}
+  }, []);
+
+  const paintIchiCloud = useCallback(() => {
+    try {
+      const host = vlineOverlayRef.current;
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      if (!host || !chart || !ser) return;
+      host.querySelectorAll("[data-ichi-cloud]").forEach((el) => el.remove());
+      if (!showIchimoku || !ichiVisible || !ichiShowCloud || hideIndicators) return;
+      const data = ichiCloudRef.current;
+      if (!data || !data.leadA.length || !data.leadB.length) return;
+      // Merge by time for polygon strips
+      const mapA = new Map(data.leadA.map((p) => [p.time, p.value]));
+      const mapB = new Map(data.leadB.map((p) => [p.time, p.value]));
+      const times = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort((a, b) => a - b);
+      // Build contiguous segments where both exist
+      type Pt = { x: number; yA: number; yB: number; bull: boolean };
+      const pts: Pt[] = [];
+      for (const t of times) {
+        const a = mapA.get(t);
+        const b = mapB.get(t);
+        if (a == null || b == null) continue;
+        let x: number | null = null;
+        try { x = chart.timeScale().timeToCoordinate(t as any) as any; } catch {}
+        if (x == null || Number.isNaN(Number(x))) continue;
+        const yA = ser.priceToCoordinate(a);
+        const yB = ser.priceToCoordinate(b);
+        if (yA == null || yB == null) continue;
+        pts.push({ x: Number(x), yA: Number(yA), yB: Number(yB), bull: a >= b });
+      }
+      if (pts.length < 2) return;
+      // Split into runs of same bull/bear for fill color
+      let run: Pt[] = [pts[0]];
+      const flush = () => {
+        if (run.length < 2) return;
+        const bull = run[0].bull;
+        let d = `M ${run[0].x} ${run[0].yA}`;
+        for (let i = 1; i < run.length; i++) d += ` L ${run[i].x} ${run[i].yA}`;
+        for (let i = run.length - 1; i >= 0; i--) d += ` L ${run[i].x} ${run[i].yB}`;
+        d += " Z";
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("data-ichi-cloud", "1");
+        svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:3;overflow:visible;";
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", d);
+        path.setAttribute("fill", bull ? ichiCloudBull : ichiCloudBear);
+        path.setAttribute("stroke", "none");
+        svg.appendChild(path);
+        host.appendChild(svg);
+      };
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i].bull !== run[0].bull) {
+          flush();
+          run = [pts[i - 1], pts[i]]; // connect at boundary
+        } else {
+          run.push(pts[i]);
+        }
+      }
+      flush();
+    } catch {}
+  }, [showIchimoku, ichiVisible, ichiShowCloud, hideIndicators, ichiCloudBull, ichiCloudBear]);
+
+  const applyIchimoku = useCallback(() => {
+    removeIchimoku();
+    if (!showIchimoku || !ichiVisible || hideIndicators || !chartRef.current || !candlesRef.current.length) return;
+    // Visibility by timeframe (TradingView-style)
+    try {
+      const iv = String(intervalRef.current || "60");
+      let ok = true;
+      if (iv === "D" || iv === "1D") {
+        ok = ichiVisDays && 1 >= ichiMinD && 1 <= ichiMaxD;
+      } else if (iv === "W" || iv === "1W") {
+        ok = ichiVisWeeks && 1 >= ichiMinW && 1 <= ichiMaxW;
+      } else if (iv === "M" || iv === "1M") {
+        ok = ichiVisMonths && 1 >= ichiMinMo && 1 <= ichiMaxMo;
+      } else {
+        const n = Number(iv);
+        if (!Number.isNaN(n) && n >= 60) {
+          const hours = n / 60;
+          ok = ichiVisHours && hours >= ichiMinH && hours <= ichiMaxH;
+        } else if (!Number.isNaN(n) && n > 0) {
+          ok = ichiVisMinutes && n >= ichiMinM && n <= ichiMaxM;
+        }
+      }
+      if (!ok) return;
+    } catch {}
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    let barSec = 60;
+    try { barSec = intervalToSeconds(String(intervalRef.current)) || 60; } catch {}
+    const data = calcIchimoku(candles, ichiConv, ichiBase, ichiLeadB, ichiDisp, barSec);
+    ichiCloudRef.current = { leadA: data.leadA, leadB: data.leadB };
+    try {
+      const mk = (color: string, visible: boolean, key: string) =>
+        chart.addLineSeries({
+          color,
+          lineWidth: 1,
+          priceLineVisible: !!ichiPriceLines[key],
+          lastValueVisible: !!ichiLabelsScale,
+          crosshairMarkerVisible: false,
+          visible,
+        });
+      const conv = mk(ichiConvColor, ichiShowConv, "conv");
+      const base = mk(ichiBaseColor, ichiShowBase, "base");
+      const lag = mk(ichiLagColor, ichiShowLag, "lag");
+      const leadA = mk(ichiLeadAColor, ichiShowLeadA, "leada");
+      const leadB = mk(ichiLeadBColor, ichiShowLeadB, "leadb");
+      if (ichiShowConv) conv.setData(data.conversion as any);
+      if (ichiShowBase) base.setData(data.base as any);
+      if (ichiShowLag) lag.setData(data.lagging as any);
+      if (ichiShowLeadA) leadA.setData(data.leadA as any);
+      if (ichiShowLeadB) leadB.setData(data.leadB as any);
+      ichiSeriesRef.current = { conv, base, lag, leadA, leadB };
+      requestAnimationFrame(() => {
+        try { paintIchiCloud(); } catch {}
+      });
+    } catch {}
+  }, [
+    showIchimoku, ichiVisible, hideIndicators, ichiConv, ichiBase, ichiLeadB, ichiDisp,
+    ichiConvColor, ichiBaseColor, ichiLagColor, ichiLeadAColor, ichiLeadBColor,
+    ichiShowConv, ichiShowBase, ichiShowLag, ichiShowLeadA, ichiShowLeadB, ichiShowCloud,
+    ichiLabelsScale, ichiPriceLines, ichiVisMinutes, ichiVisHours, ichiVisDays, ichiVisWeeks, ichiVisMonths,
+    ichiMinM, ichiMaxM, ichiMinH, ichiMaxH, ichiMinD, ichiMaxD, ichiMinW, ichiMaxW, ichiMinMo, ichiMaxMo,
+    removeIchimoku, paintIchiCloud,
+  ]);
+
   useEffect(() => { applyBB(); }, [applyBB]);
   useEffect(() => { applyHARSI(); }, [applyHARSI]);
+  useEffect(() => { applyIchimoku(); }, [applyIchimoku]);
+  useEffect(() => {
+    try { (window as any).__paintIchiCloud = paintIchiCloud; } catch {}
+  }, [paintIchiCloud]);
 
   const rebuildIndicators = useCallback(() => {
     applySMA(); applyRSI(); applyDMI(); applyPivot(); applyTrend(); applyVolume(); applyTCP();
-    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI();
-  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI]);
+    applyROC(); applyATR(); applyMACD(); applyStoch(); applyBB(); applyHARSI(); applyIchimoku();
+  }, [applySMA, applyRSI, applyDMI, applyPivot, applyTrend, applyVolume, applyTCP, applyROC, applyATR, applyMACD, applyStoch, applyBB, applyHARSI, applyIchimoku]);
 
   // Double-click hide/show oscillators — placed after apply* so functions exist
   useEffect(() => {
@@ -12235,6 +12538,8 @@ priced.sort((a, b) => a.price - b.price);
                 try { bb.upper?.setData([]); } catch {}
                 try { bb.lower?.setData([]); } catch {}
               }
+              try { removeIchimoku(); } catch {}
+              try { ichiSeriesRef.current = null; } catch {}
             } catch {}
             // Drop manual zoom from previous coin — keep the stable autoscaleInfoProvider
             // (it only applies override when priceRangeOverrideRef is set)
@@ -15262,12 +15567,7 @@ priced.sort((a, b) => a.price - b.price);
         // Don't steal events from handles / menus / while drawing a new tool
         const t = e.target as HTMLElement | null;
         if (!t) return;
-        if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-line-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id],[data-sel-marker]")) return;
-        // Handles sit on overlay — also match by ref identity
-        try {
-          if (t === handleAElRef.current || t === handleBElRef.current || t === handleCElRef.current) return;
-          if (handleAElRef.current?.contains(t) || handleBElRef.current?.contains(t) || handleCElRef.current?.contains(t)) return;
-        } catch {}
+        if (t.closest?.("[data-curve-handle],[data-path-handle],[data-ch-handle],[data-dpr-handle],[data-line-handle],[data-menu],[data-move-bar],[data-note-edit],[data-ind-panel],[data-pos-id]")) return;
         // If pointer is near an active diagonal endpoint handle, prefer handle drag
         try {
           const md = moveDiagRef.current;
@@ -15304,11 +15604,7 @@ priced.sort((a, b) => a.price - b.price);
         if (m !== "none" && m !== "move") return;
         // If a curve/path handle drag is already active, skip
         const md = moveDiagRef.current as any;
-        if (md && (md.curveHandle != null || md.pathHandle != null || md.phase === "drag-a" || md.phase === "drag-b")) return;
-        // phase drag-body without active bodyDragRef means stuck state — reset
-        if (md && md.phase === "drag-body" && !bodyDragRef.current) {
-          try { md.phase = "pick"; } catch {}
-        }
+        if (md && (md.curveHandle != null || md.pathHandle != null || md.phase === "drag-a" || md.phase === "drag-b" || md.phase === "drag-body")) return;
         if (bodyDragRef.current) return;
 
         const cont = chartContainerRef.current;
@@ -15392,9 +15688,7 @@ priced.sort((a, b) => a.price - b.price);
             pointA: { time: orig.t0, price: orig.p0 },
             pointB: { time: orig.t1, price: orig.p1 },
             color: o.color || "#2962FF", width: o.width || 2, dash: "solid",
-            noHandles: true,
           };
-          try { hideHandles(); } catch {}
         } else {
           moveDiagRef.current = null;
           movingVLineRef.current = hit.type === "v";
@@ -15415,10 +15709,6 @@ priced.sort((a, b) => a.price - b.price);
         const rect = cont.getBoundingClientRect();
         const px = e.clientX - rect.left;
         const py = e.clientY - rect.top;
-        // Track pixel distance so pointerup knows this was a real drag (not a click)
-        try {
-          (bd as any)._movedPx = Math.hypot(px - bd.startX, py - bd.startY);
-        } catch {}
         const price = ser.coordinateToPrice(py);
         if (price == null || Number.isNaN(price)) return;
         let tCursor: number | null = null;
@@ -15476,18 +15766,14 @@ priced.sort((a, b) => a.price - b.price);
           } else if (bd.type === "diag") {
             const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
             const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
-            const key = bd.kind === "alarm" ? `alarm-diag-${bd.id}` : bd.id;
-            const ls = chartLinesRef.current.get(key) || chartLinesRef.current.get(bd.id);
-            if (ls) {
+            (bd as any)._liveGeom = { t0, p0, t1, p1 };
+            // Try both line id and alarm-diag key
+            const ls =
+              chartLinesRef.current.get(bd.id) ||
+              chartLinesRef.current.get(`alarm-diag-${bd.id}`);
+            if (ls && typeof (ls as any).setData === "function") {
               const barSec = intervalToSeconds(String(intervalRef.current));
-              const data = denseDiagPoints(
-                Math.min(t0, t1),
-                Math.max(t0, t1),
-                t0 <= t1 ? p0 : p1,
-                t0 <= t1 ? p1 : p0,
-                barSec
-              );
-              ls.setData(data as any);
+              (ls as any).setData(denseDiagPoints(t0, t1, t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0, barSec));
             }
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
             if (cur) {
@@ -15496,26 +15782,18 @@ priced.sort((a, b) => a.price - b.price);
             if (bd.kind === "alarm") {
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) { curA.start_time = t0; curA.price = p0; (curA as any).end_time = t1; (curA as any).end_price = p1; }
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), p0);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: p0, start_time: t0, end_time: t1, end_price: p1,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
             }
             try {
               const md = moveDiagRef.current as any;
               if (md) { md.pointA = { time: t0, price: p0 }; md.pointB = { time: t1, price: p1 }; }
-              hideHandles(); // no endpoint circles for trendlines
-            } catch {}
-            // live note label reposition
-            try {
-              const host = vlineOverlayRef.current;
-              const lab = host?.querySelector(`[data-diag-note="${bd.id}"]`) as HTMLElement | null;
-              if (lab && chart && ser) {
-                const midT = (t0 + t1) / 2;
-                const midP = (p0 + p1) / 2;
-                const mx = chart.timeScale().timeToCoordinate(midT as any);
-                const my = ser.priceToCoordinate(midP);
-                if (mx != null && my != null) {
-                  lab.style.left = `${Number(mx)}px`;
-                  lab.style.top = `${Number(my) + 10}px`;
-                }
-              }
+              positionHandles({ time: t0, price: p0 }, { time: t1, price: p1 }, null, null);
             } catch {}
           } else if (bd.type === "h") {
             const newP = bd.orig.p + dP;
@@ -15565,20 +15843,27 @@ priced.sort((a, b) => a.price - b.price);
                 } catch {}
               } catch {}
             } else {
-              // alarm H
+              // alarm H — mutate ref + sticky override + live price line (no snap-back)
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) curA.price = newP;
               (bd as any)._liveP = newP;
+              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
               try {
-                if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
-                (bd as any)._pl = ser.createPriceLine({
-                  price: newP,
-                  color: "#f0b90b",
-                  lineWidth: 2,
-                  lineStyle: LineStyle.Solid,
-                  axisLabelVisible: true,
-                  title: "",
-                });
+                const pl = alarmLinesRef.current.get(`alarm-${bd.id}`);
+                if (pl && typeof (pl as any).applyOptions === "function") {
+                  (pl as any).applyOptions({ price: newP, color: "#f0b90b" });
+                } else {
+                  if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                  (bd as any)._pl = ser.createPriceLine({
+                    price: newP,
+                    color: "#f0b90b",
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: "",
+                  });
+                }
               } catch {}
             }
           } else if (bd.type === "v") {
@@ -15605,21 +15890,50 @@ priced.sort((a, b) => a.price - b.price);
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) {
                 curA.price = newP;
-                if (newT != null) curA.start_time = newT;
+                if (newT != null) {
+                  curA.start_time = newT;
+                  if (typeof curA.note === "string" && String(curA.note).startsWith("__ray:")) {
+                    const cfg = parseAlarmCfg(curA.note);
+                    curA.note = encodeAlarmCfg(`__ray:${newT}`, cfg.once, cfg.deleteAfter);
+                  }
+                }
               }
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), newP);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: newP, start_time: newT, end_time: null, end_price: null,
+                  note: newT != null ? `__ray:${newT}` : undefined,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
             }
             (bd as any)._liveP = newP;
             (bd as any)._liveT = newT;
+            // Update ray series in place (not just a temp H price line)
             try {
-              if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
-              (bd as any)._pl = ser.createPriceLine({
-                price: newP,
-                color: "#f0b90b",
-                lineWidth: 2,
-                lineStyle: LineStyle.Solid,
-                axisLabelVisible: true,
-                title: "",
-              });
+              const rayLs =
+                chartLinesRef.current.get(`alarm-ray-${bd.id}`) ||
+                chartLinesRef.current.get(bd.id);
+              if (rayLs && typeof (rayLs as any).setData === "function" && newT != null) {
+                const bars = candlesRef.current || [];
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                const lastT = bars.length ? Number(bars[bars.length - 1].time) : newT;
+                const rayEnd = Math.max(lastT, newT) + Math.max(FUTURE_BARS, 200) * barSec;
+                (rayLs as any).setData([
+                  { time: newT as any, value: newP },
+                  { time: rayEnd as any, value: newP },
+                ]);
+              } else {
+                if ((bd as any)._pl) { try { ser.removePriceLine((bd as any)._pl); } catch {} }
+                (bd as any)._pl = ser.createPriceLine({
+                  price: newP,
+                  color: "#f0b90b",
+                  lineWidth: 2,
+                  lineStyle: LineStyle.Solid,
+                  axisLabelVisible: true,
+                  title: "",
+                });
+              }
             } catch {}
           }
         } catch {}
@@ -15651,19 +15965,7 @@ priced.sort((a, b) => a.price - b.price);
         // Pure click (no real drag): keep selection + tools, do NOT save/exit
         const movedPx = Number((bd as any)._movedPx || 0);
         if (movedPx < 4) {
-          try {
-            const md = moveDiagRef.current as any;
-            if (md) md.phase = "pick";
-          } catch {}
-          try {
-            chartRef.current?.applyOptions({
-              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
-            });
-          } catch {}
-          // Diag: no endpoint handles — body drag only
-          try { hideHandles(); } catch {}
-          setStatusMsg("Selected — drag the line to move");
+          setStatusMsg("Selected — drag to move");
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           return;
         }
@@ -15688,59 +15990,101 @@ priced.sort((a, b) => a.price - b.price);
             }
             if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
           } else if (bd.type === "diag") {
-            const md = moveDiagRef.current as any;
-            const t0 = Number(md?.pointA?.time ?? bd.orig.t0);
-            const p0 = Number(md?.pointA?.price ?? bd.orig.p0);
-            const t1 = Number(md?.pointB?.time ?? bd.orig.t1);
-            const p1 = Number(md?.pointB?.price ?? bd.orig.p1);
+            const live = (bd as any)._liveGeom;
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
             if (bd.kind === "line") {
-              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-              const patch: any = {
-                start_time: t0, price: p0,
-                end_time: t1, end_price: p1,
-              };
-              // preserve user note after | on __diag:
-              if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
-                const rest = cur.note.includes("|") ? cur.note.slice(cur.note.indexOf("|")) : "";
-                patch.note = `__diag:${t0}:${t1}:${p1}${rest}`;
-              } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__")) {
-                patch.note = cur.note;
-              }
-              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              try {
-                const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-                if (lr) Object.assign(lr, patch);
-              } catch {}
-              if (!String(bd.id).startsWith("local-")) {
-                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+              const t0 = live ? live.t0 : (cur ? Number(cur.start_time) : null);
+              const p0 = live ? live.p0 : (cur ? Number(cur.price) : null);
+              const t1 = live ? live.t1 : (cur ? Number(cur.end_time) : null);
+              const p1 = live ? live.p1 : (cur ? Number(cur.end_price) : null);
+              if (t0 != null && p0 != null && t1 != null && p1 != null) {
+                const patch: any = {
+                  start_time: t0, price: p0,
+                  end_time: t1, end_price: p1,
+                };
+                if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
+                  patch.note = `__diag:${t0}:${t1}:${p1}`;
+                }
+                if (cur) {
+                  cur.start_time = t0; cur.price = p0; cur.end_time = t1; cur.end_price = p1;
+                  if (patch.note) cur.note = patch.note;
+                }
+                setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+                if (!String(bd.id).startsWith("local-")) {
+                  try { await supabase.from("chart_lines").update(patch).eq("id", bd.id); } catch {}
+                }
               }
             } else if (bd.kind === "alarm") {
-              const patch: any = {
-                start_time: t0, price: p0,
-                end_time: t1, end_price: p1,
-              };
-              setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              try {
-                const ar = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-                if (ar) Object.assign(ar, patch);
-              } catch {}
-              await supabase.from("alarms").update(patch).eq("id", bd.id);
-            }
-            if (md) {
-              md.phase = "pick";
-              md.pointA = { time: t0, price: p0 };
-              md.pointB = { time: t1, price: p1 };
+              const live = (bd as any)._liveGeom;
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              const t0 = live ? live.t0 : (curA ? Number(curA.start_time) : null);
+              const p0 = live ? live.p0 : (curA ? Number(curA.price) : null);
+              const t1 = live ? live.t1 : (curA ? Number((curA as any).end_time) : null);
+              const p1 = live ? live.p1 : (curA ? Number((curA as any).end_price) : null);
+              if (curA && t0 != null && p0 != null) {
+                const cfg = parseAlarmCfg(curA.note);
+                const patch: any = {
+                  start_time: t0, price: p0,
+                  end_time: t1, end_price: p1,
+                  note: encodeAlarmCfg(`__diag:${t0}:${t1}:${p1}`, cfg.once, cfg.deleteAfter),
+                };
+                curA.start_time = t0; curA.price = p0;
+                (curA as any).end_time = t1; (curA as any).end_price = p1;
+                curA.note = patch.note;
+                try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+                try {
+                  alarmPriceOverrideRef.current.set(String(bd.id), Number(p0));
+                  alarmGeomOverrideRef.current.set(String(bd.id), {
+                    price: Number(p0), start_time: t0, end_time: t1, end_price: p1, note: patch.note,
+                  });
+                } catch {}
+                setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+                try {
+                  const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                  if (error) {
+                    // fallback without note
+                    await supabase.from("alarms").update({
+                      start_time: t0, price: p0, end_time: t1, end_price: p1,
+                    }).eq("id", bd.id);
+                  }
+                } catch (e) { console.warn("alarm diag move", e); }
+              }
             }
           } else if (bd.type === "h") {
             const newP = (bd as any)._liveP ?? bd.orig.p;
             if (bd.kind === "line") {
+              try {
+                const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (cur) cur.price = newP;
+              } catch {}
               setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
               if (!String(bd.id).startsWith("local-")) {
-                await supabase.from("chart_lines").update({ price: newP }).eq("id", bd.id);
+                try { await supabase.from("chart_lines").update({ price: newP }).eq("id", bd.id); } catch {}
               }
             } else {
+              try {
+                const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (curA) curA.price = newP;
+              } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+              try { alarmPriceOverrideRef.current.set(String(bd.id), newP); } catch {}
+              // Keep price line at newP immediately (before React re-render)
+              try {
+                const ser2 = seriesRef.current;
+                const pl = alarmLinesRef.current.get(`alarm-${bd.id}`);
+                if (pl && typeof (pl as any).applyOptions === "function") {
+                  (pl as any).applyOptions({ price: newP });
+                }
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, price: newP } : x));
-              await supabase.from("alarms").update({ price: newP }).eq("id", bd.id);
+              try {
+                const { error } = await supabase.from("alarms").update({ price: Number(newP) }).eq("id", bd.id);
+                if (error) {
+                  console.warn("alarm move save failed", error);
+                  // Fallback: try again without extra fields
+                  try { await supabase.from("alarms").update({ price: Number(newP) }).eq("id", bd.id); } catch {}
+                }
+              } catch (e) { console.warn("alarm move save", e); }
             }
           } else if (bd.type === "v") {
             const newT = (bd as any)._liveT ?? bd.orig.t;
@@ -15762,13 +16106,41 @@ priced.sort((a, b) => a.price - b.price);
                 await supabase.from("chart_lines").update(patch).eq("id", bd.id);
               }
             } else {
-              const patch: any = { price: newP };
-              if (newT != null) patch.start_time = newT;
+              const patch: any = { price: Number(newP) };
+              if (newT != null) {
+                patch.start_time = newT;
+                const curA0 = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                const cfg = parseAlarmCfg(curA0?.note);
+                patch.note = encodeAlarmCfg(`__ray:${newT}`, cfg.once, cfg.deleteAfter);
+              }
+              try {
+                const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (curA) {
+                  curA.price = newP;
+                  if (newT != null) {
+                    curA.start_time = newT;
+                    if (patch.note) curA.note = patch.note;
+                  }
+                }
+              } catch {}
+              try { alarmLocalEditRef.current.set(String(bd.id), Date.now()); } catch {}
+              try {
+                alarmPriceOverrideRef.current.set(String(bd.id), newP);
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: newP, start_time: newT, end_time: null, end_price: null, note: patch.note,
+                });
+              } catch {}
               setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              await supabase.from("alarms").update(patch).eq("id", bd.id);
+              try {
+                const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                if (error) {
+                  await supabase.from("alarms").update({ price: Number(newP), start_time: newT }).eq("id", bd.id);
+                }
+              } catch (e) { console.warn("alarm ray move", e); }
             }
           }
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 30); } catch {}
           setStatusMsg("Moved");
         } catch {
           setStatusMsg("Move failed");
@@ -15786,17 +16158,35 @@ priced.sort((a, b) => a.price - b.price);
             moveDiagRef.current = null;
             movingVLineRef.current = false;
             movingRayRef.current = false;
-            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            // Delayed re-render so sticky override + setAlarms settle (prevents alarm snap-back)
+            try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 50); } catch {}
           } catch {}
         } else if (bd.type === "diag") {
+          // keep selected + restore hollow endpoints for further edit
           try {
             const md = moveDiagRef.current as any;
-            if (md) md.phase = "pick";
-            hideHandles();
-            chartRef.current?.applyOptions({
-              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
-            });
+            const live = (bd as any)._liveGeom;
+            if (md) {
+              md.phase = "pick";
+              if (live) {
+                md.pointA = { time: live.t0, price: live.p0 };
+                md.pointB = { time: live.t1, price: live.p1 };
+              }
+              try {
+                positionHandles(md.pointA, md.pointB, null, md.pointC || null);
+              } catch {}
+            }
+            try {
+              setTimeout(() => {
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                try {
+                  const md3 = moveDiagRef.current as any;
+                  if (md3 && md3.pointA && md3.pointB) {
+                    positionHandles(md3.pointA, md3.pointB, null, md3.pointC || null);
+                  }
+                } catch {}
+              }, 50);
+            } catch {}
           } catch {}
         }
         // curve: keep handles (already softMove)
@@ -16991,7 +17381,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: l.color || DEFAULT_LINE_COLOR,
                   width: l.width || 2,
                   dash: (l.dash || l.style || "solid") as string,
-                  noHandles: true,
                 };
                 // No extra dashed preview series — original line shows dashed via isMoving
                 try {
@@ -17000,8 +17389,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     previewDiagSeriesRef.current = null;
                   }
                 } catch {}
-                try { hideHandles(); } catch {}
-                setStatusMsg("Drag the line body to move");
+                try {
+                  positionHandles(
+                    { time: Number(l.start_time), price: Number(l.price) },
+                    { time: Number(l.end_time), price: Number(l.end_price) },
+                    null
+                  );
+                } catch {}
+                setStatusMsg("Drag endpoints or body to move");
               } else if (best.isV) {
                 moveDiagRef.current = null;
                 setStatusMsg("Vertical line selected — drag to move");
@@ -17036,8 +17431,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: a.color || DEFAULT_ALARM_COLOR,
                   width: a.width || 2,
                   dash: (a.dash || "solid") as string,
-                
-                  noHandles: true,
                 };
                 try {
                   if (previewDiagSeriesRef.current && chartRef.current) {
@@ -17045,8 +17438,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     previewDiagSeriesRef.current = null;
                   }
                 } catch {}
-                try { hideHandles(); } catch {}
-                setStatusMsg("Drag the line body to move");
+                try {
+                  positionHandles(
+                    { time: Number(a.start_time), price: Number(a.price) },
+                    { time: Number(a.end_time), price: Number(a.end_price) },
+                    null
+                  );
+                } catch {}
+                setStatusMsg("Drag the circles to move endpoints");
               } else if (best.isRay) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move alarm ray");
@@ -17569,6 +17968,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setMovingId(null);
             setMovingType(null);
             setMode("none");
+            setMoveStyleOpen(false);
+            setMoveNoteOpen(false);
+            setMoveAlarmOpen(false);
             clearPreview();
             movingRayRef.current = false;
             movingVLineRef.current = false;
@@ -19956,7 +20358,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       stochSettings ||
       hideMenuOpen ||
       trashMenuOpen;
-    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen && !lineToolsOpen) return;
+    if (!tfMenuOpen && !tzMenuOpen && !openMenu && !anyIndPanel && !editingNoteId && !wlMenuOpen && !drawToolsOpen && !fibToolsOpen && !alarmMenuOpen && !posToolsOpen && !lineToolsOpen && !moveStyleOpen && !moveNoteOpen) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       const t = e.target as Node;
       const el = t as HTMLElement;
@@ -19982,6 +20384,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       }
       if (posToolsOpen && !el.closest?.("[data-menu]")) {
         setPosToolsOpen(false);
+      }
+      // Line/alarm style & note popovers: close when clicking outside
+      if ((moveStyleOpen || moveNoteOpen || moveAlarmOpen) && !el.closest?.("[data-menu]") && !el.closest?.("[data-note-edit]") && !el.closest?.("[data-move-bar]")) {
+        setMoveStyleOpen(false);
+        setMoveNoteOpen(false);
+        setMoveAlarmOpen(false);
       }
       // Note editor: click anywhere outside saves
       if (editingNoteId && !el.closest?.("[data-note-edit]")) {
@@ -20031,6 +20439,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     stochSettings,
     hideMenuOpen,
     trashMenuOpen,
+    moveStyleOpen,
+    moveNoteOpen,
+    moveAlarmOpen,
     editingNoteId,
     noteDraft,
     editingNoteType,
@@ -20341,25 +20752,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const a = alarmsRes.data;
       if (a) {
         setAlarms(
-          (a as Alarm[]).map((row) => {
-            if (isDiagonalLine(row)) return row;
-            if (row.note?.startsWith("__diag:")) {
+          (a as Alarm[])
+            .filter((row) => !deletedIdsRef.current.has(String((row as any).id)))
+            .map((row) => {
+            let out: any = row;
+            if (isDiagonalLine(row)) out = row;
+            else if (row.note?.startsWith("__diag:")) {
               const body = row.note.replace(/^__diag:/, "").split("|")[0];
               const parts = body.split(":");
               if (parts.length >= 3) {
-                return {
+                out = {
                   ...row,
                   start_time: Number(parts[0]),
                   end_time: Number(parts[1]),
                   end_price: Number(parts[2]),
                 };
               }
-            }
-            if (row.note?.startsWith("__ray:") && row.start_time == null) {
+            } else if (row.note?.startsWith("__ray:") && row.start_time == null) {
               const n = Number(row.note.replace("__ray:", ""));
-              if (!Number.isNaN(n)) return { ...row, start_time: n };
+              if (!Number.isNaN(n)) out = { ...row, start_time: n };
             }
-            return row;
+            // Sticky price override (user just moved this alarm)
+            try {
+              const ov = alarmPriceOverrideRef.current.get(String(out.id));
+              if (ov != null && Number.isFinite(ov)) out = { ...out, price: ov };
+            } catch {}
+            return out;
           })
         );
       } else {
@@ -20368,7 +20786,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const l = linesRes.data;
       if (l) {
         setLines(
-          (l as ChartLine[]).map((row) => {
+          (l as ChartLine[])
+            .filter((row) => !deletedIdsRef.current.has(String(row.id)))
+            .map((row) => {
             if (isDiagonalLine(row)) return row;
             if (row.note === "__vline__" || (typeof row.note === "string" && row.note.startsWith("__vline__:"))) {
               let st = row.start_time != null ? Number(row.start_time) : null;
@@ -20691,60 +21111,115 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
    * (Previously client marked triggered without notifying Telegram → missed messages.)
    */
   const triggerAlarmLocal = useCallback(async (a: Alarm, price: number) => {
-    // فقط یک‌بار برای هر آلارم
-    if (
-      notifiedAlarmsRef.current.has(a.id) ||
-      triggeringAlarmsRef.current.has(a.id)
-    ) {
-      return;
-    }
-    triggeringAlarmsRef.current.add(a.id);
+    const cfg = parseAlarmCfg(a.note);
+    // Note __cfg is source of truth for Delete/Keep (always written on Apply)
+    const isOnce = a.once != null ? !!a.once : cfg.once;
+    const doDelete = cfg.deleteAfter || !!a.delete_after;
 
+    // Cooldown / in-flight guards
+    if (triggeringAlarmsRef.current.has(a.id)) return;
+    if (isOnce && notifiedAlarmsRef.current.has(a.id)) return;
+    // Always-mode: short cooldown so same tick cannot multi-fire
+    if (!isOnce && notifiedAlarmsRef.current.has(a.id)) return;
+
+    triggeringAlarmsRef.current.add(a.id);
     const nowIso = new Date().toISOString();
 
-    // Claim اتمیک در DB — اگر کرون زودتر زده باشد، نوتیف دوم نده (مشکل iPad)
-    let claimed = false;
+    let claimed = true;
     try {
-      const { data: row } = await supabase
-        .from("alarms")
-        .update({
+      if (doDelete) {
+        // Delete after trigger → remove row
+        const { data: row } = await supabase
+          .from("alarms")
+          .update({
+            triggered: true,
+            is_active: false,
+            last_price: price,
+            triggered_at: nowIso,
+          })
+          .eq("id", a.id)
+          .select("id")
+          .maybeSingle();
+        claimed = !!(row && (row as any).id) || true;
+        try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
+      } else {
+        // KEEP line on chart — never deactivate / never mark triggered for display filter
+        await supabase
+          .from("alarms")
+          .update({
+            last_price: price,
+            triggered_at: nowIso,
+            // stay active so line remains drawn
+            is_active: true,
+            triggered: false,
+          })
+          .eq("id", a.id);
+        claimed = true;
+      }
+    } catch {
+      claimed = true;
+    }
+
+    if (doDelete) {
+      // Remove from chart + state; keep a history entry via triggered flag if needed
+      setAlarms((p) =>
+        p
+          .map((x) =>
+            String(x.id) === String(a.id)
+              ? { ...x, triggered: true, is_active: false, last_price: price, triggered_at: nowIso }
+              : x
+          )
+          .filter((x) => String(x.id) !== String(a.id) || false) // drop it from active list
+      );
+      // Force remove price line from chart
+      try {
+        const pl = alarmLinesRef.current.get(`alarm-${a.id}`);
+        if (pl && seriesRef.current) {
+          try { seriesRef.current.removePriceLine(pl); } catch {}
+          alarmLinesRef.current.delete(`alarm-${a.id}`);
+        }
+        const ray = chartLinesRef.current.get(`alarm-ray-${a.id}`);
+        if (ray && chartRef.current) {
+          try { chartRef.current.removeSeries(ray as any); } catch {}
+          chartLinesRef.current.delete(`alarm-ray-${a.id}`);
+        }
+        const diag = chartLinesRef.current.get(String(a.id));
+        if (diag && chartRef.current) {
+          try { chartRef.current.removeSeries(diag as any); } catch {}
+          chartLinesRef.current.delete(String(a.id));
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      // Ensure DB row is gone / marked triggered for history
+      try {
+        await supabase.from("alarms").update({
           triggered: true,
           is_active: false,
           last_price: price,
           triggered_at: nowIso,
-        })
-        .eq("id", a.id)
-        .eq("triggered", false)
-        .select("id")
-        .maybeSingle();
-      claimed = !!(row && (row as any).id);
-    } catch {
-      claimed = false;
+        }).eq("id", a.id);
+      } catch {}
+      try { await supabase.from("alarms").delete().eq("id", a.id); } catch {}
+    } else {
+      // Keep: line stays visible; only update last_price
+      setAlarms((p) =>
+        p.map((x) =>
+          String(x.id) === String(a.id)
+            ? { ...x, last_price: price, triggered_at: nowIso, is_active: true, triggered: false }
+            : x
+        )
+      );
     }
 
-    // UI را در هر حالت آپدیت کن
-    setAlarms((p) =>
-      p.map((x) =>
-        x.id === a.id
-          ? {
-              ...x,
-              triggered: true,
-              is_active: false,
-              last_price: price,
-              triggered_at: nowIso,
-            }
-          : x
-      )
-    );
     notifiedAlarmsRef.current.add(a.id);
-
-    if (!claimed) {
-      // سرور/کرون قبلاً نوتیف فرستاده — دوباره نده
-      triggeringAlarmsRef.current.delete(a.id);
-      return;
+    // Always + Keep: allow re-fire after cooldown
+    if (!isOnce && !doDelete) {
+      setTimeout(() => {
+        try { notifiedAlarmsRef.current.delete(a.id); } catch {}
+      }, 15000);
     }
+    // Once + Keep: stay in notified set forever (this session) so it won't fire again
 
-    // سایت باز است → همیشه نوتیف + صدای بیپ روی کامپیوتر
     showLocalNotification(
       `${a.symbol}`,
       alarmNotifyBody(a, price),
@@ -20807,13 +21282,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           .limit(200);
         if (allAlarms && alive) {
           const normalizeAlarm = (row: Alarm): Alarm => {
-            if (isDiagonalLine(row)) return row;
-            if (row.note?.startsWith("__diag:")) {
-              const body = row.note.replace(/^__diag:/, "").split("|")[0];
+            let out: Alarm = { ...row };
+            if (row.note?.startsWith("__diag:") || (typeof row.note === "string" && row.note.includes("__diag:"))) {
+              const body = String(row.note).replace(/^__diag:/, "").split("|")[0].split("||")[0];
               const parts = body.split(":");
               if (parts.length >= 3) {
-                return {
-                  ...row,
+                out = {
+                  ...out,
                   start_time: Number(parts[0]),
                   end_time: Number(parts[1]),
                   end_price: Number(parts[2]),
@@ -20821,16 +21296,38 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               }
             }
             // Ray half-line encoded in note
-            if (row.start_time == null && row.note?.startsWith("__ray:")) {
-              const n = Number(row.note.replace("__ray:", ""));
-              if (!Number.isNaN(n)) return { ...row, start_time: n };
+            if (out.start_time == null && out.note?.startsWith("__ray:")) {
+              const n = Number(String(out.note).replace("__ray:", "").split("|")[0].split("||")[0]);
+              if (!Number.isNaN(n)) out = { ...out, start_time: n };
             }
-            return row;
+            // once / delete_after from note cfg
+            try {
+              const cfg = parseAlarmCfg(out.note);
+              out = {
+                ...out,
+                once: out.once != null ? out.once : cfg.once,
+                delete_after: out.delete_after != null ? out.delete_after : cfg.deleteAfter,
+              };
+              // Keep-mode: never treat as inactive/triggered just because server flipped flags
+              if (out.delete_after === false || (out.delete_after == null && cfg.deleteAfter === false)) {
+                // keep visible on chart
+                if (cfg.once || out.once) {
+                  // once+keep still stays on chart
+                }
+              }
+            } catch {}
+            return out;
           };
           setAlarms((prev) => {
-            const byId = new Map(allAlarms.map((a: any) => [a.id, normalizeAlarm(a as Alarm)]));
+            const byId = new Map(
+              allAlarms
+                .filter((a: any) => !deletedIdsRef.current.has(String(a.id)))
+                .map((a: any) => [a.id, normalizeAlarm(a as Alarm)])
+            );
             // merge: prefer DB state for is_active / triggered
-            const merged = prev.map((local) => {
+            const merged = prev
+              .filter((local) => !deletedIdsRef.current.has(String(local.id)))
+              .map((local) => {
               const db = byId.get(local.id);
               if (!db) return local;
               if (db.triggered && !local.triggered) {
@@ -20855,15 +21352,47 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   }
                 }
               }
+              const editedAt = alarmLocalEditRef.current.get(String(local.id)) || 0;
+              const overrideP = alarmPriceOverrideRef.current.get(String(local.id));
+              const geomOv = alarmGeomOverrideRef.current.get(String(local.id));
+              const preferLocal = (editedAt > 0 && (Date.now() - editedAt) < 120000) || overrideP != null || geomOv != null;
+              // Clear override only when DB has caught up to the moved price
+              if (overrideP != null && db.price != null && Math.abs(Number(db.price) - Number(overrideP)) / Math.max(Math.abs(Number(overrideP)), 1e-12) < 1e-8) {
+                try { alarmPriceOverrideRef.current.delete(String(local.id)); } catch {}
+              }
+              const finalPrice = (geomOv && geomOv.price != null) ? geomOv.price
+                : (overrideP != null ? overrideP : (preferLocal ? local.price : (db.price ?? local.price)));
+              const finalStart = (geomOv && geomOv.start_time != null) ? geomOv.start_time
+                : (preferLocal ? local.start_time : (db.start_time ?? local.start_time));
+              const finalEnd = (geomOv && geomOv.end_time != null) ? geomOv.end_time
+                : (preferLocal ? (local as any).end_time : (db.end_time ?? (local as any).end_time));
+              const finalEndP = (geomOv && geomOv.end_price != null) ? geomOv.end_price
+                : (preferLocal ? (local as any).end_price : (db.end_price ?? (local as any).end_price));
+              const cfgL = parseAlarmCfg(local.note);
+              const cfgD = parseAlarmCfg(db.note);
+              // Prefer explicit local delete_after / note cfg; delete=true means remove when triggered
+              const delFlag = local.delete_after != null ? !!local.delete_after
+                : (db.delete_after != null ? !!db.delete_after
+                  : (cfgL.deleteAfter || cfgD.deleteAfter));
+              const keepLine = !delFlag;
+              // Keep → stay visible; Delete + triggered → hide
+              const triggered = keepLine ? false : !!db.triggered;
+              const is_active = keepLine ? true : (!!db.is_active && !db.triggered);
               return {
                 ...local,
                 ...db,
-                // keep local diagonal geometry if DB row stripped columns
-                start_time: db.start_time ?? local.start_time,
-                end_time: db.end_time ?? local.end_time,
-                end_price: db.end_price ?? local.end_price,
-                triggered: !!db.triggered,
-                is_active: !!db.is_active && !db.triggered,
+                price: finalPrice,
+                start_time: finalStart,
+                end_time: finalEnd,
+                end_price: finalEndP,
+                dash: preferLocal ? (local as any).dash : ((db as any).dash ?? (local as any).dash),
+                width: preferLocal ? local.width : (db.width ?? local.width),
+                color: preferLocal ? local.color : (db.color ?? local.color),
+                note: preferLocal && local.note ? local.note : (db.note ?? local.note),
+                once: local.once != null ? local.once : (db.once != null ? db.once : cfgL.once),
+                delete_after: local.delete_after != null ? local.delete_after : (db.delete_after != null ? db.delete_after : cfgL.deleteAfter),
+                triggered,
+                is_active,
               };
             });
             // add any new alarms from DB not in local
@@ -20995,16 +21524,191 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     };
   }, [refreshLiveCandles, triggerAlarmLocal]);
 
+  const removeChartArtifacts = useCallback((id: string, kind: "alarm" | "line") => {
+    try {
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      const sid = String(id);
+      // price lines
+      if (ser) {
+        for (const key of [`alarm-${sid}`, sid, `line-${sid}`]) {
+          const pl = alarmLinesRef.current.get(key);
+          if (pl) {
+            try { ser.removePriceLine(pl); } catch {}
+            alarmLinesRef.current.delete(key);
+          }
+        }
+      }
+      // series (diag / ray / channel legs / etc.)
+      // Channels store an ARRAY of series under the line id
+      if (chart) {
+        const keys = [
+          sid,
+          `alarm-diag-${sid}`,
+          `alarm-ray-${sid}`,
+          `line-${sid}`,
+          `ch-${sid}-a`,
+          `ch-${sid}-b`,
+          `ch-${sid}-mid`,
+          `channel-${sid}`,
+        ];
+        const dropSeries = (ls: any) => {
+          if (!ls) return;
+          if (Array.isArray(ls)) {
+            for (const s of ls) {
+              try { chart.removeSeries(s as any); } catch {}
+            }
+          } else {
+            try { chart.removeSeries(ls as any); } catch {}
+          }
+        };
+        for (const [k, ls] of Array.from(chartLinesRef.current.entries())) {
+          if (String(k) === sid || String(k).includes(sid) || keys.includes(String(k))) {
+            dropSeries(ls);
+            chartLinesRef.current.delete(k);
+          }
+        }
+        // also strip any remaining channel fill / label DOM
+        try {
+          const host = vlineOverlayRef.current;
+          if (host) {
+            host.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"]`).forEach((el) => {
+              try { el.remove(); } catch {}
+            });
+          }
+        } catch {}
+      }
+      // channel / curve / path handles on overlay — wipe all ch-handles then re-render survivors
+      try {
+        const host = vlineOverlayRef.current;
+        if (host) {
+          host.querySelectorAll("[data-ch-handle]").forEach((el) => {
+            try { el.remove(); } catch {}
+          });
+          host.querySelectorAll(
+            `[data-curve-id="${sid}"],[data-path-id="${sid}"],[data-channel-id="${sid}"],[data-line-id="${sid}"],[data-curve-handle],[data-path-handle],[data-dpr-handle]`
+          ).forEach((el) => {
+            try { el.remove(); } catch {}
+          });
+        }
+      } catch {}
+      // hollow circle handles
+      try {
+        if (handleAElRef.current) handleAElRef.current.style.display = "none";
+        if (handleBElRef.current) handleBElRef.current.style.display = "none";
+        if (handleCElRef.current) handleCElRef.current.style.display = "none";
+        if (selMarkerRef.current) selMarkerRef.current.style.display = "none";
+      } catch {}
+      try { clearPreview(); } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    } catch {}
+  }, []);
+
   const deleteAlarm = async (id: string) => {
-    pushUndo();
-    setAlarms((prev) => prev.filter((a) => a.id !== id));
-    await supabase.from("alarms").delete().eq("id", id);
+    const sid = String(id);
+    try { deletedIdsRef.current.add(sid); } catch {}
+    try { pushUndo(); } catch {}
+    setAlarms((prev) => prev.filter((a) => String(a.id) !== sid));
+    removeChartArtifacts(sid, "alarm");
+    try {
+      const { error } = await supabase.from("alarms").delete().eq("id", id);
+      if (error) {
+        console.warn("deleteAlarm failed", error);
+        // retry with string id
+        try { await supabase.from("alarms").delete().eq("id", sid); } catch {}
+      }
+    } catch (e) {
+      console.warn("deleteAlarm exception", e);
+    }
+    // keep tombstone a while so poll cannot resurrect
+    setTimeout(() => {
+      try { deletedIdsRef.current.delete(sid); } catch {}
+    }, 60000);
   };
   const deleteLine = async (id: string) => {
-    pushUndo();
-    setLines((prev) => prev.filter((l) => l.id !== id));
-    await supabase.from("chart_lines").delete().eq("id", id);
+    const sid = String(id);
+    try { deletedIdsRef.current.add(sid); } catch {}
+    try { pushUndo(); } catch {}
+    // Mutate linesRef immediately so renderAll cannot resurrect
+    try {
+      linesRef.current = (linesRef.current || []).filter((l: any) => String(l.id) !== sid);
+    } catch {}
+    setLines((prev) => prev.filter((l) => String(l.id) !== sid));
+    try {
+      if (String(selectedChannelId) === sid) setSelectedChannelId(null);
+    } catch {}
+    removeChartArtifacts(sid, "line");
+    // Second pass after React state settles
+    try {
+      setTimeout(() => {
+        try {
+          const host = vlineOverlayRef.current;
+          host?.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-ch-handle]`).forEach((el) => el.remove());
+          // remove any leftover series array for this id
+          const chart = chartRef.current;
+          const held = chartLinesRef.current.get(sid);
+          if (chart && held) {
+            if (Array.isArray(held)) {
+              for (const s of held) { try { chart.removeSeries(s as any); } catch {} }
+            } else {
+              try { chart.removeSeries(held as any); } catch {}
+            }
+            chartLinesRef.current.delete(sid);
+          }
+          renderAllLinesAndAlarmsRef.current?.();
+        } catch {}
+      }, 40);
+    } catch {}
+    if (!sid.startsWith("local-")) {
+      try {
+        const { error } = await supabase.from("chart_lines").delete().eq("id", id);
+        if (error) {
+          console.warn("deleteLine failed", error);
+          try { await supabase.from("chart_lines").delete().eq("id", sid); } catch {}
+        }
+      } catch (e) {
+        console.warn("deleteLine exception", e);
+      }
+    }
+    setTimeout(() => {
+      try { deletedIdsRef.current.delete(sid); } catch {}
+    }, 60000);
   };
+
+  // Keyboard Delete / Backspace for selected line or alarm
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+      const id = movingIdRef.current;
+      const typ = movingTypeRef.current;
+      if (!id) return;
+      if (!(modeRef.current === "move" || typ === "line" || typ === "alarm")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const sid = String(id);
+      const kind = typ === "alarm" ? "alarm" : "line";
+      // clear selection UI first
+      try {
+        moveDiagRef.current = null;
+        setMovingId(null);
+        setMovingType(null);
+        setMode("none");
+        setMoveStyleOpen(false);
+        setMoveNoteOpen(false);
+        setMoveAlarmOpen(false);
+      } catch {}
+      void (async () => {
+        if (kind === "alarm") await deleteAlarm(sid);
+        else await deleteLine(sid);
+        setStatusMsg("Deleted");
+      })();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [deleteAlarm, deleteLine]);
   const deleteAllLines = async () => {
     const list = lines.filter((l) => l.symbol.toUpperCase() === symbolUpper);
     if (!list.length) return;
@@ -21043,6 +21747,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     setShowMACD(false);
     setShowStoch(false);
     setShowBB(false);
+    setShowIchimoku(false);
     setShowHARSI(false);
   };
   const clearMeasure = () => {
@@ -21101,13 +21806,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
           const p = parseChannelNote(cur.note);
           if (p) noteOut = buildChannelNote({ ...p, text: text || "" });
-        } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__diag:") || cur.note.startsWith("__ray:"))) {
-          // keep geometry prefix, store user text after |
-          const base = cur.note.split("|")[0];
-          noteOut = text ? `${base}|${text}` : base;
         } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
-          const base = cur.note.replace(/\|txt=[^|]*/g, "").split("|")[0];
-          noteOut = text ? `${base}|${text}` : base;
+          const base = cur.note.replace(/\|txt=[^|]*/g, "");
+          noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
         }
         await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
         setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
@@ -21650,81 +22351,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             )}
           </div>
 
-          {/* Indicators — next to timeframe tools */}
-          <div className="relative" data-ind-panel>
-            <button
-              type="button"
-              data-ind-panel
-              title="Indicators"
-              onClick={() => { setShowIndicatorMenu((v) => !v); setTfMenuOpen(false); setTzMenuOpen(false); setOpenMenu(null); }}
-              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
-                showIndicatorMenu
-                  ? "bg-blue-500/20 border-blue-500 text-blue-300 shadow-lg"
-                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-              }`}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="20" x2="6" y2="10" />
-                <line x1="12" y1="20" x2="12" y2="4" />
-                <line x1="18" y1="20" x2="18" y2="14" />
-              </svg>
-              <span className="font-medium">Indicators</span>
-            </button>
-            {showIndicatorMenu && (
-              <div
-                data-ind-panel
-                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[150px]"
-                style={{
-                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                  background: "rgba(20,20,22,0.42)",
-                  backdropFilter: "blur(40px) saturate(200%)",
-                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                }}
-              >
-                {[
-                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
-                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
-                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
-                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
-                  { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
-                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
-                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
-                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
-                  { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
-                  { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
-                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD, group: "osc" },
-                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch, group: "osc" },
-                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
-                ].map((it, idx, arr) => {
-                  const prev = idx > 0 ? arr[idx - 1] : null;
-                  const showSep = prev && prev.group === "main" && it.group === "osc";
-                  return (
-                    <div key={it.key}>
-                      {showSep && (
-                        <div className="px-3 py-1.5 flex items-center gap-2 pointer-events-none">
-                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
-                          <span className="text-[9px] text-gray-500 shrink-0 tracking-wide">Oscillator</span>
-                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        data-ind-panel
-                        onClick={() => it.set((v: boolean) => !v)}
-                        className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
-                          it.on ? "text-orange-300" : "text-gray-200"
-                        }`}
-                      >
-                        <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
-                        <span>{it.label}</span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
           {/* Chart type (Candles / Line / Area / Heikin) */}
           <div className="relative">
             <button
@@ -21800,6 +22426,82 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               </div>
             )}
           </div>
+          {/* Indicators — next to timeframe tools */}
+          <div className="relative" data-ind-panel>
+            <button
+              type="button"
+              data-ind-panel
+              title="Indicators"
+              onClick={() => { setShowIndicatorMenu((v) => !v); setTfMenuOpen(false); setTzMenuOpen(false); setOpenMenu(null); }}
+              className={`h-8 px-2.5 text-xs rounded-lg inline-flex items-center gap-1.5 border transition-all duration-200 ${
+                showIndicatorMenu
+                  ? "bg-blue-500/20 border-blue-500 text-blue-300 shadow-lg"
+                  : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="20" x2="6" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="18" y1="20" x2="18" y2="14" />
+              </svg>
+              <span className="font-medium">Indicators</span>
+            </button>
+            {showIndicatorMenu && (
+              <div
+                data-ind-panel
+                className="absolute z-50 top-full left-0 mt-1.5 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[150px]"
+                style={{
+                  animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
+                  background: "rgba(20,20,22,0.42)",
+                  backdropFilter: "blur(40px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(40px) saturate(200%)",
+                }}
+              >
+                {[
+                  { key: "vol", label: "Volume", on: showVol, set: setShowVol, group: "main" },
+                  { key: "sma", label: "3SMA", on: showSMA, set: setShowSMA, group: "main" },
+                  { key: "pivot", label: "Pivot", on: showPivot, set: setShowPivot, group: "main" },
+                  { key: "trend", label: "Trend", on: showTrend, set: setShowTrend, group: "main" },
+                  { key: "bb", label: "BB", on: showBB, set: setShowBB, group: "main" },
+                  { key: "ichi", label: "Ichimoku", on: showIchimoku, set: setShowIchimoku, group: "main" },
+                  { key: "tcp", label: "TCP", on: showTCP, set: setShowTCP, group: "main" },
+                  { key: "rsi", label: "RSI", on: showRSI, set: setShowRSI, group: "osc" },
+                  { key: "dmi", label: "DMI", on: showDMI, set: setShowDMI, group: "osc" },
+                  { key: "roc", label: "ROC", on: showROC, set: setShowROC, group: "osc" },
+                  { key: "atr", label: "ATR", on: showATR, set: setShowATR, group: "osc" },
+                  { key: "macd", label: "MACD", on: showMACD, set: setShowMACD, group: "osc" },
+                  { key: "stoch", label: "Stoch RSI", on: showStoch, set: setShowStoch, group: "osc" },
+                  { key: "harsi", label: "HARSI", on: showHARSI, set: setShowHARSI, group: "osc" },
+                ].map((it, idx, arr) => {
+                  const prev = idx > 0 ? arr[idx - 1] : null;
+                  const showSep = prev && prev.group === "main" && it.group === "osc";
+                  return (
+                    <div key={it.key}>
+                      {showSep && (
+                        <div className="px-3 py-1.5 flex items-center gap-2 pointer-events-none">
+                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
+                          <span className="text-[9px] text-gray-500 shrink-0 tracking-wide">Oscillator</span>
+                          <div className="flex-1 border-t border-dashed border-gray-600/80" />
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        data-ind-panel
+                        onClick={() => it.set((v: boolean) => !v)}
+                        className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${
+                          it.on ? "text-orange-300" : "text-gray-200"
+                        }`}
+                      >
+                        <span className="w-3 text-orange-400">{it.on ? "✓" : ""}</span>
+                        <span>{it.label}</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
 
           {/* Undo / Redo */}
           <div className="flex items-center gap-0.5 ml-1" data-hist={histTick}>
@@ -22114,7 +22816,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 setMode("none");
                 setDiagStart(null);
               }}
-              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+              className="w-9 h-9 rounded-lg flex items-center justify-center border bg-gray-900 border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 transition-colors"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
@@ -22137,7 +22839,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setMovingId(null);
                   setMovingType(null);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   alarmMenuOpen || mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22165,7 +22867,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap chart for full-line alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22185,7 +22887,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap chart for ray alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm-ray"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22206,7 +22908,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setStatusMsg("Tap two points for diagonal alarm");
                     }}
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                       mode === "alarm-diag"
                         ? "bg-orange-500/20 border-orange-500 text-orange-300"
                         : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22237,7 +22939,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setPosToolsOpen(false);
                   setAlarmMenuOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   lineToolsOpen || mode === "draw" || mode === "ray" || mode === "diag" || mode === "vline" || mode === "channel" || mode === "curve"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22373,7 +23075,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setFibToolsOpen((v) => !v);
                   setDrawToolsOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   fibToolsOpen || mode === "fib" || mode === "fib-ext" || mode === "fib-tz" || mode === "fib-tbt" || mode === "avp" || mode === "avwap" || mode === "frvp"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22560,7 +23262,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setPosToolsOpen(false);
                   setAlarmMenuOpen(false);
                 }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   drawToolsOpen || mode === "arrow-up" || mode === "arrow-down" || mode === "callout" || mode === "rect" || mode === "dpr" || mode === "brush" || mode === "path" || mode === "long-pos" || mode === "short-pos"
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22799,7 +23501,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   setStatusMsg("Measure: tap first point");
                 }
               }}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                 mode === "measure"
                   ? "bg-orange-500/20 border-orange-500 text-orange-300"
                   : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22820,7 +23522,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 type="button"
                 title="Hide"
                 onClick={() => { setHideMenuOpen((v) => !v); setTrashMenuOpen(false); }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   hideLines || hideIndicators || hideAlarms || hideMenuOpen
                     ? "bg-orange-500/20 border-orange-500 text-orange-300"
                     : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
@@ -22915,7 +23617,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 type="button"
                 title="Delete"
                 onClick={() => { setTrashMenuOpen((v) => !v); setHideMenuOpen(false); }}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                   trashMenuOpen
                     ? "bg-red-500/20 border-red-500 text-red-300"
                     : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-red-950/50 hover:border-red-700 hover:text-red-400"
@@ -23003,7 +23705,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               type="button"
               title={favToolsVisible ? "Hide favorite tools bar" : "Show favorite tools bar"}
               onClick={() => setFavToolsVisible((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors mb-1 ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 mb-1 ${
                 favToolsVisible && favTools.length
                   ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
                   : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-white/10 hover:text-amber-300"
@@ -23021,7 +23723,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               type="button"
               title={showBottomLists ? "Hide lists" : "Show lists"}
               onClick={() => setShowBottomLists((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${
+              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
                 showBottomLists
                   ? "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
                   : "bg-orange-500/15 border-orange-500/50 text-orange-300"
@@ -23145,19 +23847,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ref={handleAElRef}
                 data-line-handle="a"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
                 className="absolute rounded-full border-2 border-white cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 50, pointerEvents: "auto", touchAction: "none" }}
+                style={{ display: "none", width: 22, height: 22, transform: "translate(-50%, -50%)", background: "rgba(15,15,18,0.55)", boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 0 6px rgba(255,255,255,0.08)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
@@ -23404,6 +24106,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             {showIndChips && !hideIndicators && showBB && (
               <IndChip label="BB" visible={bbVisible} onToggleVisible={() => setBbVisible((v) => !v)}
                 onSettings={() => setBbSettings((v) => !v)} onRemove={() => { setShowBB(false); removeBB(); }} />
+            )}
+            {showIndChips && !hideIndicators && showIchimoku && (
+              <IndChip label="Ichimoku" visible={ichiVisible} onToggleVisible={() => setIchiVisible((v) => !v)}
+                onSettings={() => { setIchiSettings((v) => !v); setIchiSettingsTab("inputs"); }}
+                onRemove={() => { setShowIchimoku(false); removeIchimoku(); }} />
             )}
             {showIndChips && !hideIndicators && showRSI && (
               <IndChip label="RSI" visible={rsiVisible} onToggleVisible={() => setRsiVisible((v) => !v)}
@@ -23778,7 +24485,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             })()))) && (
             <div
               data-move-bar
-              className={`absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto ${mode === "move" ? "px-2 py-1.5" : "px-3 py-2"}`}
+              className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl shadow-xl flex items-center gap-1.5 pointer-events-auto px-2 py-1.5"
               style={
                 mode === "move" && moveBarPos
                   ? { left: moveBarPos.x, top: moveBarPos.y, bottom: "auto" }
@@ -23895,42 +24602,96 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               </div>
               {mode !== "move" && (
               <>
-              <div className="flex gap-1">
-                {LINE_WIDTHS.map((w) => (
+              {/* Style (width + dash) — same look as selected-line toolbar */}
+              <div className="relative" data-menu>
+                <button
+                  type="button"
+                  title="Line style"
+                  onClick={() => setOpenMenu((m) => (m === "__draw_style__" ? null : "__draw_style__"))}
+                  className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <path d="M4 7h16" />
+                    <path d="M4 12h10" strokeDasharray="4 3" />
+                    <path d="M4 17h7" strokeDasharray="2 2" />
+                  </svg>
+                </button>
+                {openMenu === "__draw_style__" && (
+                  <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[120px]">
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Width</div>
+                    <div className="flex gap-1 mb-2">
+                      {LINE_WIDTHS.map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() => setDrawWidth(w)}
+                          className={`w-8 h-7 rounded-md text-xs font-medium ${drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                        >{w}</button>
+                      ))}
+                    </div>
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Style</div>
+                    <div className="flex gap-1">
+                      {(["solid", "dashed", "dotted"] as const).map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setDrawDash(d)}
+                          className={`flex-1 h-7 rounded-md flex items-center justify-center ${drawDash === d ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                        >
+                          {d === "solid" ? (
+                            <span className="block w-5 border-t-2 border-current" />
+                          ) : d === "dashed" ? (
+                            <span className="block w-5 border-t-2 border-dashed border-current" />
+                          ) : (
+                            <span className="tracking-widest text-[11px]">···</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Alarm condition as bell (not Cross dropdown) */}
+              {(mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag") && (
+                <div className="relative" data-menu>
                   <button
-                    key={w}
                     type="button"
-                    onClick={() => {
-                      setDrawWidth(w);
-                    }}
-                    className={`w-7 h-7 rounded text-xs ${
-                      drawWidth === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300"
+                    title={`Condition: ${condition}`}
+                    onClick={() => setOpenMenu((m) => (m === "__draw_cond__" ? null : "__draw_cond__"))}
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                      openMenu === "__draw_cond__"
+                        ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                        : "border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500/50"
                     }`}
                   >
-                    {w}
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    </svg>
                   </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setDrawDash((d) => (d === "solid" ? "dashed" : "solid"));
-                }}
-                className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300"
-              >
-                {drawDash === "solid" ? "——" : "- -"}
-              </button>
-              {(mode === "alarm" || mode === "alarm-ray" || mode === "alarm-diag") && (
-                <select
-                  value={condition}
-                  onChange={(e) => setCondition(e.target.value as any)}
-                  className="bg-gray-800 rounded px-1.5 py-1 text-xs"
-                  title="Trigger condition"
-                >
-                  <option value="cross">Cross</option>
-                  <option value="above">Above</option>
-                  <option value="below">Below</option>
-                </select>
+                  {openMenu === "__draw_cond__" && (
+                    <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[140px]">
+                      <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
+                      {([
+                        { id: "cross", label: "Cross" },
+                        { id: "above", label: "Above" },
+                        { id: "below", label: "Below" },
+                      ] as const).map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => { setCondition(c.id); setOpenMenu(null); }}
+                          className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                            condition === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                          }`}
+                        >
+                          <span className="w-4 text-center">{condition === c.id ? "✓" : ""}</span>
+                          {c.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
               {previewPrice != null && (
                 <span className="text-xs text-orange-300 font-mono">{formatPrice(previewPrice)}</span>
@@ -23975,7 +24736,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     <button
                       type="button"
                       title="Line style"
-                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); }}
+                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); setMoveAlarmOpen(false); }}
                       className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -24022,16 +24783,51 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                 if (md) md.dash = st;
                                 try {
                                   previewDiagSeriesRef.current?.applyOptions({
-                                    lineStyle: st === "dashed" ? LineStyle.Dashed : st === "dotted" ? LineStyle.Dotted : LineStyle.Solid,
+                                    lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
                                   });
                                 } catch {}
                                 if (movingId && movingType === "line") {
                                   setLines((prev) => prev.map((l) => (l.id === movingId ? { ...l, dash: st, style: st } : l)));
+                                  try {
+                                    const ls = chartLinesRef.current.get(movingId);
+                                    if (ls && typeof (ls as any).applyOptions === "function") {
+                                      (ls as any).applyOptions({ lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid });
+                                    }
+                                  } catch {}
+                                } else if (movingId && movingType === "alarm") {
+                                  setAlarms((prev) => prev.map((a) => (a.id === movingId ? { ...a, dash: st } : a)));
+                                  try {
+                                    const al = (alarmsRef.current || []).find((x) => String(x.id) === String(movingId));
+                                    if (al) (al as any).dash = st;
+                                  } catch {}
+                                  void updateAlarmDash(movingId, st);
+                                  // Live update horizontal price line
+                                  try {
+                                    const pl = alarmLinesRef.current.get(`alarm-${movingId}`);
+                                    if (pl && typeof (pl as any).applyOptions === "function") {
+                                      (pl as any).applyOptions({
+                                        lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
+                                      });
+                                    }
+                                    const ray = chartLinesRef.current.get(`alarm-ray-${movingId}`);
+                                    if (ray && typeof (ray as any).applyOptions === "function") {
+                                      (ray as any).applyOptions({
+                                        lineStyle: st === "dashed" ? LineStyle.LargeDashed : st === "dotted" ? LineStyle.SparseDotted : LineStyle.Solid,
+                                      });
+                                    }
+                                  } catch {}
+                                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                                 }
                               }}
                               className={`flex-1 h-7 rounded-md text-[10px] ${drawDash === st ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                             >
-                              {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                              {st === "solid" ? (
+                                <span className="block w-7 border-t-2 border-current" />
+                              ) : st === "dashed" ? (
+                                <span className="block w-7 border-t-2 border-dashed border-current" />
+                              ) : (
+                                <span className="tracking-widest text-[11px] leading-none">···</span>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -24098,75 +24894,218 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </div>
                     )}
                   </div>
-                  {/* Convert line → alarm */}
-                  {movingType === "line" && (
+                  {/* Alarm options — condition / once-always / delete-after */}
+                  <div className="relative" data-menu>
                     <button
                       type="button"
-                      title="Convert to alarm"
-                      onClick={async () => {
-                        const id = movingIdRef.current;
-                        if (!id) return;
-                        const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                        if (!l) return;
-                        try {
-                          pushUndo();
-                          const session = (await supabase.auth.getSession()).data.session;
-                          const uid = session?.user?.id;
-                          const isDiag = isDiagonalLine(l) || (typeof l.note === "string" && l.note.startsWith("__diag:"));
-                          const isRay = typeof l.note === "string" && l.note.startsWith("__ray:");
-                          const row: any = {
-                            symbol: String(l.symbol || symbolRef.current || "").toUpperCase(),
-                            price: Number(l.price),
-                            condition: "cross",
-                            is_active: true,
-                            triggered: false,
-                            color: l.color || DEFAULT_ALARM_COLOR,
-                            width: l.width || 2,
-                            dash: l.dash || l.style || "solid",
-                            note: null,
-                          };
-                          if (uid) row.user_id = uid;
-                          if (isDiag) {
-                            row.start_time = l.start_time;
-                            row.end_time = l.end_time;
-                            row.end_price = l.end_price;
-                            row.note = `__diag:${l.start_time}:${l.end_time}:${l.end_price}`;
-                          } else if (isRay || (l.start_time != null && (l.end_time == null || l.end_price == null))) {
-                            row.start_time = l.start_time;
-                            row.note = `__ray:${l.start_time}`;
-                          }
-                          const { data, error } = await supabase.from("alarms").insert([row]).select().single();
-                          if (!error && data) {
-                            setAlarms((prev) => [{ ...(data as any) }, ...prev]);
-                            // remove original line
-                            try { await deleteLine(id); } catch {
-                              setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
-                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                      title="Alarm"
+                      onClick={() => {
+                        const open = !moveAlarmOpen;
+                        setMoveAlarmOpen(open);
+                        setMoveStyleOpen(false);
+                        setMoveNoteOpen(false);
+                        if (open) {
+                          const id = movingIdRef.current;
+                          const typ = movingTypeRef.current;
+                          if (typ === "alarm" && id) {
+                            const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                            if (al) {
+                              const cfg = parseAlarmCfg(al.note);
+                              setMoveAlarmCond((al.condition as any) || "cross");
+                              setMoveAlarmOnce(al.once != null ? !!al.once : cfg.once);
+                              setMoveAlarmDelete(al.delete_after != null ? !!al.delete_after : cfg.deleteAfter);
                             }
-                            setMovingId(null);
-                            setMovingType(null);
-                            setMode("none");
-                            moveDiagRef.current = null;
-                            setMoveStyleOpen(false);
-                            setMoveNoteOpen(false);
-                            clearPreview();
-                            setStatusMsg("Converted to alarm");
-                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                           } else {
-                            setStatusMsg("Convert failed");
+                            setMoveAlarmCond("cross");
+                            setMoveAlarmOnce(true);
+                            setMoveAlarmDelete(false);
                           }
-                        } catch {
-                          setStatusMsg("Convert failed");
                         }
                       }}
-                      className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10 hover:text-orange-400 flex items-center justify-center transition-colors"
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                        moveAlarmOpen || movingType === "alarm"
+                          ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
+                          : "border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
+                      }`}
                     >
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                       </svg>
                     </button>
-                  )}
+                    {moveAlarmOpen && (
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[180px]">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
+                        <div className="flex flex-col gap-0.5 mb-2">
+                          {([
+                            { id: "cross", label: "Cross", icon: "≈" },
+                            { id: "above", label: "Above", icon: "≥" },
+                            { id: "below", label: "Below", icon: "≤" },
+                          ] as const).map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setMoveAlarmCond(c.id)}
+                              className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                                moveAlarmCond === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                              }`}
+                            >
+                              <span className="w-4 text-center">{moveAlarmCond === c.id ? "✓" : ""}</span>
+                              <span>{c.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="border-t border-gray-700 my-1.5" />
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">After trigger</div>
+                        <div className="flex gap-1 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => setMoveAlarmDelete(false)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmDelete ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Keep</button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoveAlarmDelete(true);
+                              setMoveAlarmOnce(true); // delete implies once
+                            }}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmDelete ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Delete</button>
+                        </div>
+                        <div className={`text-[9px] uppercase tracking-wide mb-1.5 ${moveAlarmDelete ? "text-gray-600" : "text-gray-500"}`}>Trigger</div>
+                        <div className={`flex gap-1 mb-2 ${moveAlarmDelete ? "opacity-40 pointer-events-none" : ""}`}>
+                          <button
+                            type="button"
+                            disabled={moveAlarmDelete}
+                            onClick={() => setMoveAlarmOnce(true)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Once</button>
+                          <button
+                            type="button"
+                            disabled={moveAlarmDelete}
+                            onClick={() => setMoveAlarmOnce(false)}
+                            className={`flex-1 text-[11px] py-1.5 rounded ${!moveAlarmOnce ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                          >Always</button>
+                        </div>
+                        <button
+                          type="button"
+                          className="w-full mt-1 py-1.5 rounded bg-orange-500 text-black text-xs font-semibold hover:bg-orange-400"
+                          onClick={async () => {
+                            const id = movingIdRef.current;
+                            const typ = movingTypeRef.current;
+                            if (!id) return;
+                            const cfgNote = (base: string | null | undefined) =>
+                              encodeAlarmCfg(base, moveAlarmOnce, moveAlarmDelete);
+
+                            // Already an alarm → update settings
+                            if (typ === "alarm") {
+                              try {
+                                const al = (alarmsRef.current || []).find((x) => String(x.id) === String(id));
+                                const note = cfgNote(al ? parseAlarmCfg(al.note).text : null);
+                                const patch: any = {
+                                  condition: moveAlarmCond,
+                                  note,
+                                  once: moveAlarmOnce,
+                                  delete_after: moveAlarmDelete,
+                                };
+                                // Mutate ref immediately so next tick/trigger sees Delete/Keep
+                                if (al) {
+                                  (al as any).condition = moveAlarmCond;
+                                  (al as any).note = note;
+                                  (al as any).once = moveAlarmOnce;
+                                  (al as any).delete_after = moveAlarmDelete;
+                                }
+                                setAlarms((prev) => prev.map((a) => String(a.id) === String(id) ? { ...a, ...patch } : a));
+                                try {
+                                  await supabase.from("alarms").update({
+                                    condition: moveAlarmCond,
+                                    note,
+                                  }).eq("id", id);
+                                  try {
+                                    await supabase.from("alarms").update({ once: moveAlarmOnce, delete_after: moveAlarmDelete } as any).eq("id", id);
+                                  } catch {}
+                                } catch {}
+                                setMoveAlarmOpen(false);
+                                setStatusMsg(`Alarm: ${moveAlarmCond} · ${moveAlarmDelete ? "Delete" : "Keep"} · ${moveAlarmOnce ? "Once" : "Always"}`);
+                              } catch {
+                                setStatusMsg("Alarm update failed");
+                              }
+                              return;
+                            }
+
+                            // Line → convert to alarm with chosen settings
+                            const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                            if (!l) return;
+                            try {
+                              pushUndo();
+                              const session = (await supabase.auth.getSession()).data.session;
+                              const uid = session?.user?.id;
+                              const isDiag = isDiagonalLine(l) || (typeof l.note === "string" && l.note.startsWith("__diag:"));
+                              const isRay = typeof l.note === "string" && l.note.startsWith("__ray:");
+                              let baseNote: string | null = null;
+                              const row: any = {
+                                symbol: String(l.symbol || symbolRef.current || "").toUpperCase(),
+                                price: Number(l.price),
+                                condition: moveAlarmCond,
+                                is_active: true,
+                                triggered: false,
+                                color: l.color || DEFAULT_ALARM_COLOR,
+                                width: l.width || 2,
+                                dash: l.dash || l.style || "solid",
+                                note: null as string | null,
+                              };
+                              if (uid) row.user_id = uid;
+                              if (isDiag) {
+                                row.start_time = l.start_time;
+                                row.end_time = l.end_time;
+                                row.end_price = l.end_price;
+                                baseNote = `__diag:${l.start_time}:${l.end_time}:${l.end_price}`;
+                              } else if (isRay || (l.start_time != null && (l.end_time == null || l.end_price == null))) {
+                                row.start_time = l.start_time;
+                                baseNote = `__ray:${l.start_time}`;
+                              }
+                              row.note = cfgNote(baseNote);
+                              const { data, error } = await supabase.from("alarms").insert([row]).select().single();
+                              if (!error && data) {
+                                const saved: any = {
+                                  ...(data as any),
+                                  condition: moveAlarmCond,
+                                  once: moveAlarmOnce,
+                                  delete_after: moveAlarmDelete,
+                                  note: row.note,
+                                };
+                                setAlarms((prev) => [saved, ...prev]);
+                                try { await deleteLine(id); } catch {
+                                  setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                                  try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                                }
+                                // Stay selected as the new alarm so user can tweak further
+                                setMovingId(String(saved.id));
+                                movingIdRef.current = String(saved.id);
+                                setMovingType("alarm");
+                                movingTypeRef.current = "alarm";
+                                setMode("move");
+                                modeRef.current = "move";
+                                moveDiagRef.current = null;
+                                setMoveStyleOpen(false);
+                                setMoveNoteOpen(false);
+                                setMoveAlarmOpen(false);
+                                clearPreview();
+                                setStatusMsg(`Alarm set · ${moveAlarmCond} · ${moveAlarmOnce ? "Once" : "Always"}`);
+                                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                              } else {
+                                setStatusMsg("Convert failed");
+                              }
+                            } catch {
+                              setStatusMsg("Convert failed");
+                            }
+                          }}
+                        >
+                          {movingType === "alarm" ? "Apply" : "Set alarm"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   {/* Trash */}
                   <button
                     type="button"
@@ -24467,6 +25406,325 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <button type="button" onClick={() => setBbSettings(false)} className="text-xs text-gray-400 mt-2 block">Close</button>
             </div>
           )}
+
+          {ichiSettings && showIchimoku && (
+            <div data-ind-panel className="absolute top-2 left-28 z-30 bg-[#1e222d] border border-[#363a45] rounded-lg shadow-2xl w-[340px] text-sm overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#363a45]">
+                <p className="font-semibold text-[15px] text-gray-100">Ichimoku</p>
+                <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }} className="text-gray-400 hover:text-white text-lg leading-none px-1">×</button>
+              </div>
+              <div className="flex border-b border-[#363a45] text-[13px]">
+                {(["inputs", "style", "visibility"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => { setIchiSettingsTab(tab); setIchiDefaultsOpen(false); }}
+                    className={`flex-1 py-2.5 capitalize tracking-wide ${ichiSettingsTab === tab ? "text-white border-b-2 border-[#f7931a]" : "text-gray-500 hover:text-gray-300"}`}
+                  >
+                    {tab === "inputs" ? "Inputs" : tab === "style" ? "Style" : "Visibility"}
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 max-h-[min(62vh,520px)] overflow-y-auto">
+                {ichiSettingsTab === "inputs" && (
+                  <div className="space-y-3">
+                    {[
+                      { label: "Conversion Line Length", val: ichiConv, set: setIchiConv },
+                      { label: "Base Line Length", val: ichiBase, set: setIchiBase },
+                      { label: "Leading Span B Length", val: ichiLeadB, set: setIchiLeadB },
+                      { label: "Lagging Span", val: ichiDisp, set: setIchiDisp },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center justify-between gap-3">
+                        <span className="text-[13px] text-gray-300">{row.label}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={row.val}
+                          onChange={(e) => row.set(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                          className="w-[72px] bg-[#2a2e39] border border-[#363a45] rounded px-2 py-1.5 text-[13px] text-right text-gray-100"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {ichiSettingsTab === "style" && (
+                  <div className="space-y-2.5">
+                    {([
+                      { key: "conv", label: "Conversion Line", show: ichiShowConv, setShow: setIchiShowConv, col: ichiConvColor, setCol: setIchiConvColor },
+                      { key: "base", label: "Base Line", show: ichiShowBase, setShow: setIchiShowBase, col: ichiBaseColor, setCol: setIchiBaseColor },
+                      { key: "lag", label: "Lagging Span", show: ichiShowLag, setShow: setIchiShowLag, col: ichiLagColor, setCol: setIchiLagColor },
+                      { key: "leada", label: "Leading Span A", show: ichiShowLeadA, setShow: setIchiShowLeadA, col: ichiLeadAColor, setCol: setIchiLeadAColor },
+                      { key: "leadb", label: "Leading Span B", show: ichiShowLeadB, setShow: setIchiShowLeadB, col: ichiLeadBColor, setCol: setIchiLeadBColor },
+                      { key: "kumoup", label: "Kumo Cloud Upper Line", show: ichiShowKumoUp, setShow: setIchiShowKumoUp, col: ichiKumoUpColor, setCol: setIchiKumoUpColor },
+                      { key: "kumodn", label: "Kumo Cloud Lower Line", show: ichiShowKumoDn, setShow: setIchiShowKumoDn, col: ichiKumoDnColor, setCol: setIchiKumoDnColor },
+                    ] as const).map((row) => {
+                      const plot = (ichiPlotTypes[row.key] || "line") as string;
+                      const priceOn = !!ichiPriceLines[row.key];
+                      const plotIcon = (() => {
+                        switch (plot) {
+                          case "histogram": case "columns": return "▮";
+                          case "cross": return "+";
+                          case "circles": return "○";
+                          case "area": case "area_breaks": return "▣";
+                          case "step": case "step_breaks": case "step_diamonds": return "⌐";
+                          default: return "∿";
+                        }
+                      })();
+                      return (
+                      <div key={row.key} className="flex items-center gap-2 relative">
+                        <input type="checkbox" checked={row.show} onChange={(e) => row.setShow(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        <span className="text-[13px] text-gray-200 flex-1 truncate">{row.label}</span>
+                        {/* Single combined color + line preview (TV style) */}
+                        <label
+                          className="h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative shrink-0 flex items-center gap-1.5 px-1.5 bg-[#2a2e39]"
+                          title="Color"
+                        >
+                          <input
+                            type="color"
+                            value={row.col.startsWith("#") ? row.col.slice(0, 7) : "#888888"}
+                            onChange={(e) => row.setCol(e.target.value)}
+                            className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                          />
+                          <span className="w-4 h-4 rounded-sm border border-black/20 shrink-0" style={{ background: row.col }} />
+                          <span className="w-4 border-t-2 shrink-0" style={{ borderColor: row.col }} />
+                        </label>
+                        {/* Plot type button */}
+                        <button
+                          type="button"
+                          title="Plot type"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIchiPlotMenu((m) => (m === row.key ? null : row.key));
+                            setIchiDefaultsOpen(false);
+                          }}
+                          className={`w-8 h-7 rounded border flex items-center justify-center text-sm shrink-0 ${ichiPlotMenu === row.key ? "border-orange-500 text-orange-400 bg-orange-500/10" : "border-[#363a45] text-gray-400 hover:text-gray-200"}`}
+                        >
+                          {plotIcon}
+                        </button>
+                        {ichiPlotMenu === row.key && (
+                          <div
+                            className="absolute right-0 top-8 z-50 min-w-[200px] rounded-md border border-[#363a45] bg-[#1e222d] shadow-2xl py-1 text-[13px]"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-between px-3 py-2 border-b border-[#363a45]">
+                              <span className="text-gray-300">Price line</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIchiPriceLines((prev) => {
+                                    const next = { ...prev, [row.key]: !priceOn };
+                                    try { localStorage.setItem("ichi_price_lines", JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                }}
+                                className={`w-9 h-5 rounded-full relative transition-colors ${priceOn ? "bg-[#2962FF]" : "bg-gray-600"}`}
+                              >
+                                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${priceOn ? "left-4" : "left-0.5"}`} />
+                              </button>
+                            </div>
+                            {([
+                              { id: "line", label: "Line", icon: "∿" },
+                              { id: "line_breaks", label: "Line with breaks", icon: "∿·" },
+                              { id: "step", label: "Step line", icon: "⌐" },
+                              { id: "step_breaks", label: "Step line with breaks", icon: "⌐·" },
+                              { id: "step_diamonds", label: "Step line with diamonds", icon: "⌐◆" },
+                              { id: "histogram", label: "Histogram", icon: "▮" },
+                              { id: "cross", label: "Cross", icon: "+" },
+                              { id: "area", label: "Area", icon: "▣" },
+                              { id: "area_breaks", label: "Area with breaks", icon: "▣·" },
+                              { id: "columns", label: "Columns", icon: "▥" },
+                              { id: "circles", label: "Circles", icon: "○" },
+                            ] as const).map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className={`w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 ${plot === opt.id ? "bg-white/10 text-white" : "text-gray-300"}`}
+                                onClick={() => {
+                                  setIchiPlotTypes((prev) => {
+                                    const next = { ...prev, [row.key]: opt.id };
+                                    try { localStorage.setItem("ichi_plot_types", JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                  setIchiPlotMenu(null);
+                                  setStatusMsg(`${row.label}: ${opt.label}`);
+                                }}
+                              >
+                                <span className="w-5 text-center text-gray-400">{opt.icon}</span>
+                                <span>{opt.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      );
+                    })}
+
+                    <div className="pt-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <input type="checkbox" checked={ichiShowCloud} onChange={(e) => setIchiShowCloud(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        <span className="text-[13px] text-gray-200">Cloud Fill</span>
+                      </div>
+                      <div className="flex items-center gap-3 pl-6 mb-1.5">
+                        <span className="text-[12px] text-gray-500 w-14">Color 0</span>
+                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative" style={{ backgroundImage: "linear-gradient(45deg,#333 25%,transparent 25%),linear-gradient(-45deg,#333 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#333 75%),linear-gradient(-45deg,transparent 75%,#333 75%)", backgroundSize: "8px 8px", backgroundPosition: "0 0,0 4px,4px -4px,-4px 0" }}>
+                          <input type="color" defaultValue="#43A047" onChange={(e) => {
+                            const hex = e.target.value;
+                            const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                            setIchiCloudBull(`rgba(${r},${g},${b},0.35)`);
+                          }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          <span className="block w-full h-full" style={{ background: ichiCloudBull }} />
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-3 pl-6">
+                        <span className="text-[12px] text-gray-500 w-14">Color 1</span>
+                        <label className="w-8 h-7 rounded border border-[#363a45] overflow-hidden cursor-pointer relative" style={{ backgroundImage: "linear-gradient(45deg,#333 25%,transparent 25%),linear-gradient(-45deg,#333 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#333 75%),linear-gradient(-45deg,transparent 75%,#333 75%)", backgroundSize: "8px 8px", backgroundPosition: "0 0,0 4px,4px -4px,-4px 0" }}>
+                          <input type="color" defaultValue="#F44336" onChange={(e) => {
+                            const hex = e.target.value;
+                            const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+                            setIchiCloudBear(`rgba(${r},${g},${b},0.35)`);
+                          }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          <span className="block w-full h-full" style={{ background: ichiCloudBear }} />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-[#363a45] mt-3 pt-2">
+                      <p className="text-[10px] tracking-wider text-gray-500 mb-2">OUTPUT VALUES</p>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[13px] text-gray-300">Precision</span>
+                        <span className="text-[12px] px-2 py-1 rounded border border-[#363a45] text-gray-400 bg-[#2a2e39]">Default</span>
+                      </div>
+                      <label className="flex items-center gap-2 mb-1.5 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiLabelsScale} onChange={(e) => setIchiLabelsScale(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Labels on price scale
+                      </label>
+                      <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiValuesStatus} onChange={(e) => setIchiValuesStatus(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Values in status line
+                      </label>
+                    </div>
+                    <div className="border-t border-[#363a45] mt-3 pt-2">
+                      <p className="text-[10px] tracking-wider text-gray-500 mb-2">INPUT VALUES</p>
+                      <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                        <input type="checkbox" checked={ichiInputsStatus} onChange={(e) => setIchiInputsStatus(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                        Inputs in status line
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {ichiSettingsTab === "visibility" && (
+                  <div className="space-y-2.5">
+                    <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                      <input type="checkbox" checked={ichiVisTicks} onChange={(e) => setIchiVisTicks(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                      Ticks
+                    </label>
+                    {([
+                      { label: "Seconds", on: ichiVisSeconds, setOn: setIchiVisSeconds, min: ichiMinS, max: ichiMaxS, setMin: setIchiMinS, setMax: setIchiMaxS, absMin: 1, absMax: 59 },
+                      { label: "Minutes", on: ichiVisMinutes, setOn: setIchiVisMinutes, min: ichiMinM, max: ichiMaxM, setMin: setIchiMinM, setMax: setIchiMaxM, absMin: 1, absMax: 59 },
+                      { label: "Hours", on: ichiVisHours, setOn: setIchiVisHours, min: ichiMinH, max: ichiMaxH, setMin: setIchiMinH, setMax: setIchiMaxH, absMin: 1, absMax: 24 },
+                      { label: "Days", on: ichiVisDays, setOn: setIchiVisDays, min: ichiMinD, max: ichiMaxD, setMin: setIchiMinD, setMax: setIchiMaxD, absMin: 1, absMax: 366 },
+                      { label: "Weeks", on: ichiVisWeeks, setOn: setIchiVisWeeks, min: ichiMinW, max: ichiMaxW, setMin: setIchiMinW, setMax: setIchiMaxW, absMin: 1, absMax: 52 },
+                      { label: "Months", on: ichiVisMonths, setOn: setIchiVisMonths, min: ichiMinMo, max: ichiMaxMo, setMin: setIchiMinMo, setMax: setIchiMaxMo, absMin: 1, absMax: 12 },
+                    ] as const).map((row) => (
+                      <div key={row.label} className="flex items-center gap-2">
+                        <input type="checkbox" checked={row.on} onChange={(e) => row.setOn(e.target.checked)} className="accent-[#2962FF] w-4 h-4 shrink-0" />
+                        <span className="text-[13px] text-gray-200 w-[70px] shrink-0">{row.label}</span>
+                        <input type="number" min={row.absMin} max={row.absMax} value={row.min} disabled={!row.on}
+                          onChange={(e) => row.setMin(Math.max(row.absMin, Math.min(row.max, parseInt(e.target.value, 10) || row.absMin)))}
+                          className="w-12 bg-[#2a2e39] border border-[#363a45] rounded px-1 py-1 text-[12px] text-center disabled:opacity-40" />
+                        <input type="range" min={row.absMin} max={row.absMax} value={row.min} disabled={!row.on}
+                          onChange={(e) => row.setMin(Math.min(row.max, parseInt(e.target.value, 10)))}
+                          className="w-14 accent-gray-400 disabled:opacity-40" />
+                        <input type="range" min={row.absMin} max={row.absMax} value={row.max} disabled={!row.on}
+                          onChange={(e) => row.setMax(Math.max(row.min, parseInt(e.target.value, 10)))}
+                          className="w-14 accent-gray-400 disabled:opacity-40" />
+                        <input type="number" min={row.absMin} max={row.absMax} value={row.max} disabled={!row.on}
+                          onChange={(e) => row.setMax(Math.min(row.absMax, Math.max(row.min, parseInt(e.target.value, 10) || row.absMax)))}
+                          className="w-12 bg-[#2a2e39] border border-[#363a45] rounded px-1 py-1 text-[12px] text-center disabled:opacity-40" />
+                      </div>
+                    ))}
+                    <label className="flex items-center gap-2 text-[13px] text-gray-200">
+                      <input type="checkbox" checked={ichiVisRanges} onChange={(e) => setIchiVisRanges(e.target.checked)} className="accent-[#2962FF] w-4 h-4" />
+                      Ranges
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-t border-[#363a45] bg-[#1e222d] relative">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIchiDefaultsOpen((v) => !v)}
+                    className="text-[13px] px-2.5 py-1.5 rounded border border-[#363a45] text-gray-300 hover:bg-white/5 inline-flex items-center gap-1"
+                  >
+                    Defaults
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  {ichiDefaultsOpen && (
+                    <div className="absolute bottom-full left-0 mb-1 min-w-[160px] rounded-md border border-[#363a45] bg-[#1e222d] shadow-xl py-1 z-40">
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-[13px] text-gray-200 hover:bg-white/5"
+                        onClick={() => {
+                          setIchiConv(9); setIchiBase(26); setIchiLeadB(52); setIchiDisp(26);
+                          setIchiConvColor("#2962FF"); setIchiBaseColor("#B71C1C");
+                          setIchiLagColor("#43A047"); setIchiLeadAColor("#A5D6A7"); setIchiLeadBColor("#EF9A9A");
+                          setIchiCloudBull("rgba(67,160,71,0.35)"); setIchiCloudBear("rgba(244,67,54,0.35)");
+                          setIchiShowConv(true); setIchiShowBase(true); setIchiShowLag(true);
+                          setIchiShowLeadA(true); setIchiShowLeadB(true); setIchiShowCloud(true);
+                          setIchiShowKumoUp(false); setIchiShowKumoDn(false);
+                          setIchiKumoUpColor("#2962FF"); setIchiKumoDnColor("#2962FF");
+                          setIchiLabelsScale(true); setIchiValuesStatus(true); setIchiInputsStatus(true);
+                          setIchiVisTicks(true); setIchiVisSeconds(true); setIchiVisMinutes(true);
+                          setIchiVisHours(true); setIchiVisDays(true); setIchiVisWeeks(true);
+                          setIchiVisMonths(true); setIchiVisRanges(true);
+                          setIchiMinS(1); setIchiMaxS(59); setIchiMinM(1); setIchiMaxM(59);
+                          setIchiMinH(1); setIchiMaxH(24); setIchiMinD(1); setIchiMaxD(366);
+                          setIchiMinW(1); setIchiMaxW(52); setIchiMinMo(1); setIchiMaxMo(12);
+                          setIchiDefaultsOpen(false);
+                          setStatusMsg("Ichimoku settings reset");
+                        }}
+                      >
+                        Reset settings
+                      </button>
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-[13px] text-gray-200 hover:bg-white/5"
+                        onClick={() => {
+                          try {
+                            const def = {
+                              conv: ichiConv, base: ichiBase, leadB: ichiLeadB, disp: ichiDisp,
+                              convColor: ichiConvColor, baseColor: ichiBaseColor, lagColor: ichiLagColor,
+                              leadAColor: ichiLeadAColor, leadBColor: ichiLeadBColor,
+                              cloudBull: ichiCloudBull, cloudBear: ichiCloudBear,
+                              showConv: ichiShowConv, showBase: ichiShowBase, showLag: ichiShowLag,
+                              showLeadA: ichiShowLeadA, showLeadB: ichiShowLeadB, showCloud: ichiShowCloud,
+                              showKumoUp: ichiShowKumoUp, showKumoDn: ichiShowKumoDn,
+                            };
+                            localStorage.setItem("ichi_user_default", JSON.stringify(def));
+                            setStatusMsg("Saved as default");
+                          } catch { setStatusMsg("Save default failed"); }
+                          setIchiDefaultsOpen(false);
+                        }}
+                      >
+                        Save as default
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }}
+                    className="text-[13px] px-3 py-1.5 rounded border border-[#363a45] text-gray-300 hover:bg-white/5">Cancel</button>
+                  <button type="button" onClick={() => { setIchiSettings(false); setIchiDefaultsOpen(false); }}
+                    className="text-[13px] px-4 py-1.5 rounded bg-white text-black font-medium hover:bg-gray-200">Ok</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {harsiSettings && showHARSI && (
             <div data-ind-panel className="absolute top-2 left-28 z-20 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-52 text-sm">
               <p className="font-medium mb-2">HARSI</p>
@@ -27663,38 +28921,127 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ? `↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
                       : formatPrice(a.price)}
                   </span>
-                  {/* Condition next to price */}
+                  {/* Alarm settings (bell) — same as line toolbar */}
                   <div className="relative shrink-0" data-menu>
                     <button
                       type="button"
-                      onClick={() => setOpenMenu(openMenu === `a-cond-${a.id}` ? null : `a-cond-${a.id}`)}
-                      className={`px-1 py-0.5 rounded border text-[10px] transition-all ${
-                        openMenu === `a-cond-${a.id}`
-                          ? "bg-orange-500 text-black border-orange-400"
-                          : "bg-gray-900/95 border-gray-600 text-gray-300"
+                      title="Alarm settings"
+                      onClick={() => setOpenMenu(openMenu === `a-bell-${a.id}` ? null : `a-bell-${a.id}`)}
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
+                        openMenu === `a-bell-${a.id}`
+                          ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                          : "bg-gray-900/95 border-gray-600 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
                       }`}
                     >
-                      {a.condition === "above" ? "Above" : a.condition === "below" ? "Below" : "Cross"} ▾
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
                     </button>
-                      {openMenu === `a-cond-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[100px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.42)",
-                          backdropFilter: "blur(40px) saturate(200%)",
-                          WebkitBackdropFilter: "blur(40px) saturate(200%)",
-                        }}>
-                          {(["cross", "above", "below"] as const).map((c) => (
-                            <button key={c} type="button"
-                              onClick={() => { updateAlarmCondition(a.id, c); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${a.condition === c ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{a.condition === c ? "✓" : ""}</span>
-                              {c === "cross" ? "Cross" : c === "above" ? "Above" : "Below"}
-                            </button>
-                          ))}
+                    {openMenu === `a-bell-${a.id}` && (() => {
+                      const cfg = parseAlarmCfg(a.note);
+                      const cond = (a.condition as "cross" | "above" | "below") || "cross";
+                      const once = a.once != null ? !!a.once : cfg.once;
+                      const del = a.delete_after != null ? !!a.delete_after : cfg.deleteAfter;
+                      return (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 left-0 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[180px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
+                          <div className="flex flex-col gap-0.5 mb-2">
+                            {([
+                              { id: "cross", label: "Cross" },
+                              { id: "above", label: "Above" },
+                              { id: "below", label: "Below" },
+                            ] as const).map((c) => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={async () => {
+                                  const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, once, del);
+                                  setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, condition: c.id, note, once, delete_after: del } : x));
+                                  try {
+                                    const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                    if (al) { (al as any).condition = c.id; (al as any).note = note; }
+                                  } catch {}
+                                  await updateAlarmCondition(a.id, c.id);
+                                  try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                                }}
+                                className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-2 ${
+                                  cond === c.id ? "bg-orange-500/20 text-orange-300" : "text-gray-300 hover:bg-white/5"
+                                }`}
+                              >
+                                <span className="w-4 text-center">{cond === c.id ? "✓" : ""}</span>
+                                <span>{c.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <div className="border-t border-gray-700 my-1.5" />
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">After trigger</div>
+                          <div className="flex gap-1 mb-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, once, false);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, delete_after: false, note, once } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).delete_after = false; (al as any).note = note; (al as any).once = once; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${!del ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Keep</button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, true, true);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, delete_after: true, once: true, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).delete_after = true; (al as any).once = true; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${del ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Delete</button>
+                          </div>
+                          <div className={`text-[9px] uppercase tracking-wide mb-1.5 ${del ? "text-gray-600" : "text-gray-500"}`}>Trigger</div>
+                          <div className={`flex gap-1 ${del ? "opacity-40 pointer-events-none" : ""}`}>
+                            <button
+                              type="button"
+                              disabled={del}
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, true, del);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, once: true, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).once = true; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${once ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Once</button>
+                            <button
+                              type="button"
+                              disabled={del}
+                              onClick={async () => {
+                                const note = encodeAlarmCfg(parseAlarmCfg(a.note).text || null, false, del);
+                                setAlarms((prev) => prev.map((x) => String(x.id) === String(a.id) ? { ...x, once: false, note } : x));
+                                try {
+                                  const al = (alarmsRef.current || []).find((x) => String(x.id) === String(a.id));
+                                  if (al) { (al as any).once = false; (al as any).note = note; }
+                                } catch {}
+                                try { await supabase.from("alarms").update({ note }).eq("id", a.id); } catch {}
+                              }}
+                              className={`flex-1 text-[11px] py-1.5 rounded ${!once ? "bg-orange-500 text-black font-semibold" : "bg-gray-800 text-gray-300"}`}
+                            >Always</button>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      );
+                    })()}
+                  </div>
                   {/* Note centered — click to edit */}
                   <div className="flex-1 flex justify-center min-w-0 px-1" data-note-edit>
                     {editingNoteId === a.id && editingNoteType === "alarm" ? (
@@ -27722,9 +29069,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:") && userFacingNote(a.note)
-                          ? userFacingNote(a.note)
-                          : "Note"}
+                        {userFacingNote(a.note) ? userFacingNote(a.note) : "Note"}
                       </button>
                     )}
                   </div>
@@ -27794,28 +29139,30 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `a-style-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
-                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
-                          <div className="flex gap-1">
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl min-w-[120px]">
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mb-1">Width</div>
+                          <div className="flex gap-1 mb-2">
                             {LINE_WIDTHS.map((w) => (
-                              <button
-                                key={w}
-                                type="button"
-                                onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); setOpenMenu(null); }}
-                                className={`w-7 h-7 rounded-md text-xs font-medium ${(a.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              <button key={w} type="button"
+                                onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); }}
+                                className={`w-8 h-7 rounded-md text-xs font-medium ${(a.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                               >{w}</button>
                             ))}
                           </div>
-                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mb-1">Style</div>
                           <div className="flex gap-1">
-                            {(["solid", "dashed", "dotted"] as const).map((st) => (
-                              <button
-                                key={st}
-                                type="button"
-                                onClick={() => { pushUndo(); updateAlarmDash(a.id, st); setOpenMenu(null); }}
-                                className={`flex-1 h-7 rounded-md text-[10px] ${(a.dash === st || (!a.dash && st === "solid")) ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                            {(["solid", "dashed", "dotted"] as const).map((d) => (
+                              <button key={d} type="button"
+                                onClick={() => { pushUndo(); updateAlarmDash(a.id, d); }}
+                                className={`flex-1 h-7 rounded-md flex items-center justify-center ${((a.dash as string) || "solid") === d ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
                               >
-                                {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                                {d === "solid" ? (
+                                  <span className="block w-5 border-t-2 border-current" />
+                                ) : d === "dashed" ? (
+                                  <span className="block w-5 border-t-2 border-dashed border-current" />
+                                ) : (
+                                  <span className="tracking-widest text-[11px]">···</span>
+                                )}
                               </button>
                             ))}
                           </div>
@@ -27845,13 +29192,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: a.color || DEFAULT_ALARM_COLOR,
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
-                          
-                  noHandles: true,
-                };
+                          };
                           setDrawColor(a.color || DEFAULT_ALARM_COLOR);
                           setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Drag the line body to move");
+                          setStatusMsg("Drag the circles or body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
@@ -28492,31 +29837,32 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `l-style-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
-                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
-                          <div className="flex gap-1">
-                            {LINE_WIDTHS.map((w) => (
-                              <button
-                                key={w}
-                                type="button"
-                                onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
-                                className={`w-7 h-7 rounded-md text-xs font-medium ${(l.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
-                              >{w}</button>
-                            ))}
-                          </div>
-                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
-                          <div className="flex gap-1">
-                            {(["solid", "dashed", "dotted"] as const).map((st) => (
-                              <button
-                                key={st}
-                                type="button"
-                                onClick={() => { pushUndo(); updateLineDash(l.id, st); setOpenMenu(null); }}
-                                className={`flex-1 h-7 rounded-md text-[10px] ${((l.dash || l.style) === st || (!(l.dash || l.style) && st === "solid")) ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
-                              >
-                                {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
-                              </button>
-                            ))}
-                          </div>
+                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
+                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
+                          background: "rgba(20,20,22,0.92)",
+                          backdropFilter: "blur(24px)",
+                        }}>
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
+                          {LINE_WIDTHS.map((w) => (
+                            <button key={w} type="button"
+                              onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
+                              W{w}
+                            </button>
+                          ))}
+                          <div className="border-t border-white/10 my-1" />
+                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
+                          {(["solid", "dashed"] as const).map((d) => (
+                            <button key={d} type="button"
+                              onClick={() => { pushUndo(); updateLineDash(l.id, d); setOpenMenu(null); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
+                            >
+                              <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
+                              {d === "solid" ? "—— Solid" : "- - Dash"}
+                            </button>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -28905,12 +30251,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: l.color || DEFAULT_LINE_COLOR,
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
-                  noHandles: true,
-                };
+                          };
                           setDrawColor(l.color || DEFAULT_LINE_COLOR);
                           setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Drag the line body to move");
+                          setStatusMsg("Drag the circles or body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
