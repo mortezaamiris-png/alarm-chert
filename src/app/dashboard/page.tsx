@@ -8810,8 +8810,16 @@ priced.sort((a, b) => a.price - b.price);
             if (noteTxt && hostNote && chart) {
               const midT = (t0 + t1) / 2;
               const midP = (v0 + v1) / 2;
-              let mx = chart.timeScale().timeToCoordinate(midT as any);
-              let my = series.priceToCoordinate(midP);
+              let mx: number | null = null;
+              let my: number | null = null;
+              try {
+                const _mx = chart.timeScale().timeToCoordinate(midT as any);
+                const _my = series.priceToCoordinate(midP);
+                if (_mx != null && _my != null) {
+                  mx = Number(_mx);
+                  my = Number(_my);
+                }
+              } catch {}
               // fallback endpoints average in screen space
               if (mx == null || my == null) {
                 const x0 = chart.timeScale().timeToCoordinate(t0 as any);
@@ -8828,7 +8836,7 @@ priced.sort((a, b) => a.price - b.price);
                 lab.dataset.diagNote = String(l.id);
                 lab.textContent = noteTxt;
                 lab.style.cssText =
-                  `position:absolute;left:${Number(mx)}px;top:${Number(my) + 10}px;` +
+                  `position:absolute;left:${mx}px;top:${my + 10}px;` +
                   `transform:translate(-50%,0);padding:2px 7px;font-size:11px;line-height:1.25;` +
                   `color:#e5e7eb;background:rgba(15,18,22,0.88);border:1px solid rgba(255,255,255,0.12);` +
                   `border-radius:4px;white-space:nowrap;pointer-events:none;z-index:18;`;
