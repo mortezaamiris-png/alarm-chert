@@ -7480,7 +7480,11 @@ export default function DashboardPage() {
             // preserve __diag note if used
             const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
             if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
-              patch.note = `__diag:${md2.pointA.time}:${md2.pointB.time}:${md2.pointB.price}`;
+              const rest = cur.note.includes("|") ? cur.note.slice(cur.note.indexOf("|")) : "";
+              patch.note = `__diag:${md2.pointA.time}:${md2.pointB.time}:${md2.pointB.price}${rest}`;
+            } else if (cur && typeof cur.note === "string" && cur.note.trim() && !cur.note.startsWith("__")) {
+              // plain user note on column-based diag → encode geometry + text
+              patch.note = `__diag:${md2.pointA.time}:${md2.pointB.time}:${md2.pointB.price}|${cur.note.trim()}`;
             }
             await supabase.from("chart_lines").update(patch).eq("id", id);
             setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, ...patch } : l)));
@@ -7724,6 +7728,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-rect-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-dpr-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-id]").forEach((el) => el.remove());
+      vlineOverlayRef.current?.querySelectorAll("[data-diag-note]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-frvp-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
@@ -7846,6 +7851,24 @@ export default function DashboardPage() {
             child.style.visibility = "visible";
             child.style.left = `${x}px`;
           }
+        } else if (child.dataset.diagNote && ser) {
+          try {
+            const id = child.dataset.diagNote;
+            const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+            if (!ln || !isDiagonalLine(ln)) { child.style.visibility = "hidden"; continue; }
+            const st = Number(ln.start_time), et = Number(ln.end_time);
+            const sp = Number(ln.price), ep = Number(ln.end_price);
+            const midT = (st + et) / 2;
+            const midP = (sp + ep) / 2;
+            const mx = chart2.timeScale().timeToCoordinate(midT as any);
+            const my = ser.priceToCoordinate(midP);
+            if (mx == null || my == null) { child.style.visibility = "hidden"; }
+            else {
+              child.style.visibility = "visible";
+              child.style.left = `${Number(mx)}px`;
+              child.style.top = `${Number(my) + 12}px`;
+            }
+          } catch { child.style.visibility = "hidden"; }
         } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
           const rid = child.dataset.rayId || child.dataset.rayLabel || "";
           const item = rayItemsRef.current.find((v) => v.id === rid);
@@ -9094,6 +9117,29 @@ priced.sort((a, b) => a.price - b.price);
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
+          // Note under middle of diagonal (user text after |)
+          try {
+            const txt = userFacingNote(l.note);
+            const hostN = vlineOverlayRef.current;
+            if (txt && hostN && chart && series) {
+              const midT = (t0 + t1) / 2;
+              const midP = (v0 + v1) / 2;
+              const mx = chart.timeScale().timeToCoordinate(midT as any);
+              const my = series.priceToCoordinate(midP);
+              if (mx != null && my != null) {
+                const lab = document.createElement("div");
+                lab.dataset.diagNote = String(l.id);
+                lab.style.cssText = [
+                  `position:absolute;left:${Number(mx)}px;top:${Number(my) + 12}px;`,
+                  "transform:translate(-50%,0);pointer-events:none;z-index:24;",
+                  "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
+                  "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
+                ].join("");
+                lab.textContent = txt;
+                hostN.appendChild(lab);
+              }
+            }
+          } catch {}
           if (isArrow) {
             // TradingView-style: solid body + single rotated head at tip (no LWC up/down markers)
             try {
@@ -22233,6 +22279,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         } else if (s.startsWith("__diag:")) {
           const head = s.split("|")[0];
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
+        } else if (isDiagonalLine(cur)) {
+          // Column-based trendline without __diag encoding yet
+          const t0 = Number(cur.start_time), t1 = Number(cur.end_time), p1 = Number(cur.end_price);
+          const head = `__diag:${t0}:${t1}:${p1}`;
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         } else if (s.startsWith("__callout:")) {
           noteToSave = `__callout:${noteDraft.trim()}`;
         } else if (s.startsWith("__rect:")) {
@@ -22271,6 +22322,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       }
       await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
       setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
+      try {
+        const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(editingNoteId));
+        if (lr) lr.note = noteToSave;
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     } else {
       await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
       setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
@@ -29972,32 +30028,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `l-style-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.92)",
-                          backdropFilter: "blur(24px)",
-                        }}>
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
-                          {LINE_WIDTHS.map((w) => (
-                            <button key={w} type="button"
-                              onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
-                              W{w}
-                            </button>
-                          ))}
-                          <div className="border-t border-white/10 my-1" />
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
-                          {(["solid", "dashed"] as const).map((d) => (
-                            <button key={d} type="button"
-                              onClick={() => { pushUndo(); updateLineDash(l.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
-                              {d === "solid" ? "—— Solid" : "- - Dash"}
-                            </button>
-                          ))}
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[120px]">
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
+                          <div className="flex gap-1">
+                            {LINE_WIDTHS.map((w) => (
+                              <button
+                                key={w}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
+                                className={`w-8 h-7 rounded-md text-xs font-semibold ${(l.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >{w}</button>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                          <div className="flex gap-1">
+                            {(["solid", "dashed", "dotted"] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineDash(l.id, st); setOpenMenu(null); }}
+                                className={`flex-1 h-7 rounded-md text-[11px] font-medium ${((l.dash || l.style) === st || (!(l.dash || l.style) && st === "solid")) ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >
+                                {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -30020,25 +30075,35 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                         </svg>
                       </button>
-                      {openMenu === `l-alarm-${l.id}` && (
+                      {openMenu === `l-alarm-${l.id}` && (() => {
+                        const draftKey = `lAlarmDraft_${l.id}`;
+                        const draft = (window as any)[draftKey] || { condition: "cross" as "cross"|"above"|"below", once: true, deleteAfter: false };
+                        const setDraft = (patch: Partial<typeof draft>) => {
+                          (window as any)[draftKey] = { ...draft, ...patch };
+                          setOpenMenu(`l-alarm-${l.id}`); // re-render
+                        };
+                        return (
                         <div
-                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-700 rounded-xl p-2.5 shadow-2xl min-w-[160px]"
+                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-700 rounded-xl p-2.5 shadow-2xl min-w-[170px]"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
                           <div className="flex flex-col gap-0.5 mb-2">
-                            {(["cross", "above", "below"] as const).map((c) => (
+                            {([
+                              { id: "cross", label: "Cross" },
+                              { id: "above", label: "Above" },
+                              { id: "below", label: "Below" },
+                            ] as const).map((c) => (
                               <button
-                                key={c}
+                                key={c.id}
                                 type="button"
-                                onClick={() => {
-                                  pushUndo();
-                                  void convertLineToAlarm(l, { condition: c, once: true, deleteAfter: false });
-                                  setOpenMenu(null);
-                                }}
-                                className="text-left px-2 py-1.5 text-xs rounded-md hover:bg-orange-500/20 text-gray-200 capitalize"
+                                onClick={() => setDraft({ condition: c.id })}
+                                className={`text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 ${
+                                  draft.condition === c.id ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"
+                                }`}
                               >
-                                {c === "cross" ? "✓ Cross" : c === "above" ? "Above" : "Below"}
+                                <span className="w-3">{draft.condition === c.id ? "✓" : ""}</span>
+                                {c.label}
                               </button>
                             ))}
                           </div>
@@ -30046,46 +30111,45 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <div className="flex gap-1 mb-2">
                             <button
                               type="button"
-                              onClick={() => {
-                                pushUndo();
-                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: false });
-                                setOpenMenu(null);
-                              }}
-                              className="flex-1 text-xs py-1.5 rounded-md bg-orange-500 text-black font-medium"
+                              onClick={() => setDraft({ deleteAfter: false })}
+                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${!draft.deleteAfter ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
                             >Keep</button>
                             <button
                               type="button"
-                              onClick={() => {
-                                pushUndo();
-                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: true });
-                                setOpenMenu(null);
-                              }}
-                              className="flex-1 text-xs py-1.5 rounded-md bg-gray-800 text-gray-200 hover:bg-gray-700"
+                              onClick={() => setDraft({ deleteAfter: true })}
+                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${draft.deleteAfter ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
                             >Delete</button>
                           </div>
                           <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Trigger</div>
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 mb-2.5">
                             <button
                               type="button"
-                              onClick={() => {
-                                pushUndo();
-                                void convertLineToAlarm(l, { condition: "cross", once: true, deleteAfter: false });
-                                setOpenMenu(null);
-                              }}
-                              className="flex-1 text-xs py-1.5 rounded-md bg-orange-500 text-black font-medium"
+                              onClick={() => setDraft({ once: true })}
+                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${draft.once ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
                             >Once</button>
                             <button
                               type="button"
-                              onClick={() => {
-                                pushUndo();
-                                void convertLineToAlarm(l, { condition: "cross", once: false, deleteAfter: false });
-                                setOpenMenu(null);
-                              }}
-                              className="flex-1 text-xs py-1.5 rounded-md bg-gray-800 text-gray-200 hover:bg-gray-700"
+                              onClick={() => setDraft({ once: false })}
+                              className={`flex-1 text-xs py-1.5 rounded-md font-medium ${!draft.once ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
                             >Always</button>
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pushUndo();
+                              void convertLineToAlarm(l, {
+                                condition: draft.condition,
+                                once: draft.once,
+                                deleteAfter: draft.deleteAfter,
+                              });
+                              try { delete (window as any)[draftKey]; } catch {}
+                              setOpenMenu(null);
+                            }}
+                            className="w-full text-sm py-2 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
+                          >Apply</button>
                         </div>
-                      )}
+                        );
+                      })()}
                     </div>
                       </>
                     )}
