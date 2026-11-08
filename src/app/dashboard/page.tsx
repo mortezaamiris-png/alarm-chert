@@ -1247,12 +1247,49 @@ function isDiagonalLine(l: {
   if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:"))) {
     return false;
   }
-  return (
+  if (
     l.start_time != null &&
     l.end_time != null &&
     l.end_price != null &&
     Number(l.end_time) !== Number(l.start_time)
-  );
+  ) {
+    return true;
+  }
+  // Note / cfg-encoded diagonal: __diag:t0:t1:price (may be after other prefixes)
+  const n = typeof l.note === "string" ? l.note : "";
+  const m = n.match(/__diag:(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?)/);
+  if (m) return Number(m[1]) !== Number(m[2]);
+  return false;
+}
+
+/** Resolve diagonal endpoints from columns or note */
+function resolveDiagGeom(l: {
+  start_time?: number | null;
+  end_time?: number | null;
+  end_price?: number | null;
+  price?: number | null;
+  note?: string | null;
+}): { t0: number; p0: number; t1: number; p1: number } | null {
+  if (
+    l.start_time != null &&
+    l.end_time != null &&
+    l.end_price != null &&
+    Number(l.end_time) !== Number(l.start_time)
+  ) {
+    return {
+      t0: Number(l.start_time),
+      p0: Number(l.price),
+      t1: Number(l.end_time),
+      p1: Number(l.end_price),
+    };
+  }
+  const n = typeof l.note === "string" ? l.note : "";
+  const m = n.match(/__diag:(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const t0 = Number(m[1]), t1 = Number(m[2]), p1 = Number(m[3]);
+  const p0 = l.price != null ? Number(l.price) : p1;
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t0 === t1) return null;
+  return { t0, p0, t1, p1 };
 }
 
 const ALL_TIMEFRAMES = [
@@ -7351,6 +7388,13 @@ export default function DashboardPage() {
             (curA as any).end_time = t1;
             (curA as any).end_price = p1;
           }
+          try {
+            alarmPriceOverrideRef.current.set(String(id), p0);
+            alarmGeomOverrideRef.current.set(String(id), {
+              price: p0, start_time: t0, end_time: t1, end_price: p1,
+            });
+            alarmLocalEditRef.current.set(String(id), Date.now());
+          } catch {}
         } catch {}
 
         // Live update the actual diagonal series
@@ -7404,9 +7448,33 @@ export default function DashboardPage() {
           if (typ === "alarm") {
             try {
               if (patch.price != null) alarmPriceOverrideRef.current.set(String(id), Number(patch.price));
+              alarmGeomOverrideRef.current.set(String(id), {
+                price: Number(patch.price),
+                start_time: Number(patch.start_time),
+                end_time: Number(patch.end_time),
+                end_price: Number(patch.end_price),
+              });
               alarmLocalEditRef.current.set(String(id), Date.now());
             } catch {}
-            await supabase.from("alarms").update(patch).eq("id", id);
+            try {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+              const cfg = parseAlarmCfg(curA?.note);
+              patch.note = encodeAlarmCfg(
+                `__diag:${patch.start_time}:${patch.end_time}:${patch.end_price}`,
+                cfg.once,
+                cfg.deleteAfter
+              );
+              if (curA) Object.assign(curA, patch);
+            } catch {}
+            try {
+              const { error } = await supabase.from("alarms").update(patch).eq("id", id);
+              if (error) {
+                await supabase.from("alarms").update({
+                  price: patch.price, start_time: patch.start_time,
+                  end_time: patch.end_time, end_price: patch.end_price,
+                }).eq("id", id);
+              }
+            } catch {}
             setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, ...patch } : a)));
           } else {
             // preserve __diag note if used
@@ -15568,9 +15636,10 @@ priced.sort((a, b) => a.price - b.price);
         );
         for (const a of alarms) {
           try {
-            if (isDiagonalLine(a as any) || (a.end_time != null && a.end_price != null && a.start_time != null && Number(a.start_time) !== Number(a.end_time))) {
-              const t0 = Number(a.start_time), t1 = Number(a.end_time);
-              const p0 = Number(a.price), p1 = Number(a.end_price);
+            const geomHit = resolveDiagGeom(a as any);
+            if (geomHit || isDiagonalLine(a as any) || (a.end_time != null && a.end_price != null && a.start_time != null && Number(a.start_time) !== Number(a.end_time))) {
+              const t0 = geomHit ? geomHit.t0 : Number(a.start_time), t1 = geomHit ? geomHit.t1 : Number(a.end_time);
+              const p0 = geomHit ? geomHit.p0 : Number(a.price), p1 = geomHit ? geomHit.p1 : Number(a.end_price);
               const x0 = chart.timeScale().timeToCoordinate(t0 as any);
               const y0 = ser.priceToCoordinate(p0);
               const x1 = chart.timeScale().timeToCoordinate(t1 as any);
@@ -28972,12 +29041,29 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-mono font-medium shrink-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
-                    {isDiagonalLine(a)
-                      ? `↗ ${formatPrice(a.price)}→${formatPrice(Number(a.end_price))}`
-                      : formatPrice(a.price)}
-                  </span>
-                  {/* Alarm settings (bell) — same as line toolbar */}
+                  {(() => {
+                    const geom = resolveDiagGeom(a as any);
+                    const isDiagA = !!geom || isDiagonalLine(a);
+                    const isRayA = !isDiagA && a.start_time != null && (a.end_time == null || a.end_price == null);
+                    const icon = isDiagA ? "/" : isRayA ? "→" : "—";
+                    const label = isDiagA ? "Diag" : isRayA ? "Ray" : "H-Line";
+                    return (
+                      <span className="flex items-center gap-1.5 shrink-0 min-w-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
+                        <span
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-gray-800/90 border border-gray-700 text-[13px] font-semibold leading-none"
+                          title={label}
+                        >{icon}</span>
+                        {isDiagA ? (
+                          <span className="font-mono text-xs truncate">
+                            {formatPrice(geom ? geom.p0 : a.price)}→{formatPrice(geom ? geom.p1 : Number(a.end_price))}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-xs">{formatPrice(a.price)}</span>
+                        )}
+                      </span>
+                    );
+                  })()}
+                  {/* Alarm settings (bell) — moved next to Move; keep settings accessible */}
                   <div className="relative shrink-0" data-menu>
                     <button
                       type="button"
@@ -29238,13 +29324,18 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMoveNoteOpen(false);
                         movingRayRef.current =
                           a.start_time != null && !isDiagonalLine(a as any);
-                        if (isDiagonalLine(a as any)) {
+                        const geomA = resolveDiagGeom(a as any);
+                        if (geomA || isDiagonalLine(a as any)) {
                           movingRayRef.current = false;
+                          const g = geomA || {
+                            t0: Number(a.start_time), p0: Number(a.price),
+                            t1: Number(a.end_time), p1: Number(a.end_price),
+                          };
                           moveDiagRef.current = {
                             id: a.id,
                             phase: "pick",
-                            pointA: { time: Number(a.start_time), price: Number(a.price) },
-                            pointB: { time: Number(a.end_time), price: Number(a.end_price) },
+                            pointA: { time: g.t0, price: g.p0 },
+                            pointB: { time: g.t1, price: g.p1 },
                             color: a.color || DEFAULT_ALARM_COLOR,
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
@@ -29920,8 +30011,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         }}
                         className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
                           openMenu === `l-alarm-${l.id}`
-                            ? "bg-orange-500 text-black border-orange-400"
-                            : "bg-gray-900/95 border-gray-600 text-gray-300 hover:bg-white/10 hover:text-orange-300"
+                            ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                            : "bg-gray-900/95 border-gray-600 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
                         }`}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
