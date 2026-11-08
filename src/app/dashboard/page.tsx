@@ -15800,6 +15800,19 @@ priced.sort((a, b) => a.price - b.price);
               t = Math.max(0, Math.min(1, t));
               const d = Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy));
               consider(String(a.id), "alarm", "diag", d, a);
+            } else if (
+              (typeof a.note === "string" && (a.note === "__vline__" || a.note.startsWith("__vline__:"))) ||
+              (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time) && !(a.end_price != null && Number(a.start_time) !== Number(a.end_time)))
+            ) {
+              let tV = a.start_time != null ? Number(a.start_time) : null;
+              if ((tV == null || !(tV > 0)) && typeof a.note === "string" && a.note.startsWith("__vline__:")) {
+                const n = Number(String(a.note).replace(/^__vline__:/, "").split("|")[0]);
+                if (!Number.isNaN(n) && n > 0) tV = n;
+              }
+              if (tV != null && tV > 0) {
+                const x = chart.timeScale().timeToCoordinate(tV as any);
+                if (x != null) consider(String(a.id), "alarm", "v", Math.abs(px - Number(x)), a);
+              }
             } else if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
               const y = ser.priceToCoordinate(Number(a.price));
               if (y != null) consider(String(a.id), "alarm", "ray", Math.abs(py - Number(y)), a);
@@ -15894,7 +15907,12 @@ priced.sort((a, b) => a.price - b.price);
           orig.t0 = Number(o.start_time); orig.p0 = Number(o.price);
           orig.t1 = Number(o.end_time); orig.p1 = Number(o.end_price);
         } else if (hit.type === "v") {
-          orig.t = Number(o.start_time); orig.p0 = Number(o.price); orig.p1 = Number(o.end_price ?? o.price);
+          let t0 = o.start_time != null ? Number(o.start_time) : null;
+          if ((t0 == null || !(t0 > 0)) && typeof o.note === "string" && o.note.startsWith("__vline__:")) {
+            const n = Number(String(o.note).replace(/^__vline__:/, "").split("|")[0]);
+            if (!Number.isNaN(n) && n > 0) t0 = n;
+          }
+          orig.t = Number(t0); orig.p0 = Number(o.price); orig.p1 = Number(o.end_price ?? o.price);
         } else if (hit.type === "ray" || hit.type === "arrow") {
           orig.t = o.start_time != null ? Number(o.start_time) : null;
           orig.p = Number(o.price);
@@ -16122,9 +16140,28 @@ priced.sort((a, b) => a.price - b.price);
             }
           } else if (bd.type === "v") {
             const newT = bd.orig.t + dT;
-            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-            if (cur) { cur.start_time = newT; cur.end_time = newT; }
             (bd as any)._liveT = newT;
+            if (bd.kind === "line") {
+              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (cur) { cur.start_time = newT; cur.end_time = newT; }
+            } else {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (curA) {
+                curA.start_time = newT;
+                (curA as any).end_time = newT;
+                if (typeof curA.note === "string" && curA.note.startsWith("__vline__:")) {
+                  const cfg = parseAlarmCfg(curA.note);
+                  const userTxt = userFacingNote(curA.note);
+                  curA.note = encodeAlarmCfg(`__vline__:${newT}` + (userTxt ? `|${userTxt}` : ""), cfg.once, cfg.deleteAfter);
+                }
+              }
+              try {
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: Number(bd.orig.p0 ?? 0), start_time: newT, end_time: newT, end_price: null,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
+            }
             // verticals are DOM — trigger light repaint of vline positions
             try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
             if (savedR) { try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {} }
@@ -16352,9 +16389,39 @@ priced.sort((a, b) => a.price - b.price);
             }
           } else if (bd.type === "v") {
             const newT = (bd as any)._liveT ?? bd.orig.t;
-            setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, start_time: newT, end_time: newT } : x));
-            if (!String(bd.id).startsWith("local-")) {
-              await supabase.from("chart_lines").update({ start_time: newT, end_time: newT }).eq("id", bd.id);
+            if (bd.kind === "line") {
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, start_time: newT, end_time: newT } : x));
+              try {
+                const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (cur) { cur.start_time = newT; cur.end_time = newT; }
+              } catch {}
+              if (!String(bd.id).startsWith("local-")) {
+                await supabase.from("chart_lines").update({ start_time: newT, end_time: newT }).eq("id", bd.id);
+              }
+            } else {
+              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              const cfg = parseAlarmCfg(curA?.note);
+              const userTxt = userFacingNote(curA?.note);
+              const note = encodeAlarmCfg(`__vline__:${newT}` + (userTxt ? `|${userTxt}` : ""), cfg.once, cfg.deleteAfter);
+              const patch: any = { start_time: newT, end_time: newT, note };
+              if (curA) {
+                curA.start_time = newT;
+                (curA as any).end_time = newT;
+                curA.note = note;
+              }
+              try {
+                alarmGeomOverrideRef.current.set(String(bd.id), {
+                  price: Number(bd.orig.p0 ?? 0), start_time: newT, end_time: newT, end_price: null, note,
+                });
+                alarmLocalEditRef.current.set(String(bd.id), Date.now());
+              } catch {}
+              setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              try {
+                const { error } = await supabase.from("alarms").update(patch).eq("id", bd.id);
+                if (error) {
+                  await supabase.from("alarms").update({ start_time: newT, end_time: newT }).eq("id", bd.id);
+                }
+              } catch (e) { console.warn("alarm v move", e); }
             }
           } else if (bd.type === "ray" || bd.type === "arrow") {
             const newP = (bd as any)._liveP ?? bd.orig.p;
@@ -17447,6 +17514,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   t = Math.max(0, Math.min(1, t));
                   const cx = x0 + t * dx, cy = y0 + t * dy;
                   considerAlarm(a.id, Math.hypot(px - cx, py - cy), false, false, true);
+                }
+              } else if (
+                (typeof a.note === "string" && (a.note === "__vline__" || a.note.startsWith("__vline__:"))) ||
+                (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time))
+              ) {
+                // vertical alarm
+                let tV = a.start_time != null ? Number(a.start_time) : null;
+                if ((tV == null || !(tV > 0)) && typeof a.note === "string" && a.note.startsWith("__vline__:")) {
+                  const n = Number(String(a.note).replace(/^__vline__:/, "").split("|")[0]);
+                  if (!Number.isNaN(n) && n > 0) tV = n;
+                }
+                if (tV != null && tV > 0) {
+                  const x = chart.timeScale().timeToCoordinate(tV as any);
+                  if (x != null) considerAlarm(a.id, Math.abs(px - Number(x)), true, false, false);
                 }
               } else if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
                 // ray alarm
@@ -22049,13 +22130,23 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   };
   const updateAlarmWidth = async (id: string, width: number) => {
     pushUndo();
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, width } : a)));
-    await supabase.from("alarms").update({ width }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, width } : a)));
+    try {
+      const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+      if (curA) curA.width = width;
+    } catch {}
+    try { await supabase.from("alarms").update({ width }).eq("id", id); } catch {}
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
   const updateAlarmDash = async (id: string, dash: string) => {
     pushUndo();
-    setAlarms((prev) => prev.map((a) => (a.id === id ? { ...a, dash } : a)));
-    await supabase.from("alarms").update({ dash }).eq("id", id);
+    setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, dash } : a)));
+    try {
+      const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+      if (curA) curA.dash = dash;
+    } catch {}
+    try { await supabase.from("alarms").update({ dash }).eq("id", id); } catch {}
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
 
   const saveMoveNote = async () => {
@@ -22143,6 +22234,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   };
   const updateLineWidth = async (id: string, width: number) => {
     pushUndo();
+    try {
+      const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+      if (cur) cur.width = width;
+    } catch {}
     setLines((prev) => prev.map((l) => {
       if (String(l.id) !== String(id)) return l;
       if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
@@ -22174,6 +22269,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   };
   const updateLineDash = async (id: string, dash: string) => {
     pushUndo();
+    try {
+      const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+      if (cur) {
+        cur.dash = dash;
+        (cur as any).style = dash;
+      }
+    } catch {}
     setLines((prev) => prev.map((l) => {
       if (String(l.id) !== String(id)) return l;
       if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
@@ -22184,7 +22286,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           return { ...l, dash, note };
         }
       }
-      return { ...l, dash };
+      return { ...l, dash, style: dash } as any;
     }));
     try {
       const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
@@ -29257,9 +29359,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   {(() => {
                     const geom = resolveDiagGeom(a as any);
                     const isDiagA = !!geom || isDiagonalLine(a);
-                    const isRayA = !isDiagA && a.start_time != null && (a.end_time == null || a.end_price == null);
-                    const icon = isDiagA ? "/" : isRayA ? "→" : "—";
-                    const label = isDiagA ? "Diag" : isRayA ? "Ray" : "H-Line";
+                    const noteA = typeof a.note === "string" ? a.note : "";
+                    const isVA =
+                      !isDiagA &&
+                      (noteA === "__vline__" ||
+                        noteA.startsWith("__vline__:") ||
+                        (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time)));
+                    const isRayA = !isDiagA && !isVA && a.start_time != null && (a.end_time == null || a.end_price == null);
+                    const icon = isDiagA ? "/" : isVA ? "|" : isRayA ? "→" : "—";
+                    const label = isDiagA ? "Diag" : isVA ? "Vertical" : isRayA ? "Ray" : "H-Line";
                     return (
                       <span className="flex items-center gap-1.5 shrink-0 min-w-0" style={{ color: a.color || DEFAULT_ALARM_COLOR }}>
                         <span
@@ -29270,6 +29378,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <span className="font-mono text-xs truncate">
                             {formatPrice(geom ? geom.p0 : a.price)}→{formatPrice(geom ? geom.p1 : Number(a.end_price))}
                           </span>
+                        ) : isVA ? (
+                          <span className="font-mono text-xs text-gray-400">Vertical</span>
                         ) : (
                           <span className="font-mono text-xs">{formatPrice(a.price)}</span>
                         )}
