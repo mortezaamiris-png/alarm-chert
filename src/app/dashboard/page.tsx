@@ -2478,6 +2478,11 @@ function userFacingNote(note?: string | null): string {
   const s = String(note).trim();
   if (!s) return "";
   if (s === "__vline__") return "";
+  if (s.startsWith("__vline__:")) {
+    // __vline__:unix|text or __vline__:unix
+    const rest = s.replace(/^__vline__:[^|]*/, "").replace(/^[|]+/, "").trim();
+    return rest;
+  }
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
@@ -4354,7 +4359,7 @@ export default function DashboardPage() {
   const vlineOverlayRef = useRef<HTMLDivElement | null>(null);
   const pathPointsRef = useRef<{ time: number; price: number }[]>([])
   const coinPressRef = useRef<{ sym: string; x: number; y: number; t: number } | null>(null);
-  const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string }[]>([])
+  const vlineItemsRef = useRef<{ id: string; time: number; color: string; width: number; dash: string; note?: string }[]>([])
   const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string }[]>([])
   const rayItemsRef = useRef<{ id: string; time: number; price: number; color: string; width: number; dash: string }[]>([]);
   const arrowMoveItemsRef = useRef<{ id: string; time: number; price: number }[]>([]);
@@ -7773,6 +7778,7 @@ export default function DashboardPage() {
       if (!host || !chart2) return;
       // Only remove vertical line nodes — keep rays intact
       host.querySelectorAll("[data-vline-id]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-vline-note]").forEach((el) => el.remove());
       if (hideLines) return;
       const bars = candlesRef.current || [];
       const resolveX = (t: number): number | null => {
@@ -7819,6 +7825,19 @@ export default function DashboardPage() {
           el.style.background = v.color;
         }
         host.appendChild(el);
+        // Note text beside vertical line
+        if (v.note && String(v.note).trim()) {
+          const lab = document.createElement("div");
+          lab.dataset.vlineNote = v.id;
+          lab.style.cssText = [
+            `position:absolute;left:${x + 8}px;top:40%;transform:translateY(-50%);`,
+            "pointer-events:none;z-index:24;color:#e5e7eb;font-size:11px;font-weight:500;",
+            "white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.85);",
+            `border-left:2px solid ${v.color};padding-left:6px;`,
+          ].join("");
+          lab.textContent = String(v.note).trim();
+          host.appendChild(lab);
+        }
       }
     };
 
@@ -8072,7 +8091,7 @@ export default function DashboardPage() {
         const noteClean = (() => {
           if (!l.note) return "";
           const s = String(l.note);
-          if (s === "__vline__" || s.startsWith("__vline__:")) return "";
+          if (s === "__vline__" || s.startsWith("__vline__:")) return ""; // vertical note is DOM beside line, not price-axis title
           if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
             const idx = s.indexOf("|");
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
@@ -8146,6 +8165,7 @@ export default function DashboardPage() {
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
+              note: userFacingNote(l.note) || "",
             });
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:"))) {
@@ -10207,13 +10227,36 @@ priced.sort((a, b) => a.price - b.price);
             pointMarkersVisible: false as any,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
-            title: title || "",
+            title: "",
             autoscaleInfoProvider: () => null as any,
           });
           // Dense points — continuous on any TF (hit detection still uses projectedPriceOnDiag)
           ls.setData(
             denseDiagPoints(t0, t1, v0, v1, intervalToSeconds(String(intervalRef.current)))
           );
+          // Note under middle of alarm diagonal only
+          try {
+            const txtA = userFacingNote(a.note);
+            const hostA = vlineOverlayRef.current;
+            if (txtA && hostA && chart && series) {
+              const midT = (t0 + t1) / 2;
+              const midP = (v0 + v1) / 2;
+              const mx = chart.timeScale().timeToCoordinate(midT as any);
+              const my = series.priceToCoordinate(midP);
+              if (mx != null && my != null) {
+                const lab = document.createElement("div");
+                lab.dataset.diagNote = String(a.id);
+                lab.style.cssText = [
+                  `position:absolute;left:${Number(mx)}px;top:${Number(my) + 12}px;`,
+                  "transform:translate(-50%,0);pointer-events:none;z-index:24;",
+                  "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
+                  "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
+                ].join("");
+                lab.textContent = txtA;
+                hostA.appendChild(lab);
+              }
+            }
+          } catch {}
           chartLinesRef.current.set(`alarm-diag-${a.id}`, ls);
         } else if (
           (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
@@ -22317,7 +22360,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             noteToSave = buildAvwapNote({ ...p, text: noteDraft.trim() });
           }
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
-          noteToSave = s; // vertical lines have no user note slot
+          // Keep time encoding; attach user text after |
+          let head = s.split("|")[0];
+          if (head === "__vline__" && cur.start_time != null) head = `__vline__:${Number(cur.start_time)}`;
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         }
       }
       await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
