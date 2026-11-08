@@ -2374,7 +2374,13 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
     const idx = s.indexOf("|");
-    if (idx >= 0) return s.slice(idx + 1).trim();
+    if (idx >= 0) {
+      let rest = s.slice(idx + 1).trim();
+      if (rest.startsWith("txt=")) {
+        try { rest = decodeURIComponent(rest.slice(4)); } catch { rest = rest.slice(4); }
+      }
+      return rest;
+    }
     return "";
   }
   return s;
@@ -6873,6 +6879,16 @@ export default function DashboardPage() {
     active?: "a" | "b" | "c" | null,
     pointC?: { time: number; price: number } | null
   ) => {
+    // Trendline body-move only: never show endpoint circles
+    try {
+      const md = moveDiagRef.current as any;
+      if (md && md.noHandles) {
+        if (handleAElRef.current) handleAElRef.current.style.display = "none";
+        if (handleBElRef.current) handleBElRef.current.style.display = "none";
+        if (handleCElRef.current) handleCElRef.current.style.display = "none";
+        return;
+      }
+    } catch {}
     const chart = chartRef.current;
     const series = seriesRef.current;
     const elA = handleAElRef.current;
@@ -8797,15 +8813,22 @@ priced.sort((a, b) => a.price - b.price);
           try {
             let noteTxt = "";
             if (typeof l.note === "string") {
-              if (l.note.startsWith("__diag:")) {
+              if (l.note.startsWith("__diag:") || l.note.startsWith("__ray:")) {
                 const pipe = l.note.indexOf("|");
-                if (pipe >= 0) noteTxt = l.note.slice(pipe + 1).trim();
+                if (pipe >= 0) {
+                  let rest = l.note.slice(pipe + 1).trim();
+                  if (rest.startsWith("txt=")) {
+                    try { rest = decodeURIComponent(rest.slice(4)); } catch { rest = rest.slice(4); }
+                  }
+                  noteTxt = rest;
+                }
               } else if (!l.note.startsWith("__") && l.note.trim()) {
                 noteTxt = l.note.trim();
               }
             }
-            // also allow title/noteClean if plain
-            if (!noteTxt && noteClean && noteClean !== "MOVING") noteTxt = String(noteClean).trim();
+            if (!noteTxt && noteClean && noteClean !== "MOVING" && noteClean !== "Diag") {
+              noteTxt = String(noteClean).trim();
+            }
             const hostNote = vlineOverlayRef.current;
             if (noteTxt && hostNote && chart) {
               const midT = (t0 + t1) / 2;
@@ -15272,7 +15295,11 @@ priced.sort((a, b) => a.price - b.price);
         if (m !== "none" && m !== "move") return;
         // If a curve/path handle drag is already active, skip
         const md = moveDiagRef.current as any;
-        if (md && (md.curveHandle != null || md.pathHandle != null || md.phase === "drag-a" || md.phase === "drag-b" || md.phase === "drag-body")) return;
+        if (md && (md.curveHandle != null || md.pathHandle != null || md.phase === "drag-a" || md.phase === "drag-b")) return;
+        // phase drag-body without active bodyDragRef means stuck state — reset
+        if (md && md.phase === "drag-body" && !bodyDragRef.current) {
+          try { md.phase = "pick"; } catch {}
+        }
         if (bodyDragRef.current) return;
 
         const cont = chartContainerRef.current;
@@ -15356,7 +15383,9 @@ priced.sort((a, b) => a.price - b.price);
             pointA: { time: orig.t0, price: orig.p0 },
             pointB: { time: orig.t1, price: orig.p1 },
             color: o.color || "#2962FF", width: o.width || 2, dash: "solid",
+            noHandles: true,
           };
+          try { hideHandles(); } catch {}
         } else {
           moveDiagRef.current = null;
           movingVLineRef.current = hit.type === "v";
@@ -15434,13 +15463,18 @@ priced.sort((a, b) => a.price - b.price);
           } else if (bd.type === "diag") {
             const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
             const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
-            const ls = chartLinesRef.current.get(bd.id);
+            const key = bd.kind === "alarm" ? `alarm-diag-${bd.id}` : bd.id;
+            const ls = chartLinesRef.current.get(key) || chartLinesRef.current.get(bd.id);
             if (ls) {
-              const pts = [
-                { time: Math.min(t0, t1) as any, value: t0 <= t1 ? p0 : p1 },
-                { time: Math.max(t0, t1) as any, value: t0 <= t1 ? p1 : p0 },
-              ];
-              ls.setData(pts);
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              const data = denseDiagPoints(
+                Math.min(t0, t1),
+                Math.max(t0, t1),
+                t0 <= t1 ? p0 : p1,
+                t0 <= t1 ? p1 : p0,
+                barSec
+              );
+              ls.setData(data as any);
             }
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
             if (cur) {
@@ -15450,11 +15484,25 @@ priced.sort((a, b) => a.price - b.price);
               const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               if (curA) { curA.start_time = t0; curA.price = p0; (curA as any).end_time = t1; (curA as any).end_price = p1; }
             }
-            // update handles if any
             try {
               const md = moveDiagRef.current as any;
               if (md) { md.pointA = { time: t0, price: p0 }; md.pointB = { time: t1, price: p1 }; }
-              positionHandles({ time: t0, price: p0 }, { time: t1, price: p1 }, null, null);
+              hideHandles(); // no endpoint circles for trendlines
+            } catch {}
+            // live note label reposition
+            try {
+              const host = vlineOverlayRef.current;
+              const lab = host?.querySelector(`[data-diag-note="${bd.id}"]`) as HTMLElement | null;
+              if (lab && chart && ser) {
+                const midT = (t0 + t1) / 2;
+                const midP = (p0 + p1) / 2;
+                const mx = chart.timeScale().timeToCoordinate(midT as any);
+                const my = ser.priceToCoordinate(midP);
+                if (mx != null && my != null) {
+                  lab.style.left = `${Number(mx)}px`;
+                  lab.style.top = `${Number(my) + 10}px`;
+                }
+              }
             } catch {}
           } else if (bd.type === "h") {
             const newP = bd.orig.p + dP;
@@ -15590,7 +15638,19 @@ priced.sort((a, b) => a.price - b.price);
         // Pure click (no real drag): keep selection + tools, do NOT save/exit
         const movedPx = Number((bd as any)._movedPx || 0);
         if (movedPx < 4) {
-          setStatusMsg("Selected — drag to move");
+          try {
+            const md = moveDiagRef.current as any;
+            if (md) md.phase = "pick";
+          } catch {}
+          try {
+            chartRef.current?.applyOptions({
+              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+            });
+          } catch {}
+          // Diag: no endpoint handles — body drag only
+          try { hideHandles(); } catch {}
+          setStatusMsg("Selected — drag the line to move");
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           return;
         }
@@ -15694,10 +15754,14 @@ priced.sort((a, b) => a.price - b.price);
             try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           } catch {}
         } else if (bd.type === "diag") {
-          // keep selected but phase=pick, solid style via softMove
           try {
             const md = moveDiagRef.current as any;
             if (md) md.phase = "pick";
+            hideHandles();
+            chartRef.current?.applyOptions({
+              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+            });
           } catch {}
         }
         // curve: keep handles (already softMove)
@@ -16892,7 +16956,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: l.color || DEFAULT_LINE_COLOR,
                   width: l.width || 2,
                   dash: (l.dash || l.style || "solid") as string,
-                };
+                , noHandles: true};
                 // No extra dashed preview series — original line shows dashed via isMoving
                 try {
                   if (previewDiagSeriesRef.current && chartRef.current) {
@@ -16942,7 +17006,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: a.color || DEFAULT_ALARM_COLOR,
                   width: a.width || 2,
                   dash: (a.dash || "solid") as string,
-                };
+                , noHandles: true};
                 try {
                   if (previewDiagSeriesRef.current && chartRef.current) {
                     chartRef.current.removeSeries(previewDiagSeriesRef.current);
@@ -21011,9 +21075,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
           const p = parseChannelNote(cur.note);
           if (p) noteOut = buildChannelNote({ ...p, text: text || "" });
+        } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__diag:") || cur.note.startsWith("__ray:"))) {
+          // keep geometry prefix, store user text after |
+          const base = cur.note.split("|")[0];
+          noteOut = text ? `${base}|${text}` : base;
         } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
-          const base = cur.note.replace(/\|txt=[^|]*/g, "");
-          noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
+          const base = cur.note.replace(/\|txt=[^|]*/g, "").split("|")[0];
+          noteOut = text ? `${base}|${text}` : base;
         }
         await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
         setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
@@ -27752,7 +27820,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: a.color || DEFAULT_ALARM_COLOR,
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
-                          };
+                          , noHandles: true};
                           setDrawColor(a.color || DEFAULT_ALARM_COLOR);
                           setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
@@ -28811,7 +28879,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: l.color || DEFAULT_LINE_COLOR,
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
-                          };
+                          , noHandles: true};
                           setDrawColor(l.color || DEFAULT_LINE_COLOR);
                           setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
