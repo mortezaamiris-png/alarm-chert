@@ -16956,7 +16956,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: l.color || DEFAULT_LINE_COLOR,
                   width: l.width || 2,
                   dash: (l.dash || l.style || "solid") as string,
-                , noHandles: true};
+                  noHandles: true,
+                };
                 // No extra dashed preview series — original line shows dashed via isMoving
                 try {
                   if (previewDiagSeriesRef.current && chartRef.current) {
@@ -16964,14 +16965,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     previewDiagSeriesRef.current = null;
                   }
                 } catch {}
-                try {
-                  positionHandles(
-                    { time: Number(l.start_time), price: Number(l.price) },
-                    { time: Number(l.end_time), price: Number(l.end_price) },
-                    null
-                  );
-                } catch {}
-                setStatusMsg("Drag the circles to move endpoints");
+                try { hideHandles(); } catch {}
+                setStatusMsg("Drag the line body to move");
               } else if (best.isV) {
                 moveDiagRef.current = null;
                 setStatusMsg("Vertical line selected — drag to move");
@@ -17006,21 +17001,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   color: a.color || DEFAULT_ALARM_COLOR,
                   width: a.width || 2,
                   dash: (a.dash || "solid") as string,
-                , noHandles: true};
+                
+                  noHandles: true,
+                };
                 try {
                   if (previewDiagSeriesRef.current && chartRef.current) {
                     chartRef.current.removeSeries(previewDiagSeriesRef.current);
                     previewDiagSeriesRef.current = null;
                   }
                 } catch {}
-                try {
-                  positionHandles(
-                    { time: Number(a.start_time), price: Number(a.price) },
-                    { time: Number(a.end_time), price: Number(a.end_price) },
-                    null
-                  );
-                } catch {}
-                setStatusMsg("Drag the circles to move endpoints");
+                try { hideHandles(); } catch {}
+                setStatusMsg("Drag the line body to move");
               } else if (best.isRay) {
                 moveDiagRef.current = null;
                 setStatusMsg("Click chart to move alarm ray");
@@ -27820,11 +27811,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: a.color || DEFAULT_ALARM_COLOR,
                             width: a.width || 2,
                             dash: (a.dash || "solid") as string,
-                          , noHandles: true};
+                          
+                  noHandles: true,
+                };
                           setDrawColor(a.color || DEFAULT_ALARM_COLOR);
                           setDrawWidth(((a.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash((a.dash === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Drag the circles or body to move");
+                          setStatusMsg("Drag the line body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
@@ -28879,11 +28872,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             color: l.color || DEFAULT_LINE_COLOR,
                             width: l.width || 2,
                             dash: (l.dash || l.style || "solid") as string,
-                          , noHandles: true};
+                  noHandles: true,
+                };
                           setDrawColor(l.color || DEFAULT_LINE_COLOR);
                           setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
                           setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
-                          setStatusMsg("Drag the circles or body to move");
+                          setStatusMsg("Drag the line body to move");
                           try {
                             // Pick phase: keep chart + page fully interactive (no lock)
                             document.body.style.overflow = "";
