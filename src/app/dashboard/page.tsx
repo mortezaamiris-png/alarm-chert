@@ -4141,7 +4141,7 @@ export default function DashboardPage() {
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
-    phase: "pick" | "drag-a" | "drag-b" | "drag-c";
+    phase: "pick" | "drag-a" | "drag-b" | "drag-c" | "drag-body";
     pointA: { time: number; price: number };
     pointB: { time: number; price: number };
     pointC?: { time: number; price: number };
@@ -4153,6 +4153,15 @@ export default function DashboardPage() {
     isAvp?: boolean;
     isFrvp?: boolean;
     isChannel?: boolean;
+    isCurve?: boolean;
+    isPath?: boolean;
+    isDpr?: boolean;
+    noHandles?: boolean;
+    curveCtrls?: { time: number; price: number }[];
+    curveHandle?: number | null;
+    pathHandle?: number | null;
+    bodyStart?: { time: number; price: number } | null;
+    bodyOrig?: any;
   } | null>(null);
   /** Unified continuous body-drag for any line/alarm (TV-style grab & move) */
   const bodyDragRef = useRef<{
