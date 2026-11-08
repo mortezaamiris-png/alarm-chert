@@ -15415,6 +15415,10 @@ priced.sort((a, b) => a.price - b.price);
         const rect = cont.getBoundingClientRect();
         const px = e.clientX - rect.left;
         const py = e.clientY - rect.top;
+        // Track pixel distance so pointerup knows this was a real drag (not a click)
+        try {
+          (bd as any)._movedPx = Math.hypot(px - bd.startX, py - bd.startY);
+        } catch {}
         const price = ser.coordinateToPrice(py);
         if (price == null || Number.isNaN(price)) return;
         let tCursor: number | null = null;
@@ -15684,26 +15688,48 @@ priced.sort((a, b) => a.price - b.price);
             }
             if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
           } else if (bd.type === "diag") {
-            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-            if (bd.kind === "line" && cur) {
+            const md = moveDiagRef.current as any;
+            const t0 = Number(md?.pointA?.time ?? bd.orig.t0);
+            const p0 = Number(md?.pointA?.price ?? bd.orig.p0);
+            const t1 = Number(md?.pointB?.time ?? bd.orig.t1);
+            const p1 = Number(md?.pointB?.price ?? bd.orig.p1);
+            if (bd.kind === "line") {
+              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
               const patch: any = {
-                start_time: cur.start_time, price: cur.price,
-                end_time: cur.end_time, end_price: cur.end_price,
+                start_time: t0, price: p0,
+                end_time: t1, end_price: p1,
               };
+              // preserve user note after | on __diag:
+              if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
+                const rest = cur.note.includes("|") ? cur.note.slice(cur.note.indexOf("|")) : "";
+                patch.note = `__diag:${t0}:${t1}:${p1}${rest}`;
+              } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__")) {
+                patch.note = cur.note;
+              }
               setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              try {
+                const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (lr) Object.assign(lr, patch);
+              } catch {}
               if (!String(bd.id).startsWith("local-")) {
                 await supabase.from("chart_lines").update(patch).eq("id", bd.id);
               }
             } else if (bd.kind === "alarm") {
-              const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-              if (curA) {
-                const patch: any = {
-                  start_time: curA.start_time, price: curA.price,
-                  end_time: (curA as any).end_time, end_price: (curA as any).end_price,
-                };
-                setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-                await supabase.from("alarms").update(patch).eq("id", bd.id);
-              }
+              const patch: any = {
+                start_time: t0, price: p0,
+                end_time: t1, end_price: p1,
+              };
+              setAlarms((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              try {
+                const ar = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (ar) Object.assign(ar, patch);
+              } catch {}
+              await supabase.from("alarms").update(patch).eq("id", bd.id);
+            }
+            if (md) {
+              md.phase = "pick";
+              md.pointA = { time: t0, price: p0 };
+              md.pointB = { time: t1, price: p1 };
             }
           } else if (bd.type === "h") {
             const newP = (bd as any)._liveP ?? bd.orig.p;
@@ -27768,32 +27794,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `a-style-${a.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.92)",
-                          backdropFilter: "blur(24px)",
-                        }}>
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
-                          {LINE_WIDTHS.map((w) => (
-                            <button key={w} type="button"
-                              onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(a.width || 2) === w ? "✓" : ""}</span>
-                              W{w}
-                            </button>
-                          ))}
-                          <div className="border-t border-white/10 my-1" />
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
-                          {(["solid", "dashed"] as const).map((d) => (
-                            <button key={d} type="button"
-                              onClick={() => { pushUndo(); updateAlarmDash(a.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(a.dash === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(a.dash === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
-                              {d === "solid" ? "—— Solid" : "- - Dash"}
-                            </button>
-                          ))}
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
+                          <div className="flex gap-1">
+                            {LINE_WIDTHS.map((w) => (
+                              <button
+                                key={w}
+                                type="button"
+                                onClick={() => { pushUndo(); updateAlarmWidth(a.id, w); setOpenMenu(null); }}
+                                className={`w-7 h-7 rounded-md text-xs font-medium ${(a.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >{w}</button>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                          <div className="flex gap-1">
+                            {(["solid", "dashed", "dotted"] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => { pushUndo(); updateAlarmDash(a.id, st); setOpenMenu(null); }}
+                                className={`flex-1 h-7 rounded-md text-[10px] ${(a.dash === st || (!a.dash && st === "solid")) ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >
+                                {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -28467,32 +28492,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                       {openMenu === `l-style-${l.id}` && (
-                        <div className="absolute z-50 bottom-full mb-1 right-0 border border-white/20 rounded-2xl py-1.5 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden isolate min-w-[130px]" style={{
-                          animation: "tfPop 0.28s cubic-bezier(0.34,1.3,0.64,1)",
-                          background: "rgba(20,20,22,0.92)",
-                          backdropFilter: "blur(24px)",
-                        }}>
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Width</div>
-                          {LINE_WIDTHS.map((w) => (
-                            <button key={w} type="button"
-                              onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${(l.width || 2) === w ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{(l.width || 2) === w ? "✓" : ""}</span>
-                              W{w}
-                            </button>
-                          ))}
-                          <div className="border-t border-white/10 my-1" />
-                          <div className="text-[10px] text-gray-500 px-3 py-0.5">Style</div>
-                          {(["solid", "dashed"] as const).map((d) => (
-                            <button key={d} type="button"
-                              onClick={() => { pushUndo(); updateLineDash(l.id, d); setOpenMenu(null); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-white/10 ${((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "text-orange-300" : "text-gray-200"}`}
-                            >
-                              <span className="w-3 text-orange-400">{((l.dash || l.style) === "dashed" ? "dashed" : "solid") === d ? "✓" : ""}</span>
-                              {d === "solid" ? "—— Solid" : "- - Dash"}
-                            </button>
-                          ))}
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
+                          <div className="flex gap-1">
+                            {LINE_WIDTHS.map((w) => (
+                              <button
+                                key={w}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineWidth(l.id, w); setOpenMenu(null); }}
+                                className={`w-7 h-7 rounded-md text-xs font-medium ${(l.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >{w}</button>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                          <div className="flex gap-1">
+                            {(["solid", "dashed", "dotted"] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineDash(l.id, st); setOpenMenu(null); }}
+                                className={`flex-1 h-7 rounded-md text-[10px] ${((l.dash || l.style) === st || (!(l.dash || l.style) && st === "solid")) ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >
+                                {st === "solid" ? "—" : st === "dashed" ? "- -" : "···"}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
