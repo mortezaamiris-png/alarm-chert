@@ -2439,7 +2439,18 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__frvp:")) return { icon: "▦", label: "FRVP", showPrice: false };
   if (n.startsWith("__long:")) return { icon: "L", label: "Long", showPrice: false };
   if (n.startsWith("__short:")) return { icon: "S", label: "Short", showPrice: false };
-  if (n === "__vline__") return { icon: "|", label: "Vertical", showPrice: false };
+  if (n === "__vline__" || n.startsWith("__vline__:")) return { icon: "|", label: "Vertical", showPrice: false };
+  // Geometry-based vertical (start_time === end_time)
+  if (
+    l.start_time != null &&
+    l.end_time != null &&
+    Number(l.start_time) === Number(l.end_time) &&
+    !isDiagonalLine(l as any) &&
+    !n.startsWith("__diag:") &&
+    !n.startsWith("__ray:")
+  ) {
+    return { icon: "|", label: "Vertical", showPrice: false };
+  }
   if (n.startsWith("__arrow")) return { icon: "↗", label: "Arrow", showPrice: false };
   if (n.startsWith("__callout")) return { icon: "T", label: "Callout", showPrice: false };
   if (isDiagonalLine(l as any) || n.startsWith("__diag:")) return { icon: "/", label: "Diag", showPrice: true };
@@ -2479,8 +2490,10 @@ function userFacingNote(note?: string | null): string {
   if (!s) return "";
   if (s === "__vline__") return "";
   if (s.startsWith("__vline__:")) {
-    // __vline__:unix|text or __vline__:unix
-    const rest = s.replace(/^__vline__:[^|]*/, "").replace(/^[|]+/, "").trim();
+    // __vline__:unix|text||__cfg:...
+    let rest = s.replace(/^__vline__:[^|]*/, "").replace(/^[|]+/, "");
+    rest = rest.replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "").replace(/\|+$/g, "").trim();
+    if (rest.startsWith("__")) return "";
     return rest;
   }
   if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
@@ -2535,10 +2548,10 @@ function userFacingNote(note?: string | null): string {
       .replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "")
       .replace(/\|+$/g, "")
       .trim();
-    if (!cleaned || cleaned === s.replace(/\|+/g, "").trim() && cleaned.startsWith("__")) return "";
-    if (cleaned.startsWith("__")) return "";
+    if (!cleaned || cleaned.startsWith("__")) return "";
     return cleaned;
   }
+  if (/^__cfg:/.test(s)) return "";
   return s;
 }
 
@@ -22352,8 +22365,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         dash: (data as any).dash || payload.dash,
         note: (data as any).note || payload.note,
         start_time:
-          (data as any).start_time ?? (isDiag || isRay ? startTime : null),
-        end_time: (data as any).end_time ?? (isDiag ? endTime : null),
+          (data as any).start_time ?? (isDiag || isRay || isV ? (isV ? vTime : startTime) : null),
+        end_time: (data as any).end_time ?? (isDiag ? endTime : isV ? vTime : null),
         end_price: (data as any).end_price ?? (isDiag ? endPrice : null),
       };
       // Parse note-encoded geometry if columns missing
@@ -22366,15 +22379,28 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       }
       if (saved.start_time == null && saved.note?.startsWith("__ray:")) {
-        const n = Number(saved.note.replace("__ray:", ""));
+        const n = Number(String(saved.note).replace(/^__ray:/, "").split("|")[0]);
         if (!Number.isNaN(n)) saved.start_time = n;
+      }
+      if (typeof saved.note === "string" && saved.note.startsWith("__vline__:")) {
+        const n = Number(String(saved.note).replace(/^__vline__:/, "").split("|")[0]);
+        if (!Number.isNaN(n) && n > 0) {
+          saved.start_time = n;
+          saved.end_time = n;
+        }
+      } else if (isV && vTime != null) {
+        saved.start_time = vTime;
+        saved.end_time = vTime;
+        if (!saved.note || !String(saved.note).includes("__vline__")) {
+          saved.note = encodeAlarmCfg(`__vline__:${vTime}` + (userTxt ? `|${userTxt}` : ""), once, deleteAfter);
+        }
       }
       pushUndo();
             setAlarms((prev) => [saved, ...prev]);
       await supabase.from("chart_lines").delete().eq("id", line.id);
       setLines((prev) => prev.filter((l) => l.id !== line.id));
       setStatusMsg(
-        isDiag ? "Diagonal alarm active" : isRay ? "Ray alarm active" : "Converted to alarm"
+        isDiag ? "Diagonal alarm active" : isV ? "Vertical alarm active" : isRay ? "Ray alarm active" : "Converted to alarm"
       );
     } catch {
       setStatusMsg("Convert error");
@@ -22435,8 +22461,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           }
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
           // Keep time encoding; attach user text after |
-          let head = s.split("|")[0];
+          let head = s.split("|")[0].split("||")[0];
           if (head === "__vline__" && cur.start_time != null) head = `__vline__:${Number(cur.start_time)}`;
+          // strip any leftover cfg from head
+          head = head.replace(/\|?__cfg:.*$/, "");
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
+        } else if (
+          cur.start_time != null &&
+          cur.end_time != null &&
+          Number(cur.start_time) === Number(cur.end_time) &&
+          !isDiagonalLine(cur)
+        ) {
+          // Vertical by geometry but note lost encoding
+          const head = `__vline__:${Number(cur.start_time)}`;
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         }
       }
