@@ -15709,6 +15709,11 @@ priced.sort((a, b) => a.price - b.price);
         const rect = cont.getBoundingClientRect();
         const px = e.clientX - rect.left;
         const py = e.clientY - rect.top;
+        // Track drag distance — without this, pointerup treats every release as a click
+        // and re-renders from old state (diagonal snaps back to original position).
+        try {
+          (bd as any)._movedPx = Math.hypot(px - Number(bd.startX), py - Number(bd.startY));
+        } catch {}
         const price = ser.coordinateToPrice(py);
         if (price == null || Number.isNaN(price)) return;
         let tCursor: number | null = null;
@@ -15965,8 +15970,15 @@ priced.sort((a, b) => a.price - b.price);
         // Pure click (no real drag): keep selection + tools, do NOT save/exit
         const movedPx = Number((bd as any)._movedPx || 0);
         if (movedPx < 4) {
-          setStatusMsg("Selected — drag to move");
-          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          try {
+            const md = moveDiagRef.current as any;
+            if (md) md.phase = "pick";
+          } catch {}
+          setStatusMsg("Selected — drag the line to move");
+          // Avoid full re-render for diag (can wipe unsaved visual); only refresh other types
+          if (bd.type !== "diag") {
+            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+          }
           return;
         }
 
@@ -16003,7 +16015,8 @@ priced.sort((a, b) => a.price - b.price);
                   end_time: t1, end_price: p1,
                 };
                 if (cur && typeof cur.note === "string" && cur.note.startsWith("__diag:")) {
-                  patch.note = `__diag:${t0}:${t1}:${p1}`;
+                  const rest = cur.note.includes("|") ? cur.note.slice(cur.note.indexOf("|")) : "";
+                  patch.note = `__diag:${t0}:${t1}:${p1}${rest}`;
                 }
                 if (cur) {
                   cur.start_time = t0; cur.price = p0; cur.end_time = t1; cur.end_price = p1;
