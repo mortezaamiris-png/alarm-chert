@@ -3081,20 +3081,40 @@ function timeToXPixel(
   candles?: { time: number }[] | null
 ): number | null {
   try {
+    // Prefer native coordinate — works off-screen too (negative / > width) so curve stays locked to data while panning
     const x = chart?.timeScale?.()?.timeToCoordinate?.(t as any);
     if (x != null && !Number.isNaN(Number(x))) return Number(x);
   } catch {}
+  // Fallback: interpolate between neighboring bars when time is not on a series point
   const bars = (candles && candles.length ? candles : null) as { time: number }[] | null;
   if (!chart || !bars || bars.length < 1) return null;
   try {
     if (t <= bars[0].time) {
+      // extrapolate left of first bar using bar spacing
       const x0 = chart.timeScale().timeToCoordinate(bars[0].time as any);
-      return x0 != null ? Number(x0) : null;
+      if (x0 == null) return null;
+      if (bars.length >= 2) {
+        const x1 = chart.timeScale().timeToCoordinate(bars[1].time as any);
+        if (x1 != null) {
+          const dt = bars[1].time - bars[0].time || 1;
+          return Number(x0) + ((t - bars[0].time) / dt) * (Number(x1) - Number(x0));
+        }
+      }
+      return Number(x0);
     }
     const last = bars[bars.length - 1];
     if (t >= last.time) {
       const x1 = chart.timeScale().timeToCoordinate(last.time as any);
-      return x1 != null ? Number(x1) : null;
+      if (x1 == null) return null;
+      if (bars.length >= 2) {
+        const prev = bars[bars.length - 2];
+        const x0 = chart.timeScale().timeToCoordinate(prev.time as any);
+        if (x0 != null) {
+          const dt = last.time - prev.time || 1;
+          return Number(x1) + ((t - last.time) / dt) * (Number(x1) - Number(x0));
+        }
+      }
+      return Number(x1);
     }
     let lo = 0, hi = bars.length - 1;
     while (lo < hi - 1) {
@@ -8110,13 +8130,49 @@ export default function DashboardPage() {
     };
 
     const paintRays = () => {
-      // Rays are drawn by LWC line series (native price-axis tags, no start circle).
-      // Clear any leftover DOM from older versions.
+      // Rays are drawn by LWC line series. Keep notes in DOM glued to origin.
       const host = vlineOverlayRef.current;
+      const chart2 = chartRef.current;
+      const ser = seriesRef.current;
       if (!host) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-note]").forEach((el) => el.remove());
+      if (!chart2 || !ser || hideLines) return;
+      try {
+        const symU = (symbolRef.current || "").toUpperCase();
+        const all = [
+          ...((linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU).map((l: any) => ({ kind: "line" as const, obj: l }))),
+          ...((alarmsRef.current || []).filter((a: any) => String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered).map((a: any) => ({ kind: "alarm" as const, obj: a }))),
+        ];
+        for (const { obj: o } of all) {
+          const n = typeof o.note === "string" ? o.note : "";
+          const isRay =
+            n.startsWith("__ray:") ||
+            (o.start_time != null && (o.end_time == null || o.end_price == null) && !isDiagonalLine(o as any) && !n.startsWith("__arrow") && !n.startsWith("__vline") && n !== "__vline__");
+          if (!isRay) continue;
+          const txt = userFacingNote(o.note);
+          if (!txt) continue;
+          let t0 = o.start_time != null ? Number(o.start_time) : 0;
+          if ((!t0 || Number.isNaN(t0)) && n.startsWith("__ray:")) {
+            t0 = Number(n.replace(/^__ray:/, "").split("|")[0].split("||")[0]);
+          }
+          if (!t0 || Number.isNaN(t0)) continue;
+          const x = chart2.timeScale().timeToCoordinate(t0 as any);
+          const y = ser.priceToCoordinate(Number(o.price));
+          if (x == null || y == null) continue;
+          const lab = document.createElement("div");
+          lab.setAttribute("data-ray-note", String(o.id));
+          lab.setAttribute("data-t", String(t0));
+          lab.setAttribute("data-p", String(o.price));
+          lab.textContent = txt;
+          lab.style.cssText =
+            `position:absolute;left:${Number(x) + 8}px;top:${Number(y) + 10}px;` +
+            `font-size:11px;font-weight:600;color:${o.color || "#d1d5db"};` +
+            `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
+          host.appendChild(lab);
+        }
+      } catch {}
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -16665,9 +16721,26 @@ priced.sort((a, b) => a.price - b.price);
                 const x = chart.timeScale().timeToCoordinate(tV as any);
                 if (x != null) consider(String(a.id), "alarm", "v", Math.abs(px - Number(x)), a);
               }
-            } else if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
+            } else if (
+              (typeof a.note === "string" && a.note.startsWith("__ray:")) ||
+              (a.start_time != null && (a.end_time == null || a.end_price == null))
+            ) {
               const y = ser.priceToCoordinate(Number(a.price));
-              if (y != null) consider(String(a.id), "alarm", "ray", Math.abs(py - Number(y)), a);
+              let t0 = a.start_time != null ? Number(a.start_time) : null;
+              if ((t0 == null || !(t0 > 0)) && typeof a.note === "string" && a.note.startsWith("__ray:")) {
+                const n = Number(String(a.note).replace(/^__ray:/, "").split("|")[0].split("||")[0]);
+                if (!Number.isNaN(n) && n > 0) t0 = n;
+              }
+              const x0 = t0 != null ? chart.timeScale().timeToCoordinate(t0 as any) : null;
+              if (y != null) {
+                const dy = Math.abs(py - Number(y));
+                // only the visible half-line from origin → right (no invisible full-width grab)
+                if (x0 == null || Number.isNaN(Number(x0))) {
+                  if (dy <= HIT) consider(String(a.id), "alarm", "ray", dy, a);
+                } else if (px >= Number(x0) - 4) {
+                  if (dy <= HIT) consider(String(a.id), "alarm", "ray", dy, a);
+                }
+              }
             } else {
               const y = ser.priceToCoordinate(Number(a.price));
               if (y != null) consider(String(a.id), "alarm", "h", Math.abs(py - Number(y)), a);
@@ -23495,8 +23568,37 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
         }, 40);
       } else {
-        await supabase.from("alarms").update({ note: text || null }).eq("id", id);
-        setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: text || null } : a)));
+        // Alarm: preserve ray/vline/diag encoding when present
+        const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(id));
+        let noteOut: string | null = text || null;
+        if (curA) {
+          const s = typeof curA.note === "string" ? curA.note : "";
+          const cfg = parseAlarmCfg(s);
+          if (s.startsWith("__ray:") || (curA.start_time != null && (curA.end_time == null || curA.end_price == null) && !isDiagonalLine(curA as any))) {
+            let t0 = curA.start_time != null ? Number(curA.start_time) : 0;
+            if (s.startsWith("__ray:")) {
+              const n = Number(s.replace(/^__ray:/, "").split("|")[0].split("||")[0]);
+              if (!Number.isNaN(n) && n > 0) t0 = n;
+            }
+            const base = text ? `__ray:${t0}|${text}` : `__ray:${t0}`;
+            noteOut = encodeAlarmCfg(base, cfg.once, cfg.deleteAfter);
+          } else if (s.startsWith("__vline") || (curA.start_time != null && curA.end_time != null && Number(curA.start_time) === Number(curA.end_time))) {
+            const t0 = curA.start_time != null ? Number(curA.start_time) : 0;
+            const base = text ? `__vline__:${t0}|${text}` : `__vline__:${t0}`;
+            noteOut = encodeAlarmCfg(base, cfg.once, cfg.deleteAfter);
+          } else if (s.startsWith("__diag:") || isDiagonalLine(curA as any)) {
+            const head = s.startsWith("__diag:") ? s.split("|")[0] : s.split("|")[0];
+            const base = text ? `${head}|${text}` : head;
+            noteOut = encodeAlarmCfg(base, cfg.once, cfg.deleteAfter);
+          } else if (text) {
+            noteOut = encodeAlarmCfg(text, cfg.once, cfg.deleteAfter);
+          }
+        }
+        await supabase.from("alarms").update({ note: noteOut }).eq("id", id);
+        try {
+          if (curA) curA.note = noteOut;
+        } catch {}
+        setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, note: noteOut } : a)));
       }
     } catch {}
     setMoveNoteOpen(false);
