@@ -7872,9 +7872,9 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avwap-fill]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
-      // Always nuke curve/path handles + drafts so they never linger after deselect
+      // Always nuke curve/path handles + drafts + SVG so deleted curves vanish
       vlineOverlayRef.current?.querySelectorAll(
-        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft]"
+        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit]"
       ).forEach((el) => el.remove());
     } catch {}
     try {
@@ -22475,7 +22475,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       setTimeout(() => {
         try {
           const host = vlineOverlayRef.current;
-          host?.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle]`).forEach((el) => el.remove());
+          host?.querySelectorAll(
+            `[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle],[data-curve-svg="${sid}"],[data-curve-id="${sid}"],[data-curve-handle],[data-curve-draft],[data-curve-hit="${sid}"]`
+          ).forEach((el) => el.remove());
+          // also drop orphan curve SVGs not in lines list
+          host?.querySelectorAll("[data-curve-svg]").forEach((el) => {
+            const cid = el.getAttribute("data-curve-svg");
+            if (cid && !(linesRef.current || []).some((x: any) => String(x.id) === String(cid))) {
+              try { el.remove(); } catch {}
+            }
+          });
           // remove any leftover series array for this id
           const chart = chartRef.current;
           const held = chartLinesRef.current.get(sid);
@@ -25118,7 +25127,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </button>
           )}
 
-          <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 pointer-events-auto items-start">
+          <div className="absolute top-8 left-2 z-10 flex flex-col gap-1 pointer-events-auto items-start">
             {!hideIndicators && (
               <button
                 type="button"
@@ -29134,7 +29143,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             <button
               type="button"
               onClick={() => setShowToolsPanel(true)}
-              className="absolute top-2 left-2 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300 inline-flex items-center gap-1.5"
+              className="absolute top-10 left-2 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300 inline-flex items-center gap-1.5"
               title="Show drawing tools"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
