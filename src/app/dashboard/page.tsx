@@ -2579,7 +2579,13 @@ function userFacingNote(note?: string | null): string {
     return joined;
   }
   if (s.startsWith("__path:")) return "Path";
-  if (s.startsWith("__brush:")) return "Brush";
+  if (s.startsWith("__brush:")) {
+    const m = s.match(/\|txt=([^|]*)/);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+    }
+    return "";
+  }
   if (s.startsWith("__avp:")) {
     const p = parseAvpNote(s);
     if (p && p.text) return p.text;
@@ -4923,6 +4929,10 @@ export default function DashboardPage() {
   const [selectedRectId, setSelectedRectId] = useState<string | null>(null);
   const [rectStyleOpen, setRectStyleOpen] = useState(false);
   const [rectColorOpen, setRectColorOpen] = useState(false);
+  const [selectedBrushId, setSelectedBrushId] = useState<string | null>(null);
+  const [brushStyleOpen, setBrushStyleOpen] = useState(false);
+  const [brushColorOpen, setBrushColorOpen] = useState(false);
+  const [brushBarPos, setBrushBarPos] = useState({ x: 12, y: 340 });
   const dprDraftRef = useRef<{ a?: { time: number; price: number } } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
@@ -10747,6 +10757,17 @@ priced.sort((a, b) => a.price - b.price);
                 wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
                 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
                 svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
+                // wide invisible hit stroke
+                const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                hit.setAttribute("points", coords.join(" "));
+                hit.setAttribute("fill", "none");
+                hit.setAttribute("stroke", "transparent");
+                hit.setAttribute("stroke-width", "14");
+                hit.setAttribute("stroke-linecap", "round");
+                hit.setAttribute("stroke-linejoin", "round");
+                hit.style.pointerEvents = "stroke";
+                hit.style.cursor = "move";
+                hit.setAttribute("data-brush-hit", String(l.id));
                 const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
                 poly.setAttribute("points", coords.join(" "));
                 poly.setAttribute("fill", "none");
@@ -10754,6 +10775,8 @@ priced.sort((a, b) => a.price - b.price);
                 poly.setAttribute("stroke-width", String(Math.max(1, Number(width) || 2)));
                 poly.setAttribute("stroke-linecap", "round");
                 poly.setAttribute("stroke-linejoin", "round");
+                poly.style.pointerEvents = "none";
+                svg.appendChild(hit);
                 svg.appendChild(poly);
                 wrap.appendChild(svg);
                 host.appendChild(wrap);
@@ -12971,6 +12994,7 @@ priced.sort((a, b) => a.price - b.price);
       if (selectedRectIdRef.current === id) return;
       selectedRectIdRef.current = id;
       try { setSelectedRectId(id); } catch {}
+      if (id) { try { setSelectedBrushId(null); } catch {} }
       // lightweight: only re-render lines overlay for handle visibility
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     };
@@ -13315,6 +13339,161 @@ priced.sort((a, b) => a.price - b.price);
       window.removeEventListener("pointercancel", onUp);
     };
   }, [mode]);
+
+  // Brush select + drag body
+  useEffect(() => {
+    const host = chartContainerRef.current || vlineOverlayRef.current;
+    if (!host) return;
+    let drag: null | {
+      id: string;
+      startX: number; startY: number;
+      pts: { time: number; price: number }[];
+      moved: boolean;
+    } = null;
+    const timeFromClientX = (clientX: number): number | null => {
+      const chart = chartRef.current;
+      const candles = candlesRef.current || [];
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !rect || !candles.length) return null;
+      const x = clientX - rect.left;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      if (logical == null || Number.isNaN(Number(logical))) return null;
+      const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+      const lastIdx = candles.length - 1;
+      const L = Number(logical);
+      if (L > lastIdx) return Number(candles[lastIdx].time) + (L - lastIdx) * barSec;
+      if (L < 0) return Number(candles[0].time) + L * barSec;
+      const i0 = Math.max(0, Math.min(lastIdx - 1, Math.floor(L)));
+      const i1 = Math.min(lastIdx, i0 + 1);
+      return Number(candles[i0].time) + (Number(candles[i1].time) - Number(candles[i0].time)) * (L - i0);
+    };
+    const priceFromClientY = (clientY: number): number | null => {
+      const series = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!series || !rect) return null;
+      const y = clientY - rect.top;
+      const pr = series.coordinateToPrice(y);
+      return pr != null && Number.isFinite(pr) ? Number(pr) : null;
+    };
+    const applyPtsVisual = (id: string, pts: { time: number; price: number }[]) => {
+      const wrap = vlineOverlayRef.current?.querySelector(`[data-brush-id="${id}"]`) as HTMLElement | null;
+      if (!wrap) return;
+      const chart2 = chartRef.current;
+      const ser2 = seriesRef.current;
+      if (!chart2 || !ser2) return;
+      const coords: string[] = [];
+      for (const p of pts) {
+        const x = chart2.timeScale().timeToCoordinate(p.time as any);
+        const y = ser2.priceToCoordinate(p.price);
+        if (x == null || y == null) continue;
+        coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+      }
+      if (coords.length < 2) return;
+      wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
+      wrap.querySelectorAll("polyline").forEach((pl) => pl.setAttribute("points", coords.join(" ")));
+    };
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as Element | null;
+      if (!t) return;
+      const hit = (t.closest?.("[data-brush-hit]") || (t as any).getAttribute?.("data-brush-hit") ? t : null) as Element | null;
+      const hid = hit?.getAttribute?.("data-brush-hit");
+      if (!hid) {
+        // click outside brush → deselect brush toolbar (not when on rect toolbar)
+        if (!(ev.target as HTMLElement)?.closest?.("[data-brush-toolbar],[data-rect-toolbar],[data-move-bar],[data-menu],[data-note-edit]")) {
+          // only clear brush if click is on chart empty area
+        }
+        return;
+      }
+      if (modeRef.current === "brush") return; // drawing mode — don't drag existing
+      const wrap = vlineOverlayRef.current?.querySelector(`[data-brush-id="${hid}"]`) as HTMLElement | null;
+      const raw = wrap?.getAttribute("data-brush-pts") || "";
+      const pts = raw.split("|").map((s) => {
+        const [tt, pp] = s.split(",");
+        return { time: Number(tt), price: Number(pp) };
+      }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+      if (pts.length < 2) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      selectedRectIdRef.current = null;
+      try { setSelectedRectId(null); } catch {}
+      try { setSelectedBrushId(String(hid)); } catch {}
+      drag = { id: String(hid), startX: ev.clientX, startY: ev.clientY, pts, moved: false };
+      try { (hit as any).setPointerCapture?.(ev.pointerId); } catch {}
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (!drag) return;
+      const t0 = timeFromClientX(drag.startX);
+      const p0 = priceFromClientY(drag.startY);
+      const t1 = timeFromClientX(ev.clientX);
+      const p1 = priceFromClientY(ev.clientY);
+      if (t0 == null || p0 == null || t1 == null || p1 == null) return;
+      const dt = t1 - t0;
+      const dp = p1 - p0;
+      if (Math.abs(ev.clientX - drag.startX) > 3 || Math.abs(ev.clientY - drag.startY) > 3) drag.moved = true;
+      const next = drag.pts.map((p) => ({ time: p.time + dt, price: p.price + dp }));
+      applyPtsVisual(drag.id, next);
+    };
+    const onUp = async (ev: PointerEvent) => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      if (!d.moved) return;
+      const t0 = timeFromClientX(d.startX);
+      const p0 = priceFromClientY(d.startY);
+      const t1 = timeFromClientX(ev.clientX);
+      const p1 = priceFromClientY(ev.clientY);
+      if (t0 == null || p0 == null || t1 == null || p1 == null) return;
+      const dt = t1 - t0;
+      const dp = p1 - p0;
+      const next = d.pts.map((p) => ({ time: p.time + dt, price: p.price + dp }));
+      // preserve txt if any
+      const cur = (linesRef.current || []).find((x) => String(x.id) === String(d.id));
+      let note = `__brush:` + next.map((p) => `${p.time},${p.price}`).join("|");
+      if (cur && typeof cur.note === "string" && cur.note.includes("|txt=")) {
+        const txt = cur.note.split("|txt=")[1];
+        if (txt) note += `|txt=${txt}`;
+      }
+      const first = next[0];
+      const last = next[next.length - 1];
+      try {
+        if (linesRef.current) {
+          const lr = linesRef.current.find((x) => String(x.id) === String(d.id));
+          if (lr) {
+            lr.note = note;
+            lr.price = first.price;
+            lr.end_price = last.price;
+            (lr as any).start_time = first.time;
+            (lr as any).end_time = last.time;
+          }
+        }
+      } catch {}
+      setLines((prev) => prev.map((l) => String(l.id) === String(d.id)
+        ? { ...l, note, price: first.price, end_price: last.price, start_time: first.time, end_time: last.time }
+        : l));
+      try {
+        if (!String(d.id).startsWith("local-")) {
+          await supabase.from("chart_lines").update({
+            note,
+            price: first.price,
+            end_price: last.price,
+            start_time: first.time,
+            end_time: last.time,
+          }).eq("id", d.id);
+        }
+      } catch {}
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    };
+    host.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      host.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
 
   const syncFutureAxis = useCallback((candles: any[], iv: string) => {
     try {
@@ -24048,6 +24227,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         } else if (s.startsWith("__callout:")) {
           noteToSave = `__callout:${noteDraft.trim()}`;
+        } else if (s.startsWith("__brush:")) {
+          const ptsPart = s.replace(/^__brush:/, "").split("|").filter((p) => !p.startsWith("txt=")).join("|");
+          noteToSave = noteDraft.trim()
+            ? `__brush:${ptsPart}|txt=${encodeURIComponent(noteDraft.trim())}`
+            : `__brush:${ptsPart}`;
         } else if (s.startsWith("__rect:")) {
           const rp = parseRectNote(s);
           if (rp) {
@@ -26257,6 +26441,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4h8M4 8v8M20 8v8M8 20h8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 2l-1.5 2M12 2l1.5 2M12 22l-1.5-2M12 22l1.5-2M2 12l2-1.5M2 12l2 1.5M22 12l-2-1.5M22 12l-2 1.5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                       ) : id === "rect" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
+                      ) : id === "brush" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -26266,6 +26452,152 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           )}
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
+          {/* Brush floating toolbar — color / note / width / trash (no alarm) */}
+          {selectedBrushId && (() => {
+            const ln = (linesRef.current || []).find((x) => String(x.id) === String(selectedBrushId));
+            if (!ln || typeof ln.note !== "string" || !ln.note.startsWith("__brush:")) return null;
+            const col = ln.color || "#e5e7eb";
+            const width = Number(ln.width || 2);
+            return (
+              <div
+                data-move-bar
+                data-brush-toolbar="1"
+                className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-1.5 py-1 shadow-xl flex items-center gap-1 pointer-events-auto select-none"
+                style={{ left: brushBarPos.x, top: brushBarPos.y, bottom: "auto" }}
+                onPointerDown={(e) => {
+                  const t = e.target as HTMLElement;
+                  if (t.closest("button") || t.closest("input") || t.closest("[data-menu]")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const startX = e.clientX, startY = e.clientY;
+                  const orig = { ...brushBarPos };
+                  const onMove = (ev: PointerEvent) => {
+                    setBrushBarPos({
+                      x: Math.max(4, orig.x + (ev.clientX - startX)),
+                      y: Math.max(4, orig.y + (ev.clientY - startY)),
+                    });
+                  };
+                  const onUp = () => {
+                    document.removeEventListener("pointermove", onMove);
+                    document.removeEventListener("pointerup", onUp);
+                  };
+                  document.addEventListener("pointermove", onMove);
+                  document.addEventListener("pointerup", onUp);
+                }}
+              >
+                <div title="Drag toolbar" className="w-4 h-7 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0">
+                  <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="11" r="1.2"/><circle cx="7" cy="11" r="1.2"/></svg>
+                </div>
+                {/* Color */}
+                <div className="relative" data-menu>
+                  <button
+                    type="button"
+                    title="Color"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center overflow-hidden ${brushColorOpen ? "border-orange-400 ring-1 ring-orange-400/40" : "border-white/25 hover:border-orange-400/60"}`}
+                    onClick={() => { setBrushColorOpen((v) => !v); setBrushStyleOpen(false); setMoveNoteOpen(false); }}
+                  >
+                    <span className="w-4 h-4 rounded-sm border border-white/20" style={{ background: col }} />
+                  </button>
+                  {brushColorOpen && (
+                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[9.5rem]" onClick={(e) => e.stopPropagation()}>
+                      <div className="grid grid-cols-5 gap-1 mb-1">
+                        {["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"].map((c) => (
+                          <button key={c} type="button"
+                            className={`w-6 h-6 rounded-md border ${String(col).toLowerCase()===c.toLowerCase()?"border-orange-400 ring-1 ring-orange-400/40":"border-white/10"}`}
+                            style={{ background: c }}
+                            onClick={() => { if (!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, c); }}
+                          />
+                        ))}
+                      </div>
+                      <label className="flex items-center gap-1.5 text-[10px] text-gray-300 cursor-pointer">
+                        <span className="relative w-6 h-6 rounded-md overflow-hidden border border-white/20 shrink-0">
+                          <input type="color" value={col} onChange={(e)=>{ if(!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, e.target.value); }} className="absolute -top-1 -left-1 w-9 h-9 cursor-pointer border-0 p-0"/>
+                        </span>
+                        Custom
+                      </label>
+                    </div>
+                  )}
+                </div>
+                {/* Note */}
+                <div className="relative" data-note-edit data-menu>
+                  <button
+                    type="button"
+                    title="Note"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${moveNoteOpen && editingNoteId === selectedBrushId ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
+                    onClick={() => {
+                      const id = selectedBrushId;
+                      if (!id) return;
+                      if (moveNoteOpen && editingNoteId === id) { setMoveNoteOpen(false); setEditingNoteId(null); return; }
+                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                      setEditingNoteId(id as any);
+                      setEditingNoteType("line");
+                      setNoteDraft(userFacingNote(cur?.note) || "");
+                      setMoveNoteOpen(true);
+                      setBrushStyleOpen(false);
+                      setBrushColorOpen(false);
+                    }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                  </button>
+                  {moveNoteOpen && editingNoteId === selectedBrushId && (
+                    <div data-note-edit data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-40 flex flex-col gap-1" onClick={(e)=>e.stopPropagation()}>
+                      <input type="text" value={noteDraft} onChange={(e)=>setNoteDraft(e.target.value)}
+                        onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); void saveNote(); setMoveNoteOpen(false);} if(e.key==="Escape"){ setMoveNoteOpen(false); setEditingNoteId(null);} }}
+                        placeholder="Note…" className="w-full bg-gray-800 border border-gray-600 rounded px-1.5 py-1 text-[11px] text-white outline-none focus:border-orange-400" autoFocus />
+                      <div className="flex gap-1">
+                        <button type="button" className="flex-1 text-[11px] py-1 rounded font-semibold bg-orange-500 text-black" onClick={()=>{ void saveNote(); setMoveNoteOpen(false); }}>Save</button>
+                        <button type="button" className="px-1.5 text-[11px] py-1 rounded bg-gray-800 text-gray-300" onClick={()=>{ setMoveNoteOpen(false); setEditingNoteId(null); }}>✕</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {/* Width */}
+                <div className="relative" data-menu>
+                  <button type="button" title="Width"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${brushStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
+                    onClick={() => { setBrushStyleOpen((v)=>!v); setBrushColorOpen(false); setMoveNoteOpen(false); }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
+                  </button>
+                  {brushStyleOpen && (
+                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e)=>e.stopPropagation()}>
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Width</div>
+                      <div className="flex gap-0.5">
+                        {([1,2,3] as const).map((w)=>(
+                          <button key={w} type="button"
+                            className={`flex-1 text-[11px] py-0.5 rounded font-medium ${width===w?"bg-orange-500 text-black":"bg-gray-800 text-gray-200"}`}
+                            onClick={async ()=>{
+                              const id = selectedBrushId; if(!id) return;
+                              setLines((prev)=>prev.map((l)=>String(l.id)===String(id)?{...l,width:w}:l));
+                              try{ const lr=(linesRef.current||[]).find((x)=>String(x.id)===String(id)); if(lr) lr.width=w; }catch{}
+                              try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").update({width:w}).eq("id",id);}catch{}
+                              try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
+                              setBrushStyleOpen(false);
+                            }}
+                          >{w}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {/* Trash */}
+                <button type="button" title="Delete"
+                  className="w-7 h-7 rounded-md border border-white/20 text-gray-300 hover:text-red-400 hover:bg-red-500/15 hover:border-red-500/30 flex items-center justify-center"
+                  onClick={async ()=>{
+                    const id = selectedBrushId; if(!id) return;
+                    setLines((prev)=>prev.filter((x)=>String(x.id)!==String(id)));
+                    try{ if(linesRef.current) linesRef.current=(linesRef.current||[]).filter((x)=>String(x.id)!==String(id)); }catch{}
+                    setSelectedBrushId(null);
+                    try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id",id);}catch{}
+                    try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            );
+          })()}
+
           {/* Rectangle floating toolbar — color / note / line style / trash (no alarm) */}
           {selectedRectId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(selectedRectId));
@@ -26442,13 +26774,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setRectColorOpen(false);
                     }}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
                   </button>
                   {moveNoteOpen && editingNoteId === selectedRectId && (
                     <div
                       data-note-edit
                       data-menu
-                      className="absolute left-0 bottom-full mb-1.5 z-50 bg-gray-900 border border-gray-600 rounded-xl p-2 shadow-2xl w-52 flex flex-col gap-1.5"
+                      className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-40 flex flex-col gap-1"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <input
@@ -26493,15 +26825,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
                     onClick={() => setRectStyleOpen((v) => !v)}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 12h16"/><path d="M4 7h16" strokeDasharray="2 2"/><path d="M4 17h16" strokeDasharray="1 3"/></svg>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
                   </button>
                   {rectStyleOpen && (
-                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-2 shadow-xl w-40" onClick={(e) => e.stopPropagation()}>
-                      <div className="text-[10px] text-gray-500 uppercase mb-1">Width</div>
-                      <div className="flex gap-1 mb-2">
+                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e) => e.stopPropagation()}>
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Width</div>
+                      <div className="flex gap-0.5 mb-1.5">
                         {([1, 2, 3] as const).map((w) => (
                           <button key={w} type="button"
-                            className={`flex-1 text-xs py-1 rounded-md font-medium ${width === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                            className={`flex-1 text-[11px] py-0.5 rounded font-medium ${width === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
                             onClick={async () => {
                               const id = selectedRectId;
                               if (!id) return;
@@ -26513,15 +26845,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           >{w}</button>
                         ))}
                       </div>
-                      <div className="text-[10px] text-gray-500 uppercase mb-1">Style</div>
-                      <div className="flex gap-1">
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Style</div>
+                      <div className="flex gap-0.5">
                         {([
-                          { id: "solid" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg> },
-                          { id: "dashed" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="5 3"/></svg> },
-                          { id: "dotted" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="1.5 3"/></svg> },
+                          { id: "solid" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+                          { id: "dashed" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 2.5"/></svg> },
+                          { id: "dotted" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="1.2 2.5"/></svg> },
                         ]).map((st) => (
                           <button key={st.id} type="button" title={st.id}
-                            className={`flex-1 h-8 rounded-md flex items-center justify-center ${dash === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
+                            className={`flex-1 h-7 rounded flex items-center justify-center ${dash === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
                             onClick={async () => {
                               const id = selectedRectId;
                               if (!id) return;
@@ -26729,7 +27061,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
               // DPR / Rectangle keep their own bars
-              return !!(ln && typeof ln.note === "string" && (ln.note.startsWith("__dpr:") || ln.note.startsWith("__rect:")));
+              return !!(ln && typeof ln.note === "string" && (ln.note.startsWith("__dpr:") || ln.note.startsWith("__rect:") || ln.note.startsWith("__brush:")));
             })()))) && (
             <div
               data-move-bar
@@ -31639,6 +31971,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4h8M4 8v8M20 8v8M8 20h8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 2l-1.5 2M12 2l1.5 2M12 22l-1.5-2M12 22l1.5-2M2 12l2-1.5M2 12l2 1.5M22 12l-2-1.5M22 12l-2 1.5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                         ) : meta.label === "Rectangle" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
+                        ) : meta.label === "Brush" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
@@ -32197,7 +32531,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               >{w}</button>
                             ))}
                           </div>
-                          {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:"))) && (
+                          {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:"))) && (
                           <>
                           <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
                           <div className="flex gap-1">
@@ -32217,7 +32551,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:"))) && (
+                    {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:"))) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -32385,14 +32719,42 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // deselect box/brush toolbars when selecting other geometry
+                        if (!(typeof l.note === "string" && (l.note.startsWith("__rect:") || l.note.startsWith("__brush:")))) {
+                          try {
+                            selectedRectIdRef.current = null;
+                            setSelectedRectId(null);
+                            setSelectedBrushId(null);
+                            setRectStyleOpen(false);
+                            setRectColorOpen(false);
+                            setBrushStyleOpen(false);
+                            setBrushColorOpen(false);
+                          } catch {}
+                        }
                         // Rectangle — show floating toolbar + handles
                         if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
                           try {
                             selectedRectIdRef.current = String(l.id);
                             setSelectedRectId(String(l.id));
+                            setSelectedBrushId(null);
                             setRectStyleOpen(false);
+                            setRectColorOpen(false);
+                            setMoveNoteOpen(false);
                             try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                             setStatusMsg("Rectangle selected");
+                          } catch {}
+                          return;
+                        }
+                        // Brush — floating toolbar
+                        if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
+                          try {
+                            selectedRectIdRef.current = null;
+                            setSelectedRectId(null);
+                            setSelectedBrushId(String(l.id));
+                            setBrushStyleOpen(false);
+                            setBrushColorOpen(false);
+                            setMoveNoteOpen(false);
+                            setStatusMsg("Brush selected");
                           } catch {}
                           return;
                         }
