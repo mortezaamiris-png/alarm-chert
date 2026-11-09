@@ -22509,6 +22509,132 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     }
   };
 
+  /** Convert an alarm back into a normal chart line (Undo). */
+  const convertAlarmToLine = async (a: Alarm) => {
+    try {
+      pushUndo();
+      const noteRaw = typeof a.note === "string" ? a.note : "";
+      const userTxt = userFacingNote(noteRaw);
+      const geom = resolveDiagGeom(a as any);
+      const isDiag = !!geom || isDiagonalLine(a as any);
+      let isV = false;
+      let vTime: number | null = null;
+      if (
+        noteRaw === "__vline__" ||
+        noteRaw.startsWith("__vline__:") ||
+        (a.start_time != null && a.end_time != null && Number(a.start_time) === Number(a.end_time) && !isDiag)
+      ) {
+        isV = true;
+        vTime = a.start_time != null ? Number(a.start_time) : null;
+        if ((vTime == null || !(vTime > 0)) && noteRaw.startsWith("__vline__:")) {
+          const n = Number(noteRaw.replace(/^__vline__:/, "").split("|")[0]);
+          if (!Number.isNaN(n) && n > 0) vTime = n;
+        }
+      }
+      const isRay =
+        !isDiag &&
+        !isV &&
+        a.start_time != null &&
+        (a.end_time == null || a.end_price == null);
+
+      let note: string | null = null;
+      if (isDiag) {
+        const t0 = geom ? geom.t0 : Number(a.start_time);
+        const t1 = geom ? geom.t1 : Number(a.end_time);
+        const p1 = geom ? geom.p1 : Number(a.end_price);
+        note = `__diag:${t0}:${t1}:${p1}` + (userTxt ? `|${userTxt}` : "");
+      } else if (isV && vTime != null) {
+        note = `__vline__:${vTime}` + (userTxt ? `|${userTxt}` : "");
+      } else if (isRay) {
+        note = `__ray:${Number(a.start_time)}` + (userTxt ? `|${userTxt}` : "");
+      } else {
+        note = userTxt || null;
+      }
+
+      const payload: any = {
+        symbol: a.symbol,
+        price: Number(a.price),
+        color: a.color || DEFAULT_LINE_COLOR,
+        width: a.width || 2,
+        dash: a.dash || "solid",
+        note,
+      };
+      if (isDiag) {
+        payload.start_time = geom ? geom.t0 : a.start_time;
+        payload.end_time = geom ? geom.t1 : a.end_time;
+        payload.end_price = geom ? geom.p1 : a.end_price;
+      } else if (isV && vTime != null) {
+        payload.start_time = vTime;
+        payload.end_time = vTime;
+      } else if (isRay) {
+        payload.start_time = a.start_time;
+      }
+
+      try {
+        payload.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+      } catch {}
+
+      let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
+      if (error) {
+        // fallback without optional columns
+        const minimal: any = {
+          symbol: a.symbol,
+          price: Number(a.price),
+          color: a.color || DEFAULT_LINE_COLOR,
+          note,
+        };
+        try {
+          minimal.user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+        } catch {}
+        ({ data, error } = await supabase.from("chart_lines").insert([minimal]).select().single());
+      }
+      if (error || !data) {
+        setStatusMsg("Undo failed");
+        return;
+      }
+      const saved: any = {
+        ...(data as any),
+        color: (data as any).color || payload.color,
+        width: (data as any).width || payload.width,
+        dash: (data as any).dash || payload.dash,
+        note: (data as any).note || note,
+        start_time: (data as any).start_time ?? payload.start_time ?? null,
+        end_time: (data as any).end_time ?? payload.end_time ?? null,
+        end_price: (data as any).end_price ?? payload.end_price ?? null,
+      };
+      if (isV && vTime != null) {
+        saved.start_time = vTime;
+        saved.end_time = vTime;
+        if (!saved.note || !String(saved.note).includes("__vline__")) {
+          saved.note = `__vline__:${vTime}` + (userTxt ? `|${userTxt}` : "");
+        }
+      }
+      if (isDiag && geom) {
+        saved.start_time = geom.t0;
+        saved.end_time = geom.t1;
+        saved.end_price = geom.p1;
+        saved.price = geom.p0;
+      }
+
+      setLines((prev) => [saved, ...prev]);
+      try {
+        if (linesRef.current) linesRef.current = [saved, ...(linesRef.current || [])];
+      } catch {}
+      await supabase.from("alarms").delete().eq("id", a.id);
+      setAlarms((prev) => prev.filter((x) => String(x.id) !== String(a.id)));
+      try {
+        alarmGeomOverrideRef.current.delete(String(a.id));
+        alarmPriceOverrideRef.current.delete(String(a.id));
+        alarmLocalEditRef.current.delete(String(a.id));
+      } catch {}
+      setStatusMsg("Restored to lines");
+      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+    } catch (e) {
+      console.warn("convertAlarmToLine", e);
+      setStatusMsg("Undo failed");
+    }
+  };
+
   const saveNote = async () => {
     if (!editingNoteId || !editingNoteType) return;
     if (editingNoteType === "line") {
@@ -29702,6 +29828,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
                     >
                       Move
+                    </button>
+                    <button
+                      type="button"
+                      title="Undo — back to lines"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void convertAlarmToLine(a);
+                      }}
+                      className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-300 hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 flex items-center justify-center transition-all"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 7v6h6" />
+                        <path d="M3 13a9 9 0 1 0 3-7.7L3 7" />
+                      </svg>
                     </button>
                     <button type="button" title="Delete" onClick={() => deleteAlarm(a.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
