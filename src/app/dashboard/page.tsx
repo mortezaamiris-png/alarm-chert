@@ -7295,20 +7295,22 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
-      // Stable hollow circle — fixed size, no blink from size toggling
+      // Stable hollow circle — fixed size, no blink
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
       el.style.borderColor = isActive ? "#f97316" : "#2962FF";
-      el.style.borderWidth = "2px";
+      el.style.borderWidth = "2.5px";
       el.style.borderStyle = "solid";
       el.style.background = "#0b0e11";
-      el.style.width = "12px";
-      el.style.height = "12px";
-      el.style.boxShadow = isActive ? "0 0 0 2px rgba(249,115,22,0.35)" : "0 0 0 1px rgba(41,98,255,0.35)";
+      el.style.width = "16px";
+      el.style.height = "16px";
+      el.style.boxShadow = isActive ? "0 0 0 3px rgba(249,115,22,0.35)" : "0 0 0 2px rgba(41,98,255,0.25)";
       el.style.opacity = "1";
       el.style.visibility = "visible";
       el.style.transition = "none";
+      el.style.pointerEvents = "auto";
+      el.style.zIndex = "90";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -8413,7 +8415,8 @@ export default function DashboardPage() {
         const softMove = noteStr.startsWith("__curve:") || noteStr.startsWith("__path:") ||
           noteStr.startsWith("__channel:") || noteStr.startsWith("__dpr:") ||
           noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:") ||
-          noteStr.startsWith("__diag:") || isDiagonalLine(l);
+          noteStr.startsWith("__diag:") || noteStr.startsWith("__fib:") || noteStr.startsWith("__fibext:") ||
+          isDiagonalLine(l);
         // Curve/path/etc: keep original style while moving (only show handles)
         // Keep original appearance while selected (no orange dashed "preview")
         const color = l.color || DEFAULT_LINE_COLOR;
@@ -16639,6 +16642,12 @@ priced.sort((a, b) => a.price - b.price);
             const p3 = bd.orig.p3 != null ? bd.orig.p3 + dP : null;
             (bd as any)._liveGeom = { t1, p1, t2, p2, t3, p3 };
             try {
+              const md = moveDiagRef.current as any;
+              if (md && md.isFib) {
+                md.pointA = { time: t1, price: p1 };
+                md.pointB = { time: t2, price: p2 };
+                if (t3 != null && p3 != null) md.pointC = { time: t3, price: p3 };
+              }
               positionHandles(
                 { time: t1, price: p1 },
                 { time: t2, price: p2 },
@@ -17063,9 +17072,29 @@ priced.sort((a, b) => a.price - b.price);
             }
             try {
               const md = moveDiagRef.current as any;
-              if (md) { md.phase = "pick"; }
+              if (md) {
+                md.phase = "pick";
+                if (live) {
+                  md.pointA = { time: live.t1, price: live.p1 };
+                  md.pointB = { time: live.t2, price: live.p2 };
+                  if (live.t3 != null && live.p3 != null) {
+                    md.pointC = { time: live.t3, price: live.p3 };
+                  }
+                }
+              }
             } catch {}
             try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            // Re-show handles after re-render so they don't stick at old coords
+            try {
+              setTimeout(() => {
+                try {
+                  const md3 = moveDiagRef.current as any;
+                  if (md3 && md3.isFib && md3.pointA && md3.pointB) {
+                    positionHandles(md3.pointA, md3.pointB, null, md3.pointC || null);
+                  }
+                } catch {}
+              }, 40);
+            } catch {}
           } else if (bd.type === "diag") {
             const live = (bd as any)._liveGeom;
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
@@ -25255,19 +25284,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ref={handleAElRef}
                 data-line-handle="a"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
