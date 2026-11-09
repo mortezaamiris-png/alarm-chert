@@ -20582,19 +20582,27 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             try {
               const elA = handleAElRef.current;
               if (elA) {
-                let x = chart.timeScale().timeToCoordinate(t as any);
-                let y = series.priceToCoordinate(fp);
+                let xPx: number | null = null;
+                let yPx: number | null = null;
+                try {
+                  const xc = chart.timeScale().timeToCoordinate(t as any);
+                  const yc = series.priceToCoordinate(fp);
+                  if (xc != null && yc != null) {
+                    xPx = Number(xc);
+                    yPx = Number(yc);
+                  }
+                } catch {}
                 // fallback to click pixel if time/price coord fails
-                if ((x == null || y == null) && param?.point) {
-                  x = Number(param.point.x);
-                  y = Number(param.point.y);
+                if ((xPx == null || yPx == null) && param?.point) {
+                  xPx = Number(param.point.x);
+                  yPx = Number(param.point.y);
                 }
-                if (x != null && y != null) {
+                if (xPx != null && yPx != null && Number.isFinite(xPx) && Number.isFinite(yPx)) {
                   elA.style.display = "block";
                   elA.style.visibility = "visible";
                   elA.style.opacity = "1";
-                  elA.style.left = `${x}px`;
-                  elA.style.top = `${y}px`;
+                  elA.style.left = `${xPx}px`;
+                  elA.style.top = `${yPx}px`;
                   elA.style.borderColor = "#f97316";
                   elA.style.borderWidth = "2px";
                   elA.style.width = "22px";
