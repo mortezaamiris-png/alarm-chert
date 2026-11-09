@@ -985,7 +985,7 @@ function placeChannelHandles(
     } else {
       el.style.cssText =
         `position:absolute;width:${size}px;height:${size}px;border:2px solid ${border};background:rgba(15,23,42,0.5);border-radius:9999px;` +
-        `transform:translate(-50%,-50%);z-index:55;pointer-events:auto;cursor:move;` +
+        `transform:translate(-50%,-50%);z-index:55;pointer-events:auto;cursor:default;` +
         `box-shadow:0 0 0 1px rgba(0,0,0,0.5);display:block;`;
     }
     host.appendChild(el);
@@ -7381,6 +7381,7 @@ export default function DashboardPage() {
       el.style.transition = "none";
       el.style.pointerEvents = "auto";
       el.style.zIndex = "90";
+      el.style.cursor = "default";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -7541,9 +7542,18 @@ export default function DashboardPage() {
         try {
           const logical = chart.timeScale().coordinateToLogical(px);
           const candles = candlesRef.current || [];
+          const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
           if (logical != null && candles.length) {
-            const idx = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
-            time = Number(candles[idx].time);
+            const lastIdx = candles.length - 1;
+            const L = Number(logical);
+            if (L > lastIdx + 0.05) {
+              time = Number(candles[lastIdx].time) + Math.round(L - lastIdx) * barSec;
+            } else if (L < -0.05) {
+              time = Number(candles[0].time) + Math.round(L) * barSec;
+            } else {
+              const idx = Math.max(0, Math.min(lastIdx, Math.round(L)));
+              time = Number(candles[idx].time);
+            }
           }
         } catch {}
         if (time == null) {
@@ -10754,9 +10764,9 @@ priced.sort((a, b) => a.price - b.price);
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-brush-id", String(l.id));
                 wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
-                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
+                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:auto;z-index:11;overflow:visible;";
                 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
+                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:auto;";
                 // wide invisible hit stroke
                 const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
                 hit.setAttribute("points", coords.join(" "));
@@ -10775,6 +10785,9 @@ priced.sort((a, b) => a.price - b.price);
                 poly.setAttribute("stroke-width", String(Math.max(1, Number(width) || 2)));
                 poly.setAttribute("stroke-linecap", "round");
                 poly.setAttribute("stroke-linejoin", "round");
+                const dashSt = String((l as any).dash || (l as any).style || "solid");
+                if (dashSt === "dashed") poly.setAttribute("stroke-dasharray", "8 4");
+                else if (dashSt === "dotted") poly.setAttribute("stroke-dasharray", "2 4");
                 poly.style.pointerEvents = "none";
                 svg.appendChild(hit);
                 svg.appendChild(poly);
@@ -25494,12 +25507,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg(next === "brush" ? "Brush: draw on chart — tap Brush again to exit" : "");
                     }}
                   >
-                    <span className="w-4 text-center">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M4 20c2-1 4-3 7-3 2 0 3 .5 5 2" />
-                        <path d="M14 6l4 4" />
-                        <path d="M12.5 7.5L18 2l4 4-5.5 5.5" />
-                        <path d="M11 13l-7 7" />
+                    <span className="w-4 text-center inline-flex items-center justify-center">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                        <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
                       </svg>
                     </span>
                     Brush
@@ -25971,20 +25982,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               <div
                 ref={handleAElRef}
                 data-line-handle="a"
-                className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                className="absolute rounded-full"
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "default", opacity: 1, transition: "none" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
-                className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                className="absolute rounded-full"
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "default", opacity: 1, transition: "none" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
-                className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                className="absolute rounded-full"
+                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "default", opacity: 1, transition: "none" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
@@ -26562,7 +26573,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   {brushStyleOpen && (
                     <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e)=>e.stopPropagation()}>
                       <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Width</div>
-                      <div className="flex gap-0.5">
+                      <div className="flex gap-0.5 mb-1.5">
                         {([1,2,3] as const).map((w)=>(
                           <button key={w} type="button"
                             className={`flex-1 text-[11px] py-0.5 rounded font-medium ${width===w?"bg-orange-500 text-black":"bg-gray-800 text-gray-200"}`}
@@ -26572,9 +26583,28 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               try{ const lr=(linesRef.current||[]).find((x)=>String(x.id)===String(id)); if(lr) lr.width=w; }catch{}
                               try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").update({width:w}).eq("id",id);}catch{}
                               try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
-                              setBrushStyleOpen(false);
                             }}
                           >{w}</button>
+                        ))}
+                      </div>
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Style</div>
+                      <div className="flex gap-0.5">
+                        {([
+                          { id: "solid" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+                          { id: "dashed" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 2.5"/></svg> },
+                          { id: "dotted" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="1.2 2.5"/></svg> },
+                        ]).map((st)=>(
+                          <button key={st.id} type="button" title={st.id}
+                            className={`flex-1 h-7 rounded flex items-center justify-center ${(String(ln.dash||ln.style||"solid")===st.id)?"bg-orange-500 text-black":"bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
+                            onClick={async ()=>{
+                              const id = selectedBrushId; if(!id) return;
+                              setLines((prev)=>prev.map((l)=>String(l.id)===String(id)?{...l,dash:st.id,style:st.id}:l));
+                              try{ const lr=(linesRef.current||[]).find((x)=>String(x.id)===String(id)); if(lr){ lr.dash=st.id; (lr as any).style=st.id; } }catch{}
+                              try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").update({dash:st.id}).eq("id",id);}catch{}
+                              try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
+                              setBrushStyleOpen(false);
+                            }}
+                          >{st.icon}</button>
                         ))}
                       </div>
                     </div>
@@ -26750,6 +26780,58 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     </div>
                   )}
                 </div>
+                {/* Line style / width */}
+                <div className="relative" data-menu>
+                  <button
+                    type="button"
+                    title="Line style"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
+                    onClick={() => setRectStyleOpen((v) => !v)}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
+                  </button>
+                  {rectStyleOpen && (
+                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e) => e.stopPropagation()}>
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Width</div>
+                      <div className="flex gap-0.5 mb-1.5">
+                        {([1, 2, 3] as const).map((w) => (
+                          <button key={w} type="button"
+                            className={`flex-1 text-[11px] py-0.5 rounded font-medium ${width === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                            onClick={async () => {
+                              const id = selectedRectId;
+                              if (!id) return;
+                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, width: w } : l));
+                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) lr.width = w; } catch {}
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ width: w }).eq("id", id); } catch {}
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            }}
+                          >{w}</button>
+                        ))}
+                      </div>
+                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Style</div>
+                      <div className="flex gap-0.5">
+                        {([
+                          { id: "solid" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+                          { id: "dashed" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 2.5"/></svg> },
+                          { id: "dotted" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="1.2 2.5"/></svg> },
+                        ]).map((st) => (
+                          <button key={st.id} type="button" title={st.id}
+                            className={`flex-1 h-7 rounded flex items-center justify-center ${dash === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
+                            onClick={async () => {
+                              const id = selectedRectId;
+                              if (!id) return;
+                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, dash: st.id, style: st.id } : l));
+                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) { lr.dash = st.id; (lr as any).style = st.id; } } catch {}
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ dash: st.id }).eq("id", id); } catch {}
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                              setRectStyleOpen(false);
+                            }}
+                          >{st.icon}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 {/* Note — inline, no extra move toolbar */}
                 <div className="relative" data-note-edit data-menu>
                   <button
@@ -26813,58 +26895,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           className="px-2 text-xs py-1.5 rounded-md bg-gray-800 text-gray-300 hover:bg-gray-700"
                           onClick={() => { setMoveNoteOpen(false); setEditingNoteId(null); }}
                         >✕</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {/* Line style / width */}
-                <div className="relative" data-menu>
-                  <button
-                    type="button"
-                    title="Line style"
-                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
-                    onClick={() => setRectStyleOpen((v) => !v)}
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
-                  </button>
-                  {rectStyleOpen && (
-                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e) => e.stopPropagation()}>
-                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Width</div>
-                      <div className="flex gap-0.5 mb-1.5">
-                        {([1, 2, 3] as const).map((w) => (
-                          <button key={w} type="button"
-                            className={`flex-1 text-[11px] py-0.5 rounded font-medium ${width === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
-                            onClick={async () => {
-                              const id = selectedRectId;
-                              if (!id) return;
-                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, width: w } : l));
-                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) lr.width = w; } catch {}
-                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ width: w }).eq("id", id); } catch {}
-                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                            }}
-                          >{w}</button>
-                        ))}
-                      </div>
-                      <div className="text-[9px] text-gray-500 uppercase mb-0.5 tracking-wide">Style</div>
-                      <div className="flex gap-0.5">
-                        {([
-                          { id: "solid" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
-                          { id: "dashed" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 2.5"/></svg> },
-                          { id: "dotted" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="1.2 2.5"/></svg> },
-                        ]).map((st) => (
-                          <button key={st.id} type="button" title={st.id}
-                            className={`flex-1 h-7 rounded flex items-center justify-center ${dash === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
-                            onClick={async () => {
-                              const id = selectedRectId;
-                              if (!id) return;
-                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, dash: st.id, style: st.id } : l));
-                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) { lr.dash = st.id; (lr as any).style = st.id; } } catch {}
-                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ dash: st.id }).eq("id", id); } catch {}
-                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                              setRectStyleOpen(false);
-                            }}
-                          >{st.icon}</button>
-                        ))}
                       </div>
                     </div>
                   )}
