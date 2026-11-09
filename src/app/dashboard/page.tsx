@@ -7657,6 +7657,7 @@ export default function DashboardPage() {
       (previewDiagSeriesRef as any)._ch3 = null;
     } catch {}
     try { vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove()); } catch {}
+    try { vlineOverlayRef.current?.querySelectorAll("[data-ch-draft]").forEach((el) => el.remove()); } catch {}
     if (previewFibSeriesRef.current.length && seriesRef.current) {
       for (const pl of previewFibSeriesRef.current) {
         try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -14957,93 +14958,71 @@ priced.sort((a, b) => a.price - b.price);
             return;
           }
 
-          // Parallel channel live preview (points + lines)
+          // Parallel channel live preview — DOM only (no LWC series → no candle flicker)
           if (modeNow === "channel" && channelDraftRef.current?.a) {
             const draft = channelDraftRef.current;
             const a = draft.a!;
             const b = draft.b;
             try {
-              if (!previewDiagSeriesRef.current) {
-                previewDiagSeriesRef.current = chart.addLineSeries({
-                  color: "#787b86",
-                  lineWidth: 1,
-                  lineStyle: LineStyle.Solid,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                });
-              }
-              if (!b) {
-                // only A placed — rubber-band base
-                previewDiagSeriesRef.current.setData([
-                  { time: Math.min(a.time, tCursor) as any, value: a.time <= tCursor ? a.price : price },
-                  { time: Math.max(a.time, tCursor) as any, value: a.time <= tCursor ? price : a.price },
-                ]);
-                positionHandles(a, { time: tCursor, price }, "b");
-              } else {
-                // A+B placed — show base + parallel toward cursor
-                const span = Number(b.time) - Number(a.time) || 1;
-                const ratio = (Number(tCursor) - Number(a.time)) / span;
-                const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
-                const off = Number(price) - baseAt;
-                const pA2 = a.price + off;
-                const pB2 = b.price + off;
-                // base
-                previewDiagSeriesRef.current.setData([
-                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? a.price : b.price },
-                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? b.price : a.price },
-                ]);
-                // second line via temporary extra series stored on ref object
-                let s2 = (previewDiagSeriesRef as any)._ch2;
-                if (!s2) {
-                  s2 = chart.addLineSeries({
-                    color: "#787b86",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Solid,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                  (previewDiagSeriesRef as any)._ch2 = s2;
-                }
-                s2.setData([
-                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? pA2 : pB2 },
-                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? pB2 : pA2 },
-                ]);
-                // mid dashed
-                let s3 = (previewDiagSeriesRef as any)._ch3;
-                if (!s3) {
-                  s3 = chart.addLineSeries({
-                    color: "#787b86",
-                    lineWidth: 1,
-                    lineStyle: LineStyle.Dashed,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                  (previewDiagSeriesRef as any)._ch3 = s3;
-                }
-                s3.setData([
-                  { time: Math.min(a.time, b.time) as any, value: a.time <= b.time ? (a.price + pA2) / 2 : (b.price + pB2) / 2 },
-                  { time: Math.max(a.time, b.time) as any, value: a.time <= b.time ? (b.price + pB2) / 2 : (a.price + pA2) / 2 },
-                ]);
-                positionHandles(a, b, null);
-                try {
-                  const elC = handleCElRef.current;
-                  if (elC) {
-                    const x = chart.timeScale().timeToCoordinate(tCursor as any);
-                    const y = series.priceToCoordinate(price);
-                    if (x != null && y != null) {
-                      elC.style.display = "block";
-                      elC.style.left = `${x}px`;
-                      elC.style.top = `${y}px`;
-                      elC.style.borderColor = "#2962FF";
-                    }
+              const host = vlineOverlayRef.current;
+              const ser = seriesRef.current;
+              if (host && ser) {
+                host.querySelectorAll("[data-ch-draft]").forEach((el) => el.remove());
+                const mkLine = (x1: number, y1: number, x2: number, y2: number, dashed = false) => {
+                  const dx = x2 - x1, dy = y2 - y1;
+                  const len = Math.hypot(dx, dy) || 1;
+                  const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                  const el = document.createElement("div");
+                  el.setAttribute("data-ch-draft", "1");
+                  el.style.cssText =
+                    `position:absolute;left:${x1}px;top:${y1}px;width:${len}px;height:0;` +
+                    `border-top:${dashed ? "1px dashed" : "1.5px solid"} #9ca3af;` +
+                    `transform-origin:0 0;transform:rotate(${ang}deg);pointer-events:none;z-index:25;`;
+                  host.appendChild(el);
+                };
+                const mkDot = (x: number, y: number) => {
+                  const el = document.createElement("div");
+                  el.setAttribute("data-ch-draft", "1");
+                  el.style.cssText =
+                    `position:absolute;left:${x}px;top:${y}px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;` +
+                    `border-radius:50%;border:2px solid #60a5fa;background:rgba(15,23,42,0.5);pointer-events:none;z-index:26;`;
+                  host.appendChild(el);
+                };
+                const xy = (t: number, p: number) => {
+                  const x = chart.timeScale().timeToCoordinate(t as any);
+                  const y = ser.priceToCoordinate(p);
+                  if (x == null || y == null) return null;
+                  return { x: Number(x), y: Number(y) };
+                };
+                if (!b) {
+                  const p1 = xy(a.time, a.price);
+                  const p2 = xy(tCursor, price);
+                  if (p1 && p2) {
+                    mkLine(p1.x, p1.y, p2.x, p2.y, false);
+                    mkDot(p1.x, p1.y);
+                    mkDot(p2.x, p2.y);
                   }
-                } catch {}
+                } else {
+                  const span = Number(b.time) - Number(a.time) || 1;
+                  const ratio = (Number(tCursor) - Number(a.time)) / span;
+                  const baseAt = Number(a.price) + ratio * (Number(b.price) - Number(a.price));
+                  const off = Number(price) - baseAt;
+                  const pA2 = a.price + off, pB2 = b.price + off;
+                  const c0 = xy(a.time, a.price), c1 = xy(b.time, b.price);
+                  const c2 = xy(a.time, pA2), c3 = xy(b.time, pB2);
+                  if (c0 && c1) mkLine(c0.x, c0.y, c1.x, c1.y, false);
+                  if (c2 && c3) mkLine(c2.x, c2.y, c3.x, c3.y, false);
+                  if (c0 && c1 && c2 && c3) {
+                    mkLine((c0.x + c2.x) / 2, (c0.y + c2.y) / 2, (c1.x + c3.x) / 2, (c1.y + c3.y) / 2, true);
+                  }
+                  if (c0) mkDot(c0.x, c0.y);
+                  if (c1) mkDot(c1.x, c1.y);
+                  if (c2) mkDot(c2.x, c2.y);
+                  if (c3) mkDot(c3.x, c3.y);
+                  // cursor tip
+                  const tip = xy(tCursor, price);
+                  if (tip) mkDot(tip.x, tip.y);
+                }
               }
             } catch {}
             return;
@@ -19367,23 +19346,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             draft.b = { time: t, price: fp };
             channelDraftRef.current = draft;
             try {
+              // live preview is DOM-only via crosshair handler — no series
               positionHandles(draft.a, draft.b, "b");
-              // base line preview
-              if (!previewDiagSeriesRef.current) {
-                previewDiagSeriesRef.current = chart.addLineSeries({
-                  color: "#787b86",
-                  lineWidth: 1,
-                  lineStyle: LineStyle.Solid,
-                  priceLineVisible: false,
-                  lastValueVisible: false,
-                  crosshairMarkerVisible: false,
-                  autoscaleInfoProvider: () => null as any,
-                });
-              }
-              previewDiagSeriesRef.current.setData([
-                { time: Math.min(draft.a.time, draft.b.time) as any, value: draft.a.time <= draft.b.time ? draft.a.price : draft.b.price },
-                { time: Math.max(draft.a.time, draft.b.time) as any, value: draft.a.time <= draft.b.time ? draft.b.price : draft.a.price },
-              ]);
             } catch {}
             setStatusMsg("Channel: point 3 — parallel offset");
             return;
@@ -19472,6 +19436,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           diagStartRef.current = null;
           setDiagStart(null);
           clearPreview();
+          try { vlineOverlayRef.current?.querySelectorAll("[data-ch-draft]").forEach((el) => el.remove()); } catch {}
+          // also remove any leftover preview series from older builds
+          try {
+            if (previewDiagSeriesRef.current && chartRef.current) {
+              chartRef.current.removeSeries(previewDiagSeriesRef.current);
+              previewDiagSeriesRef.current = null;
+            }
+            const s2 = (previewDiagSeriesRef as any)._ch2;
+            const s3 = (previewDiagSeriesRef as any)._ch3;
+            if (s2 && chartRef.current) { try { chartRef.current.removeSeries(s2); } catch {} }
+            if (s3 && chartRef.current) { try { chartRef.current.removeSeries(s3); } catch {} }
+            (previewDiagSeriesRef as any)._ch2 = null;
+            (previewDiagSeriesRef as any)._ch3 = null;
+          } catch {}
           try {
             if (handleAElRef.current) handleAElRef.current.style.display = "none";
             if (handleBElRef.current) handleBElRef.current.style.display = "none";
@@ -23850,9 +23828,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       modeRef.current = mode === "channel" ? "none" : "channel";
                       setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-                      <line x1="4" y1="16" x2="16" y2="6"/><line x1="8" y1="20" x2="20" y2="10"/><circle cx="4" cy="16" r="1.7" fill="currentColor" stroke="none"/><circle cx="16" cy="6" r="1.7" fill="currentColor" stroke="none"/><circle cx="8" cy="20" r="1.7" fill="currentColor" stroke="none"/><circle cx="20" cy="10" r="1.7" fill="currentColor" stroke="none"/><line x1="10.5" y1="13" x2="13.5" y2="13" strokeWidth="1.5"/>
-                    </svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
                     Parallel channel
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("channel") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("channel", e)}>{favTools.includes("channel") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
@@ -25153,7 +25129,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       }}
                     >
                       <span className="text-[13px] leading-none inline-flex items-center justify-center">{id === "channel" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="3" y1="17" x2="15" y2="5"/><line x1="9" y1="21" x2="21" y2="9"/><circle cx="3" cy="17" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="21" r="1.6" fill="currentColor" stroke="none"/><circle cx="21" cy="9" r="1.6" fill="currentColor" stroke="none"/><line x1="9" y1="13" x2="13" y2="13" strokeWidth="1.4"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -30170,7 +30146,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-gray-800/90 border border-gray-700 text-[13px] font-semibold leading-none"
                           title={meta.label}
                         >{meta.label === "Channel" ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="3" y1="17" x2="15" y2="5"/><line x1="9" y1="21" x2="21" y2="9"/><circle cx="3" cy="17" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="21" r="1.6" fill="currentColor" stroke="none"/><circle cx="21" cy="9" r="1.6" fill="currentColor" stroke="none"/><line x1="9" y1="13" x2="13" y2="13" strokeWidth="1.4"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
