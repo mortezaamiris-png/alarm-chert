@@ -7992,9 +7992,9 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-channel-id]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-avwap-fill]").forEach((el) => el.remove());
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
-      // Always nuke curve/path handles + drafts + SVG so deleted curves vanish
+      // Always nuke curve/path handles + drafts + SVG + notes so deleted curves vanish
       vlineOverlayRef.current?.querySelectorAll(
-        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit]"
+        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit],[data-curve-note],[data-arrow-note]"
       ).forEach((el) => el.remove());
     } catch {}
     try {
@@ -8326,6 +8326,39 @@ export default function DashboardPage() {
             el.style.top = `${Number(y) + 8}px`;
             el.style.transform = "translateX(-50%)";
           });
+          // Arrow / curve note labels stay glued to their anchors
+          host.querySelectorAll("[data-arrow-note]").forEach((lab) => {
+            const el = lab as HTMLElement;
+            const id = el.getAttribute("data-arrow-note");
+            const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+            if (!ln) { el.remove(); return; }
+            const t = Number(ln.start_time || 0);
+            const p = Number(ln.price);
+            const x = chart2.timeScale().timeToCoordinate(t as any);
+            const y = ser.priceToCoordinate(p);
+            if (x == null || y == null) { el.style.visibility = "hidden"; return; }
+            const up = String(ln.note || "").startsWith("__arrow_up__");
+            el.style.visibility = "visible";
+            el.style.left = `${Number(x)}px`;
+            el.style.top = `${Number(y) + (up ? -28 : 18)}px`;
+            el.style.transform = "translateX(-50%)";
+          });
+          host.querySelectorAll("[data-curve-note]").forEach((lab) => {
+            const el = lab as HTMLElement;
+            const id = el.getAttribute("data-curve-note");
+            const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+            if (!ln) { el.remove(); return; }
+            const ctrls = parseCurveControls(String(ln.note || "")) || [];
+            if (ctrls.length < 2) { el.remove(); return; }
+            const mid = ctrls[Math.min(1, ctrls.length - 1)];
+            const x = chart2.timeScale().timeToCoordinate(mid.time as any);
+            const y = ser.priceToCoordinate(mid.price);
+            if (x == null || y == null) { el.style.visibility = "hidden"; return; }
+            el.style.visibility = "visible";
+            el.style.left = `${Number(x)}px`;
+            el.style.top = `${Number(y) + 12}px`;
+            el.style.transform = "translateX(-50%)";
+          });
           syncChannelHandlePositions(chart2, ser, host);
         } catch {}
       }
@@ -8463,9 +8496,9 @@ export default function DashboardPage() {
         const title = isDiagTitle ? "" : ((isMoving && !softMove) ? "MOVING" : noteClean);
         const isArrowMark =
           typeof l.note === "string" &&
-          (l.note === "__arrow_up__" ||
-            l.note === "__arrow_down__" ||
-            l.note === "__arrow_marker__" ||
+          (String(l.note||"").startsWith("__arrow_up__") ||
+            String(l.note||"").startsWith("__arrow_down__") ||
+            String(l.note||"").startsWith("__arrow_marker__") ||
             l.note.startsWith("__arrow"));
         const specialNote =
           typeof l.note === "string" &&
@@ -9478,7 +9511,14 @@ priced.sort((a, b) => a.price - b.price);
           const t1 = Math.max(st, et);
           const v0 = st <= et ? sp : ep;
           const v1 = st <= et ? ep : sp;
-          const isArrow = l.note === "__arrow__" || (typeof l.note === "string" && l.note.startsWith("__arrow"));
+          // Trend-arrow (diag with head) only — NOT arrow-up/down/marker marks
+          const isArrow = typeof l.note === "string" && (
+            l.note === "__arrow__" ||
+            (l.note.startsWith("__arrow") &&
+              !l.note.startsWith("__arrow_up__") &&
+              !l.note.startsWith("__arrow_down__") &&
+              !l.note.startsWith("__arrow_marker__"))
+          );
           // Diagonals always solid continuous segment (dash looks like "gaps" on higher TF)
           const ls: any = chart.addLineSeries({
             color,
@@ -9823,8 +9863,8 @@ priced.sort((a, b) => a.price - b.price);
                   }
                   el.style.cssText =
                     `position:absolute;width:${px}px;height:${px}px;margin-left:-${px / 2}px;margin-top:-${px / 2}px;pointer-events:none;z-index:30;`;
-                  const up = l.note === "__arrow_up__";
-                  const down = l.note === "__arrow_down__";
+                  const up = String(l.note || "").startsWith("__arrow_up__");
+                  const down = String(l.note || "").startsWith("__arrow_down__");
                   const stroke = "#9ca3af"; // gray dashed outline
                   const sw = w === 1 ? 1.5 : w === 2 ? 2 : 2.5;
                   const svg = up
@@ -10244,7 +10284,7 @@ priced.sort((a, b) => a.price - b.price);
                             const midT = (Number(ta) + Number(tb)) / 2;
                             const midP = Math.min(Number(p1), Number(p2), Number(p1) + Number(off), Number(p2) + Number(off));
                             const x = chart2.timeScale().timeToCoordinate(midT as any);
-                            const y = series.priceToCoordinate(midP);
+                            const y = seriesRef.current?.priceToCoordinate(midP);
                             if (x != null && y != null) {
                               host.querySelectorAll(`[data-channel-label][data-channel-id="${l.id}"]`).forEach((el) => el.remove());
                               const lab = document.createElement("div");
@@ -18269,10 +18309,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             }
             const isArrow =
               typeof l.note === "string" &&
-              (l.note === "__arrow_up__" ||
-                l.note === "__arrow_down__" ||
-                l.note === "__arrow_marker__" ||
-                l.note.startsWith("__arrow"));
+              (typeof l.note === "string" && (
+                l.note.startsWith("__arrow_up__") ||
+                l.note.startsWith("__arrow_down__") ||
+                l.note.startsWith("__arrow_marker__") ||
+                l.note.startsWith("__arrow")));
             const isRayNote =
               typeof l.note === "string" && l.note.startsWith("__ray:");
             const isV =
@@ -18584,9 +18625,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               const isArrowSel =
                 l &&
                 typeof l.note === "string" &&
-                (l.note === "__arrow_up__" ||
-                  l.note === "__arrow_down__" ||
-                  l.note === "__arrow_marker__" ||
+                (String(l.note||"").startsWith("__arrow_up__") ||
+                  String(l.note||"").startsWith("__arrow_down__") ||
+                  String(l.note||"").startsWith("__arrow_marker__") ||
                   l.note.startsWith("__arrow"));
               // Arrows move freely in X+Y (treat like ray origin)
               if (isArrowSel) {
@@ -22905,7 +22946,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             try { el.remove(); } catch {}
           });
           host.querySelectorAll(
-            `[data-curve-id="${sid}"],[data-path-id="${sid}"],[data-channel-id="${sid}"],[data-line-id="${sid}"],[data-curve-handle],[data-path-handle],[data-dpr-handle]`
+            `[data-curve-id="${sid}"],[data-path-id="${sid}"],[data-channel-id="${sid}"],[data-line-id="${sid}"],[data-curve-handle],[data-path-handle],[data-dpr-handle],[data-curve-note="${sid}"],[data-arrow-note="${sid}"],[data-arrow-ring="${sid}"],[data-curve-svg="${sid}"],[data-channel-label][data-channel-id="${sid}"],[data-vline-note="${sid}"]`
           ).forEach((el) => {
             try { el.remove(); } catch {}
           });
@@ -25260,9 +25301,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
-            {/* spacer before star — a bit lower */}
-            <div className="flex-1 min-h-3" style={{ maxHeight: 36 }} />
-            <div className="h-px w-7 mx-auto my-1.5 bg-gray-700/80 rounded-full" />
+            {/* spacer before star — lower near bottom */}
+            <div className="flex-1 min-h-8" style={{ maxHeight: 80 }} />
+            <div className="h-px w-7 mx-auto my-2 bg-gray-700/80 rounded-full" />
 
             {/* Favorites master */}
             <button
