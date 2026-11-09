@@ -9834,18 +9834,56 @@ priced.sort((a, b) => a.price - b.price);
                       crosshairMarkerVisible: false,
                       autoscaleInfoProvider: () => null as any,
                     });
-                    // Dense points so the line stays continuous when panning/zooming
+                    // Dense points snapped to real candle times — keeps line continuous
+                    // without inserting foreign timestamps that open gaps between candles
                     {
                       const tLo = Math.min(ta, tb), tHi = Math.max(ta, tb);
-                      const span = Math.max(1, tHi - tLo);
-                      const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
-                      const steps = Math.max(4, Math.min(12, Math.ceil(span / Math.max(barSec, 1))));
+                      const bars = candlesRef.current || [];
                       const dens: { time: any; value: number }[] = [];
-                      for (let i = 0; i <= steps; i++) {
-                        const tt = tLo + (span * i) / steps;
-                        dens.push({ time: tt as any, value: priceAt(tt, lv.v) });
+                      const seen = new Set<number>();
+                      const pushPt = (tt: number) => {
+                        let tSnap = tt;
+                        // snap to nearest bar time so time-scale stays candle-aligned
+                        if (bars.length) {
+                          let lo = 0, hi = bars.length - 1;
+                          while (lo < hi) {
+                            const mid = (lo + hi) >> 1;
+                            if (Number(bars[mid].time) < tt) lo = mid + 1;
+                            else hi = mid;
+                          }
+                          const cands = [lo, Math.max(0, lo - 1), Math.min(bars.length - 1, lo + 1)];
+                          let best = Number(bars[lo].time), bestD = Math.abs(best - tt);
+                          for (const i of cands) {
+                            const bt = Number(bars[i].time);
+                            const d = Math.abs(bt - tt);
+                            if (d < bestD) { best = bt; bestD = d; }
+                          }
+                          tSnap = best;
+                        }
+                        if (seen.has(tSnap)) return;
+                        seen.add(tSnap);
+                        dens.push({ time: tSnap as any, value: priceAt(tSnap, lv.v) });
+                      };
+                      // always include exact endpoints (snapped)
+                      pushPt(tLo);
+                      pushPt(tHi);
+                      // sample along the segment on real bars only
+                      if (bars.length) {
+                        for (const c of bars) {
+                          const bt = Number(c.time);
+                          if (bt >= tLo && bt <= tHi) pushPt(bt);
+                        }
+                      } else {
+                        const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
+                        const steps = Math.max(4, Math.min(24, Math.ceil((tHi - tLo) / Math.max(barSec, 1))));
+                        for (let i = 1; i < steps; i++) pushPt(tLo + ((tHi - tLo) * i) / steps);
                       }
                       dens.sort((a, b) => Number(a.time) - Number(b.time));
+                      if (dens.length < 2) {
+                        dens.length = 0;
+                        dens.push({ time: tLo as any, value: priceAt(tLo, lv.v) });
+                        dens.push({ time: tHi as any, value: priceAt(tHi, lv.v) });
+                      }
                       s.setData(dens);
                     }
                     seriesList.push(s);
