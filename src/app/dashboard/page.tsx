@@ -31721,6 +31721,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               >{w}</button>
                             ))}
                           </div>
+                          {!(typeof l.note === "string" && String(l.note).startsWith("__arrow")) && (
+                          <>
                           <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
                           <div className="flex gap-1">
                             {(["solid", "dashed", "dotted"] as const).map((st) => (
@@ -31889,6 +31891,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
+                    )}
+                    </>
                     )}
                     <button
                       type="button"
