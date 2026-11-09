@@ -10764,20 +10764,9 @@ priced.sort((a, b) => a.price - b.price);
                 const wrap = document.createElement("div");
                 wrap.setAttribute("data-brush-id", String(l.id));
                 wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
-                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:auto;z-index:11;overflow:visible;";
+                wrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:11;overflow:visible;";
                 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:auto;";
-                // wide invisible hit stroke
-                const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-                hit.setAttribute("points", coords.join(" "));
-                hit.setAttribute("fill", "none");
-                hit.setAttribute("stroke", "transparent");
-                hit.setAttribute("stroke-width", "14");
-                hit.setAttribute("stroke-linecap", "round");
-                hit.setAttribute("stroke-linejoin", "round");
-                hit.style.pointerEvents = "stroke";
-                hit.style.cursor = "move";
-                hit.setAttribute("data-brush-hit", String(l.id));
+                svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;";
                 const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
                 poly.setAttribute("points", coords.join(" "));
                 poly.setAttribute("fill", "none");
@@ -10789,7 +10778,6 @@ priced.sort((a, b) => a.price - b.price);
                 if (dashSt === "dashed") poly.setAttribute("stroke-dasharray", "8 4");
                 else if (dashSt === "dotted") poly.setAttribute("stroke-dasharray", "2 4");
                 poly.style.pointerEvents = "none";
-                svg.appendChild(hit);
                 svg.appendChild(poly);
                 wrap.appendChild(svg);
                 host.appendChild(wrap);
@@ -13353,9 +13341,9 @@ priced.sort((a, b) => a.price - b.price);
     };
   }, [mode]);
 
-  // Brush select + drag body
+  // Brush select + drag body (geometric hit — never blocks chart scroll)
   useEffect(() => {
-    const host = chartContainerRef.current || vlineOverlayRef.current;
+    const host = chartContainerRef.current;
     if (!host) return;
     let drag: null | {
       id: string;
@@ -13363,6 +13351,7 @@ priced.sort((a, b) => a.price - b.price);
       pts: { time: number; price: number }[];
       moved: boolean;
     } = null;
+
     const timeFromClientX = (clientX: number): number | null => {
       const chart = chartRef.current;
       const candles = candlesRef.current || [];
@@ -13388,6 +13377,50 @@ priced.sort((a, b) => a.price - b.price);
       const pr = series.coordinateToPrice(y);
       return pr != null && Number.isFinite(pr) ? Number(pr) : null;
     };
+    const distPointSeg = (px: number, py: number, x0: number, y0: number, x1: number, y1: number) => {
+      const dx = x1 - x0, dy = y1 - y0;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-6) return Math.hypot(px - x0, py - y0);
+      let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+    };
+    const hitBrushAt = (clientX: number, clientY: number): { id: string; pts: { time: number; price: number }[] } | null => {
+      if (modeRef.current === "brush") return null;
+      const chart = chartRef.current;
+      const ser = seriesRef.current;
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!chart || !ser || !rect) return null;
+      const px = clientX - rect.left;
+      const py = clientY - rect.top;
+      let best: { id: string; pts: { time: number; price: number }[]; d: number } | null = null;
+      for (const l of linesRef.current || []) {
+        if (typeof l.note !== "string" || !l.note.startsWith("__brush:")) continue;
+        const pts = l.note.replace(/^__brush:/, "").split("|")
+          .filter((s) => !s.startsWith("txt="))
+          .map((s) => {
+            const [tt, pp] = s.split(",");
+            return { time: Number(tt), price: Number(pp) };
+          })
+          .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+        if (pts.length < 2) continue;
+        const coords: { x: number; y: number }[] = [];
+        for (const p of pts) {
+          const x = chart.timeScale().timeToCoordinate(p.time as any);
+          const y = ser.priceToCoordinate(p.price);
+          if (x == null || y == null) continue;
+          coords.push({ x: Number(x), y: Number(y) });
+        }
+        if (coords.length < 2) continue;
+        let minD = Infinity;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const d = distPointSeg(px, py, coords[i].x, coords[i].y, coords[i + 1].x, coords[i + 1].y);
+          if (d < minD) minD = d;
+        }
+        if (minD <= 10 && (!best || minD < best.d)) best = { id: String(l.id), pts, d: minD };
+      }
+      return best ? { id: best.id, pts: best.pts } : null;
+    };
     const applyPtsVisual = (id: string, pts: { time: number; price: number }[]) => {
       const wrap = vlineOverlayRef.current?.querySelector(`[data-brush-id="${id}"]`) as HTMLElement | null;
       if (!wrap) return;
@@ -13405,33 +13438,18 @@ priced.sort((a, b) => a.price - b.price);
       wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
       wrap.querySelectorAll("polyline").forEach((pl) => pl.setAttribute("points", coords.join(" ")));
     };
+
     const onDown = (ev: PointerEvent) => {
-      const t = ev.target as Element | null;
-      if (!t) return;
-      const hit = (t.closest?.("[data-brush-hit]") || (t as any).getAttribute?.("data-brush-hit") ? t : null) as Element | null;
-      const hid = hit?.getAttribute?.("data-brush-hit");
-      if (!hid) {
-        // click outside brush → deselect brush toolbar (not when on rect toolbar)
-        if (!(ev.target as HTMLElement)?.closest?.("[data-brush-toolbar],[data-rect-toolbar],[data-move-bar],[data-menu],[data-note-edit]")) {
-          // only clear brush if click is on chart empty area
-        }
-        return;
-      }
-      if (modeRef.current === "brush") return; // drawing mode — don't drag existing
-      const wrap = vlineOverlayRef.current?.querySelector(`[data-brush-id="${hid}"]`) as HTMLElement | null;
-      const raw = wrap?.getAttribute("data-brush-pts") || "";
-      const pts = raw.split("|").map((s) => {
-        const [tt, pp] = s.split(",");
-        return { time: Number(tt), price: Number(pp) };
-      }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
-      if (pts.length < 2) return;
+      if (ev.button != null && ev.button !== 0) return;
+      if ((ev.target as HTMLElement)?.closest?.("[data-menu],[data-move-bar],[data-note-edit],[data-brush-toolbar],[data-rect-toolbar]")) return;
+      const hit = hitBrushAt(ev.clientX, ev.clientY);
+      if (!hit) return;
       ev.preventDefault();
       ev.stopPropagation();
       selectedRectIdRef.current = null;
       try { setSelectedRectId(null); } catch {}
-      try { setSelectedBrushId(String(hid)); } catch {}
-      drag = { id: String(hid), startX: ev.clientX, startY: ev.clientY, pts, moved: false };
-      try { (hit as any).setPointerCapture?.(ev.pointerId); } catch {}
+      try { setSelectedBrushId(String(hit.id)); } catch {}
+      drag = { id: String(hit.id), startX: ev.clientX, startY: ev.clientY, pts: hit.pts, moved: false };
     };
     const onMove = (ev: PointerEvent) => {
       if (!drag) return;
@@ -13440,10 +13458,8 @@ priced.sort((a, b) => a.price - b.price);
       const t1 = timeFromClientX(ev.clientX);
       const p1 = priceFromClientY(ev.clientY);
       if (t0 == null || p0 == null || t1 == null || p1 == null) return;
-      const dt = t1 - t0;
-      const dp = p1 - p0;
       if (Math.abs(ev.clientX - drag.startX) > 3 || Math.abs(ev.clientY - drag.startY) > 3) drag.moved = true;
-      const next = drag.pts.map((p) => ({ time: p.time + dt, price: p.price + dp }));
+      const next = drag.pts.map((p) => ({ time: p.time + (t1 - t0), price: p.price + (p1 - p0) }));
       applyPtsVisual(drag.id, next);
     };
     const onUp = async (ev: PointerEvent) => {
@@ -13456,10 +13472,7 @@ priced.sort((a, b) => a.price - b.price);
       const t1 = timeFromClientX(ev.clientX);
       const p1 = priceFromClientY(ev.clientY);
       if (t0 == null || p0 == null || t1 == null || p1 == null) return;
-      const dt = t1 - t0;
-      const dp = p1 - p0;
-      const next = d.pts.map((p) => ({ time: p.time + dt, price: p.price + dp }));
-      // preserve txt if any
+      const next = d.pts.map((p) => ({ time: p.time + (t1 - t0), price: p.price + (p1 - p0) }));
       const cur = (linesRef.current || []).find((x) => String(x.id) === String(d.id));
       let note = `__brush:` + next.map((p) => `${p.time},${p.price}`).join("|");
       if (cur && typeof cur.note === "string" && cur.note.includes("|txt=")) {
@@ -13496,6 +13509,7 @@ priced.sort((a, b) => a.price - b.price);
       } catch {}
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     };
+
     host.addEventListener("pointerdown", onDown, true);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -32582,6 +32596,1008 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       )}
                     </div>
                     {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:"))) && (
+                    <div className="relative" data-menu>
+                      <button
+                        type="button"
+                        title="Convert to alarm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenMenu(openMenu === `l-alarm-${l.id}` ? null : `l-alarm-${l.id}`);
+                        }}
+                        className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all ${
+                          openMenu === `l-alarm-${l.id}`
+                            ? "bg-orange-500/20 border-orange-500 text-orange-300"
+                            : "bg-gray-900/95 border-gray-600 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
+                        }`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                        </svg>
+                      </button>
+                      {openMenu === `l-alarm-${l.id}` && (
+                        <div
+                          className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-700 rounded-xl p-2.5 shadow-2xl min-w-[170px]"
+                          data-menu
+                          data-alarm-convert={l.id}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Condition</div>
+                          <div className="flex flex-col gap-0.5 mb-2" data-ac-cond>
+                            {([
+                              { id: "cross", label: "Cross" },
+                              { id: "above", label: "Above" },
+                              { id: "below", label: "Below" },
+                            ] as const).map((c) => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                data-val={c.id}
+                                data-default={c.id === "cross" ? "1" : "0"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                  root?.querySelectorAll("[data-ac-cond] button").forEach((b) => {
+                                    b.className = "text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 text-gray-200 hover:bg-white/5";
+                                    const sp = b.querySelector("span");
+                                    if (sp) sp.textContent = "";
+                                  });
+                                  const btn = e.currentTarget as HTMLElement;
+                                  btn.className = "text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 bg-orange-500/25 text-orange-300";
+                                  const sp = btn.querySelector("span");
+                                  if (sp) sp.textContent = "✓";
+                                  root && (root.dataset.condition = c.id);
+                                }}
+                                className={`text-left px-2 py-1.5 text-xs rounded-md flex items-center gap-2 ${c.id === "cross" ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"}`}
+                              >
+                                <span className="w-3">{c.id === "cross" ? "✓" : ""}</span>
+                                {c.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">After trigger</div>
+                          <div className="flex gap-1 mb-2" data-ac-after>
+                            <button
+                              type="button"
+                              data-val="keep"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.deleteAfter = "0";
+                                root?.querySelectorAll("[data-ac-after] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "keep"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                            >Keep</button>
+                            <button
+                              type="button"
+                              data-val="delete"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.deleteAfter = "1";
+                                root?.querySelectorAll("[data-ac-after] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "delete"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200"
+                            >Delete</button>
+                          </div>
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Trigger</div>
+                          <div className="flex gap-1 mb-2.5" data-ac-trig>
+                            <button
+                              type="button"
+                              data-val="once"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.once = "1";
+                                root?.querySelectorAll("[data-ac-trig] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "once"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                            >Once</button>
+                            <button
+                              type="button"
+                              data-val="always"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                                if (root) root.dataset.once = "0";
+                                root?.querySelectorAll("[data-ac-trig] button").forEach((b) => {
+                                  const v = (b as HTMLElement).dataset.val;
+                                  b.className = v === "always"
+                                    ? "flex-1 text-xs py-1.5 rounded-md font-medium bg-orange-500 text-black"
+                                    : "flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200";
+                                });
+                              }}
+                              className="flex-1 text-xs py-1.5 rounded-md font-medium bg-gray-800 text-gray-200"
+                            >Always</button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const root = (e.currentTarget as HTMLElement).closest("[data-alarm-convert]") as HTMLElement;
+                              const condition = (root?.dataset.condition || "cross") as "cross" | "above" | "below";
+                              const once = root?.dataset.once !== "0";
+                              const deleteAfter = root?.dataset.deleteAfter === "1";
+                              setOpenMenu(null);
+                              // Defer heavy work so UI stays responsive
+                              setTimeout(() => {
+                                try { pushUndo(); } catch {}
+                                void convertLineToAlarm(l, { condition, once, deleteAfter });
+                              }, 0);
+                            }}
+                            className="w-full text-sm py-2 rounded-lg bg-orange-500 text-black font-semibold hover:bg-orange-400"
+                          >Apply</button>
+                        </div>
+                      )}
+                    </div>
+                    )}
+                    </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) {
+                          setSelectedPosId(String(l.id));
+                          setMode("none");
+                          setMovingId(null);
+                          setMovingType(null);
+                          try { moveDiagRef.current = null; } catch {}
+                          setStatusMsg("Position selected — drag blue handles");
+                          return;
+                        }
+                        setMode("move");
+                        setMovingId(l.id);
+                        setMovingType("line");
+                        // deselect box/brush toolbars when selecting other geometry
+                        if (!(typeof l.note === "string" && (l.note.startsWith("__rect:") || l.note.startsWith("__brush:")))) {
+                          try {
+                            selectedRectIdRef.current = null;
+                            setSelectedRectId(null);
+                            setSelectedBrushId(null);
+                            setRectStyleOpen(false);
+                            setRectColorOpen(false);
+                            setBrushStyleOpen(false);
+                            setBrushColorOpen(false);
+                          } catch {}
+                        }
+                        // Rectangle — show floating toolbar + handles
+                        if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
+                          try {
+                            selectedRectIdRef.current = String(l.id);
+                            setSelectedRectId(String(l.id));
+                            setSelectedBrushId(null);
+                            setRectStyleOpen(false);
+                            setRectColorOpen(false);
+                            setMoveNoteOpen(false);
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            setStatusMsg("Rectangle selected");
+                          } catch {}
+                          return;
+                        }
+                        // Brush — floating toolbar
+                        if (typeof l.note === "string" && l.note.startsWith("__brush:")) {
+                          try {
+                            selectedRectIdRef.current = null;
+                            setSelectedRectId(null);
+                            setSelectedBrushId(String(l.id));
+                            setBrushStyleOpen(false);
+                            setBrushColorOpen(false);
+                            setMoveNoteOpen(false);
+                            setStatusMsg("Brush selected");
+                          } catch {}
+                          return;
+                        }
+                        // Curve — 3 control handles
+                        if (typeof l.note === "string" && l.note.startsWith("__curve:")) {
+                          try {
+                            const ctrls = parseCurveControls(l.note);
+                            if (!ctrls || ctrls.length < 3) { setStatusMsg("Curve parse failed"); return; }
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: ctrls[0].time, price: ctrls[0].price },
+                              pointB: { time: ctrls[2].time, price: ctrls[2].price },
+                              color: l.color || "#2962FF",
+                              width: l.width || 2,
+                              dash: "solid",
+                              isCurve: true,
+                              curveText: parseCurveText(l.note) || "",
+                              curveCtrls: ctrls,
+                              curveHandle: null as any,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("Curve: drag points");
+                            try {
+                              if (previewDiagSeriesRef.current && chartRef.current) {
+                                chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                                previewDiagSeriesRef.current = null;
+                              }
+                              if (previewLineRef.current && seriesRef.current) {
+                                seriesRef.current.removePriceLine(previewLineRef.current);
+                                previewLineRef.current = null;
+                              }
+                            } catch {}
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("Curve move failed"); }
+                          return;
+                        }
+                        // Path — pivot handles
+                        if (typeof l.note === "string" && l.note.startsWith("__path:")) {
+                          try {
+                            const raw = l.note.replace(/^__path:/, "");
+                            const ctrls = raw.split("|").map((s) => {
+                              const [tt, pp] = s.split(",");
+                              return { time: Number(tt), price: Number(pp) };
+                            }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+                            if (ctrls.length < 2) { setStatusMsg("Path parse failed"); return; }
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: ctrls[0].time, price: ctrls[0].price },
+                              pointB: { time: ctrls[ctrls.length - 1].time, price: ctrls[ctrls.length - 1].price },
+                              color: l.color || "#2962FF",
+                              width: l.width || 2,
+                              dash: "solid",
+                              isPath: true,
+                              pathCtrls: ctrls,
+                              pathHandle: null as any,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("Path: drag points or ✓ Done");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("Path move failed"); }
+                          return;
+                        }
+                        // Date & Price Range — select for body/corner drag
+                        if (typeof l.note === "string" && l.note.startsWith("__dpr:")) {
+                          try {
+                            const p = parseDprNote(l.note);
+                            if (!p) { setStatusMsg("DPR parse failed"); return; }
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: p.t0, price: p.p0 },
+                              pointB: { time: p.t1, price: p.p1 },
+                              color: p.lineColor || "#2962FF",
+                              width: p.lineWidth || 1,
+                              dash: "solid",
+                              isDpr: true,
+                              dprHandle: null as any,
+                              dprCfg: p,
+                            } as any;
+                            setMode("move");
+                            setMovingId(l.id);
+                            setMovingType("line");
+                            setStatusMsg("DPR: drag corners or body — ✓ Done");
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          } catch { setStatusMsg("DPR move failed"); }
+                          return;
+                        }
+                        // Parallel Channel — 6 handles (4 corners + 2 mids)
+                        if (typeof l.note === "string" && l.note.startsWith("__channel:")) {
+                          try {
+                            const p = parseChannelNote(l.note);
+                            if (!p) { setStatusMsg("Channel parse failed"); return; }
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: p.t1, price: p.p1 },
+                              pointB: { time: p.t2, price: p.p2 },
+                              color: p.color || "#787b86",
+                              width: 2,
+                              dash: "solid",
+                              isChannel: true,
+                              channelOffset: p.offset,
+                              channelHandle: null as any,
+                            } as any;
+                            movingIdRef.current = l.id;
+                            modeRef.current = "move";
+                            try {
+                              if (handleAElRef.current) handleAElRef.current.style.display = "none";
+                              if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                              if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                            } catch {}
+                            try {
+                              placeChannelHandles(vlineOverlayRef.current, {
+                                t1: p.t1, p1: p.p1, t2: p.t2, p2: p.p2, offset: p.offset,
+                              });
+                              // position once with current scale
+                              const chart2 = chartRef.current;
+                              const ser2 = seriesRef.current;
+                              if (chart2 && ser2) {
+                                syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
+                              }
+                            } catch {}
+                            setStatusMsg("Channel: drag handles");
+                            try {
+                              if (previewDiagSeriesRef.current && chartRef.current) {
+                                chartRef.current.removeSeries(previewDiagSeriesRef.current);
+                                previewDiagSeriesRef.current = null;
+                              }
+                              if (previewLineRef.current && seriesRef.current) {
+                                seriesRef.current.removePriceLine(previewLineRef.current);
+                                previewLineRef.current = null;
+                              }
+                            } catch {}
+                          } catch {
+                            setStatusMsg("Channel move failed");
+                          }
+                          return;
+                        }
+                        // Fixed Range VP — two time handles
+                        if (typeof l.note === "string" && l.note.startsWith("__frvp:")) {
+                          try {
+                            const p = parseFrvpNote(l.note);
+                            const t0 = p ? p.t0 : Number(String(l.note).replace(/^__frvp:/, "").split("|")[0]);
+                            const t1 = p ? p.t1 : Number(String(l.note).replace(/^__frvp:/, "").split("|")[1]);
+                            const binsN = p?.bins ?? 48;
+                            if (!Number.isFinite(t0) || !Number.isFinite(t1)) {
+                              setStatusMsg("FRVP: invalid range");
+                              return;
+                            }
+                            // Mid price so both handles sit in the middle of the box (easy to grab)
+                            let midP = Number(l.price) || 0;
+                            try {
+                              const vp = computeVolumeProfile(candlesRef.current || [], t0, t1, binsN);
+                              if (vp && Number.isFinite(vp.poc)) midP = vp.poc;
+                              else {
+                                const candles = candlesRef.current || [];
+                                const slice = candles.filter((c) => Number(c.time) >= Math.min(t0, t1) && Number(c.time) <= Math.max(t0, t1));
+                                if (slice.length) {
+                                  midP = slice.reduce((s, c) => s + (Number(c.high) + Number(c.low)) / 2, 0) / slice.length;
+                                }
+                              }
+                            } catch {}
+                            movingVLineRef.current = false;
+                            movingRayRef.current = false;
+                            const ta = Math.min(t0, t1);
+                            const tb = Math.max(t0, t1);
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "pick",
+                              pointA: { time: ta, price: midP },
+                              pointB: { time: tb, price: midP },
+                              color: (p && p.upColor) || l.color || "#2962FF",
+                              width: 2,
+                              dash: "solid",
+                              isFrvp: true,
+                              binsN,
+                            } as any;
+                            positionHandles(
+                              { time: ta, price: midP },
+                              { time: tb, price: midP },
+                              null
+                            );
+                            setStatusMsg("FRVP: tap left/right circle, then a candle — ✓ Done");
+                          } catch {
+                            setStatusMsg("FRVP move failed");
+                          }
+                          return;
+                        }
+                        
+                        if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
+                          try {
+                            const p = parseAvpNote(l.note);
+                            const anchor = p ? p.anchor : Number(l.start_time);
+                            if (!Number.isFinite(anchor)) {
+                              setStatusMsg("AVP: no anchor");
+                              return;
+                            }
+                            let ap = Number(l.price) || 0;
+                            try {
+                              const candles = candlesRef.current || [];
+                              const hit = candles.find((c) => Math.abs(Number(c.time) - anchor) < 2);
+                              if (hit) ap = (Number(hit.high) + Number(hit.low)) / 2;
+                            } catch {}
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "drag-a",
+                              pointA: { time: anchor, price: ap },
+                              pointB: { time: anchor, price: ap },
+                              color: (p && p.upColor) || l.color || "#2962FF",
+                              width: 2,
+                              dash: "solid",
+                              isAvp: true,
+                            } as any;
+                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, "a");
+                            try {
+                              const elB = handleBElRef.current;
+                              if (elB) elB.style.display = "none";
+                            } catch {}
+                            setStatusMsg("AVP: drag or tap a new candle for anchor — ✓ Done");
+                          } catch {
+                            setStatusMsg("AVP move failed");
+                          }
+                          return;
+                        }
+                                                if (typeof l.note === "string" && l.note.startsWith("__avwap:")) {
+                          try {
+                            const p = parseAvwapNote(l.note);
+                            const anchor = p ? p.anchor : Number(l.start_time);
+                            if (!Number.isFinite(anchor)) {
+                              setStatusMsg("VWAP: no anchor");
+                              return;
+                            }
+                            // price at anchor from pack
+                            let ap = Number(l.price) || 0;
+                            try {
+                              const pack = computeAnchoredVWAP(candlesRef.current || [], anchor);
+                              if (pack.vwap.length) ap = pack.vwap[0].value;
+                            } catch {}
+                            moveDiagRef.current = {
+                              id: l.id,
+                              phase: "drag-a",
+                              pointA: { time: anchor, price: ap },
+                              pointB: { time: anchor, price: ap },
+                              color: (p && p.vwapColor) || l.color || "#2962FF",
+                              width: (p && p.width) || 2,
+                              dash: "solid",
+                              isAvwap: true,
+                            } as any;
+                            positionHandles({ time: anchor, price: ap }, { time: anchor, price: ap }, "a");
+                            // hide second handle (same point)
+                            try {
+                              const elB = handleBElRef.current;
+                              if (elB) elB.style.display = "none";
+                            } catch {}
+                            setStatusMsg("VWAP: drag or tap a new candle for anchor — ✓ Done");
+                          } catch {
+                            setStatusMsg("VWAP move failed");
+                          }
+                          return;
+                        }
+                        // Trend-based fib time / Fib time zone: select only — drag blue handles, no Move bar
+                        if (typeof l.note === "string" && l.note.startsWith("__fibtbt:")) {
+                          (window as any).__selectedFibTbtId = String(l.id);
+                          setSelectedFibTbtId(String(l.id));
+                          setMode("none");
+                          setMovingId(null);
+                          setMovingType(null);
+                          moveDiagRef.current = null;
+                          setStatusMsg("Trend-based fib time selected — drag blue handles");
+                          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          return;
+                        }
+                        if (typeof l.note === "string" && l.note.startsWith("__fibtz:")) {
+                          (window as any).__selectedFibTzId = String(l.id);
+                          setSelectedFibTzId(String(l.id));
+                          setMode("none");
+                          setMovingId(null);
+                          setMovingType(null);
+                          moveDiagRef.current = null;
+                          setStatusMsg("Fib time zone selected — drag blue handles");
+                          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                          return;
+                        }
+                        const fibHit = parseFibNote(l.note);
+                        if (fibHit) {
+                          setSelectedFibId(String(l.id));
+                          if (typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:"))) setSelectedPosId(String(l.id));
+                          else setSelectedPosId(null);
+                          movingVLineRef.current = false;
+                          movingRayRef.current = false;
+                          const hasC = fibHit.kind === "fib-ext" && fibHit.t3 != null && fibHit.p3 != null;
+                          moveDiagRef.current = {
+                            id: l.id,
+                            phase: "pick",
+                            pointA: { time: Number(fibHit.t1), price: Number(fibHit.p1) },
+                            pointB: { time: Number(fibHit.t2), price: Number(fibHit.p2) },
+                            pointC: hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : undefined,
+                            color: l.color || DEFAULT_LINE_COLOR,
+                            width: l.width || 1,
+                            dash: "solid",
+                            isFib: true,
+                          };
+                          try {
+                            positionHandles(
+                              { time: fibHit.t1, price: fibHit.p1 },
+                              { time: fibHit.t2, price: fibHit.p2 },
+                              null,
+                              hasC ? { time: Number(fibHit.t3), price: Number(fibHit.p3) } : null
+                            );
+                          } catch {}
+                          setStatusMsg(hasC ? "Tap a circle (A/B/C) to move fib — ✓ Done" : "Tap a circle to move fib — ✓ Done");
+                          return;
+                        }
+                        const isArrowL =
+                          typeof l.note === "string" &&
+                          (l.note === "__arrow_up__" ||
+                            l.note === "__arrow_down__" ||
+                            l.note === "__arrow_marker__" ||
+                            l.note.startsWith("__arrow"));
+                        const isRayNote =
+                          typeof l.note === "string" && l.note.startsWith("__ray:");
+                        const isV =
+                          !isArrowL &&
+                          !isRayNote &&
+                          (l.note === "__vline__" ||
+                            (typeof l.note === "string" && l.note.startsWith("__vline__:")) ||
+                            (l.start_time != null &&
+                              l.end_time != null &&
+                              Number(l.start_time) === Number(l.end_time) &&
+                              l.end_price != null &&
+                              !isDiagonalLine(l)));
+                        movingVLineRef.current = !!isV;
+                        // Ray / arrow: can move in time + price (left-right and up-down)
+                        movingRayRef.current =
+                          !isV &&
+                          (isArrowL ||
+                            isRayNote ||
+                            (l.start_time != null && !isDiagonalLine(l)));
+                        if (isDiagonalLine(l)) {
+                          movingRayRef.current = false;
+                          movingVLineRef.current = false;
+                          moveDiagRef.current = {
+                            id: l.id,
+                            phase: "pick",
+                            pointA: { time: Number(l.start_time), price: Number(l.price) },
+                            pointB: { time: Number(l.end_time), price: Number(l.end_price) },
+                            color: l.color || DEFAULT_LINE_COLOR,
+                            width: l.width || 2,
+                            dash: (l.dash || l.style || "solid") as string,
+                          };
+                          setDrawColor(l.color || DEFAULT_LINE_COLOR);
+                          setDrawWidth(((l.width as 1 | 2 | 3) || 2) as 1 | 2 | 3);
+                          setDrawDash(((l.dash || l.style) === "dashed" ? "dashed" : "solid") as "solid" | "dashed");
+                          setStatusMsg("Drag the circles or body to move");
+                          try {
+                            // Pick phase: keep chart + page fully interactive (no lock)
+                            document.body.style.overflow = "";
+                            document.documentElement.style.overflow = "";
+                            if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
+                            chartRef.current?.applyOptions({
+                              handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+                              handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
+                            });
+                            const chart = chartRef.current;
+                            const md = moveDiagRef.current!;
+                            if (chart) {
+                              // Keep visible range fixed — no auto-scroll to the right while editing
+                              if (previewDiagSeriesRef.current) {
+                                try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
+                                previewDiagSeriesRef.current = null;
+                              }
+                              // no extra dashed series — keep original line (isMoving styles it)
+                              try {
+                                if (previewDiagSeriesRef.current) {
+                                  chart.removeSeries(previewDiagSeriesRef.current);
+                                  previewDiagSeriesRef.current = null;
+                                }
+                              } catch {}
+                              positionHandles(md.pointA, md.pointB, null);
+                            }
+                          } catch {}
+                        } else {
+                          moveDiagRef.current = null;
+                          // Clear any channel selection so channel handlers don't steal vline drags
+                          try {
+                            setSelectedChannelId(null);
+                            vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove());
+                          } catch {}
+                          setStatusMsg("Click on chart to move line");
+                        }
+                      }}
+                      className="text-sm font-semibold text-blue-400 hover:text-blue-300 px-1"
+                    >
+                      Move
+                    </button>
+                    <button type="button" title="Delete" onClick={() => deleteLine(l.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!currentLines.length && <p className="text-gray-600 text-sm">No lines</p>}
+          </div>
+        </div>
+
+        {/* Alarm history for current symbol */}
+        <div>
+          <div className="flex flex-nowrap items-center gap-1 mb-2 min-h-[28px] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setHistoryMode("coin")}
+              title={`History — ${symbolUpper}`}
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation max-w-[9.5rem] truncate ${
+                historyMode === "coin"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
+                  : "text-gray-500 border-gray-600 hover:text-gray-300 hover:border-gray-500"
+              }`}
+            >
+              Hist · {symbolUpper.replace(/USDT$/i, "")}
+            </button>
+            <button
+              type="button"
+              title="All history"
+              onClick={() => setHistoryMode("all")}
+              className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors shrink-0 touch-manipulation ${
+                historyMode === "all"
+                  ? "text-orange-300/90 border-orange-500/50 bg-orange-500/15"
+                  : "text-gray-500 border-gray-600 bg-transparent hover:text-gray-300 hover:border-gray-500"
+              }`}
+            >
+              All ({historyAlarms.length})
+            </button>
+            {historyAlarms.length > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const ids = historyAlarms.map((a) => a.id);
+                  setAlarms((prev) => prev.filter((a) => !ids.includes(a.id)));
+                  try {
+                    await supabase.from("alarms").delete().in("id", ids);
+                  } catch {}
+                }}
+                className="ml-auto shrink-0 text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded border border-red-900/50 touch-manipulation"
+              >
+                Delete all
+              </button>
+            )}
+          </div>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {historyAlarms.map((a) => {
+              const when = a.triggered_at || a.created_at;
+              return (
+                <div
+                  key={a.id}
+                  className="bg-gray-950 border border-gray-800/80 rounded-md px-2 py-2 text-xs cursor-pointer hover:border-amber-600/50 touch-manipulation active:bg-gray-900"
+                  onClick={() => {
+                    // Resolve diagonal geometry (columns or note fallback)
+                    let st = a.start_time ?? null;
+                    let et = a.end_time ?? null;
+                    let ep = a.end_price ?? null;
+                    if ((!et || ep == null) && a.note?.startsWith("__diag:")) {
+                      const parts = a.note.replace(/^__diag:/, "").split("|")[0].split(":");
+                      if (parts.length >= 3) {
+                        st = Number(parts[0]);
+                        et = Number(parts[1]);
+                        ep = Number(parts[2]);
+                      }
+                    }
+                    const isDiag =
+                      st != null &&
+                      et != null &&
+                      ep != null &&
+                      Number(st) !== Number(et);
+                    setHighlightAlarmId(null);
+
+                    // Jump chart to the hit / line region (not just flash off-screen)
+                    const chart = chartRef.current;
+                    const series = seriesRef.current;
+                    const candles = candlesRef.current;
+                    const barSec = intervalToSeconds(String(intervalRef.current));
+                    const idxNear = (unix: number) => {
+                      if (!candles.length) return 0;
+                      // binary search nearest bar
+                      let lo = 0;
+                      let hi = candles.length - 1;
+                      while (lo < hi) {
+                        const mid = (lo + hi) >> 1;
+                        if (candles[mid].time < unix) lo = mid + 1;
+                        else hi = mid;
+                      }
+                      return Math.max(0, Math.min(candles.length - 1, lo));
+                    };
+
+                    if (isDiag) {
+                      setHighlightPrice(null);
+                      setHighlightRay(null);
+                      setHighlightDiag({
+                        start_time: Number(st),
+                        end_time: Number(et),
+                        price: Number(a.price),
+                        end_price: Number(ep),
+                      });
+                      setStatusMsg(`History Diag ${formatPrice(a.price)}→${formatPrice(Number(ep))}`);
+                      if (chart && candles.length) {
+                        const t0 = Math.min(Number(st), Number(et));
+                        const t1 = Math.max(Number(st), Number(et));
+                        // Prefer trigger moment if known, else middle of segment
+                        let focusT = (t0 + t1) / 2;
+                        try {
+                          const trig = (a as any).triggered_at || (a as any).updated_at;
+                          if (trig) {
+                            const n = Math.floor(new Date(trig).getTime() / 1000);
+                            if (!Number.isNaN(n) && n > 0) focusT = n;
+                          }
+                        } catch {}
+                        // Time-based window around the hit (works on any TF)
+                        const span = Math.max(t1 - t0, barSec * 12);
+                        const pad = Math.max(span * 0.8, barSec * 20);
+                        const fromT = Math.min(t0, focusT) - pad;
+                        const toT = Math.max(t1, focusT) + pad;
+                        historyFocusRef.current = { from: fromT, to: toT };
+                        try {
+                          (chart.timeScale() as any).setVisibleRange({
+                            from: fromT as any,
+                            to: toT as any,
+                          });
+                        } catch {
+                          // Fallback: logical indices
+                          const i0 = idxNear(fromT);
+                          const i1 = idxNear(toT);
+                          try {
+                            chart.timeScale().setVisibleLogicalRange({
+                              from: Math.max(0, i0 - 2),
+                              to: Math.min(candles.length - 1 + FUTURE_VISIBLE, i1 + 5),
+                            });
+                          } catch {}
+                        }
+                        // Keep focus locked for a few seconds so live updates / re-renders don't yank away
+                        window.setTimeout(() => {
+                          historyFocusRef.current = null;
+                        }, 5000);
+                        try {
+                          const pLo = Math.min(Number(a.price), Number(ep));
+                          const pHi = Math.max(Number(a.price), Number(ep));
+                          const ppad = Math.max((pHi - pLo) * 0.5, pHi * 0.004);
+                          const ps = series?.priceScale() as any;
+                          if (ps && typeof ps.setVisibleRange === "function") {
+                            ps.setVisibleRange({ from: pLo - ppad, to: pHi + ppad });
+                          }
+                        } catch {}
+                      }
+                    } else {
+                      // Resolve ray (half-line) geometry — column, note, or non-diag start_time
+                      let rayStart: number | null = null;
+                      if (a.start_time != null && (a.end_time == null || a.end_price == null)) {
+                        rayStart = Number(a.start_time);
+                      }
+                      if (rayStart == null && a.note?.startsWith("__ray:")) {
+                        const n = Number(String(a.note).replace("__ray:", "").split("|")[0]);
+                        if (!Number.isNaN(n) && n > 0) rayStart = n;
+                      }
+                      // Note may contain "__ray:unix" even alongside other text
+                      if (rayStart == null && a.note && String(a.note).includes("__ray:")) {
+                        const m = String(a.note).match(/__ray:(\d+)/);
+                        if (m) rayStart = Number(m[1]);
+                      }
+                      const isRayHist = rayStart != null && !Number.isNaN(rayStart) && rayStart > 0;
+
+                      setHighlightDiag(null);
+                      if (isRayHist) {
+                        setHighlightPrice(null);
+                        setHighlightRay({
+                          start_time: Number(rayStart),
+                          price: Number(a.price),
+                        });
+                        setStatusMsg(`History Ray @ ${formatPrice(a.price)}`);
+                      } else {
+                        setHighlightRay(null);
+                        setHighlightPrice(a.price);
+                        setStatusMsg(`History @ ${formatPrice(a.price)}`);
+                      }
+
+                      if (chart && candles.length) {
+                        let focusT: number | null = isRayHist ? Number(rayStart) : null;
+                        try {
+                          const trig = (a as any).triggered_at || (a as any).updated_at;
+                          if (trig) {
+                            const n = Math.floor(new Date(trig).getTime() / 1000);
+                            if (!Number.isNaN(n) && n > 0) focusT = n;
+                          }
+                        } catch {}
+                        if (focusT != null) {
+                          const pad = barSec * 40;
+                          const fromT = focusT - pad;
+                          const toT = focusT + pad;
+                          historyFocusRef.current = { from: fromT, to: toT };
+                          try {
+                            (chart.timeScale() as any).setVisibleRange({
+                              from: fromT as any,
+                              to: toT as any,
+                            });
+                          } catch {
+                            const iF = idxNear(focusT);
+                            try {
+                              chart.timeScale().setVisibleLogicalRange({
+                                from: Math.max(0, iF - 40),
+                                to: Math.min(candles.length - 1 + FUTURE_VISIBLE, iF + 20),
+                              });
+                            } catch {}
+                          }
+                          window.setTimeout(() => {
+                            historyFocusRef.current = null;
+                          }, 5000);
+                        } else {
+                          historyFocusRef.current = null;
+                          try {
+                            const bars = candles.length;
+                            const past = Math.min(500, bars);
+                            chart.timeScale().setVisibleLogicalRange({
+                              from: bars - past,
+                              to: bars - 1 + FUTURE_VISIBLE,
+                            });
+                          } catch {}
+                        }
+                        try {
+                          const p = Number(a.price);
+                          const ppad = Math.abs(p) * 0.012;
+                          const ps = series?.priceScale() as any;
+                          if (ps && typeof ps.setVisibleRange === "function") {
+                            ps.setVisibleRange({ from: p - ppad, to: p + ppad });
+                          }
+                        } catch {}
+                      }
+                    }
+                  }}
+                  title="Tap to jump to hit area on chart"
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] font-semibold text-gray-400 shrink-0">
+                      {chartSymbol(a.symbol)}
+                    </span>
+                    <span className="font-mono font-medium text-gray-400">
+                      {(() => {
+                        let et = a.end_time ?? null;
+                        let ep = a.end_price ?? null;
+                        if ((!et || ep == null) && a.note?.startsWith("__diag:")) {
+                          const parts = a.note.replace(/^__diag:/, "").split("|")[0].split(":");
+                          if (parts.length >= 3) {
+                            et = Number(parts[1]);
+                            ep = Number(parts[2]);
+                          }
+                        }
+                        // Ray history label
+                        let rayS = a.start_time ?? null;
+                        if (rayS == null && a.note?.startsWith("__ray:")) {
+                          const n = Number(String(a.note).replace("__ray:", "").split("|")[0]);
+                          if (!Number.isNaN(n)) rayS = n;
+                        }
+                        if (
+                          rayS != null &&
+                          (a.end_time == null || a.end_price == null) &&
+                          !(a.end_time != null && a.end_price != null)
+                        ) {
+                          return `→ ${formatPrice(a.price)}`;
+                        }
+                        if (et != null && ep != null && Number(a.start_time) !== Number(et)) {
+                          return `↗ ${formatPrice(a.price)}→${formatPrice(Number(ep))}`;
+                        }
+                        return `${getConditionSymbol(a.condition)} ${formatPrice(a.price)}`;
+                      })()}
+                    </span>
+                    <span className="ml-auto text-[11px] text-gray-500 tabular-nums">
+                      {formatRelativeTime(when)}
+                    </span>
+                    <button
+                      type="button"
+                      title="Delete from history"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setAlarms((prev) => prev.filter((x) => x.id !== a.id));
+                        try {
+                          await supabase.from("alarms").delete().eq("id", a.id);
+                        } catch {}
+                      }}
+                      className="text-gray-600 hover:text-red-400 text-xs leading-none px-1 shrink-0"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5 text-center truncate">
+                    {a.note && !String(a.note).startsWith("__diag:") && !String(a.note).startsWith("__ray:")
+                      ? userFacingNote(a.note)
+                      : formatAlarmDate(when)}
+                  </div>
+                  <div className="mt-1 flex justify-center">
+                    <button
+                      type="button"
+                      title="Restore to active alarms"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          pushUndo();
+                          await supabase
+                            .from("alarms")
+                            .update({ triggered: false, triggered_at: null, is_active: true })
+                            .eq("id", a.id);
+                          setAlarms((prev) =>
+                            prev.map((x) =>
+                              x.id === a.id
+                                ? { ...x, triggered: false, triggered_at: null, is_active: true }
+                                : x
+                            )
+                          );
+                          setStatusMsg("Alarm restored");
+                        } catch {
+                          setStatusMsg("Restore failed");
+                        }
+                      }}
+                      className="text-[10px] text-orange-400/70 hover:text-orange-300 px-2 py-0.5 rounded border border-orange-800/40 hover:border-orange-600/50 bg-orange-500/5"
+                    >
+                      ↩ Restore
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {!historyAlarms.length && (
+              <p className="text-gray-600 text-sm">No triggered alarms yet</p>
+            )}
+          </div>
+        </div>
+      </div>
+      )}
+
+      <p className="text-center text-gray-600 text-xs mt-6">© 2026 Alarm Chert</p>
+    </div>
+  );
+}{openMenu === `l-style-${l.id}` && (
+                        <div className="absolute z-50 bottom-full mb-1.5 right-0 bg-gray-950 border border-gray-600 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 min-w-[7.5rem]" data-menu onClick={(e) => e.stopPropagation()}>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5">Width</div>
+                          <div className="flex gap-0.5">
+                            {LINE_WIDTHS.map((w) => (
+                              <button
+                                key={w}
+                                type="button"
+                                onClick={() => { pushUndo(); updateLineWidth(l.id, w); }}
+                                className={`flex-1 h-7 rounded-md text-[11px] font-semibold ${(l.width || 2) === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}
+                              >{w}</button>
+                            ))}
+                          </div>
+                          {!(typeof l.note === "string" && String(l.note).startsWith("__arrow")) && (
+                          <>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
+                          <div className="flex gap-0.5">
+                            {([
+                              { id: "solid" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+                              { id: "dashed" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 2.5"/></svg> },
+                              { id: "dotted" as const, icon: <svg width="22" height="10" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="1.2 2.5"/></svg> },
+                            ]).map((st) => (
+                              <button
+                                key={st.id}
+                                type="button"
+                                title={st.id}
+                                onClick={() => {
+                                  pushUndo();
+                                  setLines((prev) => prev.map((x) => String(x.id) === String(l.id) ? { ...x, dash: st.id, style: st.id } : x));
+                                  try {
+                                    const lr = (linesRef.current || []).find((x) => String(x.id) === String(l.id));
+                                    if (lr) { lr.dash = st.id; (lr as any).style = st.id; }
+                                  } catch {}
+                                  try {
+                                    if (!String(l.id).startsWith("local-")) {
+                                      void supabase.from("chart_lines").update({ dash: st.id }).eq("id", l.id);
+                                    }
+                                  } catch {}
+                                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                                  setOpenMenu(null);
+                                }}
+                                className={`flex-1 h-7 rounded flex items-center justify-center ${String(l.dash || l.style || "solid") === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
+                              >{st.icon}</button>
+                            ))}
+                          </div>
+                          </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                                        {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:"))) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
