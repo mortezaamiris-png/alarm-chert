@@ -15233,7 +15233,7 @@ priced.sort((a, b) => a.price - b.price);
           (md as any).bodyOrigin = null;
           md.phase = "drag-a";
           try {
-            const ps = seriesRef.current?.priceScale?.();
+            const ps: any = seriesRef.current?.priceScale?.();
             if (ps && typeof ps.getVisibleRange === "function") {
               (md as any)._savedPriceRange = ps.getVisibleRange();
             }
@@ -15328,7 +15328,7 @@ priced.sort((a, b) => a.price - b.price);
         };
         md.phase = "drag-a";
         try {
-          const ps = seriesRef.current?.priceScale?.();
+          const ps: any = seriesRef.current?.priceScale?.();
           if (ps && typeof ps.getVisibleRange === "function") {
             (md as any)._savedPriceRange = ps.getVisibleRange();
           }
@@ -15454,7 +15454,7 @@ priced.sort((a, b) => a.price - b.price);
                   // Freeze price scale so candles don't stretch while series data updates
                   let savedPR: any = null;
                   try {
-                    const ps = seriesRef.current?.priceScale?.();
+                    const ps: any = seriesRef.current?.priceScale?.();
                     if (ps && typeof ps.getVisibleRange === "function") {
                       savedPR = ps.getVisibleRange();
                     }
@@ -15514,7 +15514,7 @@ priced.sort((a, b) => a.price - b.price);
                   // Restore price scale
                   try {
                     if (savedPR && seriesRef.current?.priceScale) {
-                      const ps = seriesRef.current.priceScale();
+                      const ps: any = seriesRef.current.priceScale();
                       if (ps && typeof ps.setVisibleRange === "function") {
                         ps.setVisibleRange(savedPR);
                       }
@@ -15554,7 +15554,7 @@ priced.sort((a, b) => a.price - b.price);
         try {
           const saved = (md as any)._savedPriceRange;
           if (saved && seriesRef.current?.priceScale) {
-            const ps = seriesRef.current.priceScale();
+            const ps: any = seriesRef.current.priceScale();
             if (ps && typeof ps.setVisibleRange === "function") ps.setVisibleRange(saved);
           }
         } catch {}
