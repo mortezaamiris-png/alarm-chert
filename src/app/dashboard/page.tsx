@@ -4862,6 +4862,7 @@ export default function DashboardPage() {
   const [selectedDprId, setSelectedDprId] = useState<string | null>(null);
   const [dprSettingsTab, setDprSettingsTab] = useState<"style" | "text" | "coordinates" | "visibility">("style");
   const [dprCfg, setDprCfg] = useState(() => defaultDprCfg());
+  const [dprBarPos, setDprBarPos] = useState({ x: 12, y: 420 });
   const dprDraftRef = useRef<{ a?: { time: number; price: number } } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
@@ -24103,11 +24104,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                       setStatusMsg(nextCurve === "curve" ? "Curve: tap start, then end (middle appears after)" : "");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="4,18 12,6 20,18" />
-                      <circle cx="4" cy="18" r="2.2" fill="none" />
-                      <circle cx="12" cy="6" r="2.2" fill="none" />
-                      <circle cx="20" cy="18" r="2.2" fill="none" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 17 Q12 5 19 17" />
                     </svg>
                     Curve
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("curve") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("curve", e)}>{favTools.includes("curve") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -24771,25 +24769,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </button>
 
-            {/* Show / Hide bottom lists (alarms · lines · history) */}
-            <button
-              type="button"
-              title={showBottomLists ? "Hide lists" : "Show lists"}
-              onClick={() => setShowBottomLists((v) => !v)}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 ${
-                showBottomLists
-                  ? "bg-gray-900 border-gray-700 text-gray-300 hover:bg-white/10"
-                  : "bg-orange-500/15 border-orange-500/50 text-orange-300"
-              }`}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                {showBottomLists ? (
-                  <polyline points="6 9 12 15 18 9" />
-                ) : (
-                  <polyline points="6 15 12 9 18 15" />
-                )}
-              </svg>
-            </button>
           </div>
         )}
 
@@ -25363,6 +25342,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     >
                       <span className="text-[13px] leading-none inline-flex items-center justify-center">{id === "channel" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
+                      ) : id === "curve" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M5 17 Q12 5 19 17" /></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -25379,7 +25360,36 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             // Only DPR keeps this special bar; channel uses main edit toolbar
             return ln.note.startsWith("__dpr:");
           })() && (
-            <div data-move-bar className="absolute bottom-28 left-3 z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto">
+            <div
+              data-move-bar
+              data-dpr-toolbar="1"
+              className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto select-none"
+              style={{ left: dprBarPos.x, top: dprBarPos.y, bottom: "auto" }}
+              onPointerDown={(e) => {
+                // drag bar by empty area / grip — not buttons
+                const t = e.target as HTMLElement;
+                if (t.closest("button")) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const startX = e.clientX, startY = e.clientY;
+                const orig = { ...dprBarPos };
+                const onMove = (ev: PointerEvent) => {
+                  setDprBarPos({
+                    x: Math.max(4, orig.x + (ev.clientX - startX)),
+                    y: Math.max(4, orig.y + (ev.clientY - startY)),
+                  });
+                };
+                const onUp = () => {
+                  document.removeEventListener("pointermove", onMove);
+                  document.removeEventListener("pointerup", onUp);
+                };
+                document.addEventListener("pointermove", onMove);
+                document.addEventListener("pointerup", onUp);
+              }}
+            >
+              <div title="Drag toolbar" className="w-4 h-8 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0">
+                <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="11" r="1.2"/><circle cx="7" cy="11" r="1.2"/></svg>
+              </div>
               {(() => {
                 const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
                 const isDpr = !!(ln && typeof ln.note === "string" && ln.note.startsWith("__dpr:"));
@@ -25442,29 +25452,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   </>
                 );
               })()}
-              <button
-                type="button"
-                onClick={async () => {
-                  moveDiagRef.current = null;
-                  setMovingId(null);
-                  setMovingType(null);
-                  setMode("none");
-                  clearPreview();
-                  try {
-                    chartRef.current?.applyOptions({
-                      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-                      handleScale: { axisPressedMouseMove: true, axisDoubleClickReset: true, mouseWheel: true, pinch: true },
-                    });
-                    if (chartContainerRef.current) chartContainerRef.current.style.touchAction = "none";
-                    document.body.style.overflow = "";
-                    document.documentElement.style.overflow = "";
-                  } catch {}
-                  setStatusMsg("✓ Confirmed");
-                }}
-                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-green-500 text-black hover:bg-green-400"
-              >
-                ✓ Done
-              </button>
             </div>
           )}
 
