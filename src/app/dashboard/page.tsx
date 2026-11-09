@@ -4438,7 +4438,7 @@ export default function DashboardPage() {
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
-    phase: "pick" | "drag-a" | "drag-b" | "drag-c" | "drag-body";
+    phase: "pick" | "drag-a" | "drag-b" | "drag-c";
     pointA: { time: number; price: number };
     pointB: { time: number; price: number };
     pointC?: { time: number; price: number };
@@ -4455,7 +4455,7 @@ export default function DashboardPage() {
   const bodyDragRef = useRef<{
     id: string;
     kind: "line" | "alarm";
-    type: "h" | "v" | "ray" | "diag" | "curve" | "arrow" | "fib";
+    type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
     startX: number;
     startY: number;
     startTime: number;
@@ -7295,22 +7295,20 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
-      // Stable hollow circle — fixed size, no blink
+      // Stable hollow circle — fixed size, no blink from size toggling
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
       el.style.borderColor = isActive ? "#f97316" : "#2962FF";
-      el.style.borderWidth = "2.5px";
+      el.style.borderWidth = "2px";
       el.style.borderStyle = "solid";
       el.style.background = "#0b0e11";
-      el.style.width = "16px";
-      el.style.height = "16px";
-      el.style.boxShadow = isActive ? "0 0 0 3px rgba(249,115,22,0.35)" : "0 0 0 2px rgba(41,98,255,0.25)";
+      el.style.width = "12px";
+      el.style.height = "12px";
+      el.style.boxShadow = isActive ? "0 0 0 2px rgba(249,115,22,0.35)" : "0 0 0 1px rgba(41,98,255,0.35)";
       el.style.opacity = "1";
       el.style.visibility = "visible";
       el.style.transition = "none";
-      el.style.pointerEvents = "auto";
-      el.style.zIndex = "90";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -7518,103 +7516,19 @@ export default function DashboardPage() {
           } catch {}
         } catch {}
 
-        // Live update diagonal series OR fib levels
+        // Live update the actual diagonal series
         try {
-          if ((md2 as any).isFib) {
-            const held = chartLinesRef.current.get(id) || chartLinesRef.current.get(String(id));
-            const fibBase = (md2 as any).fibSnapshot || (() => {
-              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
-              return cur ? parseFibNote(cur.note) : null;
-            })();
-            if (fibBase && held && (held as any).__fibPriceLines) {
-              (md2 as any).fibSnapshot = fibBase;
-              const rev = !!fibBase.reverse;
-              const levels: number[] = fibBase.levels || [];
-              const pls: any[] = (held as any).lines || [];
-              // price lines are created in level order for on-levels
-              let pi = 0;
-              for (const lv of levels) {
-                let pr: number;
-                if (fibBase.kind === "fib-ext" && md2.pointC) {
-                  pr = Number(md2.pointC.price) + (p1 - p0) * Number(lv);
-                } else {
-                  pr = fibPrice(p0, p1, Number(lv), rev);
-                }
-                if (pi < pls.length && pls[pi] && typeof pls[pi].applyOptions === "function") {
-                  try { pls[pi].applyOptions({ price: pr }); } catch {}
-                }
-                pi++;
-              }
-              // trend line series if any
-              const extras: any[] = (held as any).series || [];
-              for (const ser of extras) {
-                if (!ser || typeof ser.setData !== "function") continue;
-                try {
-                  const barSec = intervalToSeconds(String(intervalRef.current));
-                  if (fibBase.kind === "fib-ext" && md2.pointC) {
-                    // first extra = A→B, second may be B→C
-                    // Heuristic: update all trend-like series between anchors
-                    ser.setData(denseDiagPoints(
-                      Math.min(t0, t1), Math.max(t0, t1),
-                      t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
-                      barSec
-                    ));
-                  } else {
-                    ser.setData(denseDiagPoints(
-                      Math.min(t0, t1), Math.max(t0, t1),
-                      t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
-                      barSec
-                    ));
-                  }
-                } catch {}
-              }
-              // mutate note coords live for persistence
-              try {
-                const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
-                if (cur && typeof cur.note === "string") {
-                  const fib0 = { ...fibBase, t1: t0, p1: p0, t2: t1, p2: p1 };
-                  if (md2.pointC) { (fib0 as any).t3 = md2.pointC.time; (fib0 as any).p3 = md2.pointC.price; }
-                  const note = buildFibNote(
-                    fib0.kind === "fib-ext" ? "fib-ext" : "fib",
-                    { t1: t0, p1: p0, t2: t1, p2: p1, ...(md2.pointC ? { t3: md2.pointC.time, p3: md2.pointC.price } : {}) },
-                    (fib0.levels || []).map((v: number, i: number) => ({
-                      v, on: true, color: (fib0.colors && fib0.colors[i]) || "#f97316",
-                    })),
-                    {
-                      reverse: !!fib0.reverse, extend: fib0.extend || "none",
-                      lineWidth: fib0.lineWidth || 1, lineStyle: fib0.lineStyle || "solid",
-                      trend: !!fib0.trend, trendColor: fib0.trendColor || "#f97316",
-                      background: fib0.background !== false, bgColor: fib0.bgColor || "#2962FF",
-                      bgOpacity: fib0.bgOpacity ?? 20,
-                      labelH: fib0.labelH, labelV: fib0.labelV,
-                      showPrices: fib0.showPrices, showLevels: fib0.showLevels,
-                      visMinutes: fib0.visMinutes, visHours: fib0.visHours, visDays: fib0.visDays,
-                      visWeeks: fib0.visWeeks, visMonths: fib0.visMonths,
-                      visMinM: fib0.visMinM, visMaxM: fib0.visMaxM,
-                      visMinH: fib0.visMinH, visMaxH: fib0.visMaxH,
-                      visMinD: fib0.visMinD, visMaxD: fib0.visMaxD,
-                      visMinW: fib0.visMinW, visMaxW: fib0.visMaxW,
-                      visMinMo: fib0.visMinMo, visMaxMo: fib0.visMaxMo,
-                    }
-                  );
-                  cur.note = note;
-                  (md2 as any)._liveFibNote = note;
-                }
-              } catch {}
-            }
-          } else {
-            const barSec = intervalToSeconds(String(intervalRef.current));
-            const ls =
-              chartLinesRef.current.get(id) ||
-              chartLinesRef.current.get(String(id)) ||
-              chartLinesRef.current.get(`alarm-diag-${id}`);
-            if (ls && typeof (ls as any).setData === "function") {
-              const tt0 = Math.min(t0, t1);
-              const tt1 = Math.max(t0, t1);
-              const vv0 = t0 <= t1 ? p0 : p1;
-              const vv1 = t0 <= t1 ? p1 : p0;
-              (ls as any).setData(denseDiagPoints(tt0, tt1, vv0, vv1, barSec));
-            }
+          const barSec = intervalToSeconds(String(intervalRef.current));
+          const ls =
+            chartLinesRef.current.get(id) ||
+            chartLinesRef.current.get(String(id)) ||
+            chartLinesRef.current.get(`alarm-diag-${id}`);
+          if (ls && typeof (ls as any).setData === "function") {
+            const tt0 = Math.min(t0, t1);
+            const tt1 = Math.max(t0, t1);
+            const vv0 = t0 <= t1 ? p0 : p1;
+            const vv1 = t0 <= t1 ? p1 : p0;
+            (ls as any).setData(denseDiagPoints(tt0, tt1, vv0, vv1, barSec));
           }
         } catch {}
 
@@ -7679,18 +7593,6 @@ export default function DashboardPage() {
               }
             } catch {}
             setAlarms((prev) => prev.map((a) => (String(a.id) === String(id) ? { ...a, ...patch } : a)));
-          } else if ((md2 as any).isFib) {
-            const note = (md2 as any)._liveFibNote;
-            if (note) patch.note = note;
-            else {
-              const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
-              if (cur && typeof cur.note === "string") patch.note = cur.note;
-            }
-            if (!String(id).startsWith("local-")) {
-              await supabase.from("chart_lines").update(patch).eq("id", id);
-            }
-            setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, ...patch } : l)));
-            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           } else {
             // preserve __diag note if used
             const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
@@ -7857,11 +7759,6 @@ export default function DashboardPage() {
   }, []);
 
   const renderAllLinesAndAlarms = useCallback(() => {
-    // While user is mid body-drag, only keep existing series — full rebuild makes lines vanish
-    if (bodyDragRef.current) {
-      return;
-    }
-
     const series = seriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
@@ -8420,8 +8317,7 @@ export default function DashboardPage() {
         const softMove = noteStr.startsWith("__curve:") || noteStr.startsWith("__path:") ||
           noteStr.startsWith("__channel:") || noteStr.startsWith("__dpr:") ||
           noteStr.startsWith("__avp:") || noteStr.startsWith("__frvp:") || noteStr.startsWith("__avwap:") ||
-          noteStr.startsWith("__diag:") || noteStr.startsWith("__fib:") || noteStr.startsWith("__fibext:") ||
-          isDiagonalLine(l);
+          noteStr.startsWith("__diag:") || isDiagonalLine(l);
         // Curve/path/etc: keep original style while moving (only show handles)
         // Keep original appearance while selected (no orange dashed "preview")
         const color = l.color || DEFAULT_LINE_COLOR;
@@ -10828,8 +10724,7 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
         // No active move → never leave ghost circles on chart
-        // drag-body must keep hollow endpoints visible while moving the whole tool
-        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c" && md.phase !== "drag-body")) {
+        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c")) {
           if (elA0) elA0.style.display = "none";
           if (elB0) elB0.style.display = "none";
           if (elC0) elC0.style.display = "none";
@@ -16256,7 +16151,7 @@ priced.sort((a, b) => a.price - b.price);
       // (Horizontal, Ray, Vertical, Trendline, Curve, Alarms) — TV style
       // ═══════════════════════════════════════════════════════════
       const hitTestAnyLine = (px: number, py: number): {
-        id: string; kind: "line" | "alarm"; type: "h" | "v" | "ray" | "diag" | "curve" | "arrow" | "fib";
+        id: string; kind: "line" | "alarm"; type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
         score: number; obj: any;
       } | null => {
         const chart = chartRef.current;
@@ -16286,36 +16181,6 @@ priced.sort((a, b) => a.price - b.price);
                   dmin = Math.min(dmin, Math.hypot(px - Number(xx), py - Number(yy)));
                 }
                 consider(String(l.id), "line", "curve", dmin, l);
-              }
-            } else if (n0.startsWith("__fib:") || n0.startsWith("__fibext:")) {
-              const fib = parseFibNote(n0);
-              if (fib) {
-                let dmin = 1e9;
-                for (const lv of fib.levels || []) {
-                  if (lv == null) continue;
-                  let pr: number;
-                  try {
-                    if (fib.kind === "fib-ext" && fib.p3 != null) pr = Number(fib.p3) + (Number(fib.p2) - Number(fib.p1)) * Number(lv);
-                    else pr = fibPrice(Number(fib.p1), Number(fib.p2), Number(lv), !!fib.reverse);
-                  } catch { continue; }
-                  const y = ser.priceToCoordinate(pr);
-                  if (y != null) dmin = Math.min(dmin, Math.abs(py - Number(y)));
-                }
-                // also hit trend line between anchors
-                try {
-                  const x0 = chart.timeScale().timeToCoordinate(Number(fib.t1) as any);
-                  const y0 = ser.priceToCoordinate(Number(fib.p1));
-                  const x1 = chart.timeScale().timeToCoordinate(Number(fib.t2) as any);
-                  const y1 = ser.priceToCoordinate(Number(fib.p2));
-                  if (x0 != null && y0 != null && x1 != null && y1 != null) {
-                    const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
-                    const len2 = dx * dx + dy * dy || 1;
-                    let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
-                    t = Math.max(0, Math.min(1, t));
-                    dmin = Math.min(dmin, Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy)));
-                  }
-                } catch {}
-                if (dmin <= 12) consider(String(l.id), "line", "fib", dmin, l);
               }
             } else if (isDiagonalLine(l) || (n0.startsWith("__diag:"))) {
               const t0 = Number(l.start_time), t1 = Number(l.end_time);
@@ -16481,14 +16346,6 @@ priced.sort((a, b) => a.price - b.price);
         const o = hit.obj;
         if (hit.type === "curve") {
           orig.ctrls = parseCurveControls(o.note) || [];
-        } else if (hit.type === "fib") {
-          const fib = parseFibNote(o.note);
-          if (fib) {
-            orig.fib = { ...fib };
-            orig.t1 = Number(fib.t1); orig.p1 = Number(fib.p1);
-            orig.t2 = Number(fib.t2); orig.p2 = Number(fib.p2);
-            if (fib.t3 != null) { orig.t3 = Number(fib.t3); orig.p3 = Number(fib.p3); }
-          }
         } else if (hit.type === "diag") {
           orig.t0 = Number(o.start_time); orig.p0 = Number(o.price);
           orig.t1 = Number(o.end_time); orig.p1 = Number(o.end_price);
@@ -16519,19 +16376,12 @@ priced.sort((a, b) => a.price - b.price);
           orig,
         };
 
-        // CRITICAL: do NOT setMovingId/setMode here — that useEffect re-runs renderAll and wipes fib/lines mid-drag.
-        // Selection state is already set on pointerdown (click-to-select). Refs alone drive the drag.
+        // Enter move mode + select so handles appear for multi-point tools
+        setMode("move");
         modeRef.current = "move";
+        setMovingId(hit.id);
         movingIdRef.current = hit.id;
-        try {
-          // Keep React movingId in sync without forcing a new value when already selected
-          if (String(movingId) !== String(hit.id)) {
-            // Defer state update until pointerup so series stay on chart during drag
-            (bodyDragRef.current as any)._needSelect = true;
-            (bodyDragRef.current as any)._selectId = hit.id;
-            (bodyDragRef.current as any)._selectKind = hit.kind;
-          }
-        } catch {}
+        setMovingType(hit.kind);
         if (hit.type === "curve" && orig.ctrls?.length >= 3) {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body", isCurve: true, isCurveBody: true,
@@ -16542,27 +16392,6 @@ priced.sort((a, b) => a.price - b.price);
             bodyStart: { time: tCursor, price },
             bodyOrig: orig.ctrls.map((p: any) => ({ ...p })),
           };
-        } else if (hit.type === "fib" && orig.t1 != null) {
-          const hasC = orig.t3 != null && orig.p3 != null;
-          (moveDiagRef as any).current = {
-            id: hit.id, phase: "drag-body", isFib: true,
-            pointA: { time: orig.t1, price: orig.p1 },
-            pointB: { time: orig.t2, price: orig.p2 },
-            pointC: hasC ? { time: orig.t3, price: orig.p3 } : undefined,
-            color: o.color || "#2962FF", width: o.width || 1, dash: "solid",
-            bodyStart: { time: tCursor, price },
-            bodyOrig: { t1: orig.t1, p1: orig.p1, t2: orig.t2, p2: orig.p2, t3: orig.t3, p3: orig.p3, fib: orig.fib },
-          };
-          try {
-            positionHandles(
-              { time: orig.t1, price: orig.p1 },
-              { time: orig.t2, price: orig.p2 },
-              null,
-              hasC ? { time: orig.t3, price: orig.p3 } : null
-            );
-          } catch {}
-          // Defer setSelectedFibId to pointerup — avoids renderAll wipe mid-drag
-          try { (bodyDragRef.current as any)._selFib = String(hit.id); } catch {}
         } else if (hit.type === "diag") {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body",
@@ -16649,128 +16478,6 @@ priced.sort((a, b) => a.price - b.price);
               cur.end_time = Math.max(...ctrls.map((p: any) => p.time));
               cur.end_price = ctrls[ctrls.length - 1].price;
             }
-          } else if (bd.type === "fib" && bd.orig?.t1 != null) {
-            const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
-            const t2 = bd.orig.t2 + dT, p2 = bd.orig.p2 + dP;
-            const t3 = bd.orig.t3 != null ? bd.orig.t3 + dT : null;
-            const p3 = bd.orig.p3 != null ? bd.orig.p3 + dP : null;
-            (bd as any)._liveGeom = { t1, p1, t2, p2, t3, p3 };
-            try {
-              const md = moveDiagRef.current as any;
-              if (md && md.isFib) {
-                md.pointA = { time: t1, price: p1 };
-                md.pointB = { time: t2, price: p2 };
-                if (t3 != null && p3 != null) md.pointC = { time: t3, price: p3 };
-              }
-              positionHandles(
-                { time: t1, price: p1 },
-                { time: t2, price: p2 },
-                null,
-                t3 != null && p3 != null ? { time: t3, price: p3 } : null
-              );
-            } catch {}
-            // In-place update fib price lines (no full renderAll → no lag)
-            try {
-              const fib0 = bd.orig.fib;
-              const held = chartLinesRef.current.get(bd.id) || chartLinesRef.current.get(String(bd.id));
-              if (fib0 && held && (held as any).__fibPriceLines) {
-                const rev = !!fib0.reverse;
-                const levels: number[] = fib0.levels || [];
-                const pls: any[] = (held as any).lines || [];
-                let pi = 0;
-                for (const lv of levels) {
-                  let pr: number;
-                  if (fib0.kind === "fib-ext" && t3 != null && p3 != null) {
-                    pr = Number(p3) + (p2 - p1) * Number(lv);
-                  } else {
-                    pr = fibPrice(p1, p2, Number(lv), rev);
-                  }
-                  if (pi < pls.length && pls[pi] && typeof pls[pi].applyOptions === "function") {
-                    try { pls[pi].applyOptions({ price: pr }); } catch {}
-                  }
-                  pi++;
-                }
-                // Update trend line series so A→B (and B→C) move with the body
-                try {
-                  const barSec = intervalToSeconds(String(intervalRef.current));
-                  const extras: any[] = (held as any).series || [];
-                  if (extras[0] && typeof extras[0].setData === "function") {
-                    extras[0].setData(denseDiagPoints(Number(t1), Number(t2), Number(p1), Number(p2), barSec));
-                  }
-                  if (t3 != null && p3 != null && extras[1] && typeof extras[1].setData === "function") {
-                    extras[1].setData(denseDiagPoints(Number(t2), Number(t3), Number(p2), Number(p3), barSec));
-                  }
-                } catch {}
-                // Shift fib background bands with price delta
-                try {
-                  const host = vlineOverlayRef.current;
-                  const ser2 = seriesRef.current;
-                  if (host && ser2) {
-                    host.querySelectorAll(`[data-fib-id="${bd.id}"]`).forEach((el) => {
-                      try {
-                        const lo = Number((el as HTMLElement).dataset.fibLo) + dP;
-                        const hi = Number((el as HTMLElement).dataset.fibHi) + dP;
-                        const y1 = ser2.priceToCoordinate(hi);
-                        const y2 = ser2.priceToCoordinate(lo);
-                        if (y1 != null && y2 != null) {
-                          (el as HTMLElement).style.top = `${Math.min(Number(y1), Number(y2))}px`;
-                          (el as HTMLElement).style.height = `${Math.max(1, Math.abs(Number(y2) - Number(y1)))}px`;
-                          (el as HTMLElement).dataset.fibLo = String(lo);
-                          (el as HTMLElement).dataset.fibHi = String(hi);
-                        }
-                      } catch {}
-                    });
-                  }
-                } catch {}
-                const extras: any[] = (held as any).series || [];
-                const barSec = intervalToSeconds(String(intervalRef.current));
-                for (const ser of extras) {
-                  if (!ser || typeof ser.setData !== "function") continue;
-                  try {
-                    ser.setData(denseDiagPoints(
-                      Math.min(t1, t2), Math.max(t1, t2),
-                      t1 <= t2 ? p1 : p2, t1 <= t2 ? p2 : p1,
-                      barSec
-                    ));
-                  } catch {}
-                }
-                // keep note coords for save on pointerup
-                try {
-                  const note = buildFibNote(
-                    fib0.kind === "fib-ext" ? "fib-ext" : "fib",
-                    { t1, p1, t2, p2, ...(t3 != null && p3 != null ? { t3, p3 } : {}) },
-                    (fib0.levels || []).map((v: number, i: number) => ({
-                      v, on: true, color: (fib0.colors && fib0.colors[i]) || "#f97316",
-                    })),
-                    {
-                      reverse: !!fib0.reverse, extend: fib0.extend || "none",
-                      lineWidth: fib0.lineWidth || 1, lineStyle: fib0.lineStyle || "solid",
-                      trend: !!fib0.trend, trendColor: fib0.trendColor || "#f97316",
-                      background: fib0.background !== false, bgColor: fib0.bgColor || "#2962FF",
-                      bgOpacity: fib0.bgOpacity ?? 20,
-                      labelH: fib0.labelH, labelV: fib0.labelV,
-                      showPrices: fib0.showPrices, showLevels: fib0.showLevels,
-                      visMinutes: fib0.visMinutes, visHours: fib0.visHours, visDays: fib0.visDays,
-                      visWeeks: fib0.visWeeks, visMonths: fib0.visMonths,
-                      visMinM: fib0.visMinM, visMaxM: fib0.visMaxM,
-                      visMinH: fib0.visMinH, visMaxH: fib0.visMaxH,
-                      visMinD: fib0.visMinD, visMaxD: fib0.visMaxD,
-                      visMinW: fib0.visMinW, visMaxW: fib0.visMaxW,
-                      visMinMo: fib0.visMinMo, visMaxMo: fib0.visMaxMo,
-                    }
-                  );
-                  (bd as any)._liveFibNote = note;
-                  const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-                  if (cur) {
-                    cur.note = note;
-                    cur.price = p1;
-                    cur.start_time = Math.min(t1, t2);
-                    cur.end_time = Math.max(t1, t2);
-                    cur.end_price = p2;
-                  }
-                } catch {}
-              }
-            } catch {}
           } else if (bd.type === "diag") {
             const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
             const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
@@ -16989,26 +16696,7 @@ priced.sort((a, b) => a.price - b.price);
       const onBodyDragUp = async () => {
         const bd = bodyDragRef.current;
         if (!bd) return;
-        const needSelect = !!(bd as any)._needSelect;
-        const selId = (bd as any)._selectId;
-        const selKind = (bd as any)._selectKind;
         bodyDragRef.current = null;
-        // Apply deferred selection now that drag is over
-        try {
-          if (needSelect && selId) {
-            setMode("move");
-            setMovingId(String(selId));
-            setMovingType(selKind === "alarm" ? "alarm" : "line");
-          }
-          if ((bd as any)._selFib) {
-            setSelectedFibId(String((bd as any)._selFib));
-          }
-        } catch {}
-        // Rebuild once after drag so fib/diag settle solid (guard no longer blocks)
-        try { setTimeout(() => {
-          try { (renderAllLinesAndAlarmsRef as any).immediate?.(); } catch {}
-          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-        }, 0); } catch {}
         // Prevent the same pointer-up/click from teleporting the line via subscribeClick
         clickLockRef.current = true;
         setTimeout(() => { clickLockRef.current = false; }, 350);
@@ -17059,107 +16747,6 @@ priced.sort((a, b) => a.price - b.price);
               }
             }
             if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
-          } else if (bd.type === "fib") {
-            const live = (bd as any)._liveGeom;
-            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
-            if (cur && (bd as any)._liveFibNote) {
-              const note = (bd as any)._liveFibNote as string;
-              const patch: any = {
-                note,
-                price: live ? live.p1 : cur.price,
-                start_time: live ? Math.min(live.t1, live.t2) : cur.start_time,
-                end_time: live ? Math.max(live.t1, live.t2) : cur.end_time,
-                end_price: live ? live.p2 : cur.end_price,
-              };
-              cur.note = note;
-              Object.assign(cur, patch);
-              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-              if (!String(bd.id).startsWith("local-")) {
-                await supabase.from("chart_lines").update(patch).eq("id", bd.id);
-              }
-            } else if (live && cur && bd.orig?.fib) {
-              const t1 = live.t1, p1 = live.p1, t2 = live.t2, p2 = live.p2;
-              const t3 = live.t3, p3 = live.p3;
-              const fib0 = { ...bd.orig.fib, t1, p1, t2, p2 };
-              if (t3 != null && p3 != null) { (fib0 as any).t3 = t3; (fib0 as any).p3 = p3; }
-              try {
-                const note = buildFibNote(
-                  fib0.kind === "fib-ext" ? "fib-ext" : "fib",
-                  { t1, p1, t2, p2, ...(t3 != null && p3 != null ? { t3, p3 } : {}) },
-                  (fib0.levels || []).map((v: number, i: number) => ({
-                    v,
-                    on: true,
-                    color: (fib0.colors && fib0.colors[i]) || "#f97316",
-                  })),
-                  {
-                    reverse: !!fib0.reverse,
-                    extend: fib0.extend || "none",
-                    lineWidth: fib0.lineWidth || 1,
-                    lineStyle: fib0.lineStyle || "solid",
-                    trend: !!fib0.trend,
-                    trendColor: fib0.trendColor || "#f97316",
-                    background: fib0.background !== false,
-                    bgColor: fib0.bgColor || "#2962FF",
-                    bgOpacity: fib0.bgOpacity ?? 20,
-                    labelH: fib0.labelH,
-                    labelV: fib0.labelV,
-                    showPrices: fib0.showPrices,
-                    showLevels: fib0.showLevels,
-                    visMinutes: fib0.visMinutes,
-                    visHours: fib0.visHours,
-                    visDays: fib0.visDays,
-                    visWeeks: fib0.visWeeks,
-                    visMonths: fib0.visMonths,
-                    visMinM: fib0.visMinM, visMaxM: fib0.visMaxM,
-                    visMinH: fib0.visMinH, visMaxH: fib0.visMaxH,
-                    visMinD: fib0.visMinD, visMaxD: fib0.visMaxD,
-                    visMinW: fib0.visMinW, visMaxW: fib0.visMaxW,
-                    visMinMo: fib0.visMinMo, visMaxMo: fib0.visMaxMo,
-                  }
-                );
-                const patch: any = {
-                  note,
-                  price: p1,
-                  start_time: Math.min(t1, t2),
-                  end_time: Math.max(t1, t2),
-                  end_price: p2,
-                };
-                cur.note = note;
-                cur.price = p1;
-                cur.start_time = patch.start_time;
-                cur.end_time = patch.end_time;
-                cur.end_price = p2;
-                setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
-                if (!String(bd.id).startsWith("local-")) {
-                  await supabase.from("chart_lines").update(patch).eq("id", bd.id);
-                }
-              } catch (e) { console.warn("fib body move", e); }
-            }
-            try {
-              const md = moveDiagRef.current as any;
-              if (md) {
-                md.phase = "pick";
-                if (live) {
-                  md.pointA = { time: live.t1, price: live.p1 };
-                  md.pointB = { time: live.t2, price: live.p2 };
-                  if (live.t3 != null && live.p3 != null) {
-                    md.pointC = { time: live.t3, price: live.p3 };
-                  }
-                }
-              }
-            } catch {}
-            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-            // Re-show handles after re-render so they don't stick at old coords
-            try {
-              setTimeout(() => {
-                try {
-                  const md3 = moveDiagRef.current as any;
-                  if (md3 && md3.isFib && md3.pointA && md3.pointB) {
-                    positionHandles(md3.pointA, md3.pointB, null, md3.pointC || null);
-                  }
-                } catch {}
-              }, 40);
-            } catch {}
           } else if (bd.type === "diag") {
             const live = (bd as any)._liveGeom;
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
@@ -17609,7 +17196,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             }
           }
         } catch {}
-        // Fib live preview — hollow handles only (stable, no blink)
+        // Fib live preview — rAF + reuse price lines (update price only)
         try {
           const mNow = modeRef.current;
           const startPt = diagStartRef.current;
@@ -17625,22 +17212,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               const tCursor = (() => {
                 try {
                   const tr = chartNow?.timeScale().coordinateToTime(param.point.x as number);
-                  if (tr != null) return Number(tr);
-                } catch {}
-                try {
-                  const logical = chartNow?.timeScale().coordinateToLogical(param.point.x as number);
-                  const candles = candlesRef.current || [];
-                  if (logical != null && candles.length) {
-                    const idx = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
-                    return Number(candles[idx].time);
-                  }
-                } catch {}
-                // last resort: use pixel-based synthetic time so handles never vanish
-                try {
-                  const candles = candlesRef.current || [];
-                  if (candles.length) return Number(candles[candles.length - 1].time);
-                } catch {}
-                return null;
+                  return tr != null ? Number(tr) : null;
+                } catch { return null; }
               })();
               try {
                 if (chartNow && tCursor != null) {
@@ -17728,67 +17301,23 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                     }
                   } else {
-                    // Before first click: hollow point follows mouse (no display thrash → no blink)
+                    // Before first click: hollow point follows mouse
                     const elA = handleAElRef.current;
                     if (elA) {
-                      if (elA.style.display !== "block") elA.style.display = "block";
+                      elA.style.display = "block";
                       elA.style.left = `${param.point.x}px`;
                       elA.style.top = `${param.point.y}px`;
-                      elA.style.borderColor = "#2962FF";
-                      elA.style.borderWidth = "2.5px";
-                      elA.style.background = "#0b0e11";
-                      elA.style.width = "18px";
-                      elA.style.height = "18px";
-                      elA.style.borderRadius = "50%";
-                      elA.style.opacity = "1";
-                      elA.style.transition = "none";
-                      elA.style.boxShadow = "0 0 0 2px rgba(41,98,255,0.3)";
+                      elA.style.borderColor = "#f97316";
+                      elA.style.width = "16px";
+                      elA.style.height = "16px";
                     }
-                    if (handleBElRef.current && handleBElRef.current.style.display !== "none") {
-                      handleBElRef.current.style.display = "none";
-                    }
-                    if (handleCElRef.current && handleCElRef.current.style.display !== "none") {
-                      handleCElRef.current.style.display = "none";
-                    }
+                    if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                    if (handleCElRef.current) handleCElRef.current.style.display = "none";
                   }
                 }
               } catch {}
-              // TV-style: after point A, live-preview all fib levels to cursor (point B)
-              if (startPt && (mNow === "fib" || mNow === "fib-ext") && seriesRef.current) {
-                try {
-                  const levelsNow = (loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS) || DEFAULT_FIB_LEVELS;
-                  const rev = !!loadLS("fib_reverse", false);
-                  const p1 = Number(startPt.price);
-                  const p2n = Number(p2);
-                  // Clear previous preview lines
-                  if (previewFibSeriesRef.current.length) {
-                    for (const pl of previewFibSeriesRef.current) {
-                      try { seriesRef.current.removePriceLine(pl); } catch {}
-                    }
-                    previewFibSeriesRef.current = [];
-                  }
-                  for (const lv of levelsNow) {
-                    if (lv && (lv as any).on === false) continue;
-                    const v = typeof lv === "number" ? lv : Number((lv as any).v);
-                    if (!Number.isFinite(v)) continue;
-                    const pr = fibPrice(p1, p2n, v, rev);
-                    if (!Number.isFinite(pr)) continue;
-                    const col = (typeof lv === "object" && (lv as any).color) ||
-                      (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - v) < 1e-6)?.color) || "#787B86";
-                    try {
-                      const pl = seriesRef.current.createPriceLine({
-                        price: pr,
-                        color: col,
-                        lineWidth: 1,
-                        lineStyle: LineStyle.Solid,
-                        axisLabelVisible: true,
-                        title: String(v),
-                      });
-                      previewFibSeriesRef.current.push(pl);
-                    } catch {}
-                  }
-                } catch {}
-              } else if (previewFibSeriesRef.current.length && seriesRef.current) {
+              // During placement: ONLY hollow points — no level lines until committed
+              if (previewFibSeriesRef.current.length && seriesRef.current) {
                 try {
                   for (const pl of previewFibSeriesRef.current) {
                     try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -18083,11 +17612,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const drawing =
             mNow === "vline" || mNow === "draw" || mNow === "ray" || mNow === "diag" ||
             mNow === "alarm" || mNow === "alarm-ray" || mNow === "alarm-diag" ||
-            mNow === "curve" || mNow === "channel" || mNow === "path" ||
-            mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz" || mNow === "fib-tbt" ||
-            mNow === "rect" || mNow === "arrow" || mNow === "avp" || mNow === "avwap" ||
-            mNow === "frvp" || mNow === "dpr" || mNow === "long-pos" || mNow === "short-pos" ||
-            mNow === "brush" || mNow === "callout" || mNow === "measure";
+            mNow === "curve" || mNow === "channel" || mNow === "path";
           if (drawing) {
             clickLockRef.current = false;
           } else if (!(mNow === "move" && md0 && md0.phase === "pick")) {
@@ -20613,67 +20138,31 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
 
         if (m === "fib") {
-          let t = resolveTime(param);
-          if (t == null) {
-            // fallback: logical index or last candle
-            try {
-              const logical = chart.timeScale().coordinateToLogical(param.point.x);
-              const candles = candlesRef.current || [];
-              if (logical != null && candles.length) {
-                const idx = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
-                t = Number(candles[idx].time);
-              }
-            } catch {}
-          }
-          if (t == null) {
-            setStatusMsg("Fib: click on a candle");
-            return;
-          }
+          const t = resolveTime(param);
+          if (t == null) return;
           const start = diagStartRef.current;
           if (!start) {
             diagStartRef.current = { time: t, price: fp };
             setDiagStart({ time: t, price: fp });
             fibPreviewCacheRef.current = null; // reload levels
-            clickLockRef.current = false;
-            // hollow point so user sees where first anchor is — first click always sticks
+            // hollow point so user sees where first anchor is
             try {
               const elA = handleAElRef.current;
               if (elA) {
-                let xPx: number | null = null;
-                let yPx: number | null = null;
-                try {
-                  const xc = chart.timeScale().timeToCoordinate(t as any);
-                  const yc = series.priceToCoordinate(fp);
-                  if (xc != null && yc != null) {
-                    xPx = Number(xc);
-                    yPx = Number(yc);
-                  }
-                } catch {}
-                // fallback to click pixel if time/price coord fails
-                if ((xPx == null || yPx == null) && param?.point) {
-                  xPx = Number(param.point.x);
-                  yPx = Number(param.point.y);
-                }
-                if (xPx != null && yPx != null && Number.isFinite(xPx) && Number.isFinite(yPx)) {
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(fp);
+                if (x != null && y != null) {
                   elA.style.display = "block";
-                  elA.style.visibility = "visible";
-                  elA.style.opacity = "1";
-                  elA.style.left = `${xPx}px`;
-                  elA.style.top = `${yPx}px`;
-                  elA.style.borderColor = "#2962FF";
-                  elA.style.borderWidth = "2.5px";
-                  elA.style.background = "#0b0e11";
-                  elA.style.width = "18px";
-                  elA.style.height = "18px";
-                  elA.style.borderRadius = "50%";
-                  elA.style.transition = "none";
-                  elA.style.zIndex = "80";
-                  elA.style.boxShadow = "0 0 0 2px rgba(41,98,255,0.3)";
+                  elA.style.left = `${x}px`;
+                  elA.style.top = `${y}px`;
+                  elA.style.borderColor = "#f97316";
+                  elA.style.width = "16px";
+                  elA.style.height = "16px";
                 }
               }
               if (handleBElRef.current) handleBElRef.current.style.display = "none";
             } catch {}
-            setStatusMsg("Fib: point A set — tap point B");
+            setStatusMsg("Fib: move, then tap second point");
             return;
           }
           clickLockRef.current = true;
@@ -22047,8 +21536,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   }, [applyLastPriceLabel, symbol, interval]);
 
   useEffect(() => {
-    // Never rebuild series while user is mid body-drag (fib/diag vanish bug)
-    if (bodyDragRef.current) return;
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
   }, [currentLines, currentAlarms, movingId, movingType, renderAllLinesAndAlarms]);
 
@@ -22900,20 +22387,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         ];
         const dropSeries = (ls: any) => {
           if (!ls) return;
-          // Fib stores { __fibPriceLines, lines: priceLines[], series: LineSeries[] }
-          if (ls && (ls as any).__fibPriceLines) {
-            if (Array.isArray((ls as any).lines) && ser) {
-              for (const pl of (ls as any).lines) {
-                try { ser.removePriceLine(pl); } catch {}
-              }
-            }
-            if (Array.isArray((ls as any).series)) {
-              for (const s of (ls as any).series) {
-                try { chart.removeSeries(s as any); } catch {}
-              }
-            }
-            return;
-          }
           if (Array.isArray(ls)) {
             for (const s of ls) {
               try { chart.removeSeries(s as any); } catch {}
@@ -23004,7 +22477,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try {
           const host = vlineOverlayRef.current;
           host?.querySelectorAll(
-            `[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle],[data-curve-svg="${sid}"],[data-curve-id="${sid}"],[data-curve-handle],[data-curve-draft],[data-curve-hit="${sid}"],[data-fib-band]`
+            `[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle],[data-curve-svg="${sid}"],[data-curve-id="${sid}"],[data-curve-handle],[data-curve-draft],[data-curve-hit="${sid}"]`
           ).forEach((el) => el.remove());
           // also drop orphan curve SVGs not in lines list
           host?.querySelectorAll("[data-curve-svg]").forEach((el) => {
@@ -24679,12 +24152,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       fibPoint3Ref.current = null;
                       setMovingId(null);
-                      clickLockRef.current = false;
-                      diagStartRef.current = null;
                       setMode("fib");
-                      modeRef.current = "fib";
-                      try { clickLockRef.current = false; } catch {}
-                      try { diagStartRef.current = null; setDiagStart(null); } catch {}
                       setStatusMsg("Fib Retracement: tap point A, then B");
                     }}
                   >
@@ -24704,12 +24172,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       fibPoint3Ref.current = null;
                       setMovingId(null);
-                      clickLockRef.current = false;
-                      diagStartRef.current = null;
                       setMode("fib-ext");
-                      modeRef.current = "fib-ext";
-                      try { clickLockRef.current = false; } catch {}
-                      try { diagStartRef.current = null; setDiagStart(null); fibPoint3Ref.current = null; } catch {}
                       setStatusMsg("Fib Extension: tap A, then B, then C");
                     }}
                   >
@@ -25416,19 +24879,19 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 ref={handleAElRef}
                 data-line-handle="a"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleBElRef}
                 data-line-handle="b"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               <div
                 ref={handleCElRef}
                 data-line-handle="c"
                 className="absolute rounded-full cursor-grab active:cursor-grabbing"
-                style={{ display: "none", width: 16, height: 16, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2.5px solid #2962FF", boxShadow: "0 0 0 2px rgba(41,98,255,0.25)", zIndex: 90, pointerEvents: "auto", touchAction: "none", cursor: "grab", opacity: 1, transition: "none" }}
+                style={{ display: "none", width: 12, height: 12, transform: "translate(-50%, -50%)", background: "#0b0e11", border: "2px solid #2962FF", boxShadow: "0 0 0 1px rgba(41,98,255,0.35)", zIndex: 80, pointerEvents: "auto", touchAction: "none", cursor: "grab" }}
               />
               {/* Selection marker — shows which line is selected */}
               <div
