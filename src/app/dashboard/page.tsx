@@ -16182,6 +16182,36 @@ priced.sort((a, b) => a.price - b.price);
                 }
                 consider(String(l.id), "line", "curve", dmin, l);
               }
+            } else if (n0.startsWith("__fib:") || n0.startsWith("__fibext:")) {
+              const fib = parseFibNote(n0);
+              if (fib) {
+                let dmin = 1e9;
+                for (const lv of fib.levels || []) {
+                  if (lv == null) continue;
+                  let pr: number;
+                  try {
+                    if (fib.kind === "fib-ext" && fib.p3 != null) pr = Number(fib.p3) + (Number(fib.p2) - Number(fib.p1)) * Number(lv);
+                    else pr = fibPrice(Number(fib.p1), Number(fib.p2), Number(lv), !!fib.reverse);
+                  } catch { continue; }
+                  const y = ser.priceToCoordinate(pr);
+                  if (y != null) dmin = Math.min(dmin, Math.abs(py - Number(y)));
+                }
+                // also hit trend line between anchors
+                try {
+                  const x0 = chart.timeScale().timeToCoordinate(Number(fib.t1) as any);
+                  const y0 = ser.priceToCoordinate(Number(fib.p1));
+                  const x1 = chart.timeScale().timeToCoordinate(Number(fib.t2) as any);
+                  const y1 = ser.priceToCoordinate(Number(fib.p2));
+                  if (x0 != null && y0 != null && x1 != null && y1 != null) {
+                    const dx = Number(x1) - Number(x0), dy = Number(y1) - Number(y0);
+                    const len2 = dx * dx + dy * dy || 1;
+                    let t = ((px - Number(x0)) * dx + (py - Number(y0)) * dy) / len2;
+                    t = Math.max(0, Math.min(1, t));
+                    dmin = Math.min(dmin, Math.hypot(px - (Number(x0) + t * dx), py - (Number(y0) + t * dy)));
+                  }
+                } catch {}
+                if (dmin <= 12) consider(String(l.id), "line", "fib", dmin, l);
+              }
             } else if (isDiagonalLine(l) || (n0.startsWith("__diag:"))) {
               const t0 = Number(l.start_time), t1 = Number(l.end_time);
               const p0 = Number(l.price), p1 = Number(l.end_price);
@@ -16346,6 +16376,14 @@ priced.sort((a, b) => a.price - b.price);
         const o = hit.obj;
         if (hit.type === "curve") {
           orig.ctrls = parseCurveControls(o.note) || [];
+        } else if (hit.type === "fib") {
+          const fib = parseFibNote(o.note);
+          if (fib) {
+            orig.fib = { ...fib };
+            orig.t1 = Number(fib.t1); orig.p1 = Number(fib.p1);
+            orig.t2 = Number(fib.t2); orig.p2 = Number(fib.p2);
+            if (fib.t3 != null) { orig.t3 = Number(fib.t3); orig.p3 = Number(fib.p3); }
+          }
         } else if (hit.type === "diag") {
           orig.t0 = Number(o.start_time); orig.p0 = Number(o.price);
           orig.t1 = Number(o.end_time); orig.p1 = Number(o.end_price);
@@ -16392,6 +16430,26 @@ priced.sort((a, b) => a.price - b.price);
             bodyStart: { time: tCursor, price },
             bodyOrig: orig.ctrls.map((p: any) => ({ ...p })),
           };
+        } else if (hit.type === "fib" && orig.t1 != null) {
+          const hasC = orig.t3 != null && orig.p3 != null;
+          (moveDiagRef as any).current = {
+            id: hit.id, phase: "drag-body", isFib: true,
+            pointA: { time: orig.t1, price: orig.p1 },
+            pointB: { time: orig.t2, price: orig.p2 },
+            pointC: hasC ? { time: orig.t3, price: orig.p3 } : undefined,
+            color: o.color || "#2962FF", width: o.width || 1, dash: "solid",
+            bodyStart: { time: tCursor, price },
+            bodyOrig: { t1: orig.t1, p1: orig.p1, t2: orig.t2, p2: orig.p2, t3: orig.t3, p3: orig.p3, fib: orig.fib },
+          };
+          try {
+            positionHandles(
+              { time: orig.t1, price: orig.p1 },
+              { time: orig.t2, price: orig.p2 },
+              null,
+              hasC ? { time: orig.t3, price: orig.p3 } : null
+            );
+          } catch {}
+          try { setSelectedFibId(String(hit.id)); } catch {}
         } else if (hit.type === "diag") {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body",
@@ -16477,6 +16535,72 @@ priced.sort((a, b) => a.price - b.price);
               cur.start_time = Math.min(...ctrls.map((p: any) => p.time));
               cur.end_time = Math.max(...ctrls.map((p: any) => p.time));
               cur.end_price = ctrls[ctrls.length - 1].price;
+            }
+          } else if (bd.type === "fib" && bd.orig?.t1 != null) {
+            const t1 = bd.orig.t1 + dT, p1 = bd.orig.p1 + dP;
+            const t2 = bd.orig.t2 + dT, p2 = bd.orig.p2 + dP;
+            const t3 = bd.orig.t3 != null ? bd.orig.t3 + dT : null;
+            const p3 = bd.orig.p3 != null ? bd.orig.p3 + dP : null;
+            (bd as any)._liveGeom = { t1, p1, t2, p2, t3, p3 };
+            try {
+              positionHandles(
+                { time: t1, price: p1 },
+                { time: t2, price: p2 },
+                null,
+                t3 != null && p3 != null ? { time: t3, price: p3 } : null
+              );
+            } catch {}
+            // throttle full re-render of fib levels
+            const now = Date.now();
+            if (!(bd as any)._lastFibRender || now - (bd as any)._lastFibRender > 80) {
+              (bd as any)._lastFibRender = now;
+              const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              if (cur && bd.orig.fib) {
+                const fib0 = { ...bd.orig.fib, t1, p1, t2, p2 };
+                if (t3 != null && p3 != null) { (fib0 as any).t3 = t3; (fib0 as any).p3 = p3; }
+                try {
+                  const note = buildFibNote(
+                    fib0.kind === "fib-ext" ? "fib-ext" : "fib",
+                    { t1, p1, t2, p2, ...(t3 != null && p3 != null ? { t3, p3 } : {}) },
+                    (fib0.levels || []).map((v: number, i: number) => ({
+                      v,
+                      on: true,
+                      color: (fib0.colors && fib0.colors[i]) || "#f97316",
+                    })),
+                    {
+                      reverse: !!fib0.reverse,
+                      extend: fib0.extend || "none",
+                      lineWidth: fib0.lineWidth || 1,
+                      lineStyle: fib0.lineStyle || "solid",
+                      trend: !!fib0.trend,
+                      trendColor: fib0.trendColor || "#f97316",
+                      background: fib0.background !== false,
+                      bgColor: fib0.bgColor || "#2962FF",
+                      bgOpacity: fib0.bgOpacity ?? 20,
+                      labelH: fib0.labelH,
+                      labelV: fib0.labelV,
+                      showPrices: fib0.showPrices,
+                      showLevels: fib0.showLevels,
+                      visMinutes: fib0.visMinutes,
+                      visHours: fib0.visHours,
+                      visDays: fib0.visDays,
+                      visWeeks: fib0.visWeeks,
+                      visMonths: fib0.visMonths,
+                      visMinM: fib0.visMinM, visMaxM: fib0.visMaxM,
+                      visMinH: fib0.visMinH, visMaxH: fib0.visMaxH,
+                      visMinD: fib0.visMinD, visMaxD: fib0.visMaxD,
+                      visMinW: fib0.visMinW, visMaxW: fib0.visMaxW,
+                      visMinMo: fib0.visMinMo, visMaxMo: fib0.visMaxMo,
+                    }
+                  );
+                  cur.note = note;
+                  cur.price = p1;
+                  cur.start_time = Math.min(t1, t2);
+                  cur.end_time = Math.max(t1, t2);
+                  cur.end_price = p2;
+                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                } catch {}
+              }
             }
           } else if (bd.type === "diag") {
             const t0 = bd.orig.t0 + dT, p0 = bd.orig.p0 + dP;
@@ -16747,6 +16871,72 @@ priced.sort((a, b) => a.price - b.price);
               }
             }
             if (md) { md.phase = "pick"; md.bodyStart = null; md.bodyOrig = null; }
+          } else if (bd.type === "fib") {
+            const live = (bd as any)._liveGeom;
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (live && cur && bd.orig?.fib) {
+              const t1 = live.t1, p1 = live.p1, t2 = live.t2, p2 = live.p2;
+              const t3 = live.t3, p3 = live.p3;
+              const fib0 = { ...bd.orig.fib, t1, p1, t2, p2 };
+              if (t3 != null && p3 != null) { (fib0 as any).t3 = t3; (fib0 as any).p3 = p3; }
+              try {
+                const note = buildFibNote(
+                  fib0.kind === "fib-ext" ? "fib-ext" : "fib",
+                  { t1, p1, t2, p2, ...(t3 != null && p3 != null ? { t3, p3 } : {}) },
+                  (fib0.levels || []).map((v: number, i: number) => ({
+                    v,
+                    on: true,
+                    color: (fib0.colors && fib0.colors[i]) || "#f97316",
+                  })),
+                  {
+                    reverse: !!fib0.reverse,
+                    extend: fib0.extend || "none",
+                    lineWidth: fib0.lineWidth || 1,
+                    lineStyle: fib0.lineStyle || "solid",
+                    trend: !!fib0.trend,
+                    trendColor: fib0.trendColor || "#f97316",
+                    background: fib0.background !== false,
+                    bgColor: fib0.bgColor || "#2962FF",
+                    bgOpacity: fib0.bgOpacity ?? 20,
+                    labelH: fib0.labelH,
+                    labelV: fib0.labelV,
+                    showPrices: fib0.showPrices,
+                    showLevels: fib0.showLevels,
+                    visMinutes: fib0.visMinutes,
+                    visHours: fib0.visHours,
+                    visDays: fib0.visDays,
+                    visWeeks: fib0.visWeeks,
+                    visMonths: fib0.visMonths,
+                    visMinM: fib0.visMinM, visMaxM: fib0.visMaxM,
+                    visMinH: fib0.visMinH, visMaxH: fib0.visMaxH,
+                    visMinD: fib0.visMinD, visMaxD: fib0.visMaxD,
+                    visMinW: fib0.visMinW, visMaxW: fib0.visMaxW,
+                    visMinMo: fib0.visMinMo, visMaxMo: fib0.visMaxMo,
+                  }
+                );
+                const patch: any = {
+                  note,
+                  price: p1,
+                  start_time: Math.min(t1, t2),
+                  end_time: Math.max(t1, t2),
+                  end_price: p2,
+                };
+                cur.note = note;
+                cur.price = p1;
+                cur.start_time = patch.start_time;
+                cur.end_time = patch.end_time;
+                cur.end_price = p2;
+                setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+                if (!String(bd.id).startsWith("local-")) {
+                  await supabase.from("chart_lines").update(patch).eq("id", bd.id);
+                }
+              } catch (e) { console.warn("fib body move", e); }
+            }
+            try {
+              const md = moveDiagRef.current as any;
+              if (md) { md.phase = "pick"; }
+            } catch {}
+            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
           } else if (bd.type === "diag") {
             const live = (bd as any)._liveGeom;
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
@@ -17301,18 +17491,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                     }
                   } else {
-                    // Before first click: hollow point follows mouse
+                    // Before first click: hollow point follows mouse (no display thrash → no blink)
                     const elA = handleAElRef.current;
                     if (elA) {
-                      elA.style.display = "block";
+                      if (elA.style.display !== "block") elA.style.display = "block";
                       elA.style.left = `${param.point.x}px`;
                       elA.style.top = `${param.point.y}px`;
                       elA.style.borderColor = "#f97316";
                       elA.style.width = "16px";
                       elA.style.height = "16px";
+                      elA.style.opacity = "1";
+                      elA.style.transition = "none";
                     }
-                    if (handleBElRef.current) handleBElRef.current.style.display = "none";
-                    if (handleCElRef.current) handleCElRef.current.style.display = "none";
+                    if (handleBElRef.current && handleBElRef.current.style.display !== "none") {
+                      handleBElRef.current.style.display = "none";
+                    }
+                    if (handleCElRef.current && handleCElRef.current.style.display !== "none") {
+                      handleCElRef.current.style.display = "none";
+                    }
                   }
                 }
               } catch {}
@@ -22387,6 +22583,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         ];
         const dropSeries = (ls: any) => {
           if (!ls) return;
+          // Fib stores { __fibPriceLines, lines: priceLines[], series: LineSeries[] }
+          if (ls && (ls as any).__fibPriceLines) {
+            if (Array.isArray((ls as any).lines) && ser) {
+              for (const pl of (ls as any).lines) {
+                try { ser.removePriceLine(pl); } catch {}
+              }
+            }
+            if (Array.isArray((ls as any).series)) {
+              for (const s of (ls as any).series) {
+                try { chart.removeSeries(s as any); } catch {}
+              }
+            }
+            return;
+          }
           if (Array.isArray(ls)) {
             for (const s of ls) {
               try { chart.removeSeries(s as any); } catch {}
@@ -22477,7 +22687,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try {
           const host = vlineOverlayRef.current;
           host?.querySelectorAll(
-            `[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle],[data-curve-svg="${sid}"],[data-curve-id="${sid}"],[data-curve-handle],[data-curve-draft],[data-curve-hit="${sid}"]`
+            `[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle],[data-curve-svg="${sid}"],[data-curve-id="${sid}"],[data-curve-handle],[data-curve-draft],[data-curve-hit="${sid}"],[data-fib-band]`
           ).forEach((el) => el.remove());
           // also drop orphan curve SVGs not in lines list
           host?.querySelectorAll("[data-curve-svg]").forEach((el) => {
