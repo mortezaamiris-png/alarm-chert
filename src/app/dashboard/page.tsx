@@ -16580,6 +16580,90 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
+        // ── Click any path on chart → select + start body move (no list Move needed) ──
+        if (!(modeRef.current === "path" || modeRef.current === "brush" || modeRef.current === "curve" || modeRef.current === "diag" || modeRef.current === "rect")) {
+          if (!(t.closest?.("[data-menu]") || t.closest?.("[data-move-bar]") || t.closest?.("[data-note-edit]") || t.getAttribute("data-path-handle") || t.getAttribute("data-curve-handle"))) {
+            const cont = chartContainerRef.current;
+            const chart = chartRef.current;
+            const ser = seriesRef.current;
+            if (cont && chart && ser) {
+              const rect = cont.getBoundingClientRect();
+              const px = e.clientX - rect.left;
+              const py = e.clientY - rect.top;
+              let best: { id: string; ctrls: { time: number; price: number }[]; d: number; line: any } | null = null;
+              for (const ln of linesRef.current || []) {
+                if (typeof ln.note !== "string" || !ln.note.startsWith("__path:")) continue;
+                const ctrls = ln.note.replace(/^__path:/, "").split("|").map((s) => {
+                  const [tt, pp] = s.split(",");
+                  return { time: Number(tt), price: Number(pp) };
+                }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+                if (ctrls.length < 2) continue;
+                const coords: { x: number; y: number }[] = [];
+                for (const p of ctrls) {
+                  const xx = chart.timeScale().timeToCoordinate(p.time as any);
+                  const yy = ser.priceToCoordinate(p.price);
+                  if (xx == null || yy == null) continue;
+                  coords.push({ x: Number(xx), y: Number(yy) });
+                }
+                let minD = 1e9;
+                for (let i = 0; i < coords.length - 1; i++) {
+                  const x0 = coords[i].x, y0 = coords[i].y, x1 = coords[i + 1].x, y1 = coords[i + 1].y;
+                  const dx = x1 - x0, dy = y1 - y0;
+                  const len2 = dx * dx + dy * dy || 1;
+                  let tt = ((px - x0) * dx + (py - y0) * dy) / len2;
+                  tt = Math.max(0, Math.min(1, tt));
+                  const d = Math.hypot(px - (x0 + tt * dx), py - (y0 + tt * dy));
+                  if (d < minD) minD = d;
+                }
+                if (minD <= 12 && (!best || minD < best.d)) best = { id: String(ln.id), ctrls, d: minD, line: ln };
+              }
+              if (best) {
+                e.preventDefault();
+                e.stopPropagation();
+                const price0 = ser.coordinateToPrice(py);
+                let t0: number | null = null;
+                try {
+                  const logical = chart.timeScale().coordinateToLogical(px);
+                  const candles = candlesRef.current || [];
+                  const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+                  if (logical != null && candles.length) {
+                    const lastIdx = candles.length - 1;
+                    const L = Number(logical);
+                    if (L > lastIdx) t0 = Number(candles[lastIdx].time) + Math.round(L - lastIdx) * barSec;
+                    else if (L < 0) t0 = Number(candles[0].time) + Math.round(L) * barSec;
+                    else t0 = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(L)))].time);
+                  }
+                } catch {}
+                (moveDiagRef as any).current = {
+                  id: best.id,
+                  phase: "drag-body",
+                  pointA: { time: best.ctrls[0].time, price: best.ctrls[0].price },
+                  pointB: { time: best.ctrls[best.ctrls.length - 1].time, price: best.ctrls[best.ctrls.length - 1].price },
+                  color: best.line.color || "#2962FF",
+                  width: best.line.width || 2,
+                  dash: String(best.line.dash || "solid"),
+                  isCurve: false,
+                  isPath: true,
+                  pathCtrls: best.ctrls,
+                  pathHandle: null,
+                  isCurveBody: true,
+                  bodyStart: { time: t0, price: price0 != null ? Number(price0) : best.ctrls[0].price },
+                  bodyOrig: best.ctrls.map((p) => ({ time: p.time, price: p.price })),
+                };
+                setMode("move");
+                modeRef.current = "move";
+                setMovingId(best.id);
+                movingIdRef.current = best.id as any;
+                setMovingType("line");
+                lockChartInteraction(true);
+                try { (t as any).setPointerCapture?.(e.pointerId); } catch {}
+                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                setStatusMsg("Path: move");
+                return;
+              }
+            }
+          }
+        }
         // ── Body drag: path polyline (when selected) ──
         if (modeRef.current === "move" && movingIdRef.current) {
           const mdP = moveDiagRef.current as any;
@@ -25726,12 +25810,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     }}
                   >
                     <span className="w-4 text-center inline-flex items-center justify-center">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/>
-                        <circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/>
-                        <circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/>
-                        <path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/>
-                      </svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
                     </span>
                     Path
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("path") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("path", e)}>{favTools.includes("path") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26648,7 +26727,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "brush" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                       ) : id === "path" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/><path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -32200,7 +32279,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         ) : meta.label === "Brush" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.label === "Path" ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/><path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
