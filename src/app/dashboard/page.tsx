@@ -4455,7 +4455,7 @@ export default function DashboardPage() {
   const bodyDragRef = useRef<{
     id: string;
     kind: "line" | "alarm";
-    type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
+    type: "h" | "v" | "ray" | "diag" | "curve" | "arrow" | "fib";
     startX: number;
     startY: number;
     startTime: number;
@@ -16151,7 +16151,7 @@ priced.sort((a, b) => a.price - b.price);
       // (Horizontal, Ray, Vertical, Trendline, Curve, Alarms) — TV style
       // ═══════════════════════════════════════════════════════════
       const hitTestAnyLine = (px: number, py: number): {
-        id: string; kind: "line" | "alarm"; type: "h" | "v" | "ray" | "diag" | "curve" | "arrow";
+        id: string; kind: "line" | "alarm"; type: "h" | "v" | "ray" | "diag" | "curve" | "arrow" | "fib";
         score: number; obj: any;
       } | null => {
         const chart = chartRef.current;
