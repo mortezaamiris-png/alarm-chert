@@ -2497,7 +2497,7 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__rect:")) return { icon: "□", label: "Rectangle", showPrice: false };
   if (n.startsWith("__brush:")) return { icon: "✎", label: "Brush", showPrice: false };
   if (n.startsWith("__path:")) return { icon: "⬠", label: "Path", showPrice: false };
-  if (n.startsWith("__curve:")) return { icon: "∿", label: "Curve", showPrice: false };
+  if (n.startsWith("__curve:")) return { icon: "⌒", label: "Curve", showPrice: false };
   if (n.startsWith("__dpr:")) return { icon: "⬚", label: "Date range", showPrice: false };
   if (n.startsWith("__channel:")) return { icon: "⧉", label: "Channel", showPrice: false };
   if (n.startsWith("__avp:")) return { icon: "▣", label: "AVP", showPrice: false };
@@ -2531,7 +2531,7 @@ const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "diag": { label: "Trendline", icon: "/" },
   "vline": { label: "Vertical line", icon: "|" },
   "channel": { label: "Parallel channel", icon: "⧉" },
-  "curve": { label: "Curve", icon: "∿" },
+  "curve": { label: "Curve", icon: "⌒" },
   "fib": { label: "Fib retracement", icon: "F" },
   "fib-ext": { label: "Fib extension", icon: "Fe" },
   "fib-tz": { label: "Fib time zone", icon: "║" },
@@ -24103,11 +24103,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                       setStatusMsg(nextCurve === "curve" ? "Curve: tap start, then end (middle appears after)" : "");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 17 C7 17 9 7 12 7 C15 7 17 17 21 17" />
-                      <circle cx="3" cy="17" r="2" fill="none" />
-                      <circle cx="12" cy="7" r="2" fill="none" />
-                      <circle cx="21" cy="17" r="2" fill="none" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="4,18 12,6 20,18" />
+                      <circle cx="4" cy="18" r="2.2" fill="none" />
+                      <circle cx="12" cy="6" r="2.2" fill="none" />
+                      <circle cx="20" cy="18" r="2.2" fill="none" />
                     </svg>
                     Curve
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("curve") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("curve", e)}>{favTools.includes("curve") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -25127,7 +25127,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             </button>
           )}
 
-          <div className="absolute top-8 left-2 z-10 flex flex-col gap-1 pointer-events-auto items-start">
+          <div className={`absolute left-2 z-10 flex flex-col gap-1 pointer-events-auto items-start ${!showToolsPanel ? "top-20" : "top-8"}`}>
             {!hideIndicators && (
               <button
                 type="button"
@@ -29956,9 +29956,21 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       {showBottomLists && (
       <div className="mt-2 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
-          <h3 className="text-sm font-medium text-green-400 mb-2">
-            Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
-            <span className="text-gray-500">({currentAlarms.length})</span>
+          <h3 className="text-sm font-medium text-green-400 mb-2 flex items-center gap-2">
+            <span>
+              Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
+              <span className="text-gray-500">({currentAlarms.length})</span>
+            </span>
+            <button
+              type="button"
+              title={showBottomLists ? "Hide lists" : "Show lists"}
+              onClick={() => setShowBottomLists((v) => !v)}
+              className="w-6 h-6 rounded-md border border-gray-700 bg-gray-900/80 text-gray-300 hover:border-orange-500 hover:text-orange-300 flex items-center justify-center"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
           </h3>
           <div className="space-y-1.5">
             {currentAlarms.map((a) => (
@@ -30001,7 +30013,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </span>
                     );
                   })()}
-                  {/* Alarm settings (bell) — moved next to Move; keep settings accessible */}
+                  {/* Undo next to alarm */}
+                    <button
+                      type="button"
+                      title="Undo — back to lines"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void convertAlarmToLine(a);
+                      }}
+                      className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-300 hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 flex items-center justify-center transition-all"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 7v6h6" />
+                        <path d="M3 13a9 9 0 1 0 3-7.7L3 7" />
+                      </svg>
+                    </button>
+                                      {/* Alarm settings (bell) — moved next to Move; keep settings accessible */}
                   <div className="relative shrink-0" data-menu>
                     <button
                       type="button"
@@ -30318,21 +30345,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     >
                       Move
                     </button>
-                    <button
-                      type="button"
-                      title="Undo — back to lines"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void convertAlarmToLine(a);
-                      }}
-                      className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-300 hover:border-orange-500 hover:text-orange-300 hover:bg-orange-500/10 flex items-center justify-center transition-all"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 7v6h6" />
-                        <path d="M3 13a9 9 0 1 0 3-7.7L3 7" />
-                      </svg>
-                    </button>
-                    <button type="button" title="Delete" onClick={() => deleteAlarm(a.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
+<button type="button" title="Delete" onClick={() => deleteAlarm(a.id)} className="w-5 h-5 flex items-center justify-center rounded text-red-500 hover:bg-red-500/20 text-sm leading-none">×</button>
                   </div>
                 </div>
               </div>
