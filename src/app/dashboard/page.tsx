@@ -16519,18 +16519,19 @@ priced.sort((a, b) => a.price - b.price);
           orig,
         };
 
-        // Prefer refs during drag so renderAll (depends on movingId) does not wipe series
+        // CRITICAL: do NOT setMovingId/setMode here — that useEffect re-runs renderAll and wipes fib/lines mid-drag.
+        // Selection state is already set on pointerdown (click-to-select). Refs alone drive the drag.
         modeRef.current = "move";
         movingIdRef.current = hit.id;
-        if (String(movingIdRef.current) !== String(movingId) || mode !== "move") {
-          // selection changed — update state (one rebuild ok)
-          setMode("move");
-          setMovingId(hit.id);
-          setMovingType(hit.kind);
-        } else {
-          // already selected — keep state, no re-render
-          setMovingType(hit.kind);
-        }
+        try {
+          // Keep React movingId in sync without forcing a new value when already selected
+          if (String(movingId) !== String(hit.id)) {
+            // Defer state update until pointerup so series stay on chart during drag
+            (bodyDragRef.current as any)._needSelect = true;
+            (bodyDragRef.current as any)._selectId = hit.id;
+            (bodyDragRef.current as any)._selectKind = hit.kind;
+          }
+        } catch {}
         if (hit.type === "curve" && orig.ctrls?.length >= 3) {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body", isCurve: true, isCurveBody: true,
@@ -16560,7 +16561,8 @@ priced.sort((a, b) => a.price - b.price);
               hasC ? { time: orig.t3, price: orig.p3 } : null
             );
           } catch {}
-          try { setSelectedFibId(String(hit.id)); } catch {}
+          // Defer setSelectedFibId to pointerup — avoids renderAll wipe mid-drag
+          try { (bodyDragRef.current as any)._selFib = String(hit.id); } catch {}
         } else if (hit.type === "diag") {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body",
@@ -16987,9 +16989,26 @@ priced.sort((a, b) => a.price - b.price);
       const onBodyDragUp = async () => {
         const bd = bodyDragRef.current;
         if (!bd) return;
+        const needSelect = !!(bd as any)._needSelect;
+        const selId = (bd as any)._selectId;
+        const selKind = (bd as any)._selectKind;
         bodyDragRef.current = null;
+        // Apply deferred selection now that drag is over
+        try {
+          if (needSelect && selId) {
+            setMode("move");
+            setMovingId(String(selId));
+            setMovingType(selKind === "alarm" ? "alarm" : "line");
+          }
+          if ((bd as any)._selFib) {
+            setSelectedFibId(String((bd as any)._selFib));
+          }
+        } catch {}
         // Rebuild once after drag so fib/diag settle solid (guard no longer blocks)
-        try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 0); } catch {}
+        try { setTimeout(() => {
+          try { (renderAllLinesAndAlarmsRef as any).immediate?.(); } catch {}
+          try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+        }, 0); } catch {}
         // Prevent the same pointer-up/click from teleporting the line via subscribeClick
         clickLockRef.current = true;
         setTimeout(() => { clickLockRef.current = false; }, 350);
@@ -17715,11 +17734,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       if (elA.style.display !== "block") elA.style.display = "block";
                       elA.style.left = `${param.point.x}px`;
                       elA.style.top = `${param.point.y}px`;
-                      elA.style.borderColor = "#f97316";
-                      elA.style.width = "16px";
-                      elA.style.height = "16px";
+                      elA.style.borderColor = "#2962FF";
+                      elA.style.borderWidth = "2.5px";
+                      elA.style.background = "#0b0e11";
+                      elA.style.width = "18px";
+                      elA.style.height = "18px";
+                      elA.style.borderRadius = "50%";
                       elA.style.opacity = "1";
                       elA.style.transition = "none";
+                      elA.style.boxShadow = "0 0 0 2px rgba(41,98,255,0.3)";
                     }
                     if (handleBElRef.current && handleBElRef.current.style.display !== "none") {
                       handleBElRef.current.style.display = "none";
@@ -17730,8 +17753,42 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   }
                 }
               } catch {}
-              // During placement: ONLY hollow points — no level lines until committed
-              if (previewFibSeriesRef.current.length && seriesRef.current) {
+              // TV-style: after point A, live-preview all fib levels to cursor (point B)
+              if (startPt && (mNow === "fib" || mNow === "fib-ext") && seriesRef.current) {
+                try {
+                  const levelsNow = (loadLS("fib_levels", DEFAULT_FIB_LEVELS) as typeof DEFAULT_FIB_LEVELS) || DEFAULT_FIB_LEVELS;
+                  const rev = !!loadLS("fib_reverse", false);
+                  const p1 = Number(startPt.price);
+                  const p2n = Number(p2);
+                  // Clear previous preview lines
+                  if (previewFibSeriesRef.current.length) {
+                    for (const pl of previewFibSeriesRef.current) {
+                      try { seriesRef.current.removePriceLine(pl); } catch {}
+                    }
+                    previewFibSeriesRef.current = [];
+                  }
+                  for (const lv of levelsNow) {
+                    if (lv && (lv as any).on === false) continue;
+                    const v = typeof lv === "number" ? lv : Number((lv as any).v);
+                    if (!Number.isFinite(v)) continue;
+                    const pr = fibPrice(p1, p2n, v, rev);
+                    if (!Number.isFinite(pr)) continue;
+                    const col = (typeof lv === "object" && (lv as any).color) ||
+                      (DEFAULT_FIB_LEVELS.find((x) => Math.abs(x.v - v) < 1e-6)?.color) || "#787B86";
+                    try {
+                      const pl = seriesRef.current.createPriceLine({
+                        price: pr,
+                        color: col,
+                        lineWidth: 1,
+                        lineStyle: LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: String(v),
+                      });
+                      previewFibSeriesRef.current.push(pl);
+                    } catch {}
+                  }
+                } catch {}
+              } else if (previewFibSeriesRef.current.length && seriesRef.current) {
                 try {
                   for (const pl of previewFibSeriesRef.current) {
                     try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -20603,12 +20660,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   elA.style.opacity = "1";
                   elA.style.left = `${xPx}px`;
                   elA.style.top = `${yPx}px`;
-                  elA.style.borderColor = "#f97316";
-                  elA.style.borderWidth = "2px";
-                  elA.style.width = "22px";
-                  elA.style.height = "22px";
+                  elA.style.borderColor = "#2962FF";
+                  elA.style.borderWidth = "2.5px";
+                  elA.style.background = "#0b0e11";
+                  elA.style.width = "18px";
+                  elA.style.height = "18px";
+                  elA.style.borderRadius = "50%";
                   elA.style.transition = "none";
                   elA.style.zIndex = "80";
+                  elA.style.boxShadow = "0 0 0 2px rgba(41,98,255,0.3)";
                 }
               }
               if (handleBElRef.current) handleBElRef.current.style.display = "none";
@@ -21987,6 +22047,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
   }, [applyLastPriceLabel, symbol, interval]);
 
   useEffect(() => {
+    // Never rebuild series while user is mid body-drag (fib/diag vanish bug)
+    if (bodyDragRef.current) return;
     if (seriesRef.current && chartRef.current) renderAllLinesAndAlarms();
   }, [currentLines, currentAlarms, movingId, movingType, renderAllLinesAndAlarms]);
 
