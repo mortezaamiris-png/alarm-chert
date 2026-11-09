@@ -7704,6 +7704,26 @@ export default function DashboardPage() {
     const chart = chartRef.current;
     if (!series || !chart) return;
 
+    // Capture scales so rebuilding channel/other series cannot stretch candles or open gaps
+    let __savedLogR: any = null;
+    let __savedPR: any = null;
+    try { __savedLogR = chart.timeScale().getVisibleLogicalRange(); } catch {}
+    try {
+      const __ps: any = series.priceScale?.();
+      if (__ps?.getVisibleRange) __savedPR = __ps.getVisibleRange();
+    } catch {}
+    const __restoreScales = () => {
+      try {
+        if (__savedLogR) chart.timeScale().setVisibleLogicalRange(__savedLogR);
+      } catch {}
+      try {
+        if (__savedPR) {
+          const __ps: any = seriesRef.current?.priceScale?.();
+          if (__ps?.setVisibleRange) __ps.setVisibleRange(__savedPR);
+        }
+      } catch {}
+    };
+
     // هر بار قبل از رسم، preview موقت را پاک کن تا خط دوتایی نماند
     try {
       if (previewLineRef.current) {
@@ -10281,8 +10301,11 @@ priced.sort((a, b) => a.price - b.price);
       }
     } catch {}
 
+    // Restore scales after series rebuild (prevents candle stretch / gaps with channel)
+    try { __restoreScales(); } catch {}
     // Rays/vlines appear immediately with candles (before slower alarm series work)
     try { paintVLines(); paintRays(); } catch {}
+    try { requestAnimationFrame(() => { try { __restoreScales(); } catch {} }); } catch {}
 
     // Alarms: horizontal price lines OR diagonal trend alarms
     let hlDrawnOnActive = false;
@@ -15224,6 +15247,11 @@ priced.sort((a, b) => a.price - b.price);
         const t = e.target as HTMLElement | null;
         const md = moveDiagRef.current;
         if (!md || !(md as any).isChannel || modeRef.current !== "move") return;
+        // Don't steal events while another tool is being body-dragged
+        if (bodyDragRef.current) return;
+        // Only handle channel when the active moving id is this channel
+        if (movingIdRef.current && String(movingIdRef.current) !== String(md.id)) return;
+        if (movingVLineRef.current) return;
         // Handle corner/mid
         if (t && t.getAttribute && t.getAttribute("data-ch-handle")) {
           e.preventDefault();
@@ -16331,8 +16359,25 @@ priced.sort((a, b) => a.price - b.price);
                 alarmLocalEditRef.current.set(String(bd.id), Date.now());
               } catch {}
             }
-            // verticals are DOM — trigger light repaint of vline positions
-            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            // Lightweight live move: update vlineItemsRef + DOM only (no full renderAll → no hang/snap with channel)
+            try {
+              const item = vlineItemsRef.current.find((v) => String(v.id) === String(bd.id));
+              if (item) item.time = newT;
+            } catch {}
+            try {
+              const host = vlineOverlayRef.current;
+              if (host) {
+                const x = chart.timeScale().timeToCoordinate(newT as any);
+                if (x != null) {
+                  host.querySelectorAll(`[data-vline-id="${bd.id}"]`).forEach((el) => {
+                    (el as HTMLElement).style.left = `${Number(x)}px`;
+                  });
+                  host.querySelectorAll(`[data-vline-note="${bd.id}"]`).forEach((el) => {
+                    (el as HTMLElement).style.left = `${Number(x) + 6}px`;
+                  });
+                }
+              }
+            } catch {}
             if (savedR) { try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {} }
             return;
           } else if (bd.type === "ray" || bd.type === "arrow") {
@@ -19356,7 +19401,44 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             }
             if (!error && data) {
               pushUndo();
+              // Freeze scales so adding channel series does not stretch candles / open gaps
+              let savedLog: any = null;
+              let savedPR: any = null;
+              let savedBar: number | null = null;
+              try {
+                const ch = chartRef.current;
+                if (ch) {
+                  savedLog = ch.timeScale().getVisibleLogicalRange();
+                  try { savedBar = (ch.timeScale() as any).options?.()?.barSpacing ?? null; } catch {}
+                  try {
+                    const ps: any = seriesRef.current?.priceScale?.();
+                    if (ps?.getVisibleRange) savedPR = ps.getVisibleRange();
+                  } catch {}
+                }
+              } catch {}
               setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+              const restore = () => {
+                try {
+                  const ch = chartRef.current;
+                  if (!ch) return;
+                  if (savedLog) ch.timeScale().setVisibleLogicalRange(savedLog);
+                  if (savedBar != null) {
+                    try { ch.timeScale().applyOptions({ barSpacing: savedBar }); } catch {}
+                  }
+                  if (savedPR) {
+                    try {
+                      const ps: any = seriesRef.current?.priceScale?.();
+                      if (ps?.setVisibleRange) ps.setVisibleRange(savedPR);
+                    } catch {}
+                  }
+                } catch {}
+              };
+              requestAnimationFrame(() => {
+                restore();
+                requestAnimationFrame(restore);
+                setTimeout(restore, 50);
+                setTimeout(restore, 150);
+              });
               setStatusMsg("Parallel channel placed — Move to adjust");
             } else setStatusMsg("Channel save failed");
           } catch { setStatusMsg("Channel save failed"); }
@@ -31205,6 +31287,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           } catch {}
                         } else {
                           moveDiagRef.current = null;
+                          // Clear any channel selection so channel handlers don't steal vline drags
+                          try {
+                            setSelectedChannelId(null);
+                            vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove());
+                          } catch {}
                           setStatusMsg("Click on chart to move line");
                         }
                       }}
