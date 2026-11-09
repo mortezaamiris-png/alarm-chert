@@ -26418,28 +26418,73 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     </div>
                   )}
                 </div>
-                {/* Note */}
-                <button
-                  type="button"
-                  title="Note"
-                  className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
-                  onClick={() => {
-                    const id = selectedRectId;
-                    if (!id) return;
-                    const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                    const txt = userFacingNote(cur?.note) || "";
-                    setEditingNoteId(id as any);
-                    setEditingNoteType("line");
-                    setNoteDraft(txt);
-                    setMoveNoteOpen(true);
-                    setMovingId(id as any);
-                    setMovingType("line");
-                    modeRef.current = "move";
-                    setMode("move");
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
-                </button>
+                {/* Note — inline, no extra move toolbar */}
+                <div className="relative" data-note-edit data-menu>
+                  <button
+                    type="button"
+                    title="Note"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${moveNoteOpen && editingNoteId === selectedRectId ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
+                    onClick={() => {
+                      const id = selectedRectId;
+                      if (!id) return;
+                      if (moveNoteOpen && editingNoteId === id) {
+                        setMoveNoteOpen(false);
+                        setEditingNoteId(null);
+                        return;
+                      }
+                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                      const txt = userFacingNote(cur?.note) || "";
+                      setEditingNoteId(id as any);
+                      setEditingNoteType("line");
+                      setNoteDraft(txt);
+                      setMoveNoteOpen(true);
+                      setRectStyleOpen(false);
+                      setRectColorOpen(false);
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
+                  </button>
+                  {moveNoteOpen && editingNoteId === selectedRectId && (
+                    <div
+                      data-note-edit
+                      data-menu
+                      className="absolute left-0 bottom-full mb-1.5 z-50 bg-gray-900 border border-gray-600 rounded-xl p-2 shadow-2xl w-52 flex flex-col gap-1.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void saveNote();
+                            setMoveNoteOpen(false);
+                          }
+                          if (e.key === "Escape") {
+                            setMoveNoteOpen(false);
+                            setEditingNoteId(null);
+                          }
+                        }}
+                        placeholder="Note…"
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1.5 text-xs text-white outline-none focus:border-orange-400"
+                        autoFocus
+                      />
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          className="flex-1 text-xs py-1.5 rounded-md font-semibold bg-orange-500 text-black hover:bg-orange-400"
+                          onClick={() => { void saveNote(); setMoveNoteOpen(false); }}
+                        >Save</button>
+                        <button
+                          type="button"
+                          className="px-2 text-xs py-1.5 rounded-md bg-gray-800 text-gray-300 hover:bg-gray-700"
+                          onClick={() => { setMoveNoteOpen(false); setEditingNoteId(null); }}
+                        >✕</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 {/* Line style / width */}
                 <div className="relative" data-menu>
                   <button
@@ -26469,20 +26514,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         ))}
                       </div>
                       <div className="text-[10px] text-gray-500 uppercase mb-1">Style</div>
-                      <div className="flex flex-col gap-0.5">
-                        {(["solid", "dashed", "dotted"] as const).map((st) => (
-                          <button key={st} type="button"
-                            className={`text-left px-2 py-1 text-xs rounded-md ${dash === st ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"}`}
+                      <div className="flex gap-1">
+                        {([
+                          { id: "solid" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg> },
+                          { id: "dashed" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="5 3"/></svg> },
+                          { id: "dotted" as const, icon: <svg width="28" height="12" viewBox="0 0 28 12"><line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="1.5 3"/></svg> },
+                        ]).map((st) => (
+                          <button key={st.id} type="button" title={st.id}
+                            className={`flex-1 h-8 rounded-md flex items-center justify-center ${dash === st.id ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200 hover:bg-gray-700"}`}
                             onClick={async () => {
                               const id = selectedRectId;
                               if (!id) return;
-                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, dash: st, style: st } : l));
-                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) { lr.dash = st; (lr as any).style = st; } } catch {}
-                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ dash: st }).eq("id", id); } catch {}
+                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, dash: st.id, style: st.id } : l));
+                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) { lr.dash = st.id; (lr as any).style = st.id; } } catch {}
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ dash: st.id }).eq("id", id); } catch {}
                               try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                               setRectStyleOpen(false);
                             }}
-                          >{st}</button>
+                          >{st.icon}</button>
                         ))}
                       </div>
                     </div>
@@ -26679,8 +26728,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mode === "alarm-diag" ||
             (mode === "move" && !(movingId && (() => {
               const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-              // only DPR keeps its own bar
-              return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__dpr:"));
+              // DPR / Rectangle keep their own bars
+              return !!(ln && typeof ln.note === "string" && (ln.note.startsWith("__dpr:") || ln.note.startsWith("__rect:")));
             })()))) && (
             <div
               data-move-bar
@@ -30358,15 +30407,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               Show list »
             </button>
           )}
-          {/* Floating lists toggle — visible when tools panel is hidden OR lists are hidden */}
-          {(!showToolsPanel || !showBottomLists) && (
+          {/* Floating Show lists — only when bottom lists are hidden */}
+          {!showBottomLists && (
             <button
               type="button"
-              onClick={() => setShowBottomLists((v) => !v)}
+              onClick={() => setShowBottomLists(true)}
               className="absolute bottom-3 left-3 z-30 px-2.5 py-1.5 text-xs rounded-lg bg-orange-500 text-black font-medium shadow-lg hover:bg-orange-400 border border-orange-300"
-              title={showBottomLists ? "Hide bottom lists" : "Show bottom lists"}
+              title="Show bottom lists"
             >
-              {showBottomLists ? "Hide lists «" : "Show lists »"}
+              Show lists »
             </button>
           )}
         </div>
