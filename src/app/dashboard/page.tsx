@@ -2505,19 +2505,24 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__frvp:")) return { icon: "▦", label: "FRVP", showPrice: false };
   if (n.startsWith("__long:")) return { icon: "L", label: "Long", showPrice: false };
   if (n.startsWith("__short:")) return { icon: "S", label: "Short", showPrice: false };
+  // Arrow marks first (same start/end time would otherwise look like Vertical)
+  if (n.startsWith("__arrow_up__")) return { icon: "↑", label: "Arrow up", showPrice: false };
+  if (n.startsWith("__arrow_down__")) return { icon: "↓", label: "Arrow down", showPrice: false };
+  if (n.startsWith("__arrow_marker__")) return { icon: "●", label: "Arrow mark", showPrice: false };
+  if (n === "__arrow__" || n.startsWith("__arrow")) return { icon: "↗", label: "Arrow", showPrice: false };
   if (n === "__vline__" || n.startsWith("__vline__:")) return { icon: "|", label: "Vertical", showPrice: false };
-  // Geometry-based vertical (start_time === end_time)
+  // Geometry-based vertical (start_time === end_time) — exclude arrows already handled
   if (
     l.start_time != null &&
     l.end_time != null &&
     Number(l.start_time) === Number(l.end_time) &&
     !isDiagonalLine(l as any) &&
     !n.startsWith("__diag:") &&
-    !n.startsWith("__ray:")
+    !n.startsWith("__ray:") &&
+    !n.startsWith("__arrow")
   ) {
     return { icon: "|", label: "Vertical", showPrice: false };
   }
-  if (n.startsWith("__arrow")) return { icon: "↗", label: "Arrow", showPrice: false };
   if (n.startsWith("__callout")) return { icon: "T", label: "Callout", showPrice: false };
   if (isDiagonalLine(l as any) || n.startsWith("__diag:")) return { icon: "/", label: "Diag", showPrice: true };
   if (n.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l as any)))
@@ -16061,6 +16066,7 @@ priced.sort((a, b) => a.price - b.price);
                 kind: "line",
                 isCurve: true,
                 isPath: false,
+                curveText: (() => { try { const ln = (linesRef.current||[]).find((x:any)=>String(x.id)===String(id)); return parseCurveText(ln?.note)||""; } catch { return ""; } })(),
                 curveCtrls: ctrls.map((p: any) => ({ time: p.time, price: p.price })),
                 pathCtrls: null,
                 curveHandle: null,
@@ -16506,9 +16512,19 @@ priced.sort((a, b) => a.price - b.price);
               const t0 = Number(l.start_time);
               const x = chart.timeScale().timeToCoordinate(t0 as any);
               if (x != null) consider(String(l.id), "line", "v", Math.abs(px - Number(x)), l);
-            } else if (n0.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l))) {
+            } else if (n0.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l) && !n0.startsWith("__arrow"))) {
               const y = ser.priceToCoordinate(Number(l.price));
-              if (y != null) consider(String(l.id), "line", "ray", Math.abs(py - Number(y)), l);
+              const t0 = Number(l.start_time);
+              const x0 = t0 ? chart.timeScale().timeToCoordinate(t0 as any) : null;
+              if (y != null) {
+                const dy = Math.abs(py - Number(y));
+                // only the visible half-line from origin to the right — no invisible full-width grab
+                if (x0 == null || Number.isNaN(Number(x0))) {
+                  if (dy <= HIT) consider(String(l.id), "line", "ray", dy, l);
+                } else if (px >= Number(x0) - 4) {
+                  if (dy <= HIT) consider(String(l.id), "line", "ray", dy, l);
+                }
+              }
             } else if (n0.startsWith("__arrow")) {
               const y = ser.priceToCoordinate(Number(l.price));
               const x = l.start_time != null ? chart.timeScale().timeToCoordinate(Number(l.start_time) as any) : null;
@@ -16697,6 +16713,7 @@ priced.sort((a, b) => a.price - b.price);
         if (hit.type === "curve" && orig.ctrls?.length >= 3) {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body", isCurve: true, isCurveBody: true,
+            curveText: parseCurveText(o?.note) || parseCurveText(orig?.note) || "",
             curveCtrls: orig.ctrls.map((p: any) => ({ ...p })),
             curveHandle: null,
             pointA: orig.ctrls[0], pointB: orig.ctrls[orig.ctrls.length - 1],
@@ -16804,7 +16821,12 @@ priced.sort((a, b) => a.price - b.price);
             // update linesRef live
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
             if (cur) {
-              cur.note = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              let cn = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              try {
+                const t = parseCurveText(cur.note);
+                if (t) cn = `${cn}|txt=${encodeURIComponent(t)}`;
+              } catch {}
+              cur.note = cn;
               cur.price = ctrls[0].price;
               cur.start_time = Math.min(...ctrls.map((p: any) => p.time));
               cur.end_time = Math.max(...ctrls.map((p: any) => p.time));
@@ -18731,6 +18753,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       dash: "solid",
                       isCurve: true,
                       isPath: false,
+                      curveText: parseCurveText(l.note) || "",
                       curveCtrls: ctrls,
                       pathCtrls: null,
                       curveHandle: null,
@@ -23323,6 +23346,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
         }
         await supabase.from("chart_lines").update({ note: noteOut }).eq("id", id);
+        try {
+          const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+          if (lr) lr.note = noteOut;
+        } catch {}
         setLines((prev) => prev.map((l) => (String(l.id) === String(id) ? { ...l, note: noteOut } : l)));
         // keep channel selected + handles after re-render
         try {
@@ -23823,6 +23850,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const p = parseChannelNote(s);
           if (p) {
             noteToSave = buildChannelNote({ ...p, text: noteDraft.trim() });
+          } else {
+            const segs = s.split("|");
+            const head = segs.slice(0, 5).join("|");
+            noteToSave = noteDraft.trim() ? `${head}|txt=${encodeURIComponent(noteDraft.trim())}` : head;
           }
         } else if (s.startsWith("__curve:")) {
           const segs = s.replace(/^__curve:/, "").split("|").filter((x) => x.includes(",") && !x.includes("="));
@@ -23870,6 +23901,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         }
       }
       await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
+      try {
+        const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(editingNoteId));
+        if (lr) lr.note = noteToSave;
+      } catch {}
       setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
       try {
         const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(editingNoteId));
@@ -31844,6 +31879,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               width: l.width || 2,
                               dash: "solid",
                               isCurve: true,
+                              curveText: parseCurveText(l.note) || "",
                               curveCtrls: ctrls,
                               curveHandle: null as any,
                             } as any;
