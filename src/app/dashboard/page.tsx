@@ -2498,7 +2498,7 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__brush:")) return { icon: "✎", label: "Brush", showPrice: false };
   if (n.startsWith("__path:")) return { icon: "⬠", label: "Path", showPrice: false };
   if (n.startsWith("__curve:")) return { icon: "⌒", label: "Curve", showPrice: false };
-  if (n.startsWith("__dpr:")) return { icon: "⬚", label: "Date range", showPrice: false };
+  if (n.startsWith("__dpr:")) return { icon: "⊞", label: "Date range", showPrice: false };
   if (n.startsWith("__channel:")) return { icon: "⧉", label: "Channel", showPrice: false };
   if (n.startsWith("__avp:")) return { icon: "▣", label: "AVP", showPrice: false };
   if (n.startsWith("__avwap:")) return { icon: "V", label: "AVWAP", showPrice: false };
@@ -2552,7 +2552,7 @@ const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "long-pos": { label: "Long position", icon: "L" },
   "short-pos": { label: "Short position", icon: "S" },
   "rect": { label: "Rectangle", icon: "□" },
-  "dpr": { label: "Date price range", icon: "⬚" },
+  "dpr": { label: "Date price range", icon: "⊞" },
 };
 
 function userFacingNote(note?: string | null): string {
@@ -8365,11 +8365,10 @@ export default function DashboardPage() {
               try { (wrap as HTMLElement).setAttribute("data-curve-pts", JSON.stringify(ctrls.slice(0, 3))); } catch {}
               const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
               const d = curveSvgPath(chart2, ser, ctrls[0], ctrls[1], ctrls[2], barCandles);
-              const path = wrap.querySelector("path");
-              if (path && d) path.setAttribute("d", d);
-              // also update hit path
-              const hit = wrap.querySelector("[data-curve-hit]") as SVGPathElement | null;
-              if (hit && d) hit.setAttribute("d", d);
+              if (d) {
+                // Must update EVERY path (visible stroke + hit target) — querySelector only hits the first
+                wrap.querySelectorAll("path").forEach((p) => p.setAttribute("d", d));
+              }
             } catch {}
           });
           host.querySelectorAll("[data-channel-label]").forEach((lab) => {
@@ -25428,12 +25427,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Date & price range: tap first corner");
                     }}
                   >
-                    <svg width="18" height="16" viewBox="0 0 24 20" fill="none" stroke="currentColor" strokeWidth="1.6" className="shrink-0 opacity-90">
-                      <rect x="3" y="3" width="14" height="12" rx="1" />
-                      <line x1="10" y1="3" x2="10" y2="15" />
-                      <line x1="3" y1="9" x2="17" y2="9" />
-                      <path d="M17 9 L21 9" strokeWidth="1.6" />
-                      <path d="M10 3 L10 1" strokeWidth="1.6" />
+                    <svg width="18" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-90">
+                      <rect x="3.5" y="3.5" width="17" height="17" rx="1.5" />
+                      <path d="M12 7v10M7 12h10" />
+                      <path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2" />
                     </svg>
                     Date and price range
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("dpr") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("dpr", e)}>{favTools.includes("dpr") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26254,6 +26251,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="8" x2="20" y2="5"/><line x1="4" y1="19" x2="20" y2="16"/><circle cx="4" cy="8" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="2" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="16" r="2" fill="currentColor" stroke="none"/></svg>
                       ) : id === "curve" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M5 17 Q12 5 19 17" /></svg>
+                      ) : id === "dpr" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M12 7v10M7 12h10"/><path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -26273,7 +26272,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             <div
               data-move-bar
               data-dpr-toolbar="1"
-              className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 pointer-events-auto select-none"
+              className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-1.5 py-1 shadow-xl flex items-center gap-1 pointer-events-auto select-none scale-90 origin-top-left"
               style={{ left: dprBarPos.x, top: dprBarPos.y, bottom: "auto" }}
               onPointerDown={(e) => {
                 // drag bar by empty area / grip — not buttons
@@ -31339,6 +31338,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           title={meta.label}
                         >{meta.label === "Channel" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
+                        ) : meta.label === "Date range" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M12 7v10M7 12h10"/><path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
