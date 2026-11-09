@@ -8051,6 +8051,70 @@ export default function DashboardPage() {
           }
         }
       }
+      // Channel fill + labels + handles — must run on vertical pan too (not only timeScale)
+      if (ser) {
+        try {
+          host.querySelectorAll("[data-channel-fill]").forEach((wrap) => {
+            const raw = (wrap as HTMLElement).getAttribute("data-channel-pts");
+            if (!raw) return;
+            let pairs: { t: number; p0: number; p1: number }[] = [];
+            try { pairs = JSON.parse(raw); } catch { return; }
+            const pts: string[] = [];
+            for (const p of pairs) {
+              const x = chart2.timeScale().timeToCoordinate(p.t as any);
+              const y = ser.priceToCoordinate(p.p0);
+              if (x == null || y == null) continue;
+              pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+            }
+            for (let i = pairs.length - 1; i >= 0; i--) {
+              const p = pairs[i];
+              const x = chart2.timeScale().timeToCoordinate(p.t as any);
+              const y = ser.priceToCoordinate(p.p1);
+              if (x == null || y == null) continue;
+              pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+            }
+            const poly = wrap.querySelector("polygon");
+            if (poly) {
+              if (pts.length >= 4) {
+                poly.setAttribute("points", pts.join(" "));
+                (wrap as HTMLElement).style.visibility = "visible";
+              } else {
+                (wrap as HTMLElement).style.visibility = "hidden";
+              }
+            }
+          });
+          host.querySelectorAll("[data-channel-label]").forEach((lab) => {
+            const el = lab as HTMLElement;
+            const tt = Number(el.getAttribute("data-t"));
+            const pp = Number(el.getAttribute("data-p"));
+            const x = chart2.timeScale().timeToCoordinate(tt as any);
+            const y = ser.priceToCoordinate(pp);
+            if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
+              el.style.visibility = "hidden";
+              return;
+            }
+            el.style.visibility = "visible";
+            el.style.display = "block";
+            el.style.left = `${Number(x)}px`;
+            el.style.top = `${Number(y) + 8}px`;
+            el.style.transform = "translateX(-50%)";
+          });
+          host.querySelectorAll("[data-ch-handle]").forEach((h) => {
+            const el = h as HTMLElement;
+            const tt = Number(el.getAttribute("data-t"));
+            const pp = Number(el.getAttribute("data-p"));
+            const x = chart2.timeScale().timeToCoordinate(tt as any);
+            const y = ser.priceToCoordinate(pp);
+            if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
+              el.style.visibility = "hidden";
+            } else {
+              el.style.visibility = "visible";
+              el.style.left = `${Number(x)}px`;
+              el.style.top = `${Number(y)}px`;
+            }
+          });
+        } catch {}
+      }
     };
 
 
@@ -9750,10 +9814,20 @@ priced.sort((a, b) => a.price - b.price);
                       crosshairMarkerVisible: false,
                       autoscaleInfoProvider: () => null as any,
                     });
-                    s.setData([
-                      { time: ta as any, value: priceAt(ta, lv.v) },
-                      { time: tb as any, value: priceAt(tb, lv.v) },
-                    ].sort((a, b) => Number(a.time) - Number(b.time)));
+                    // Dense points so the line stays continuous when panning/zooming
+                    {
+                      const tLo = Math.min(ta, tb), tHi = Math.max(ta, tb);
+                      const span = Math.max(1, tHi - tLo);
+                      const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
+                      const steps = Math.max(8, Math.min(64, Math.ceil(span / barSec)));
+                      const dens: { time: any; value: number }[] = [];
+                      for (let i = 0; i <= steps; i++) {
+                        const tt = tLo + (span * i) / steps;
+                        dens.push({ time: tt as any, value: priceAt(tt, lv.v) });
+                      }
+                      dens.sort((a, b) => Number(a.time) - Number(b.time));
+                      s.setData(dens);
+                    }
                     seriesList.push(s);
                   }
                   // Background: store time/price pts — synced on pan/zoom (no lag)
@@ -9768,7 +9842,7 @@ priced.sort((a, b) => a.price - b.price);
                         const aa = Math.max(0, Math.min(1, (cfg.bgOpacity ?? 12) / 100));
                         // sample along channel for smooth fill when extended
                         const pairs: { t: number; p0: number; p1: number }[] = [];
-                        const steps = 8;
+                        const steps = 24;
                         for (let i = 0; i <= steps; i++) {
                           const tt = ta + (tb - ta) * (i / steps);
                           pairs.push({ t: tt, p0: priceAt(tt, 0), p1: priceAt(tt, 1) });
@@ -17081,9 +17155,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         const price = series.coordinateToPrice(param.point.y);
         if (price == null || Number.isNaN(price)) return;
 
-        // Fib placement: never show full-width horizontal preview line
+        // Never show full-width H-line for non-horizontal tools (channel, curve, …)
         const modeNowH = modeRef.current as ToolMode;
-        if (modeNowH === "fib" || modeNowH === "fib-ext") {
+        const noHPreview =
+          modeNowH === "fib" || modeNowH === "fib-ext" || modeNowH === "fib-tz" || modeNowH === "fib-tbt" ||
+          modeNowH === "channel" || modeNowH === "curve" || modeNowH === "path" || modeNowH === "brush" ||
+          modeNowH === "rect" || modeNowH === "dpr" || modeNowH === "vline" || modeNowH === "diag" ||
+          modeNowH === "alarm-diag" || modeNowH === "arrow" || modeNowH === "avp" || modeNowH === "avwap" ||
+          modeNowH === "frvp" || modeNowH === "long-pos" || modeNowH === "short-pos" || modeNowH === "measure" ||
+          modeNowH === "callout" || modeNowH === "none" || modeNowH === "move" || modeNowH === "ray" ||
+          modeNowH === "alarm-ray";
+        if (noHPreview) {
           try {
             if (previewLineRef.current && seriesRef.current) {
               seriesRef.current.removePriceLine(previewLineRef.current);
@@ -17092,7 +17174,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           } catch {}
           return;
         }
-        // Full horizontal (draw / alarm): cheap price line update only
+        // Full horizontal (draw / alarm only): cheap price line update only
         if (previewDiagSeriesRef.current) {
           try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
           previewDiagSeriesRef.current = null;
