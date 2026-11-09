@@ -2578,7 +2578,13 @@ function userFacingNote(note?: string | null): string {
     if (joined.startsWith("__")) return "";
     return joined;
   }
-  if (s.startsWith("__path:")) return "Path";
+  if (s.startsWith("__path:")) {
+    const m = s.match(/\|txt=([^|]*)/);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+    }
+    return "";
+  }
   if (s.startsWith("__brush:")) {
     const m = s.match(/\|txt=([^|]*)/);
     if (m) {
@@ -8053,7 +8059,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
       // Always nuke curve/path handles + drafts + SVG + notes so deleted curves vanish
       vlineOverlayRef.current?.querySelectorAll(
-        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit],[data-curve-note],[data-arrow-note]"
+        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit],[data-curve-note],[data-path-note],[data-arrow-note]"
       ).forEach((el) => el.remove());
     } catch {}
     try {
@@ -10054,6 +10060,7 @@ priced.sort((a, b) => a.price - b.price);
           }
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
           const isCurve = l.note.startsWith("__curve:");
+          try { vlineOverlayRef.current?.querySelectorAll(`[data-path-note="${l.id}"]`).forEach((el) => el.remove()); } catch {}
           const raw = l.note.replace(/^__(?:path|curve):/, "");
           let pairs = raw.split("|").filter((s) => s && s.includes(",") && !s.includes("=")).map((s) => {
             const [tt, pp] = s.split(",");
@@ -10234,6 +10241,51 @@ priced.sort((a, b) => a.price - b.price);
                   host.appendChild(el);
                 }
               });
+            }
+            // Path note at first placement point
+            if (!isCurve) {
+              try {
+                const hostN = vlineOverlayRef.current;
+                const serN = seriesRef.current;
+                hostN?.querySelectorAll(`[data-path-note="${l.id}"]`).forEach((el) => el.remove());
+                const txt = userFacingNote(String(l.note || ""));
+                if (txt && hostN && serN && chart) {
+                  const firstSeg = String(l.note || "").replace(/^__path:/, "").split("|").find((s) => s.includes(",") && !s.includes("="));
+                  if (firstSeg) {
+                    const [tt, pp] = firstSeg.split(",");
+                    const t0 = Number(tt), p0 = Number(pp);
+                    if (t0 > 0 && !Number.isNaN(p0)) {
+                      const x = chart.timeScale().timeToCoordinate(t0 as any);
+                      const y = serN.priceToCoordinate(p0);
+                      if (x != null && y != null) {
+                        const lab = document.createElement("div");
+                        lab.setAttribute("data-path-note", String(l.id));
+                        lab.textContent = txt;
+                        lab.style.cssText = [
+                          "position:absolute",
+                          `left:${Number(x) + 8}px`,
+                          `top:${Number(y) - 6}px`,
+                          "transform:translateY(-100%)",
+                          "pointer-events:none",
+                          "z-index:19",
+                          "font-size:11px",
+                          "font-weight:600",
+                          "color:#e5e7eb",
+                          "background:rgba(15,23,42,0.88)",
+                          "border:1px solid rgba(148,163,184,0.35)",
+                          "border-radius:4px",
+                          "padding:1px 6px",
+                          "white-space:nowrap",
+                          "max-width:180px",
+                          "overflow:hidden",
+                          "text-overflow:ellipsis",
+                        ].join(";");
+                        hostN.appendChild(lab);
+                      }
+                    }
+                  }
+                }
+              } catch {}
             }
           } catch {}
         } else if (typeof l.note === "string" && l.note.startsWith("__avp:")) {
@@ -16846,9 +16898,17 @@ priced.sort((a, b) => a.price - b.price);
           else md.pathCtrls = ctrls;
         }
 
-        const note = md.isCurve
+        let note = md.isCurve
           ? `__curve:` + ctrls.map((p) => `${p.time},${p.price}`).join("|")
           : `__path:` + ctrls.map((p) => `${p.time},${p.price}`).join("|");
+        try {
+          if (md.isCurve && (md as any).curveText) note += `|txt=${encodeURIComponent(String((md as any).curveText))}`;
+          else if (md.isPath) {
+            const prevN = (linesRef.current || []).find((x) => String(x.id) === String(md.id))?.note;
+            const t = userFacingNote(prevN) || "";
+            if (t) note += `|txt=${encodeURIComponent(t)}`;
+          }
+        } catch {}
         const cur = (linesRef.current || []).find((x) => String(x.id) === String(md.id));
         if (cur) {
           cur.note = note;
@@ -16981,7 +17041,7 @@ priced.sort((a, b) => a.price - b.price);
           let note = md.isCurve
             ? `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|")
             : `__path:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
-          // Keep user text attached to curve
+          // Keep user text attached to curve / path
           if (md.isCurve) {
             try {
               const prev = (linesRef.current || []).find((x: any) => String(x.id) === String(md.id));
@@ -16990,6 +17050,12 @@ priced.sort((a, b) => a.price - b.price);
                 note = `${note}|txt=${encodeURIComponent(t)}`;
                 (md as any).curveText = t;
               }
+            } catch {}
+          } else if (md.isPath) {
+            try {
+              const prev = (linesRef.current || []).find((x: any) => String(x.id) === String(md.id));
+              const t = userFacingNote(prev?.note) || "";
+              if (t) note = `${note}|txt=${encodeURIComponent(t)}`;
             } catch {}
           }
           setLines((prev) => prev.map((x) =>
@@ -23980,6 +24046,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__arrow_up__") || cur.note.startsWith("__arrow_down__") || cur.note.startsWith("__arrow_marker__") || cur.note === "__arrow__")) {
           const head = cur.note.split("|")[0];
           noteOut = text ? `${head}|${text}` : head;
+        } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__path:")) {
+          const segs = cur.note.replace(/^__path:/, "").split("|").filter((s) => s.includes(",") && !s.includes("="));
+          const base = `__path:${segs.join("|")}`;
+          noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
         } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__ray:") || cur.note.startsWith("__diag:"))) {
           const head = cur.note.split("|")[0];
           noteOut = text ? `${head}|${text}` : head;
@@ -24054,6 +24124,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     } catch {}
     setMoveNoteOpen(false);
     setStatusMsg("Note saved");
+    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
   };
 
   const updateLineColor = async (id: string, color: string) => {
@@ -25810,7 +25881,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     }}
                   >
                     <span className="w-4 text-center inline-flex items-center justify-center">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
+                      <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
                     </span>
                     Path
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("path") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("path", e)}>{favTools.includes("path") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26727,7 +26798,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "brush" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                       ) : id === "path" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
+                        <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -32279,7 +32350,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         ) : meta.label === "Brush" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.label === "Path" ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 17 L9 10 L13 14 L17 7"/><circle cx="4" cy="17" r="2" fill="none"/><circle cx="9" cy="10" r="2" fill="none"/><circle cx="13" cy="14" r="2" fill="none"/><path d="M17 7 L21 5 M17 7 L19 11" strokeWidth="1.7"/></svg>
+                          <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
