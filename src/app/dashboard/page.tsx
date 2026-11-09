@@ -954,6 +954,7 @@ function placeChannelHandles(
   if (!host) return;
   host.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove());
   const t1 = geo.t1, p1 = geo.p1, t2 = geo.t2, p2 = geo.p2, off = geo.offset;
+  // Mid times/prices kept for drag math; screen position uses pixel midpoint (see syncChannelHandlePositions)
   const mids = {
     t0: (t1 + t2) / 2,
     p0: (p1 + p2) / 2,
@@ -989,6 +990,71 @@ function placeChannelHandles(
     }
     host.appendChild(el);
   }
+}
+
+/** Position channel handles on chart. Mid squares use pixel midpoint so they never hide at odd angles. */
+function syncChannelHandlePositions(chart: any, ser: any, host: HTMLElement | null) {
+  if (!chart || !ser || !host) return;
+  const corners: Record<string, { x: number; y: number }> = {};
+  host.querySelectorAll("[data-ch-handle]").forEach((h) => {
+    const el = h as HTMLElement;
+    const key = el.getAttribute("data-ch-handle") || "";
+    if (key === "m0" || key === "m1") return; // mids after corners
+    const t = Number(el.getAttribute("data-t"));
+    const p = Number(el.getAttribute("data-p"));
+    let x = chart.timeScale().timeToCoordinate(t as any);
+    let y = ser.priceToCoordinate(p);
+    // Fallback: logical interpolation if exact time not on scale
+    if (x != null && y != null && !Number.isNaN(Number(x)) && !Number.isNaN(Number(y))) {
+      el.style.display = "block";
+      el.style.left = `${Number(x)}px`;
+      el.style.top = `${Number(y)}px`;
+      corners[key] = { x: Number(x), y: Number(y) };
+    } else {
+      el.style.display = "none";
+    }
+  });
+  // Midpoints always from corner pixel average — never hide due to mid-time
+  host.querySelectorAll("[data-ch-handle]").forEach((h) => {
+    const el = h as HTMLElement;
+    const key = el.getAttribute("data-ch-handle") || "";
+    if (key === "m0") {
+      const a = corners["a0"], b = corners["b0"];
+      if (a && b) {
+        el.style.display = "block";
+        el.style.left = `${(a.x + b.x) / 2}px`;
+        el.style.top = `${(a.y + b.y) / 2}px`;
+      } else {
+        // fallback time/price
+        const t = Number(el.getAttribute("data-t"));
+        const p = Number(el.getAttribute("data-p"));
+        const x = chart.timeScale().timeToCoordinate(t as any);
+        const y = ser.priceToCoordinate(p);
+        if (x != null && y != null) {
+          el.style.display = "block";
+          el.style.left = `${Number(x)}px`;
+          el.style.top = `${Number(y)}px`;
+        } else el.style.display = "none";
+      }
+    } else if (key === "m1") {
+      const a = corners["a1"], b = corners["b1"];
+      if (a && b) {
+        el.style.display = "block";
+        el.style.left = `${(a.x + b.x) / 2}px`;
+        el.style.top = `${(a.y + b.y) / 2}px`;
+      } else {
+        const t = Number(el.getAttribute("data-t"));
+        const p = Number(el.getAttribute("data-p"));
+        const x = chart.timeScale().timeToCoordinate(t as any);
+        const y = ser.priceToCoordinate(p);
+        if (x != null && y != null) {
+          el.style.display = "block";
+          el.style.left = `${Number(x)}px`;
+          el.style.top = `${Number(y)}px`;
+        } else el.style.display = "none";
+      }
+    }
+  });
 }
 
 
@@ -2433,7 +2499,7 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__path:")) return { icon: "⬠", label: "Path", showPrice: false };
   if (n.startsWith("__curve:")) return { icon: "∿", label: "Curve", showPrice: false };
   if (n.startsWith("__dpr:")) return { icon: "⬚", label: "Date range", showPrice: false };
-  if (n.startsWith("__channel:")) return { icon: "⫽", label: "Channel", showPrice: false };
+  if (n.startsWith("__channel:")) return { icon: "⧉", label: "Channel", showPrice: false };
   if (n.startsWith("__avp:")) return { icon: "▣", label: "AVP", showPrice: false };
   if (n.startsWith("__avwap:")) return { icon: "V", label: "AVWAP", showPrice: false };
   if (n.startsWith("__frvp:")) return { icon: "▦", label: "FRVP", showPrice: false };
@@ -2464,7 +2530,7 @@ const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "ray": { label: "Horizontal ray", icon: "→" },
   "diag": { label: "Trendline", icon: "/" },
   "vline": { label: "Vertical line", icon: "|" },
-  "channel": { label: "Parallel channel", icon: "⫽" },
+  "channel": { label: "Parallel channel", icon: "⧉" },
   "curve": { label: "Curve", icon: "∿" },
   "fib": { label: "Fib retracement", icon: "F" },
   "fib-ext": { label: "Fib extension", icon: "Fe" },
@@ -8119,20 +8185,7 @@ export default function DashboardPage() {
             el.style.top = `${Number(y) + 8}px`;
             el.style.transform = "translateX(-50%)";
           });
-          host.querySelectorAll("[data-ch-handle]").forEach((h) => {
-            const el = h as HTMLElement;
-            const tt = Number(el.getAttribute("data-t"));
-            const pp = Number(el.getAttribute("data-p"));
-            const x = chart2.timeScale().timeToCoordinate(tt as any);
-            const y = ser.priceToCoordinate(pp);
-            if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
-              el.style.visibility = "hidden";
-            } else {
-              el.style.visibility = "visible";
-              el.style.left = `${Number(x)}px`;
-              el.style.top = `${Number(y)}px`;
-            }
-          });
+          syncChannelHandlePositions(chart2, ser, host);
         } catch {}
       }
     };
@@ -10321,18 +10374,7 @@ priced.sort((a, b) => a.price - b.price);
             const chart2 = chartRef.current;
             const ser2 = seriesRef.current;
             if (chart2 && ser2) {
-              vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                const el = h as HTMLElement;
-                const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                if (x != null && y != null) {
-                  el.style.display = "block";
-                  el.style.left = `${Number(x)}px`;
-                  el.style.top = `${Number(y)}px`;
-                } else {
-                  el.style.display = "none";
-                }
-              });
+              syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
             }
           }
         }
@@ -10917,22 +10959,8 @@ priced.sort((a, b) => a.price - b.price);
                   el.style.top = `${Number(y) + 8}px`;
                   el.style.transform = "translateX(-50%)";
                 });
-                // 6 channel edit handles — keep visible even if one coord briefly fails
-                host.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                  const el = h as HTMLElement;
-                  const tt = Number(el.getAttribute("data-t"));
-                  const pp = Number(el.getAttribute("data-p"));
-                  const x = chart2.timeScale().timeToCoordinate(tt as any);
-                  const y = ser2.priceToCoordinate(pp);
-                  if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
-                    // keep last known pixel position; never hide mid squares
-                    el.style.display = "block";
-                    return;
-                  }
-                  el.style.display = "block";
-                  el.style.left = `${Number(x)}px`;
-                  el.style.top = `${Number(y)}px`;
-                });
+                // 6 channel edit handles — mids via pixel midpoint so they never hide
+                syncChannelHandlePositions(chart2, ser2, host);
                 host.querySelectorAll("[data-avwap-fill]").forEach((wrap) => {
                   const raw = (wrap as HTMLElement).getAttribute("data-avwap-pts");
                   if (!raw) return;
@@ -15480,15 +15508,7 @@ priced.sort((a, b) => a.price - b.price);
           placeChannelHandles(vlineOverlayRef.current, { t1, p1, t2, p2, offset: off }, key);
           const host = vlineOverlayRef.current;
           if (host) {
-            host.querySelectorAll("[data-ch-handle]").forEach((h) => {
-              const el = h as HTMLElement;
-              const xx = chart.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-              const yy = ser.priceToCoordinate(Number(el.getAttribute("data-p")));
-              if (xx != null && yy != null) {
-                el.style.left = `${Number(xx)}px`;
-                el.style.top = `${Number(yy)}px`;
-              }
-            });
+            syncChannelHandlePositions(chartRef.current, seriesRef.current, host);
           }
           // live update — in-place only (NO full renderAll → no hang / candle stretch)
           const cur = (linesRef.current || []).find((x) => x.id === md.id);
@@ -15593,15 +15613,7 @@ priced.sort((a, b) => a.price - b.price);
                   const c2 = chartRef.current;
                   const s2 = seriesRef.current;
                   if (c2 && s2) {
-                    vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                      const el = h as HTMLElement;
-                      const xx = c2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                      const yy = s2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                      if (xx != null && yy != null) {
-                        el.style.left = `${Number(xx)}px`;
-                        el.style.top = `${Number(yy)}px`;
-                      }
-                    });
+                    syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
                   }
                 } catch {}
               });
@@ -15650,15 +15662,7 @@ priced.sort((a, b) => a.price - b.price);
           const chart = chartRef.current;
           const ser = seriesRef.current;
           if (chart && ser) {
-            vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-              const el = h as HTMLElement;
-              const xx = chart.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-              const yy = ser.priceToCoordinate(Number(el.getAttribute("data-p")));
-              if (xx != null && yy != null) {
-                el.style.left = `${Number(xx)}px`;
-                el.style.top = `${Number(yy)}px`;
-              }
-            });
+            syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
           }
           setStatusMsg("Channel updated — drag more or ✓ Done");
         } catch {}
@@ -17962,15 +17966,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     const chart2 = chartRef.current;
                     const ser2 = seriesRef.current;
                     if (chart2 && ser2) {
-                      vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                        const el = h as HTMLElement;
-                        const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                        const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                        if (x != null && y != null) {
-                          el.style.left = `${Number(x)}px`;
-                          el.style.top = `${Number(y)}px`;
-                        }
-                      });
+                      syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
                     }
                     setStatusMsg("Channel: drag corners / mids / body — ✓ Done");
                   }
@@ -18373,15 +18369,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   const chart2 = chartRef.current;
                   const ser2 = seriesRef.current;
                   if (chart2 && ser2) {
-                    vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                      const el = h as HTMLElement;
-                      const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                      const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                      if (x != null && y != null) {
-                        el.style.left = `${Number(x)}px`;
-                        el.style.top = `${Number(y)}px`;
-                      }
-                    });
+                    syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
                   }
                   try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                 } catch {}
@@ -23862,15 +23850,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       modeRef.current = mode === "channel" ? "none" : "channel";
                       setStatusMsg(mode === "channel" ? "" : "Parallel channel: tap point 1, then 2, then 3 (offset)");
                     }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M4 16 L10 8 L20 10" />
-                      <path d="M4 20 L10 12 L20 14" />
-                      <circle cx="4" cy="16" r="1.6" fill="none" />
-                      <circle cx="10" cy="8" r="1.6" fill="none" />
-                      <circle cx="20" cy="10" r="1.6" fill="none" />
-                      <circle cx="4" cy="20" r="1.6" fill="none" />
-                      <circle cx="10" cy="12" r="1.6" fill="none" />
-                      <circle cx="20" cy="14" r="1.6" fill="none" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                      <line x1="4" y1="16" x2="16" y2="6"/><line x1="8" y1="20" x2="20" y2="10"/><circle cx="4" cy="16" r="1.7" fill="currentColor" stroke="none"/><circle cx="16" cy="6" r="1.7" fill="currentColor" stroke="none"/><circle cx="8" cy="20" r="1.7" fill="currentColor" stroke="none"/><circle cx="20" cy="10" r="1.7" fill="currentColor" stroke="none"/><line x1="10.5" y1="13" x2="13.5" y2="13" strokeWidth="1.5"/>
                     </svg>
                     Parallel channel
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("channel") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("channel", e)}>{favTools.includes("channel") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -25171,7 +25152,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         document.addEventListener("pointerup", onUp);
                       }}
                     >
-                      <span className="text-[13px] leading-none">{meta.icon}</span>
+                      <span className="text-[13px] leading-none inline-flex items-center justify-center">{id === "channel" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="3" y1="17" x2="15" y2="5"/><line x1="9" y1="21" x2="21" y2="9"/><circle cx="3" cy="17" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="21" r="1.6" fill="currentColor" stroke="none"/><circle cx="21" cy="9" r="1.6" fill="currentColor" stroke="none"/><line x1="9" y1="13" x2="13" y2="13" strokeWidth="1.4"/></svg>
+                      ) : meta.icon}</span>
                     </button>
                   );
                 })}
@@ -30186,7 +30169,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <span
                           className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-gray-800/90 border border-gray-700 text-[13px] font-semibold leading-none"
                           title={meta.label}
-                        >{meta.icon}</span>
+                        >{meta.label === "Channel" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="3" y1="17" x2="15" y2="5"/><line x1="9" y1="21" x2="21" y2="9"/><circle cx="3" cy="17" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="21" r="1.6" fill="currentColor" stroke="none"/><circle cx="21" cy="9" r="1.6" fill="currentColor" stroke="none"/><line x1="9" y1="13" x2="13" y2="13" strokeWidth="1.4"/></svg>
+                        ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
                             <span className="font-mono text-xs truncate">{formatPrice(l.price)}→{formatPrice(Number(l.end_price))}</span>
@@ -31053,15 +31038,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               const chart2 = chartRef.current;
                               const ser2 = seriesRef.current;
                               if (chart2 && ser2) {
-                                vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((h) => {
-                                  const el = h as HTMLElement;
-                                  const x = chart2.timeScale().timeToCoordinate(Number(el.getAttribute("data-t")) as any);
-                                  const y = ser2.priceToCoordinate(Number(el.getAttribute("data-p")));
-                                  if (x != null && y != null) {
-                                    el.style.left = `${Number(x)}px`;
-                                    el.style.top = `${Number(y)}px`;
-                                  }
-                                });
+                                syncChannelHandlePositions(chartRef.current, seriesRef.current, vlineOverlayRef.current);
                               }
                             } catch {}
                             setStatusMsg("Channel: drag handles");
