@@ -9819,7 +9819,7 @@ priced.sort((a, b) => a.price - b.price);
                       const tLo = Math.min(ta, tb), tHi = Math.max(ta, tb);
                       const span = Math.max(1, tHi - tLo);
                       const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
-                      const steps = Math.max(8, Math.min(64, Math.ceil(span / barSec)));
+                      const steps = Math.max(4, Math.min(12, Math.ceil(span / Math.max(barSec, 1))));
                       const dens: { time: any; value: number }[] = [];
                       for (let i = 0; i <= steps; i++) {
                         const tt = tLo + (span * i) / steps;
@@ -15232,6 +15232,12 @@ priced.sort((a, b) => a.price - b.price);
           (md as any).channelHandle = key;
           (md as any).bodyOrigin = null;
           md.phase = "drag-a";
+          try {
+            const ps = seriesRef.current?.priceScale?.();
+            if (ps && typeof ps.getVisibleRange === "function") {
+              (md as any)._savedPriceRange = ps.getVisibleRange();
+            }
+          } catch { (md as any)._savedPriceRange = null; }
           lockChartInteraction(true);
           try { t.setPointerCapture(e.pointerId); } catch {}
           setStatusMsg(`Channel: dragging ${key}`);
@@ -15321,6 +15327,12 @@ priced.sort((a, b) => a.price - b.price);
           t1, p1, t2, p2, off,
         };
         md.phase = "drag-a";
+        try {
+          const ps = seriesRef.current?.priceScale?.();
+          if (ps && typeof ps.getVisibleRange === "function") {
+            (md as any)._savedPriceRange = ps.getVisibleRange();
+          }
+        } catch { (md as any)._savedPriceRange = null; }
         lockChartInteraction(true);
         setStatusMsg("Channel: moving body");
       };
@@ -15412,7 +15424,7 @@ priced.sort((a, b) => a.price - b.price);
               }
             });
           }
-          // live update (throttled)
+          // live update — in-place only (NO full renderAll → no hang / candle stretch)
           const cur = (linesRef.current || []).find((x) => x.id === md.id);
           if (cur) {
             const oldP = parseChannelNote(cur.note as any);
@@ -15428,14 +15440,90 @@ priced.sort((a, b) => a.price - b.price);
             if (!(window as any).__chDragRaf) {
               (window as any).__chDragRaf = requestAnimationFrame(() => {
                 (window as any).__chDragRaf = 0;
-                try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                const md2 = moveDiagRef.current;
-                if (md2 && (md2 as any).isChannel) {
+                try {
+                  const md2 = moveDiagRef.current as any;
+                  if (!md2 || !md2.isChannel) return;
                   const a = md2.pointA, b = md2.pointB;
-                  const o = Number((md2 as any).channelOffset ?? 0);
+                  const o = Number(md2.channelOffset ?? 0);
+                  const tt1 = a.time, pp1 = a.price, tt2 = b.time, pp2 = b.price;
+                  const priceAt = (t: number, level: number) => {
+                    const span = (tt2 - tt1) || 1;
+                    const r = (t - tt1) / span;
+                    return pp1 + r * (pp2 - pp1) + o * level;
+                  };
+                  // Freeze price scale so candles don't stretch while series data updates
+                  let savedPR: any = null;
+                  try {
+                    const ps = seriesRef.current?.priceScale?.();
+                    if (ps && typeof ps.getVisibleRange === "function") {
+                      savedPR = ps.getVisibleRange();
+                    }
+                  } catch {}
+                  // Update line series in-place
+                  const held = chartLinesRef.current.get(String(md2.id));
+                  const levels = (oldP?.levels || []).filter((lv: any) => lv.on);
+                  let lvVals = levels.map((lv: any) => Number(lv.v));
+                  if (!lvVals.some((v: number) => Math.abs(v - 0) < 1e-9)) lvVals = [0, ...lvVals];
+                  if (!lvVals.some((v: number) => Math.abs(v - 1) < 1e-9)) lvVals = [...lvVals, 1];
+                  // default parallel channel has 0, 0.5, 1
+                  if (!lvVals.length) lvVals = [0, 0.5, 1];
+                  if (Array.isArray(held)) {
+                    const tLo = Math.min(tt1, tt2), tHi = Math.max(tt1, tt2);
+                    held.forEach((serLine: any, i: number) => {
+                      const lv = lvVals[i] != null ? lvVals[i] : (i === 0 ? 0 : i === held.length - 1 ? 1 : 0.5);
+                      try {
+                        serLine.setData([
+                          { time: tLo as any, value: priceAt(tLo, lv) },
+                          { time: tHi as any, value: priceAt(tHi, lv) },
+                        ]);
+                      } catch {}
+                    });
+                  }
+                  // Update fill polygon pts
+                  try {
+                    const host = vlineOverlayRef.current;
+                    const c2 = chartRef.current;
+                    const s2 = seriesRef.current;
+                    if (host && c2 && s2) {
+                      const wrap = host.querySelector(`[data-channel-fill="${md2.id}"]`) as HTMLElement | null;
+                      if (wrap) {
+                        const steps = 12;
+                        const pairs: { t: number; p0: number; p1: number }[] = [];
+                        for (let i = 0; i <= steps; i++) {
+                          const tt = tt1 + (tt2 - tt1) * (i / steps);
+                          pairs.push({ t: tt, p0: priceAt(tt, 0), p1: priceAt(tt, 1) });
+                        }
+                        wrap.setAttribute("data-channel-pts", JSON.stringify(pairs));
+                        const pts: string[] = [];
+                        for (const p of pairs) {
+                          const x = c2.timeScale().timeToCoordinate(p.t as any);
+                          const y = s2.priceToCoordinate(p.p0);
+                          if (x != null && y != null) pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                        }
+                        for (let i = pairs.length - 1; i >= 0; i--) {
+                          const p = pairs[i];
+                          const x = c2.timeScale().timeToCoordinate(p.t as any);
+                          const y = s2.priceToCoordinate(p.p1);
+                          if (x != null && y != null) pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                        }
+                        const poly = wrap.querySelector("polygon");
+                        if (poly && pts.length >= 4) poly.setAttribute("points", pts.join(" "));
+                      }
+                    }
+                  } catch {}
+                  // Restore price scale
+                  try {
+                    if (savedPR && seriesRef.current?.priceScale) {
+                      const ps = seriesRef.current.priceScale();
+                      if (ps && typeof ps.setVisibleRange === "function") {
+                        ps.setVisibleRange(savedPR);
+                      }
+                    }
+                  } catch {}
+                  // Handles
                   placeChannelHandles(vlineOverlayRef.current, {
-                    t1: a.time, p1: a.price, t2: b.time, p2: b.price, offset: o,
-                  }, (md2 as any).channelHandle || null);
+                    t1: tt1, p1: pp1, t2: tt2, p2: pp2, offset: o,
+                  }, md2.channelHandle || null);
                   const c2 = chartRef.current;
                   const s2 = seriesRef.current;
                   if (c2 && s2) {
@@ -15449,7 +15537,7 @@ priced.sort((a, b) => a.price - b.price);
                       }
                     });
                   }
-                }
+                } catch {}
               });
             }
           }
@@ -15463,6 +15551,13 @@ priced.sort((a, b) => a.price - b.price);
         (md as any).channelHandle = null;
         md.phase = "pick";
         lockChartInteraction(false);
+        try {
+          const saved = (md as any)._savedPriceRange;
+          if (saved && seriesRef.current?.priceScale) {
+            const ps = seriesRef.current.priceScale();
+            if (ps && typeof ps.setVisibleRange === "function") ps.setVisibleRange(saved);
+          }
+        } catch {}
         // persist
         try {
           const a = md.pointA, b = md.pointB;
