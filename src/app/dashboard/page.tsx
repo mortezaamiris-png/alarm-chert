@@ -8160,6 +8160,22 @@ export default function DashboardPage() {
               }
             }
           });
+          // Channel SVG boundary lines sync
+          host.querySelectorAll("[data-channel-line]").forEach((wrap) => {
+            try {
+              const raw = (wrap as HTMLElement).getAttribute("data-channel-pts");
+              if (!raw) return;
+              const pairs = JSON.parse(raw) as { t: number; p: number }[];
+              const pts: string[] = [];
+              for (const p of pairs) {
+                const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                const y = ser.priceToCoordinate(p.p);
+                if (x != null && y != null) pts.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+              }
+              const poly = wrap.querySelector("polyline");
+              if (poly && pts.length >= 2) poly.setAttribute("points", pts.join(" "));
+            } catch {}
+          });
           // Curve SVG free-shape sync on pan/zoom
           host.querySelectorAll("[data-curve-svg]").forEach((wrap) => {
             try {
@@ -9747,7 +9763,7 @@ priced.sort((a, b) => a.price - b.price);
           }
           if (pairs.length >= 2) {
             const ls: any = chart.addLineSeries({
-              color: isCurve ? "rgba(0,0,0,0)" : color, // curve visible via SVG; series kept for hit-test/range
+              color: isCurve ? "rgba(0,0,0,0)" : color, // curve visible via SVG only
               lineWidth: isCurve ? 1 : width,
               lineStyle: style,
               priceLineVisible: false,
@@ -9756,7 +9772,26 @@ priced.sort((a, b) => a.price - b.price);
               title: "",
               autoscaleInfoProvider: () => null as any,
             });
-            ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
+            if (isCurve) {
+              // Only 2 real bar times so LWC never stretches candles
+              const bars = candlesRef.current || [];
+              const snap = (tt: number) => {
+                if (!bars.length) return tt;
+                let best = Number(bars[0].time), bestD = Math.abs(best - tt);
+                for (const c of bars) {
+                  const d = Math.abs(Number(c.time) - tt);
+                  if (d < bestD) { best = Number(c.time); bestD = d; }
+                }
+                return best;
+              };
+              const t0 = snap(pairs[0].time), t1 = snap(pairs[pairs.length - 1].time);
+              ls.setData([
+                { time: Math.min(t0, t1) as any, value: pairs[0].value },
+                { time: Math.max(t0, t1) === Math.min(t0, t1) ? ((Math.min(t0, t1) + 1) as any) : (Math.max(t0, t1) as any), value: pairs[pairs.length - 1].value },
+              ]);
+            } else {
+              ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
+            }
             chartLinesRef.current.set(l.id, ls);
           }
           // Visible control handles when this curve/path is in move mode (3 for curve)
@@ -9764,7 +9799,7 @@ priced.sort((a, b) => a.price - b.price);
             const isMoving = movingId === l.id && movingType === "line";
             const host = vlineOverlayRef.current;
             const ser = seriesRef.current;
-            // Always remove this line's handles first (hide when not moving)
+            // Always remove ALL curve/path handles for this id (prevents orphan dots)
             try {
               host?.querySelectorAll("[data-curve-handle],[data-path-handle]").forEach((el) => {
                 if ((el.getAttribute("data-curve-id") || el.getAttribute("data-path-id")) === String(l.id)) el.remove();
@@ -9774,8 +9809,9 @@ priced.sort((a, b) => a.price - b.price);
               let ctrls: { time: number; price: number }[] = [];
               if (isCurve) {
                 ctrls = parseCurveControls(l.note) || [];
-                // never more than 3
-                if (ctrls.length > 3) ctrls = [ctrls[0], ctrls[Math.floor(ctrls.length / 2)], ctrls[ctrls.length - 1]];
+                // exactly 3: start, mid, end
+                if (ctrls.length > 3) ctrls = [ctrls[0], ctrls[1], ctrls[2]];
+                if (ctrls.length < 3) ctrls = [];
               } else {
                 ctrls = raw.split("|").map((s) => {
                   const [tt, pp] = s.split(",");
@@ -9925,56 +9961,38 @@ priced.sort((a, b) => a.price - b.price);
                       crosshairMarkerVisible: false,
                       autoscaleInfoProvider: () => null as any,
                     });
-                    // Dense points snapped to real candle times — keeps line continuous
-                    // without inserting foreign timestamps that open gaps between candles
+                    // Series uses only 2 endpoints on nearest bars (no mid times → no candle gaps).
+                    // Visible extended lines are drawn as SVG (same as fill) so they continue past last candle.
                     {
                       const tLo = Math.min(ta, tb), tHi = Math.max(ta, tb);
                       const bars = candlesRef.current || [];
-                      const dens: { time: any; value: number }[] = [];
-                      const seen = new Set<number>();
-                      const pushPt = (tt: number) => {
-                        let tSnap = tt;
-                        // snap to nearest bar time so time-scale stays candle-aligned
-                        if (bars.length) {
-                          let lo = 0, hi = bars.length - 1;
-                          while (lo < hi) {
-                            const mid = (lo + hi) >> 1;
-                            if (Number(bars[mid].time) < tt) lo = mid + 1;
-                            else hi = mid;
-                          }
-                          const cands = [lo, Math.max(0, lo - 1), Math.min(bars.length - 1, lo + 1)];
-                          let best = Number(bars[lo].time), bestD = Math.abs(best - tt);
-                          for (const i of cands) {
-                            const bt = Number(bars[i].time);
-                            const d = Math.abs(bt - tt);
-                            if (d < bestD) { best = bt; bestD = d; }
-                          }
-                          tSnap = best;
+                      const snapBar = (tt: number) => {
+                        if (!bars.length) return tt;
+                        let lo = 0, hi = bars.length - 1;
+                        while (lo < hi) {
+                          const mid = (lo + hi) >> 1;
+                          if (Number(bars[mid].time) < tt) lo = mid + 1;
+                          else hi = mid;
                         }
-                        if (seen.has(tSnap)) return;
-                        seen.add(tSnap);
-                        dens.push({ time: tSnap as any, value: priceAt(tSnap, lv.v) });
+                        const cands = [lo, Math.max(0, lo - 1), Math.min(bars.length - 1, lo + 1)];
+                        let best = Number(bars[lo].time), bestD = Math.abs(best - tt);
+                        for (const i of cands) {
+                          const bt = Number(bars[i].time);
+                          const d = Math.abs(bt - tt);
+                          if (d < bestD) { best = bt; bestD = d; }
+                        }
+                        return best;
                       };
-                      // always include exact endpoints (snapped)
-                      pushPt(tLo);
-                      pushPt(tHi);
-                      // sample along the segment on real bars only
-                      if (bars.length) {
-                        for (const c of bars) {
-                          const bt = Number(c.time);
-                          if (bt >= tLo && bt <= tHi) pushPt(bt);
-                        }
-                      } else {
-                        const barSec = intervalToSeconds(String(intervalRef.current)) || 60;
-                        const steps = Math.max(4, Math.min(24, Math.ceil((tHi - tLo) / Math.max(barSec, 1))));
-                        for (let i = 1; i < steps; i++) pushPt(tLo + ((tHi - tLo) * i) / steps);
-                      }
-                      dens.sort((a, b) => Number(a.time) - Number(b.time));
-                      if (dens.length < 2) {
-                        dens.length = 0;
-                        dens.push({ time: tLo as any, value: priceAt(tLo, lv.v) });
-                        dens.push({ time: tHi as any, value: priceAt(tHi, lv.v) });
-                      }
+                      const tA = snapBar(tLo), tB = snapBar(tHi);
+                      const dens = tA === tB
+                        ? [
+                            { time: tA as any, value: priceAt(tA, lv.v) },
+                            { time: (tA + 1) as any, value: priceAt(tA, lv.v) },
+                          ]
+                        : [
+                            { time: Math.min(tA, tB) as any, value: priceAt(Math.min(tA, tB), lv.v) },
+                            { time: Math.max(tA, tB) as any, value: priceAt(Math.max(tA, tB), lv.v) },
+                          ];
                       s.setData(dens);
                     }
                     seriesList.push(s);
@@ -10003,6 +10021,43 @@ priced.sort((a, b) => a.price - b.price);
                         wrap.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;";
                         wrap.innerHTML = `<polygon points="" fill="rgba(${rr},${gg},${bb},${aa})" />`;
                         host.appendChild(wrap);
+                        // SVG boundary lines (extend past last candle, same geometry as fill)
+                        try {
+                          host.querySelectorAll(`[data-channel-line="${l.id}"]`).forEach((el) => el.remove());
+                          const serL = seriesRef.current;
+                          const lineLevels = levels.length ? levels : [{ v: 0 }, { v: 1 }];
+                          for (const lv of lineLevels) {
+                            const col = color || (lv as any).color || cfg.color || "#787b86";
+                            const w = Math.max(1, Math.min(4, width || (lv as any).width || cfg.width || 1));
+                            const dash = ((l.dash || (lv as any).dash || cfg.dash) === "dashed") ? "6 4" : "";
+                            const ptsL: string[] = [];
+                            for (const p of pairs) {
+                              const x = chart2.timeScale().timeToCoordinate(p.t as any);
+                              const y = serL?.priceToCoordinate(priceAt(p.t, (lv as any).v ?? 0));
+                              if (x != null && y != null) ptsL.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                            }
+                            if (ptsL.length >= 2) {
+                              const svgL = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                              svgL.setAttribute("data-channel-id", String(l.id));
+                              svgL.setAttribute("data-channel-line", String(l.id));
+                              svgL.setAttribute("data-channel-lv", String((lv as any).v ?? 0));
+                              svgL.setAttribute("data-channel-pts", JSON.stringify(pairs.map((p) => ({ t: p.t, p: priceAt(p.t, (lv as any).v ?? 0) }))));
+                              svgL.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;overflow:visible;";
+                              const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                              poly.setAttribute("points", ptsL.join(" "));
+                              poly.setAttribute("fill", "none");
+                              poly.setAttribute("stroke", col);
+                              poly.setAttribute("stroke-width", String(w));
+                              poly.setAttribute("stroke-linecap", "round");
+                              poly.setAttribute("stroke-linejoin", "round");
+                              if (dash) poly.setAttribute("stroke-dasharray", dash);
+                              svgL.appendChild(poly);
+                              host.appendChild(svgL);
+                            }
+                          }
+                        } catch {}
+                        // hide LWC series lines (SVG draws them); keep series for geometry/hit only
+                        try { seriesList.forEach((ss: any) => ss.applyOptions?.({ color: "rgba(0,0,0,0)" })); } catch {}
                         // initial place
                         try {
                           const ser = seriesRef.current;
@@ -15610,6 +15665,25 @@ priced.sort((a, b) => a.price - b.price);
                         }
                         const poly = wrap.querySelector("polygon");
                         if (poly && pts.length >= 4) poly.setAttribute("points", pts.join(" "));
+                        // live SVG boundary lines
+                        host.querySelectorAll(`[data-channel-line="${md2.id}"]`).forEach((lineWrap) => {
+                          try {
+                            const lv = Number((lineWrap as HTMLElement).getAttribute("data-channel-lv") || "0");
+                            const ptsL: string[] = [];
+                            const linePairs: { t: number; p: number }[] = [];
+                            for (let i = 0; i <= steps; i++) {
+                              const tt = tt1 + (tt2 - tt1) * (i / steps);
+                              const pp = priceAt(tt, lv);
+                              linePairs.push({ t: tt, p: pp });
+                              const x = c2.timeScale().timeToCoordinate(tt as any);
+                              const y = s2.priceToCoordinate(pp);
+                              if (x != null && y != null) ptsL.push(`${Number(x).toFixed(1)},${Number(y).toFixed(1)}`);
+                            }
+                            (lineWrap as HTMLElement).setAttribute("data-channel-pts", JSON.stringify(linePairs));
+                            const pl = lineWrap.querySelector("polyline");
+                            if (pl && ptsL.length >= 2) pl.setAttribute("points", ptsL.join(" "));
+                          } catch {}
+                        });
                       }
                     }
                   } catch {}
@@ -15875,8 +15949,22 @@ priced.sort((a, b) => a.price - b.price);
           if (ls && chart) {
             let data: { time: number; value: number }[] = [];
             if (md.isCurve && ctrls.length >= 3) {
-              const barTsM = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 64, barTsM);
+              // series keeps only 2 snapped endpoints (no gap); shape is SVG
+              const bars = candlesRef.current || [];
+              const snap = (tt: number) => {
+                if (!bars.length) return tt;
+                let best = Number(bars[0].time), bestD = Math.abs(best - tt);
+                for (const c of bars) {
+                  const d = Math.abs(Number(c.time) - tt);
+                  if (d < bestD) { best = Number(c.time); bestD = d; }
+                }
+                return best;
+              };
+              const t0 = snap(ctrls[0].time), t1 = snap(ctrls[2].time);
+              data = [
+                { time: Math.min(t0, t1), value: ctrls[0].price },
+                { time: Math.max(t0, t1) === Math.min(t0, t1) ? Math.min(t0, t1) + 1 : Math.max(t0, t1), value: ctrls[2].price },
+              ];
               // live SVG path (true free shape while dragging mid)
               try {
                 const host2 = vlineOverlayRef.current;
@@ -22249,7 +22337,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try {
           const host = vlineOverlayRef.current;
           if (host) {
-            host.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"]`).forEach((el) => {
+            host.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"]`).forEach((el) => {
               try { el.remove(); } catch {}
             });
           }
@@ -22320,7 +22408,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       setTimeout(() => {
         try {
           const host = vlineOverlayRef.current;
-          host?.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-ch-handle]`).forEach((el) => el.remove());
+          host?.querySelectorAll(`[data-channel-id="${sid}"],[data-channel-fill="${sid}"],[data-channel-line="${sid}"],[data-ch-handle]`).forEach((el) => el.remove());
           // remove any leftover series array for this id
           const chart = chartRef.current;
           const held = chartLinesRef.current.get(sid);
