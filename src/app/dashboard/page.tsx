@@ -26184,11 +26184,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         >{w}</button>
                       ))}
                     </div>
-                    {!(mode === "arrow-up" || mode === "arrow-down" || mode === "arrow-marker" ||
-                      (mode === "move" && movingId && (() => {
-                        const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
-                        return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__arrow"));
-                      })())) && (
+                    {!(() => {
+                      try {
+                        const m = String(modeRef.current || mode || "");
+                        if (m === "arrow-up" || m === "arrow-down" || m === "arrow-marker") return true;
+                        if (m === "move" && movingId) {
+                          const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+                          return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__arrow"));
+                        }
+                      } catch {}
+                      return false;
+                    })() && (
                     <>
                     <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Style</div>
                     <div className="flex gap-1">
