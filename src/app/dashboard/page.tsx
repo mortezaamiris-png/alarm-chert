@@ -4922,6 +4922,7 @@ export default function DashboardPage() {
   const [rectBarPos, setRectBarPos] = useState({ x: 12, y: 380 });
   const [selectedRectId, setSelectedRectId] = useState<string | null>(null);
   const [rectStyleOpen, setRectStyleOpen] = useState(false);
+  const [rectColorOpen, setRectColorOpen] = useState(false);
   const dprDraftRef = useRef<{ a?: { time: number; price: number } } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
@@ -25432,7 +25433,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Date & price range: tap first corner");
                     }}
                   >
-                    <svg width="18" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-90"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
+                    <svg width="18" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-90"><path d="M8 4h8M4 8v8M20 8v8M8 20h8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 2l-1.5 2M12 2l1.5 2M12 22l-1.5-2M12 22l1.5-2M2 12l2-1.5M2 12l2 1.5M22 12l-2-1.5M22 12l-2 1.5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                     Date and price range
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("dpr") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("dpr", e)}>{favTools.includes("dpr") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
@@ -26253,7 +26254,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "curve" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M5 17 Q12 5 19 17" /></svg>
                       ) : id === "dpr" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4h8M4 8v8M20 8v8M8 20h8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 2l-1.5 2M12 2l1.5 2M12 22l-1.5-2M12 22l1.5-2M2 12l2-1.5M2 12l2 1.5M22 12l-2-1.5M22 12l-2 1.5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                       ) : id === "rect" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                       ) : meta.icon}</span>
@@ -26303,37 +26304,120 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 <div title="Drag toolbar" className="w-4 h-7 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0">
                   <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="11" r="1.2"/><circle cx="7" cy="11" r="1.2"/></svg>
                 </div>
-                {/* Color */}
-                <label className="relative w-7 h-7 rounded-md border border-white/20 overflow-hidden cursor-pointer hover:border-orange-400 flex items-center justify-center" title="Border color">
-                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: borderCol }} />
-                  <input
-                    type="color"
-                    defaultValue={borderCol}
-                    className="absolute inset-0 opacity-0 cursor-pointer"
-                    onChange={async (e) => {
-                      const col = e.target.value;
-                      const id = selectedRectId;
-                      if (!id) return;
-                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                      if (!cur || typeof cur.note !== "string") return;
-                      const p = parseRectNote(cur.note);
-                      // color is on the line row; also update fill in note so box matches
-                      let note = cur.note;
-                      if (p) {
-                        note = buildRectNote(p.t0, p.t1, p.p0, p.p1, col, p.fillOpacity, p.text || "");
-                      }
-                      try {
-                        if (linesRef.current) {
-                          const lr = linesRef.current.find((x) => String(x.id) === String(id));
-                          if (lr) { lr.note = note; lr.color = col; }
-                        }
-                      } catch {}
-                      setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, note, color: col } : l));
-                      try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ note, color: col }).eq("id", id); } catch {}
-                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                    }}
-                  />
-                </label>
+                {/* Color — Border + Fill (TV style) */}
+                <div className="relative" data-menu>
+                  <button
+                    type="button"
+                    title="Colors"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center overflow-hidden ${rectColorOpen ? "border-orange-400 ring-1 ring-orange-400/40" : "border-white/25 hover:border-orange-400/60"}`}
+                    onClick={() => { setRectColorOpen((v) => !v); setRectStyleOpen(false); }}
+                  >
+                    <span
+                      className="w-4 h-4 rounded-sm border border-white/20 shadow-inner"
+                      style={{
+                        background: `linear-gradient(135deg, ${borderCol} 50%, ${rp?.fill || "#787B86"} 50%)`,
+                      }}
+                    />
+                  </button>
+                  {rectColorOpen && (
+                    <div
+                      data-menu
+                      className="absolute left-0 bottom-full mb-1.5 z-50 bg-gray-900 border border-gray-600 rounded-xl p-3 shadow-2xl w-[200px]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {(() => {
+                        const palette = ["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#6366f1","#a855f7","#ec4899","#f43f5e","#ffffff","#94a3b8","#64748b","#0ea5e9","#84cc16"];
+                        const id = selectedRectId;
+                        return (
+                          <>
+                            <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Border color</div>
+                            <div className="grid grid-cols-5 gap-1.5 mb-2">
+                              {palette.map((c) => (
+                                <button
+                                  key={"rb-"+c}
+                                  type="button"
+                                  onClick={() => {
+                                    if (!id) return;
+                                    pushUndo();
+                                    void updateLineColor(id, c);
+                                  }}
+                                  className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                    String(borderCol).toLowerCase() === c.toLowerCase()
+                                      ? "border-orange-400 ring-2 ring-orange-400/40"
+                                      : "border-white/10"
+                                  }`}
+                                  style={{ background: c }}
+                                />
+                              ))}
+                            </div>
+                            <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer mb-3">
+                              <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                                <input
+                                  type="color"
+                                  value={borderCol}
+                                  onChange={(e) => {
+                                    if (!id) return;
+                                    pushUndo();
+                                    void updateLineColor(id, e.target.value);
+                                  }}
+                                  className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                />
+                              </span>
+                              Custom border
+                            </label>
+                            <div className="border-t border-white/10 pt-2 mb-2">
+                              <div className="text-[10px] text-gray-400 mb-2 font-medium tracking-wide">Fill color</div>
+                              <div className="grid grid-cols-5 gap-1.5 mb-2">
+                                {palette.map((c) => (
+                                  <button
+                                    key={"rf-"+c}
+                                    type="button"
+                                    onClick={() => {
+                                      if (!id || !rp) return;
+                                      void updateRectFill(id, c, rp.fillOpacity);
+                                    }}
+                                    className={`w-7 h-7 rounded-lg border transition-transform hover:scale-110 ${
+                                      String(rp?.fill || "").toLowerCase() === c.toLowerCase()
+                                        ? "border-orange-400 ring-2 ring-orange-400/40"
+                                        : "border-white/10"
+                                    }`}
+                                    style={{ background: c }}
+                                  />
+                                ))}
+                              </div>
+                              <label className="flex items-center gap-2 text-[11px] text-gray-300 cursor-pointer mb-2">
+                                <span className="relative w-7 h-7 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                                  <input
+                                    type="color"
+                                    value={rp?.fill || "#787B86"}
+                                    onChange={(e) => {
+                                      if (!id || !rp) return;
+                                      void updateRectFill(id, e.target.value, rp.fillOpacity);
+                                    }}
+                                    className="absolute -top-1 -left-1 w-10 h-10 cursor-pointer border-0 p-0"
+                                  />
+                                </span>
+                                Custom fill
+                              </label>
+                              <div className="text-[10px] text-gray-400 mb-1">Fill opacity {rp?.fillOpacity ?? 28}%</div>
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                value={rp?.fillOpacity ?? 28}
+                                onChange={(e) => {
+                                  if (!id || !rp) return;
+                                  void updateRectFill(id, rp.fill, Number(e.target.value));
+                                }}
+                                className="w-full accent-orange-500"
+                              />
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
                 {/* Note */}
                 <button
                   type="button"
@@ -31503,7 +31587,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         >{meta.label === "Channel" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
                         ) : meta.label === "Date range" ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4h8M4 8v8M20 8v8M8 20h8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 2l-1.5 2M12 2l1.5 2M12 22l-1.5-2M12 22l1.5-2M2 12l2-1.5M2 12l2 1.5M22 12l-2-1.5M22 12l-2 1.5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                         ) : meta.label === "Rectangle" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                         ) : meta.icon}</span>
