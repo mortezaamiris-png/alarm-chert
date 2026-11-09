@@ -2621,10 +2621,20 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__fibtz:")) return "Fib time zone";
   if (s.startsWith("__fib:") || s.startsWith("__fibext:")) return "Fib";
   if (s.startsWith("__diag:") || s.startsWith("__ray:")) {
-    // strip geometry + optional ||__cfg
+    // strip geometry + optional ||__cfg; support |txt=enc and plain |text
     let rest = s.replace(/^__diag:[^|]*/, "").replace(/^__ray:[^|]*/, "");
-    rest = rest.replace(/^[|]+/, "").replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/, "").trim();
-    return rest;
+    rest = rest.replace(/^[|]+/, "").replace(/(?:^|\|\|?)__cfg:once=\d\|del=\d/g, "").trim();
+    if (!rest) return "";
+    if (rest.startsWith("txt=")) {
+      try { return decodeURIComponent(rest.slice(4)); } catch { return rest.slice(4); }
+    }
+    // strip remaining geometry-looking segments
+    const parts = rest.split("|").filter((p) => p && !p.startsWith("__") && !/^[-]?\d+(\.\d+)?$/.test(p));
+    const joined = parts.join("|");
+    if (joined.startsWith("txt=")) {
+      try { return decodeURIComponent(joined.slice(4)); } catch { return joined.slice(4); }
+    }
+    return joined;
   }
   // Strip alarm config marker from any note
   if (s.includes("__cfg:")) {
@@ -8539,9 +8549,11 @@ export default function DashboardPage() {
           return s;
         })();
         // Never label special drawings as MOVING on the price axis (causes a phantom H-line look)
-        // Diagonal: note only under the line + list Note column — NEVER on price-axis tag
+        // Diagonal / Ray / Arrow: note only under the line + list Note column — NEVER on price-axis tag
         const isDiagTitle = isDiagonalLine(l) || noteStr.startsWith("__diag:") || noteStr.includes("__diag:");
-        const title = isDiagTitle ? "" : ((isMoving && !softMove) ? "MOVING" : noteClean);
+        const isRayTitle = noteStr.startsWith("__ray:");
+        const isArrowTitle = noteStr.startsWith("__arrow");
+        const title = (isDiagTitle || isRayTitle || isArrowTitle) ? "" : ((isMoving && !softMove) ? "MOVING" : noteClean);
         const isArrowMark =
           typeof l.note === "string" &&
           (String(l.note||"").startsWith("__arrow_up__") ||
@@ -16396,8 +16408,11 @@ priced.sort((a, b) => a.price - b.price);
           if (md.isCurve) {
             try {
               const prev = (linesRef.current || []).find((x: any) => String(x.id) === String(md.id));
-              const t = parseCurveText(prev?.note);
-              if (t) note = `${note}|txt=${encodeURIComponent(t)}`;
+              const t = (md as any).curveText || parseCurveText(prev?.note) || "";
+              if (t) {
+                note = `${note}|txt=${encodeURIComponent(t)}`;
+                (md as any).curveText = t;
+              }
             } catch {}
           }
           setLines((prev) => prev.map((x) =>
@@ -16823,8 +16838,12 @@ priced.sort((a, b) => a.price - b.price);
             if (cur) {
               let cn = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
               try {
-                const t = parseCurveText(cur.note);
-                if (t) cn = `${cn}|txt=${encodeURIComponent(t)}`;
+                const mdC = moveDiagRef.current as any;
+                const t = (mdC && String(mdC.id) === String(bd.id) && mdC.curveText) || parseCurveText(cur.note) || "";
+                if (t) {
+                  cn = `${cn}|txt=${encodeURIComponent(t)}`;
+                  if (mdC && String(mdC.id) === String(bd.id)) mdC.curveText = t;
+                }
               } catch {}
               cur.note = cn;
               cur.price = ctrls[0].price;
@@ -23338,7 +23357,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const segs = base.replace(/^__curve:/, "").split("|").filter((s) => s.includes(",") && !s.includes("="));
           base = `__curve:${segs.join("|")}`;
           noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
+          try {
+            const md = moveDiagRef.current as any;
+            if (md && String(md.id) === String(id) && md.isCurve) md.curveText = text || "";
+          } catch {}
         } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__arrow_up__") || cur.note.startsWith("__arrow_down__") || cur.note.startsWith("__arrow_marker__") || cur.note === "__arrow__")) {
+          const head = cur.note.split("|")[0];
+          noteOut = text ? `${head}|${text}` : head;
+        } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__ray:") || cur.note.startsWith("__diag:"))) {
           const head = cur.note.split("|")[0];
           noteOut = text ? `${head}|${text}` : head;
         } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
@@ -26537,9 +26563,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         {!(() => {
                           try {
                             const id = movingIdRef.current || movingId;
-                            const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                            const n = ln && typeof ln.note === "string" ? ln.note : "";
-                            return n.startsWith("__arrow");
+                            if (!id) return false;
+                            const ln = (linesRef.current || []).find((x) => String(x.id) === String(id))
+                              || (Array.isArray(lines) ? lines.find((x: any) => String(x.id) === String(id)) : null);
+                            const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                            if (n.startsWith("__arrow")) return true;
+                            // geometry fallback: same start/end + no ray/vline encoding → could still be arrow mark from list meta
+                            try {
+                              const meta = lineListMeta(ln as any);
+                              if (meta && (meta.label === "Arrow up" || meta.label === "Arrow down" || meta.label === "Arrow" || meta.label === "Arrow mark")) return true;
+                            } catch {}
+                            return false;
                           } catch { return false; }
                         })() && (
                         <>
@@ -26674,9 +26708,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     try {
                       const id = movingIdRef.current || movingId;
                       if (!id) return false;
-                      const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
-                      const n = ln && typeof ln.note === "string" ? ln.note : "";
-                      return n.startsWith("__arrow_up__") || n.startsWith("__arrow_down__") || n.startsWith("__arrow_marker__") || n === "__arrow__";
+                      const ln = (linesRef.current || []).find((x) => String(x.id) === String(id))
+                        || (Array.isArray(lines) ? lines.find((x: any) => String(x.id) === String(id)) : null);
+                      const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                      if (n.startsWith("__arrow")) return true;
+                      try {
+                        const meta = lineListMeta(ln as any);
+                        if (meta && String(meta.label || "").startsWith("Arrow")) return true;
+                      } catch {}
+                      return false;
                     } catch { return false; }
                   })() && (
                   <div className="relative" data-menu>
@@ -31694,9 +31734,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               </button>
                             ))}
                           </div>
+                          </>
+                          )}
                         </div>
                       )}
                     </div>
+                    {!(typeof l.note === "string" && String(l.note).startsWith("__arrow")) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -31846,7 +31889,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                      </>
                     )}
                     <button
                       type="button"
