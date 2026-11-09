@@ -4919,6 +4919,9 @@ export default function DashboardPage() {
   const [dprSettingsTab, setDprSettingsTab] = useState<"style" | "text" | "coordinates" | "visibility">("style");
   const [dprCfg, setDprCfg] = useState(() => defaultDprCfg());
   const [dprBarPos, setDprBarPos] = useState({ x: 12, y: 420 });
+  const [rectBarPos, setRectBarPos] = useState({ x: 12, y: 380 });
+  const [selectedRectId, setSelectedRectId] = useState<string | null>(null);
+  const [rectStyleOpen, setRectStyleOpen] = useState(false);
   const dprDraftRef = useRef<{ a?: { time: number; price: number } } | null>(null);
   const measureStartRef = useRef<{ time: number; price: number } | null>(null);
   const measureDoneRef = useRef(false);
@@ -12966,6 +12969,7 @@ priced.sort((a, b) => a.price - b.price);
     const selectRect = (id: string | null) => {
       if (selectedRectIdRef.current === id) return;
       selectedRectIdRef.current = id;
+      try { setSelectedRectId(id); } catch {}
       // lightweight: only re-render lines overlay for handle visibility
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     };
@@ -13009,6 +13013,7 @@ priced.sort((a, b) => a.price - b.price);
       // first tap on body → only select (show handles); drag needs already-selected or a handle
       if (!wasSelected) {
         selectedRectIdRef.current = id;
+        try { setSelectedRectId(id); } catch {}
         try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
         if (!handle) return;
       }
@@ -25427,11 +25432,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Date & price range: tap first corner");
                     }}
                   >
-                    <svg width="18" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-90">
-                      <rect x="3.5" y="3.5" width="17" height="17" rx="1.5" />
-                      <path d="M12 7v10M7 12h10" />
-                      <path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2" />
-                    </svg>
+                    <svg width="18" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-90"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
                     Date and price range
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("dpr") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("dpr", e)}>{favTools.includes("dpr") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
@@ -26252,7 +26253,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "curve" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M5 17 Q12 5 19 17" /></svg>
                       ) : id === "dpr" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M12 7v10M7 12h10"/><path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
+                      ) : id === "rect" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -26262,6 +26265,167 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           )}
 
           {/* Style panel: color / width / dash — bottom-left of chart */}
+          {/* Rectangle floating toolbar — color / note / line style / trash (no alarm) */}
+          {selectedRectId && (() => {
+            const ln = (linesRef.current || []).find((x) => String(x.id) === String(selectedRectId));
+            if (!ln || typeof ln.note !== "string" || !ln.note.startsWith("__rect:")) return null;
+            const rp = parseRectNote(ln.note);
+            const borderCol = ln.color || (rp as any)?.fill || "#787b86";
+            const dash = String(ln.dash || ln.style || "solid");
+            const width = Number(ln.width || 2);
+            return (
+              <div
+                data-move-bar
+                data-rect-toolbar="1"
+                className="absolute z-50 bg-gray-900/95 border border-gray-700 rounded-xl px-1.5 py-1 shadow-xl flex items-center gap-1 pointer-events-auto select-none"
+                style={{ left: rectBarPos.x, top: rectBarPos.y, bottom: "auto" }}
+                onPointerDown={(e) => {
+                  const t = e.target as HTMLElement;
+                  if (t.closest("button") || t.closest("input") || t.closest("[data-menu]")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const startX = e.clientX, startY = e.clientY;
+                  const orig = { ...rectBarPos };
+                  const onMove = (ev: PointerEvent) => {
+                    setRectBarPos({
+                      x: Math.max(4, orig.x + (ev.clientX - startX)),
+                      y: Math.max(4, orig.y + (ev.clientY - startY)),
+                    });
+                  };
+                  const onUp = () => {
+                    document.removeEventListener("pointermove", onMove);
+                    document.removeEventListener("pointerup", onUp);
+                  };
+                  document.addEventListener("pointermove", onMove);
+                  document.addEventListener("pointerup", onUp);
+                }}
+              >
+                <div title="Drag toolbar" className="w-4 h-7 flex items-center justify-center cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 shrink-0">
+                  <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="11" r="1.2"/><circle cx="7" cy="11" r="1.2"/></svg>
+                </div>
+                {/* Color */}
+                <label className="relative w-7 h-7 rounded-md border border-white/20 overflow-hidden cursor-pointer hover:border-orange-400 flex items-center justify-center" title="Border color">
+                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: borderCol }} />
+                  <input
+                    type="color"
+                    defaultValue={borderCol}
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                    onChange={async (e) => {
+                      const col = e.target.value;
+                      const id = selectedRectId;
+                      if (!id) return;
+                      const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                      if (!cur || typeof cur.note !== "string") return;
+                      const p = parseRectNote(cur.note);
+                      // color is on the line row; also update fill in note so box matches
+                      let note = cur.note;
+                      if (p) {
+                        note = buildRectNote(p.t0, p.t1, p.p0, p.p1, col, p.fillOpacity, p.text || "");
+                      }
+                      try {
+                        if (linesRef.current) {
+                          const lr = linesRef.current.find((x) => String(x.id) === String(id));
+                          if (lr) { lr.note = note; lr.color = col; }
+                        }
+                      } catch {}
+                      setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, note, color: col } : l));
+                      try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ note, color: col }).eq("id", id); } catch {}
+                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                    }}
+                  />
+                </label>
+                {/* Note */}
+                <button
+                  type="button"
+                  title="Note"
+                  className="w-7 h-7 rounded-md border border-white/20 text-gray-200 hover:bg-white/10 flex items-center justify-center"
+                  onClick={() => {
+                    const id = selectedRectId;
+                    if (!id) return;
+                    const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                    const txt = userFacingNote(cur?.note) || "";
+                    setEditingNoteId(id as any);
+                    setEditingNoteType("line");
+                    setNoteDraft(txt);
+                    setMoveNoteOpen(true);
+                    setMovingId(id as any);
+                    setMovingType("line");
+                    modeRef.current = "move";
+                    setMode("move");
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
+                </button>
+                {/* Line style / width */}
+                <div className="relative" data-menu>
+                  <button
+                    type="button"
+                    title="Line style"
+                    className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
+                    onClick={() => setRectStyleOpen((v) => !v)}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 12h16"/><path d="M4 7h16" strokeDasharray="2 2"/><path d="M4 17h16" strokeDasharray="1 3"/></svg>
+                  </button>
+                  {rectStyleOpen && (
+                    <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-2 shadow-xl w-40" onClick={(e) => e.stopPropagation()}>
+                      <div className="text-[10px] text-gray-500 uppercase mb-1">Width</div>
+                      <div className="flex gap-1 mb-2">
+                        {([1, 2, 3] as const).map((w) => (
+                          <button key={w} type="button"
+                            className={`flex-1 text-xs py-1 rounded-md font-medium ${width === w ? "bg-orange-500 text-black" : "bg-gray-800 text-gray-200"}`}
+                            onClick={async () => {
+                              const id = selectedRectId;
+                              if (!id) return;
+                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, width: w } : l));
+                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) lr.width = w; } catch {}
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ width: w }).eq("id", id); } catch {}
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            }}
+                          >{w}</button>
+                        ))}
+                      </div>
+                      <div className="text-[10px] text-gray-500 uppercase mb-1">Style</div>
+                      <div className="flex flex-col gap-0.5">
+                        {(["solid", "dashed", "dotted"] as const).map((st) => (
+                          <button key={st} type="button"
+                            className={`text-left px-2 py-1 text-xs rounded-md ${dash === st ? "bg-orange-500/25 text-orange-300" : "text-gray-200 hover:bg-white/5"}`}
+                            onClick={async () => {
+                              const id = selectedRectId;
+                              if (!id) return;
+                              setLines((prev) => prev.map((l) => String(l.id) === String(id) ? { ...l, dash: st, style: st } : l));
+                              try { const lr = (linesRef.current || []).find((x) => String(x.id) === String(id)); if (lr) { lr.dash = st; (lr as any).style = st; } } catch {}
+                              try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").update({ dash: st }).eq("id", id); } catch {}
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                              setRectStyleOpen(false);
+                            }}
+                          >{st}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {/* Trash */}
+                <button
+                  type="button"
+                  title="Delete"
+                  className="w-7 h-7 rounded-md border border-white/20 text-gray-300 hover:text-red-400 hover:bg-red-500/15 hover:border-red-500/30 flex items-center justify-center"
+                  onClick={async () => {
+                    const id = selectedRectId;
+                    if (!id) return;
+                    setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
+                    try { if (linesRef.current) linesRef.current = (linesRef.current || []).filter((x) => String(x.id) !== String(id)); } catch {}
+                    selectedRectIdRef.current = null;
+                    setSelectedRectId(null);
+                    try { if (!String(id).startsWith("local-")) await supabase.from("chart_lines").delete().eq("id", id); } catch {}
+                    try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            );
+          })()}
+
           {/* Channel / DPR move toolbar (no Edit handles) */}
           {mode === "move" && movingId && (() => {
             const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
@@ -31339,7 +31503,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         >{meta.label === "Channel" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="5" y1="15" x2="15" y2="7"/><line x1="9" y1="19" x2="19" y2="11"/><circle cx="5" cy="15" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="10" y1="13" x2="14" y2="13" strokeWidth="1.6"/></svg>
                         ) : meta.label === "Date range" ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M12 7v10M7 12h10"/><path d="M12 7l-2 2.5M12 7l2 2.5M12 17l-2-2.5M12 17l2-2.5M7 12l2.5-2M7 12l2.5 2M17 12l-2.5-2M17 12l-2.5 2"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><circle cx="18" cy="6" r="2.2" fill="none"/><circle cx="6" cy="18" r="2.2" fill="none"/><path d="M12 8.5v7M8.5 12h7"/><path d="M12 8.5l-1.4 1.8M12 8.5l1.4 1.8M12 15.5l-1.4-1.8M12 15.5l1.4-1.8M8.5 12l1.8-1.4M8.5 12l1.8 1.4M15.5 12l-1.8-1.4M15.5 12l-1.8 1.4"/></svg>
+                        ) : meta.label === "Rectangle" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
@@ -31898,7 +32064,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               >{w}</button>
                             ))}
                           </div>
-                          {!(typeof l.note === "string" && String(l.note).startsWith("__arrow")) && (
+                          {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:"))) && (
                           <>
                           <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
                           <div className="flex gap-1">
@@ -31918,7 +32084,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && String(l.note).startsWith("__arrow")) && (
+                    {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:"))) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -32086,6 +32252,17 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         setMode("move");
                         setMovingId(l.id);
                         setMovingType("line");
+                        // Rectangle — show floating toolbar + handles
+                        if (typeof l.note === "string" && l.note.startsWith("__rect:")) {
+                          try {
+                            selectedRectIdRef.current = String(l.id);
+                            setSelectedRectId(String(l.id));
+                            setRectStyleOpen(false);
+                            try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            setStatusMsg("Rectangle selected");
+                          } catch {}
+                          return;
+                        }
                         // Curve — 3 control handles
                         if (typeof l.note === "string" && l.note.startsWith("__curve:")) {
                           try {
