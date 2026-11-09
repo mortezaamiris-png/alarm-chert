@@ -2969,94 +2969,84 @@ type DprCfg = {
 
 /**
  * Expand 3 ON-CURVE points (TradingView Curve style) into dense samples.
- * Sample times are snapped to existing bar times so we never inject new
- * timestamps into the LWC time scale (that would zoom/spread candles).
- * Price is quadratic Bezier so the curve passes through a, b, c.
+ * Point roles are FIXED by order: a=start, b=middle, c=end — never sorted by time,
+ * so dragging the middle left/right/up/down freely rotates the curve like TV.
+ * Both time and price use a quadratic Bezier that passes through all 3 points
+ * (control computed so mid is hit at t=0.5). Samples are made strictly
+ * time-increasing for LWC series; full free shape is also drawn via SVG.
  */
 function expandCurveControls(
   a: { time: number; price: number },
   b: { time: number; price: number },
   c: { time: number; price: number },
-  steps = 48,
-  barTimes?: number[] | null
+  steps = 64,
+  _barTimes?: number[] | null
 ): { time: number; value: number }[] {
-  // Sort by time so left→right; mid can freely move left/right past ends (TV style)
-  const pts = [
-    { time: a.time, price: a.price },
-    { time: b.time, price: b.price },
-    { time: c.time, price: c.price },
-  ].sort((p, q) => p.time - q.time);
-  const A = pts[0];
-  const B = pts[1];
-  const C = pts[2];
-  const tSpan = C.time - A.time;
-  if (!Number.isFinite(tSpan) || Math.abs(tSpan) < 1) {
-    const t0 = A.time;
+  const A = a, B = b, C = c;
+  // Control points so the quadratic passes through B at t = 0.5
+  const tCtrl = 2 * B.time - (A.time + C.time) / 2;
+  const pCtrl = 2 * B.price - (A.price + C.price) / 2;
+  const samples: { time: number; value: number }[] = [];
+  const n = Math.max(16, steps);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const o = 1 - t;
+    const tt = o * o * A.time + 2 * o * t * tCtrl + t * t * C.time;
+    const pp = o * o * A.price + 2 * o * t * pCtrl + t * t * C.price;
+    samples.push({ time: tt, value: pp });
+  }
+  // LWC needs strictly increasing times — collapse any backtracking segments
+  const mono: { time: number; value: number }[] = [];
+  for (const p of samples) {
+    if (!mono.length) {
+      mono.push({ time: p.time, value: p.value });
+      continue;
+    }
+    const prev = mono[mono.length - 1];
+    if (p.time > prev.time) {
+      mono.push({ time: p.time, value: p.value });
+    } else if (p.time === prev.time) {
+      prev.value = p.value; // same x: keep latest price
+    } else {
+      // time went backwards (loop): skip for series; SVG will still show full shape
+    }
+  }
+  if (mono.length < 2) {
     return [
-      { time: t0, value: A.price },
-      { time: t0 + 1, value: B.price },
-      { time: t0 + 2, value: C.price },
+      { time: A.time, value: A.price },
+      { time: A.time === C.time ? C.time + 1 : C.time, value: C.price },
     ];
   }
-  // t of the middle-time point in [0,1]; allow near 0/1 so mid can sit close to ends
-  let tMid = (B.time - A.time) / tSpan;
-  if (!Number.isFinite(tMid)) tMid = 0.5;
-  tMid = Math.max(0.02, Math.min(0.98, tMid));
-  const tm = tMid;
-  const one = 1 - tm;
-  const denom = 2 * one * tm;
-  let pPrice: number;
-  if (Math.abs(denom) < 1e-8) {
-    pPrice = 2 * B.price - (A.price + C.price) / 2;
-  } else {
-    pPrice = (B.price - one * one * A.price - tm * tm * C.price) / denom;
-  }
-  // NO soft-limit: curve must pass exactly through the three on-curve points (TV style)
-  const priceAt = (t: number) => {
-    const o = 1 - t;
-    return o * o * A.price + 2 * o * t * pPrice + t * t * C.price;
-  };
-
-  const tMin = A.time;
-  const tMax = C.time;
-  let times: number[] = [];
-
-  if (barTimes && barTimes.length >= 2) {
-    times = barTimes.filter((t) => t >= tMin && t <= tMax);
-  }
-  if (times.length < 2) {
-    // last resort: only endpoints (never invent intermediate timestamps that stretch the scale)
-    times = [A.time, C.time];
-  }
-
-  // ONLY use existing bar times — never inject mid.time if it is not a real bar
-  // (injecting synthetic times makes LWC stretch the scale → empty gaps between candles)
-  const bag = times.slice();
-  // endpoints only if they already exist in bar set (or fallback list)
-  const barSet = barTimes && barTimes.length >= 2 ? new Set(barTimes) : null;
-  for (const t of [A.time, C.time]) {
-    if (!barSet || barSet.has(t)) bag.push(t);
-  }
-  bag.sort((x, y) => x - y);
-  const finalTimes: number[] = [];
-  for (const t of bag) {
-    const tt = Math.max(tMin, Math.min(tMax, t));
-    if (!finalTimes.length || tt > finalTimes[finalTimes.length - 1]) finalTimes.push(tt);
-  }
-  if (finalTimes.length < 2) {
-    finalTimes.length = 0;
-    finalTimes.push(tMin, tMax);
-  }
-
-  return finalTimes.map((t) => {
-    const tParam = (t - A.time) / tSpan;
-    return { time: t, value: priceAt(tParam) };
-  });
+  return mono;
 }
 
+/** Pixel-space quadratic path through 3 control points (TV free curve, allows loops). */
+function curveSvgPath(
+  chart: any,
+  ser: any,
+  a: { time: number; price: number },
+  b: { time: number; price: number },
+  c: { time: number; price: number },
+  candles?: { time: number }[] | null
+): string | null {
+  try {
+    const x0 = timeToXPixel(chart, a.time, candles);
+    const x1 = timeToXPixel(chart, b.time, candles);
+    const x2 = timeToXPixel(chart, c.time, candles);
+    const y0 = ser.priceToCoordinate(a.price);
+    const y1 = ser.priceToCoordinate(b.price);
+    const y2 = ser.priceToCoordinate(c.price);
+    if (x0 == null || x1 == null || x2 == null || y0 == null || y1 == null || y2 == null) return null;
+    // Quadratic Bezier control so curve passes through mid at t=0.5:
+    // P(0.5)=mid => Ctrl = 2*mid - (start+end)/2
+    const cx = 2 * Number(x1) - (Number(x0) + Number(x2)) / 2;
+    const cy = 2 * Number(y1) - (Number(y0) + Number(y2)) / 2;
+    return `M ${Number(x0).toFixed(1)} ${Number(y0).toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${Number(x2).toFixed(1)} ${Number(y2).toFixed(1)}`;
+  } catch {
+    return null;
+  }
+}
 
-
-/** Map any unix time to pixel X even if it is between two bars (needed for free mid-handle). */
 function timeToXPixel(
   chart: any,
   t: number,
@@ -8170,6 +8160,19 @@ export default function DashboardPage() {
               }
             }
           });
+          // Curve SVG free-shape sync on pan/zoom
+          host.querySelectorAll("[data-curve-svg]").forEach((wrap) => {
+            try {
+              const raw = (wrap as HTMLElement).getAttribute("data-curve-pts");
+              if (!raw) return;
+              const ctrls = JSON.parse(raw) as { time: number; price: number }[];
+              if (!ctrls || ctrls.length < 3) return;
+              const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
+              const d = curveSvgPath(chart2, ser, ctrls[0], ctrls[1], ctrls[2], barCandles);
+              const path = wrap.querySelector("path");
+              if (path && d) path.setAttribute("d", d);
+            } catch {}
+          });
           host.querySelectorAll("[data-channel-label]").forEach((lab) => {
             const el = lab as HTMLElement;
             const tt = Number(el.getAttribute("data-t"));
@@ -9691,32 +9694,66 @@ priced.sort((a, b) => a.price - b.price);
             const [tt, pp] = s.split(",");
             return { time: Number(tt), value: Number(pp) };
           }).filter((p) => p.time > 0 && !Number.isNaN(p.value));
-          pairs.sort((a, b) => a.time - b.time);
-          for (let i = 1; i < pairs.length; i++) {
-            if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
+          // Path: keep time order. Curve: keep placement order (start, mid, end) — never sort.
+          if (!isCurve) {
+            pairs.sort((a, b) => a.time - b.time);
+            for (let i = 1; i < pairs.length; i++) {
+              if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
+            }
           }
-          // Curve stored as 3 controls → expand to smooth arc
-          if (isCurve && pairs.length === 3) {
-            const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-            pairs = expandCurveControls(
+          // Curve stored as 3 controls → expand for series + SVG free shape
+          if (isCurve && pairs.length >= 3) {
+            const ctrls3 = [
               { time: pairs[0].time, price: pairs[0].value },
               { time: pairs[1].time, price: pairs[1].value },
               { time: pairs[2].time, price: pairs[2].value },
-              48,
-              barTs
-            );
+            ];
+            const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
+            pairs = expandCurveControls(ctrls3[0], ctrls3[1], ctrls3[2], 64, barTs);
+            // SVG overlay draws the true free curve (allows mid past ends / loops)
+            try {
+              const host = vlineOverlayRef.current;
+              const serSvg = seriesRef.current;
+              if (host && serSvg && chart) {
+                host.querySelectorAll(`[data-curve-svg="${l.id}"]`).forEach((el) => el.remove());
+                const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
+                const d = curveSvgPath(chart, serSvg, ctrls3[0], ctrls3[1], ctrls3[2], barCandles);
+                if (d) {
+                  const wrap = document.createElement("div");
+                  wrap.setAttribute("data-curve-svg", String(l.id));
+                  wrap.setAttribute("data-curve-pts", JSON.stringify(ctrls3));
+                  wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:18;overflow:visible;";
+                  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                  svg.setAttribute("width", "100%");
+                  svg.setAttribute("height", "100%");
+                  svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                  path.setAttribute("d", d);
+                  path.setAttribute("fill", "none");
+                  path.setAttribute("stroke", color || "#2962FF");
+                  path.setAttribute("stroke-width", String(Math.max(1, width)));
+                  path.setAttribute("stroke-linecap", "round");
+                  path.setAttribute("stroke-linejoin", "round");
+                  if (style === 1) path.setAttribute("stroke-dasharray", "6 4");
+                  else if (style === 2) path.setAttribute("stroke-dasharray", "2 3");
+                  svg.appendChild(path);
+                  wrap.appendChild(svg);
+                  host.appendChild(wrap);
+                }
+              }
+            } catch {}
           } else if (isCurve && pairs.length > 3) {
-            // legacy dense: keep; also show 3 handles when moving
+            // legacy dense: keep
           }
           if (pairs.length >= 2) {
             const ls: any = chart.addLineSeries({
-              color,
-              lineWidth: width,
+              color: isCurve ? "rgba(0,0,0,0)" : color, // curve visible via SVG; series kept for hit-test/range
+              lineWidth: isCurve ? 1 : width,
               lineStyle: style,
               priceLineVisible: false,
               lastValueVisible: false,
               crosshairMarkerVisible: false,
-              title: "", // never show axis tag for curve/path (no phantom H-line)
+              title: "",
               autoscaleInfoProvider: () => null as any,
             });
             ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
@@ -15839,7 +15876,39 @@ priced.sort((a, b) => a.price - b.price);
             let data: { time: number; value: number }[] = [];
             if (md.isCurve && ctrls.length >= 3) {
               const barTsM = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 48, barTsM);
+              data = expandCurveControls(ctrls[0], ctrls[1], ctrls[2], 64, barTsM);
+              // live SVG path (true free shape while dragging mid)
+              try {
+                const host2 = vlineOverlayRef.current;
+                const ser2 = seriesRef.current;
+                if (host2 && ser2 && chart) {
+                  host2.querySelectorAll(`[data-curve-svg="${md.id}"]`).forEach((el) => el.remove());
+                  const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
+                  const d = curveSvgPath(chart, ser2, ctrls[0], ctrls[1], ctrls[2], barCandles);
+                  if (d) {
+                    const wrap = document.createElement("div");
+                    wrap.setAttribute("data-curve-svg", String(md.id));
+                    wrap.setAttribute("data-curve-pts", JSON.stringify(ctrls.slice(0, 3)));
+                    wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:18;overflow:visible;";
+                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    svg.setAttribute("width", "100%");
+                    svg.setAttribute("height", "100%");
+                    svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    path.setAttribute("d", d);
+                    path.setAttribute("fill", "none");
+                    const col = (cur && cur.color) || "#2962FF";
+                    const w = (cur && cur.width) || 2;
+                    path.setAttribute("stroke", col);
+                    path.setAttribute("stroke-width", String(Math.max(1, w)));
+                    path.setAttribute("stroke-linecap", "round");
+                    path.setAttribute("stroke-linejoin", "round");
+                    svg.appendChild(path);
+                    wrap.appendChild(svg);
+                    host2.appendChild(wrap);
+                  }
+                }
+              } catch {}
             } else {
               data = ctrls.map((p) => ({ time: p.time, value: p.price }));
               for (let i = 1; i < data.length; i++) {
