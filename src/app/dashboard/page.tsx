@@ -2496,7 +2496,7 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__fib:")) return { icon: "F", label: "Fib", showPrice: false };
   if (n.startsWith("__rect:")) return { icon: "□", label: "Rectangle", showPrice: false };
   if (n.startsWith("__brush:")) return { icon: "✎", label: "Brush", showPrice: false };
-  if (n.startsWith("__path:")) return { icon: "⬠", label: "Path", showPrice: false };
+  if (n.startsWith("__path:")) return { icon: "⑂", label: "Path", showPrice: false };
   if (n.startsWith("__curve:")) return { icon: "⌒", label: "Curve", showPrice: false };
   if (n.startsWith("__dpr:")) return { icon: "⊞", label: "Date range", showPrice: false };
   if (n.startsWith("__channel:")) return { icon: "⧉", label: "Channel", showPrice: false };
@@ -2548,7 +2548,7 @@ const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "arrow-down": { label: "Arrow down", icon: "↓" },
   "callout": { label: "Callout", icon: "T" },
   "brush": { label: "Brush", icon: "✎" },
-  "path": { label: "Path", icon: "⬠" },
+  "path": { label: "Path", icon: "⑂" },
   "long-pos": { label: "Long position", icon: "L" },
   "short-pos": { label: "Short position", icon: "S" },
   "rect": { label: "Rectangle", icon: "□" },
@@ -14810,6 +14810,61 @@ priced.sort((a, b) => a.price - b.price);
           if (m && m !== "none") {
             e.preventDefault();
             e.stopPropagation();
+            // Path: right-click finishes (if >=2 points) instead of discarding
+            if (m === "path") {
+              try {
+                const pts = [...(pathPointsRef.current || [])];
+                if (pts.length >= 2) {
+                  void (async () => {
+                    try {
+                      clickLockRef.current = true;
+                      setSaving(true);
+                      const first = pts[0];
+                      const last = pts[pts.length - 1];
+                      const note = `__path:` + pts.map((p) => `${p.time},${p.price}`).join("|");
+                      const base: any = {
+                        symbol: symbolRef.current.toUpperCase(),
+                        price: first.price,
+                        color: drawColorRef.current,
+                        width: drawWidthRef.current,
+                        dash: drawDashRef.current,
+                        start_time: first.time,
+                        end_time: last.time,
+                        end_price: last.price,
+                        note,
+                      };
+                      try {
+                        (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+                      } catch {}
+                      let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+                      if (error) {
+                        const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                        (fb as any).user_id = base.user_id;
+                        ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+                      }
+                      if (!error && data) {
+                        pushUndo();
+                        setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
+                        setStatusMsg("Path saved");
+                        setMovingId((data as any).id);
+                        setMovingType("line");
+                        setMode("move");
+                        modeRef.current = "move";
+                      } else setStatusMsg("Path save failed");
+                    } catch {
+                      setStatusMsg("Path save failed");
+                    } finally {
+                      pathPointsRef.current = [];
+                      try { vlineOverlayRef.current?.querySelectorAll("[data-path-draft]").forEach((el) => el.remove()); } catch {}
+                      clearPreview();
+                      setSaving(false);
+                      setTimeout(() => { clickLockRef.current = false; }, 200);
+                    }
+                  })();
+                  return;
+                }
+              } catch {}
+            }
             try {
               moveDiagRef.current = null;
               movingVLineRef.current = false;
@@ -16525,6 +16580,67 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
+        // ── Body drag: path polyline (when selected) ──
+        if (modeRef.current === "move" && movingIdRef.current) {
+          const mdP = moveDiagRef.current as any;
+          if (mdP && mdP.isPath && mdP.pathCtrls && mdP.pathCtrls.length >= 2) {
+            if (!(t.closest?.("[data-menu]") || t.closest?.("[data-move-bar]") || t.closest?.("[data-note-edit]") || t.getAttribute("data-path-handle"))) {
+              const cont = chartContainerRef.current;
+              const chart = chartRef.current;
+              const ser = seriesRef.current;
+              if (cont && chart && ser) {
+                const rect = cont.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                let bestD = 1e9;
+                const coords: { x: number; y: number }[] = [];
+                for (const p of mdP.pathCtrls) {
+                  const xx = chart.timeScale().timeToCoordinate(p.time as any);
+                  const yy = ser.priceToCoordinate(p.price);
+                  if (xx == null || yy == null) continue;
+                  coords.push({ x: Number(xx), y: Number(yy) });
+                }
+                for (let i = 0; i < coords.length - 1; i++) {
+                  const x0 = coords[i].x, y0 = coords[i].y, x1 = coords[i + 1].x, y1 = coords[i + 1].y;
+                  const dx = x1 - x0, dy = y1 - y0;
+                  const len2 = dx * dx + dy * dy || 1;
+                  let tt = ((px - x0) * dx + (py - y0) * dy) / len2;
+                  tt = Math.max(0, Math.min(1, tt));
+                  const d = Math.hypot(px - (x0 + tt * dx), py - (y0 + tt * dy));
+                  if (d < bestD) bestD = d;
+                }
+                if (bestD <= 14) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const price0 = ser.coordinateToPrice(py);
+                  let t0: number | null = null;
+                  try {
+                    const logical = chart.timeScale().coordinateToLogical(px);
+                    const candles = candlesRef.current || [];
+                    const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
+                    if (logical != null && candles.length) {
+                      const lastIdx = candles.length - 1;
+                      const L = Number(logical);
+                      if (L > lastIdx) t0 = Number(candles[lastIdx].time) + Math.round(L - lastIdx) * barSec;
+                      else if (L < 0) t0 = Number(candles[0].time) + Math.round(L) * barSec;
+                      else t0 = Number(candles[Math.max(0, Math.min(lastIdx, Math.round(L)))].time);
+                    }
+                  } catch {}
+                  if (t0 != null && price0 != null && !Number.isNaN(Number(price0))) {
+                    mdP.phase = "drag-body";
+                    mdP.isCurveBody = true;
+                    mdP.bodyStart = { time: t0, price: Number(price0) };
+                    mdP.bodyOrig = mdP.pathCtrls.map((p: any) => ({ time: p.time, price: p.price }));
+                    lockChartInteraction(true);
+                    try { (t as any).setPointerCapture?.(e.pointerId); } catch {}
+                    setStatusMsg("Path: move");
+                    return;
+                  }
+                }
+              }
+            }
+          }
+        }
         // ── Body drag: when a curve is already selected and user presses near the arc ──
         if (modeRef.current === "move" && movingIdRef.current) {
           const md0 = moveDiagRef.current as any;
@@ -16628,12 +16744,13 @@ priced.sort((a, b) => a.price - b.price);
 
         let ctrls: { time: number; price: number }[] = [];
 
-        // ── Whole-body drag: translate all 3 points by the same delta ──
-        if (md.isCurve && md.phase === "drag-body" && md.bodyStart && md.bodyOrig) {
+        // ── Whole-body drag: translate all points by the same delta ──
+        if (md.phase === "drag-body" && md.bodyStart && md.bodyOrig && (md.isCurve || md.isPath)) {
           const dT = tCursor - md.bodyStart.time;
           const dP = price - md.bodyStart.price;
           ctrls = md.bodyOrig.map((p: any) => ({ time: p.time + dT, price: p.price + dP }));
-          md.curveCtrls = ctrls;
+          if (md.isCurve) md.curveCtrls = ctrls;
+          else md.pathCtrls = ctrls;
         } else {
           // ── Single handle drag ──
           const handle = md.isCurve ? md.curveHandle : md.pathHandle;
@@ -22579,7 +22696,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     };
 
     const onContext = (e: MouseEvent) => {
-      // Right-click: close ALL tool menus and cancel active drawing / move
+      // Right-click: close ALL tool menus; Path finishes if enough points
       const el = e.target as HTMLElement | null;
       e.preventDefault();
       try { setLineToolsOpen(false); } catch {}
@@ -22588,6 +22705,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       try { setDrawToolsOpen(false); } catch {}
       try { setAlarmMenuOpen(false); } catch {}
       if (el?.closest?.("[data-move-bar]")) return;
+      if (modeRef.current === "path" && (pathPointsRef.current || []).length >= 2) {
+        // let chart contextmenu handler finish the path
+        return;
+      }
       cancelAll();
     };
 
@@ -25601,15 +25722,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       const next = mode === "path" ? "none" : "path";
                       setMode(next as any);
                       modeRef.current = next as any;
-                      setStatusMsg(next === "path" ? "Path: click points — double-click or Done to finish" : "");
+                      setStatusMsg(next === "path" ? "Path: click points — right-click or Done to finish" : "");
                     }}
                   >
-                    <span className="w-4 text-center">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="5" cy="18" r="2" />
-                        <circle cx="12" cy="8" r="2" />
-                        <circle cx="19" cy="14" r="2" />
-                        <path d="M6.5 16.5 L10.5 9.5 L17.5 13.5" />
+                    <span className="w-4 text-center inline-flex items-center justify-center">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/>
+                        <circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/>
+                        <circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/>
+                        <path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/>
                       </svg>
                     </span>
                     Path
@@ -26526,6 +26647,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                       ) : id === "brush" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+                      ) : id === "path" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/><path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -27618,7 +27741,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       const ln = (linesRef.current || []).find((x) => String(x.id) === String(id))
                         || (Array.isArray(lines) ? lines.find((x: any) => String(x.id) === String(id)) : null);
                       const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
-                      if (n.startsWith("__arrow")) return true;
+                      if (n.startsWith("__arrow") || n.startsWith("__path:") || n.startsWith("__brush:") || n.startsWith("__rect:")) return true;
                       try {
                         const meta = lineListMeta(ln as any);
                         if (meta && String(meta.label || "").startsWith("Arrow")) return true;
@@ -32076,6 +32199,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="4" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
                         ) : meta.label === "Brush" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+                        ) : meta.label === "Path" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="6" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="16" r="2.2" fill="currentColor" stroke="none"/><path d="M6.8 16.2L10.5 8.2M13.5 7.5L17.2 14.2"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
@@ -32657,7 +32782,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </div>
                       )}
                     </div>
-                    {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:"))) && (
+                    {!(typeof l.note === "string" && (String(l.note).startsWith("__arrow") || String(l.note).startsWith("__rect:") || String(l.note).startsWith("__brush:") || String(l.note).startsWith("__path:"))) && (
                     <div className="relative" data-menu>
                       <button
                         type="button"
@@ -32861,6 +32986,39 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             setBrushColorOpen(false);
                             setMoveNoteOpen(false);
                             setStatusMsg("Brush selected");
+                          } catch {}
+                          return;
+                        }
+                        // Path — enter move with handles + floating toolbar
+                        if (typeof l.note === "string" && l.note.startsWith("__path:")) {
+                          try {
+                            selectedRectIdRef.current = null;
+                            setSelectedRectId(null);
+                            setSelectedBrushId(null);
+                            const ctrls = l.note.replace(/^__path:/, "").split("|").map((s) => {
+                              const [tt, pp] = s.split(",");
+                              return { time: Number(tt), price: Number(pp) };
+                            }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+                            if (ctrls.length >= 2) {
+                              moveDiagRef.current = {
+                                id: l.id,
+                                phase: "pick",
+                                pointA: { time: ctrls[0].time, price: ctrls[0].price },
+                                pointB: { time: ctrls[ctrls.length - 1].time, price: ctrls[ctrls.length - 1].price },
+                                color: l.color || "#2962FF",
+                                width: l.width || 2,
+                                dash: String(l.dash || "solid"),
+                                isCurve: false,
+                                isPath: true,
+                                pathCtrls: ctrls,
+                                pathHandle: null,
+                              } as any;
+                              setMode("move");
+                              setMovingId(l.id);
+                              setMovingType("line");
+                              setStatusMsg("Path: drag points or body");
+                              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                            }
                           } catch {}
                           return;
                         }
