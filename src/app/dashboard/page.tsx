@@ -2562,7 +2562,17 @@ function userFacingNote(note?: string | null): string {
     if (rest.startsWith("__")) return "";
     return rest;
   }
-  if (s === "__arrow__" || s.startsWith("__arrow")) return "Arrow";
+  if (s === "__arrow__" || s.startsWith("__arrow")) {
+    // __arrow_up__|text  or __arrow_up__|txt=text
+    const parts = s.split("|").slice(1).filter(Boolean);
+    if (!parts.length) return "";
+    const joined = parts.join("|");
+    if (joined.startsWith("txt=")) {
+      try { return decodeURIComponent(joined.slice(4)); } catch { return joined.slice(4); }
+    }
+    if (joined.startsWith("__")) return "";
+    return joined;
+  }
   if (s.startsWith("__path:")) return "Path";
   if (s.startsWith("__brush:")) return "Brush";
   if (s.startsWith("__avp:")) {
@@ -2590,7 +2600,10 @@ function userFacingNote(note?: string | null): string {
     if (p && p.text) return p.text;
     return "";
   }
-  if (s.startsWith("__curve:")) return "Curve";
+  if (s.startsWith("__curve:")) {
+    const t = parseCurveText(s);
+    return t || "";
+  }
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
   if (s.startsWith("__rect:")) {
@@ -3088,7 +3101,8 @@ function timeToXPixel(
 function parseCurveControls(note: string): { time: number; price: number }[] | null {
   if (!note || !note.startsWith("__curve:")) return null;
   const raw = note.replace(/^__curve:/, "");
-  const pairs = raw.split("|").map((s) => {
+  // ignore txt= / other key=value segments
+  const pairs = raw.split("|").filter((s) => s && !s.includes("=") && s.includes(",")).map((s) => {
     const [tt, pp] = s.split(",");
     return { time: Number(tt), price: Number(pp) };
   }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
@@ -3099,6 +3113,13 @@ function parseCurveControls(note: string): { time: number; price: number }[] | n
   const c = pairs[pairs.length - 1];
   const b = pairs[Math.floor(pairs.length / 2)];
   return [a, b, c];
+}
+
+function parseCurveText(note: string | null | undefined): string {
+  if (!note || !String(note).startsWith("__curve:")) return "";
+  const m = String(note).match(/(?:^|\|)txt=([^|]*)/);
+  if (!m) return "";
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
 }
 
 function defaultDprCfg(t0=0, p0=0, t1=0, p1=0): DprCfg {
@@ -9723,13 +9744,14 @@ priced.sort((a, b) => a.price - b.price);
               chartLinesRef.current.set(l.id, { __dprDom: true } as any);
             }
           } catch {}
-        } else if (typeof l.note === "string" && (l.note === "__arrow_up__" || l.note === "__arrow_down__" || l.note === "__arrow_marker__")) {
+        } else if (typeof l.note === "string" && (l.note.startsWith("__arrow_up__") || l.note.startsWith("__arrow_down__") || l.note.startsWith("__arrow_marker__") || l.note === "__arrow__")) {
           const t = Number(l.start_time || 0);
+          const arrowKind = l.note.startsWith("__arrow_up__") ? "up" : l.note.startsWith("__arrow_down__") ? "down" : "mark";
           if (t > 0) {
             const baseCol =
-              l.note === "__arrow_up__"
+              arrowKind === "up"
                 ? (color && color !== DEFAULT_LINE_COLOR ? color : "#22c55e")
-                : l.note === "__arrow_down__"
+                : arrowKind === "down"
                 ? (color && color !== DEFAULT_LINE_COLOR ? color : "#ef4444")
                 : color || "#f97316";
             // Size: width 1/2/3 → visibly different marker sizes
@@ -9747,7 +9769,7 @@ priced.sort((a, b) => a.price - b.price);
             ls.setData([{ time: t as any, value: l.price }]);
             try {
               const shape =
-                l.note === "__arrow_up__" ? "arrowUp" : l.note === "__arrow_down__" ? "arrowDown" : "circle";
+                arrowKind === "up" ? "arrowUp" : arrowKind === "down" ? "arrowDown" : "circle";
               if (isMoving) {
                 // Hide solid marker — dashed hollow arrow drawn as SVG overlay
                 ls.setMarkers([]);
@@ -9764,6 +9786,27 @@ priced.sort((a, b) => a.price - b.price);
               }
             } catch {}
             chartLinesRef.current.set(l.id, ls);
+
+            // Note text under the arrow mark
+            try {
+              const arrowTxt = userFacingNote(l.note);
+              const host = vlineOverlayRef.current;
+              if (host && arrowTxt) {
+                host.querySelectorAll(`[data-arrow-note="${l.id}"]`).forEach((el) => el.remove());
+                const x = chart.timeScale().timeToCoordinate(t as any);
+                const y = series.priceToCoordinate(Number(l.price));
+                if (x != null && y != null) {
+                  const lab = document.createElement("div");
+                  lab.setAttribute("data-arrow-note", String(l.id));
+                  lab.textContent = arrowTxt;
+                  lab.style.cssText =
+                    `position:absolute;left:${Number(x)}px;top:${Number(y) + (arrowKind === "up" ? -28 : 18)}px;` +
+                    `transform:translateX(-50%);font-size:11px;font-weight:600;color:${baseCol};` +
+                    `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
+                  host.appendChild(lab);
+                }
+              }
+            } catch {}
 
             // Moving: gray dashed hollow arrow (outline only), size follows width 1/2/3
             if (isMoving) {
@@ -9807,7 +9850,7 @@ priced.sort((a, b) => a.price - b.price);
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
           const isCurve = l.note.startsWith("__curve:");
           const raw = l.note.replace(/^__(?:path|curve):/, "");
-          let pairs = raw.split("|").map((s) => {
+          let pairs = raw.split("|").filter((s) => s && s.includes(",") && !s.includes("=")).map((s) => {
             const [tt, pp] = s.split(",");
             return { time: Number(tt), value: Number(pp) };
           }).filter((p) => p.time > 0 && !Number.isNaN(p.value));
@@ -9872,6 +9915,26 @@ priced.sort((a, b) => a.price - b.price);
                   hit.style.pointerEvents = "stroke";
                   wrap.appendChild(svg);
                   host.appendChild(wrap);
+                  // Note under curve midpoint
+                  try {
+                    const curveTxt = parseCurveText(l.note);
+                    if (curveTxt) {
+                      host.querySelectorAll(`[data-curve-note="${l.id}"]`).forEach((el) => el.remove());
+                      const mid = ctrls3[1];
+                      const xm = timeToXPixel(chart, mid.time, barCandles);
+                      const ym = serSvg.priceToCoordinate(mid.price);
+                      if (xm != null && ym != null) {
+                        const lab = document.createElement("div");
+                        lab.setAttribute("data-curve-note", String(l.id));
+                        lab.textContent = curveTxt;
+                        lab.style.cssText =
+                          `position:absolute;left:${Number(xm)}px;top:${Number(ym) + 12}px;transform:translateX(-50%);` +
+                          `font-size:11px;font-weight:600;color:${color || "#d1d5db"};` +
+                          `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
+                        host.appendChild(lab);
+                      }
+                    }
+                  } catch {}
                 }
               }
             } catch {}
@@ -10175,6 +10238,30 @@ priced.sort((a, b) => a.price - b.price);
                         } catch {}
                         // hide LWC series lines (SVG draws them); keep series for geometry/hit only
                         try { seriesList.forEach((ss: any) => ss.applyOptions?.({ color: "rgba(0,0,0,0)" })); } catch {}
+                        // Channel note text under the lower boundary (midpoint)
+                        try {
+                          if (cfg.text && String(cfg.text).trim()) {
+                            const midT = (Number(ta) + Number(tb)) / 2;
+                            const midP = Math.min(Number(p1), Number(p2), Number(p1) + Number(off), Number(p2) + Number(off));
+                            const x = chart2.timeScale().timeToCoordinate(midT as any);
+                            const y = series.priceToCoordinate(midP);
+                            if (x != null && y != null) {
+                              host.querySelectorAll(`[data-channel-label][data-channel-id="${l.id}"]`).forEach((el) => el.remove());
+                              const lab = document.createElement("div");
+                              lab.setAttribute("data-channel-label", "1");
+                              lab.setAttribute("data-channel-id", String(l.id));
+                              lab.setAttribute("data-t", String(midT));
+                              lab.setAttribute("data-p", String(midP));
+                              lab.textContent = String(cfg.text).trim();
+                              const tsz = Math.max(10, Number(cfg.textSize) || 14);
+                              lab.style.cssText =
+                                `position:absolute;left:${Number(x)}px;top:${Number(y) + 10}px;transform:translateX(-50%);` +
+                                `font-size:${tsz}px;font-weight:600;color:${cfg.color || color || "#d1d5db"};` +
+                                `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
+                              host.appendChild(lab);
+                            }
+                          }
+                        } catch {}
                         // initial place
                         try {
                           const ser = seriesRef.current;
@@ -23057,6 +23144,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
           const p = parseChannelNote(cur.note);
           if (p) noteOut = buildChannelNote({ ...p, text: text || "" });
+        } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__curve:")) {
+          const ctrls = parseCurveControls(cur.note) || [];
+          const head = ctrls.length >= 3
+            ? `__curve:${ctrls.map((p) => `${p.time},${p.price}`).join("|")}`
+            : cur.note.replace(/\|txt=[^|]*/g, "").split("|").filter((s) => s.includes(",")).join("|").replace(/^/, "__curve:").replace(/^__curve:__curve:/, "__curve:");
+          // rebuild clean head from controls
+          let base = cur.note.replace(/\|txt=[^|]*/g, "");
+          // strip any non-coordinate segments
+          const segs = base.replace(/^__curve:/, "").split("|").filter((s) => s.includes(",") && !s.includes("="));
+          base = `__curve:${segs.join("|")}`;
+          noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
+        } else if (cur && typeof cur.note === "string" && (cur.note.startsWith("__arrow_up__") || cur.note.startsWith("__arrow_down__") || cur.note.startsWith("__arrow_marker__") || cur.note === "__arrow__")) {
+          const head = cur.note.split("|")[0];
+          noteOut = text ? `${head}|${text}` : head;
         } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__") && !cur.note.startsWith("__callout:")) {
           const base = cur.note.replace(/\|txt=[^|]*/g, "");
           noteOut = text ? `${base}|txt=${encodeURIComponent(text)}` : base;
@@ -23563,6 +23664,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           if (p) {
             noteToSave = buildChannelNote({ ...p, text: noteDraft.trim() });
           }
+        } else if (s.startsWith("__curve:")) {
+          const segs = s.replace(/^__curve:/, "").split("|").filter((x) => x.includes(",") && !x.includes("="));
+          const base = `__curve:${segs.join("|")}`;
+          noteToSave = noteDraft.trim() ? `${base}|txt=${encodeURIComponent(noteDraft.trim())}` : base;
+        } else if (s.startsWith("__arrow_up__") || s.startsWith("__arrow_down__") || s.startsWith("__arrow_marker__") || s === "__arrow__") {
+          const head = s.split("|")[0];
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         } else if (s.startsWith("__dpr:")) {
           const p = parseDprNote(s);
           if (p) {
@@ -25152,11 +25260,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
               )}
             </div>
 
-            {/* thin spacer before star */}
-            <div className="h-1.5" />
-            <div className="h-px w-7 mx-auto my-1 bg-gray-700/80 rounded-full" />
+            {/* spacer before star — a bit lower */}
+            <div className="flex-1 min-h-3" style={{ maxHeight: 36 }} />
+            <div className="h-px w-7 mx-auto my-1.5 bg-gray-700/80 rounded-full" />
 
-            {/* Favorites master — higher, near trash/eye */}
+            {/* Favorites master */}
             <button
               type="button"
               title={favToolsVisible ? "Hide favorite tools bar" : "Show favorite tools bar"}
@@ -26076,6 +26184,12 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         >{w}</button>
                       ))}
                     </div>
+                    {!(mode === "arrow-up" || mode === "arrow-down" || mode === "arrow-marker" ||
+                      (mode === "move" && movingId && (() => {
+                        const ln = (linesRef.current || []).find((x) => String(x.id) === String(movingId));
+                        return !!(ln && typeof ln.note === "string" && ln.note.startsWith("__arrow"));
+                      })())) && (
+                    <>
                     <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">Style</div>
                     <div className="flex gap-1">
                       {(["solid", "dashed", "dotted"] as const).map((d) => (
@@ -26095,6 +26209,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </button>
                       ))}
                     </div>
+                    </>
+                    )}
                   </div>
                 )}
               </div>
@@ -26217,6 +26333,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             >{w}</button>
                           ))}
                         </div>
+                        {!(() => {
+                          try {
+                            const id = movingIdRef.current || movingId;
+                            const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                            const n = ln && typeof ln.note === "string" ? ln.note : "";
+                            return n.startsWith("__arrow");
+                          } catch { return false; }
+                        })() && (
+                        <>
                         <div className="text-[9px] text-gray-500 uppercase tracking-wide px-0.5 mt-0.5">Style</div>
                         <div className="flex gap-1">
                           {(["solid", "dashed", "dotted"] as const).map((st) => (
@@ -26278,6 +26403,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             </button>
                           ))}
                         </div>
+                        </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -26341,7 +26468,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </div>
                     )}
                   </div>
-                  {/* Alarm options — condition / once-always / delete-after */}
+                  {/* Alarm options — hide for arrow marks (up/down/marker) */}
+                  {!(() => {
+                    try {
+                      const id = movingIdRef.current || movingId;
+                      if (!id) return false;
+                      const ln = (linesRef.current || []).find((x) => String(x.id) === String(id));
+                      const n = ln && typeof ln.note === "string" ? ln.note : "";
+                      return n.startsWith("__arrow_up__") || n.startsWith("__arrow_down__") || n.startsWith("__arrow_marker__") || n === "__arrow__";
+                    } catch { return false; }
+                  })() && (
                   <div className="relative" data-menu>
                     <button
                       type="button"
@@ -26553,6 +26689,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </div>
                     )}
                   </div>
+                  )}
                   {/* Trash */}
                   <button
                     type="button"
@@ -30348,20 +30485,20 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       {showBottomLists && (
       <div className="mt-2 grid grid-cols-1 lg:grid-cols-[1.15fr_1.15fr_0.7fr] gap-4">
         <div>
-          <h3 className="text-sm font-medium text-green-400 mb-2 flex items-center gap-1.5 flex-wrap">
-            <span className="inline-flex items-center gap-1">
+          <h3 className="text-sm font-medium text-green-400 mb-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              title={showBottomLists ? "Hide lists" : "Show lists"}
+              onClick={() => setShowBottomLists((v) => !v)}
+              className="w-5 h-5 rounded border border-gray-700 bg-gray-900/80 text-gray-300 hover:border-orange-500 hover:text-orange-300 inline-flex items-center justify-center shrink-0"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <span>
               Alarms — <span className="text-gray-400 font-normal">{symbolUpper}</span>{" "}
               <span className="text-gray-500">({currentAlarms.length})</span>
-              <button
-                type="button"
-                title={showBottomLists ? "Hide lists" : "Show lists"}
-                onClick={() => setShowBottomLists((v) => !v)}
-                className="w-5 h-5 ml-0.5 rounded border border-gray-700 bg-gray-900/80 text-gray-300 hover:border-orange-500 hover:text-orange-300 inline-flex items-center justify-center align-middle"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
             </span>
           </h3>
           <div className="space-y-1.5">
