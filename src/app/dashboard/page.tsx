@@ -7648,6 +7648,7 @@ export default function DashboardPage() {
     } catch {}
     try { vlineOverlayRef.current?.querySelectorAll("[data-ch-handle]").forEach((el) => el.remove()); } catch {}
     try { vlineOverlayRef.current?.querySelectorAll("[data-ch-draft]").forEach((el) => el.remove()); } catch {}
+    try { vlineOverlayRef.current?.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove()); } catch {}
     if (previewFibSeriesRef.current.length && seriesRef.current) {
       for (const pl of previewFibSeriesRef.current) {
         try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -9752,7 +9753,23 @@ priced.sort((a, b) => a.price - b.price);
                   path.setAttribute("stroke-linejoin", "round");
                   if (style === LineStyle.LargeDashed) path.setAttribute("stroke-dasharray", "6 4");
                   else if (style === LineStyle.SparseDotted) path.setAttribute("stroke-dasharray", "2 3");
+                  // hit-target: wide invisible stroke so user can grab anywhere on the curve
+                  const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                  hit.setAttribute("d", d);
+                  hit.setAttribute("fill", "none");
+                  hit.setAttribute("stroke", "transparent");
+                  hit.setAttribute("stroke-width", "14");
+                  hit.setAttribute("stroke-linecap", "round");
+                  hit.setAttribute("stroke-linejoin", "round");
+                  hit.style.pointerEvents = "stroke";
+                  hit.style.cursor = "move";
+                  hit.setAttribute("data-curve-hit", String(l.id));
+                  svg.appendChild(hit);
+                  path.style.pointerEvents = "none";
                   svg.appendChild(path);
+                  wrap.style.pointerEvents = "none";
+                  // allow hit path to receive events
+                  hit.style.pointerEvents = "stroke";
                   wrap.appendChild(svg);
                   host.appendChild(wrap);
                 }
@@ -14910,63 +14927,57 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
           if (tCursor == null) return;
 
-          // Curve live preview (TV-style: 3 on-curve points)
+          // Curve live preview — SVG only (no LWC series → no candle stretch)
           if (modeNow === "curve") {
             const pts = pathPointsRef.current || [];
-            if (pts.length >= 1 && pts.length < 2) {
-              try {
-                if (!previewDiagSeriesRef.current) {
-                  previewDiagSeriesRef.current = chart.addLineSeries({
-                    color: drawColorRef.current || "#f0b90b",
-                    lineWidth: Math.max(2, drawWidthRef.current || 2) as 1 | 2 | 3 | 4,
-                    lineStyle: LineStyle.Solid,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
-                }
-                let dens: { time: number; value: number }[] = [];
-                if (pts.length === 1) {
-                  // TV: start fixed; cursor = end; mid auto halfway with mild default bow (not straight)
+            try {
+              const host = vlineOverlayRef.current;
+              const ser = seriesRef.current;
+              if (host && ser) {
+                host.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove());
+                if (pts.length >= 1 && pts.length < 2) {
                   const a = pts[0];
                   const c = { time: tCursor, price };
                   const avgP = (a.price + c.price) / 2;
                   const dy = Math.abs(c.price - a.price);
-                  // mild default arc like TradingView preview (bow ~15-25% of vertical span, min visible)
                   const bow = Math.max(dy * 0.22, Math.abs(avgP) * 0.0015);
                   const mid = {
                     time: Math.round((a.time + c.time) / 2),
                     price: avgP + bow,
                   };
-                  const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-                  dens = expandCurveControls(a, mid, c, 36, barTs);
-                }
-                if (dens.length >= 2) {
-                  let savedR: any = null;
-                  try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
-                  previewDiagSeriesRef.current.setData(
-                    dens.map((p) => ({ time: p.time as any, value: p.value }))
-                  );
-                  if (savedR) {
-                    try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+                  const col = drawColorRef.current || "#f0b90b";
+                  const w = Math.max(2, drawWidthRef.current || 2);
+                  const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
+                  const d = curveSvgPath(chart, ser, a, mid, c, barCandles);
+                  if (d) {
+                    const wrap = document.createElement("div");
+                    wrap.setAttribute("data-curve-draft", "svg");
+                    wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:24;overflow:visible;";
+                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    svg.setAttribute("width", "100%");
+                    svg.setAttribute("height", "100%");
+                    svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                    const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    pathEl.setAttribute("d", d);
+                    pathEl.setAttribute("fill", "none");
+                    pathEl.setAttribute("stroke", col);
+                    pathEl.setAttribute("stroke-width", String(w));
+                    pathEl.setAttribute("stroke-linecap", "round");
+                    pathEl.setAttribute("stroke-linejoin", "round");
+                    pathEl.setAttribute("stroke-dasharray", "6 4");
+                    svg.appendChild(pathEl);
+                    wrap.appendChild(svg);
+                    host.appendChild(wrap);
                   }
-                }
-                // keep draft markers synced
-                const host = vlineOverlayRef.current;
-                const ser = seriesRef.current;
-                if (host && ser) {
-                  host.querySelectorAll("[data-curve-draft]").forEach((el) => el.remove());
-                  const show = [...pts, { time: tCursor, price }];
-                  show.forEach((pt, idx) => {
-                    if (idx >= 3) return;
+                  // draft dots: start + cursor end (+ mid)
+                  [{ ...a }, mid, c].forEach((pt, idx) => {
                     const el = document.createElement("div");
                     el.setAttribute("data-curve-draft", String(idx));
                     el.style.cssText =
                       `position:absolute;width:14px;height:14px;margin-left:-7px;margin-top:-7px;` +
-                      `border-radius:50%;border:2px solid ${drawColorRef.current || "#2962FF"};` +
+                      `border-radius:50%;border:2px solid ${col};` +
                       `background:transparent;pointer-events:none;z-index:45;box-shadow:0 0 0 1px rgba(0,0,0,0.4);`;
-                    const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+                    const xx = timeToXPixel(chart, pt.time, barCandles);
                     const yy = ser.priceToCoordinate(pt.price);
                     if (xx != null && yy != null) {
                       el.style.left = `${xx}px`;
@@ -14975,8 +14986,8 @@ priced.sort((a, b) => a.price - b.price);
                     }
                   });
                 }
-              } catch {}
-            }
+              }
+            } catch {}
           }
 
           // Path live preview
@@ -15763,6 +15774,61 @@ priced.sort((a, b) => a.price - b.price);
       const onCurvePathPointerDown = (e: PointerEvent) => {
         const t = e.target as HTMLElement | null;
         if (!t || !t.getAttribute) return;
+        // Click on curve SVG hit-stroke → body drag
+        const curveHit = t.closest?.("[data-curve-hit]") || (t.getAttribute?.("data-curve-hit") ? t : null);
+        if (curveHit) {
+          const id = String((curveHit as HTMLElement).getAttribute("data-curve-hit") || "");
+          const ln = (linesRef.current || []).find((x: any) => String(x.id) === id);
+          if (ln && typeof ln.note === "string" && ln.note.startsWith("__curve:")) {
+            const ctrls = parseCurveControls(ln.note) || [];
+            if (ctrls.length >= 3) {
+              e.preventDefault();
+              e.stopPropagation();
+              const cont = chartContainerRef.current;
+              const chart = chartRef.current;
+              const ser = seriesRef.current;
+              let t0: number | null = null;
+              let price0: number | null = null;
+              if (cont && chart && ser) {
+                const rect = cont.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                price0 = ser.coordinateToPrice(py);
+                try {
+                  const logical = chart.timeScale().coordinateToLogical(px);
+                  const candles = candlesRef.current || [];
+                  if (logical != null && candles.length) {
+                    const i = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
+                    t0 = Number(candles[i].time);
+                  }
+                } catch {}
+              }
+              moveDiagRef.current = {
+                id,
+                kind: "line",
+                isCurve: true,
+                isPath: false,
+                curveCtrls: ctrls.map((p: any) => ({ time: p.time, price: p.price })),
+                pathCtrls: null,
+                curveHandle: null,
+                pathHandle: null,
+                isCurveBody: true,
+                phase: "drag-body",
+                bodyStart: { time: t0, price: price0 },
+                bodyOrig: ctrls.map((p: any) => ({ time: p.time, price: p.price })),
+              } as any;
+              setMode("move");
+              setMovingId(id);
+              setMovingType("line");
+              lockChartInteraction(true);
+              try { (t as any).setPointerCapture?.(e.pointerId); } catch {}
+              setStatusMsg("Curve: moving body");
+              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+              return;
+            }
+          }
+        }
+
         const curveIdx = t.getAttribute("data-curve-handle");
         const pathIdx = t.getAttribute("data-path-handle");
         const curveId = t.getAttribute("data-curve-id");
@@ -15828,16 +15894,17 @@ priced.sort((a, b) => a.price - b.price);
             if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
             try {
               const barTsB = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((tt: number) => tt > 0);
-              const dens = expandCurveControls(md0.curveCtrls[0], md0.curveCtrls[1], md0.curveCtrls[2], 36, barTsB);
+              const barCandlesB = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
+              const dens = expandCurveControls(md0.curveCtrls[0], md0.curveCtrls[1], md0.curveCtrls[2], 48, barTsB);
               let bestD = 1e9;
               for (const pt of dens) {
-                const xx = chart.timeScale().timeToCoordinate(pt.time as any);
+                const xx = timeToXPixel(chart, pt.time, barCandlesB);
                 const yy = ser.priceToCoordinate(pt.value);
                 if (xx == null || yy == null) continue;
                 const d = Math.hypot(px - Number(xx), py - Number(yy));
                 if (d < bestD) bestD = d;
               }
-              if (bestD <= 14) {
+              if (bestD <= 18) {
                 e.preventDefault();
                 e.stopPropagation();
                 // record start for delta translation
