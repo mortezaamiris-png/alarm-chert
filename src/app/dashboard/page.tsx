@@ -4438,7 +4438,7 @@ export default function DashboardPage() {
   /** Diagonal move: pick a handle (A/B) then place it */
   const moveDiagRef = useRef<{
     id: string;
-    phase: "pick" | "drag-a" | "drag-b" | "drag-c";
+    phase: "pick" | "drag-a" | "drag-b" | "drag-c" | "drag-body";
     pointA: { time: number; price: number };
     pointB: { time: number; price: number };
     pointC?: { time: number; price: number };
@@ -7857,6 +7857,11 @@ export default function DashboardPage() {
   }, []);
 
   const renderAllLinesAndAlarms = useCallback(() => {
+    // While user is mid body-drag, only keep existing series — full rebuild makes lines vanish
+    if (bodyDragRef.current) {
+      return;
+    }
+
     const series = seriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
@@ -10823,7 +10828,8 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
         // No active move → never leave ghost circles on chart
-        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c")) {
+        // drag-body must keep hollow endpoints visible while moving the whole tool
+        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c" && md.phase !== "drag-body")) {
           if (elA0) elA0.style.display = "none";
           if (elB0) elB0.style.display = "none";
           if (elC0) elC0.style.display = "none";
@@ -16513,12 +16519,18 @@ priced.sort((a, b) => a.price - b.price);
           orig,
         };
 
-        // Enter move mode + select so handles appear for multi-point tools
-        setMode("move");
+        // Prefer refs during drag so renderAll (depends on movingId) does not wipe series
         modeRef.current = "move";
-        setMovingId(hit.id);
         movingIdRef.current = hit.id;
-        setMovingType(hit.kind);
+        if (String(movingIdRef.current) !== String(movingId) || mode !== "move") {
+          // selection changed — update state (one rebuild ok)
+          setMode("move");
+          setMovingId(hit.id);
+          setMovingType(hit.kind);
+        } else {
+          // already selected — keep state, no re-render
+          setMovingType(hit.kind);
+        }
         if (hit.type === "curve" && orig.ctrls?.length >= 3) {
           (moveDiagRef as any).current = {
             id: hit.id, phase: "drag-body", isCurve: true, isCurveBody: true,
@@ -16676,6 +16688,38 @@ priced.sort((a, b) => a.price - b.price);
                   }
                   pi++;
                 }
+                // Update trend line series so A→B (and B→C) move with the body
+                try {
+                  const barSec = intervalToSeconds(String(intervalRef.current));
+                  const extras: any[] = (held as any).series || [];
+                  if (extras[0] && typeof extras[0].setData === "function") {
+                    extras[0].setData(denseDiagPoints(Number(t1), Number(t2), Number(p1), Number(p2), barSec));
+                  }
+                  if (t3 != null && p3 != null && extras[1] && typeof extras[1].setData === "function") {
+                    extras[1].setData(denseDiagPoints(Number(t2), Number(t3), Number(p2), Number(p3), barSec));
+                  }
+                } catch {}
+                // Shift fib background bands with price delta
+                try {
+                  const host = vlineOverlayRef.current;
+                  const ser2 = seriesRef.current;
+                  if (host && ser2) {
+                    host.querySelectorAll(`[data-fib-id="${bd.id}"]`).forEach((el) => {
+                      try {
+                        const lo = Number((el as HTMLElement).dataset.fibLo) + dP;
+                        const hi = Number((el as HTMLElement).dataset.fibHi) + dP;
+                        const y1 = ser2.priceToCoordinate(hi);
+                        const y2 = ser2.priceToCoordinate(lo);
+                        if (y1 != null && y2 != null) {
+                          (el as HTMLElement).style.top = `${Math.min(Number(y1), Number(y2))}px`;
+                          (el as HTMLElement).style.height = `${Math.max(1, Math.abs(Number(y2) - Number(y1)))}px`;
+                          (el as HTMLElement).dataset.fibLo = String(lo);
+                          (el as HTMLElement).dataset.fibHi = String(hi);
+                        }
+                      } catch {}
+                    });
+                  }
+                } catch {}
                 const extras: any[] = (held as any).series || [];
                 const barSec = intervalToSeconds(String(intervalRef.current));
                 for (const ser of extras) {
@@ -16944,6 +16988,8 @@ priced.sort((a, b) => a.price - b.price);
         const bd = bodyDragRef.current;
         if (!bd) return;
         bodyDragRef.current = null;
+        // Rebuild once after drag so fib/diag settle solid (guard no longer blocks)
+        try { setTimeout(() => renderAllLinesAndAlarmsRef.current?.(), 0); } catch {}
         // Prevent the same pointer-up/click from teleporting the line via subscribeClick
         clickLockRef.current = true;
         setTimeout(() => { clickLockRef.current = false; }, 350);
@@ -17980,7 +18026,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           const drawing =
             mNow === "vline" || mNow === "draw" || mNow === "ray" || mNow === "diag" ||
             mNow === "alarm" || mNow === "alarm-ray" || mNow === "alarm-diag" ||
-            mNow === "curve" || mNow === "channel" || mNow === "path";
+            mNow === "curve" || mNow === "channel" || mNow === "path" ||
+            mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz" || mNow === "fib-tbt" ||
+            mNow === "rect" || mNow === "arrow" || mNow === "avp" || mNow === "avwap" ||
+            mNow === "frvp" || mNow === "dpr" || mNow === "long-pos" || mNow === "short-pos" ||
+            mNow === "brush" || mNow === "callout" || mNow === "measure";
           if (drawing) {
             clickLockRef.current = false;
           } else if (!(mNow === "move" && md0 && md0.phase === "pick")) {
@@ -20528,26 +20578,34 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setDiagStart({ time: t, price: fp });
             fibPreviewCacheRef.current = null; // reload levels
             clickLockRef.current = false;
-            // hollow point so user sees where first anchor is
+            // hollow point so user sees where first anchor is — first click always sticks
             try {
               const elA = handleAElRef.current;
               if (elA) {
-                const x = chart.timeScale().timeToCoordinate(t as any);
-                const y = series.priceToCoordinate(fp);
+                let x = chart.timeScale().timeToCoordinate(t as any);
+                let y = series.priceToCoordinate(fp);
+                // fallback to click pixel if time/price coord fails
+                if ((x == null || y == null) && param?.point) {
+                  x = Number(param.point.x);
+                  y = Number(param.point.y);
+                }
                 if (x != null && y != null) {
                   elA.style.display = "block";
+                  elA.style.visibility = "visible";
+                  elA.style.opacity = "1";
                   elA.style.left = `${x}px`;
                   elA.style.top = `${y}px`;
                   elA.style.borderColor = "#f97316";
-                  elA.style.width = "12px";
-                  elA.style.height = "12px";
+                  elA.style.borderWidth = "2px";
+                  elA.style.width = "22px";
+                  elA.style.height = "22px";
                   elA.style.transition = "none";
-                  elA.style.opacity = "1";
+                  elA.style.zIndex = "80";
                 }
               }
               if (handleBElRef.current) handleBElRef.current.style.display = "none";
             } catch {}
-            setStatusMsg("Fib: move, then tap second point");
+            setStatusMsg("Fib: point A set — tap point B");
             return;
           }
           clickLockRef.current = true;
@@ -24555,6 +24613,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       diagStartRef.current = null;
                       setMode("fib");
                       modeRef.current = "fib";
+                      try { clickLockRef.current = false; } catch {}
+                      try { diagStartRef.current = null; setDiagStart(null); } catch {}
                       setStatusMsg("Fib Retracement: tap point A, then B");
                     }}
                   >
@@ -24578,6 +24638,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       diagStartRef.current = null;
                       setMode("fib-ext");
                       modeRef.current = "fib-ext";
+                      try { clickLockRef.current = false; } catch {}
+                      try { diagStartRef.current = null; setDiagStart(null); fibPoint3Ref.current = null; } catch {}
                       setStatusMsg("Fib Extension: tap A, then B, then C");
                     }}
                   >
