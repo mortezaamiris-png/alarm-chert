@@ -10780,6 +10780,38 @@ priced.sort((a, b) => a.price - b.price);
                 poly.style.pointerEvents = "none";
                 svg.appendChild(poly);
                 wrap.appendChild(svg);
+                // Note at start of stroke
+                try {
+                  const txt = userFacingNote(String(l.note || ""));
+                  if (txt && coords.length >= 1) {
+                    const [sx, sy] = coords[0].split(",").map(Number);
+                    if (Number.isFinite(sx) && Number.isFinite(sy)) {
+                      const lab = document.createElement("div");
+                      lab.setAttribute("data-brush-note", String(l.id));
+                      lab.textContent = txt;
+                      lab.style.cssText = [
+                        "position:absolute",
+                        `left:${sx + 8}px`,
+                        `top:${sy - 6}px`,
+                        "transform:translateY(-100%)",
+                        "pointer-events:none",
+                        "z-index:12",
+                        "font-size:11px",
+                        "font-weight:600",
+                        "color:#e5e7eb",
+                        "background:rgba(15,23,42,0.85)",
+                        "border:1px solid rgba(148,163,184,0.35)",
+                        "border-radius:4px",
+                        "padding:1px 6px",
+                        "white-space:nowrap",
+                        "max-width:180px",
+                        "overflow:hidden",
+                        "text-overflow:ellipsis",
+                      ].join(";");
+                      wrap.appendChild(lab);
+                    }
+                  }
+                } catch {}
                 host.appendChild(wrap);
                 chartLinesRef.current.set(l.id, { __brushDom: true } as any);
               }
@@ -13437,13 +13469,32 @@ priced.sort((a, b) => a.price - b.price);
       if (coords.length < 2) return;
       wrap.setAttribute("data-brush-pts", pts.map((p) => `${p.time},${p.price}`).join("|"));
       wrap.querySelectorAll("polyline").forEach((pl) => pl.setAttribute("points", coords.join(" ")));
+      try {
+        const lab = wrap.querySelector("[data-brush-note]") as HTMLElement | null;
+        if (lab) {
+          const [sx, sy] = coords[0].split(",").map(Number);
+          if (Number.isFinite(sx) && Number.isFinite(sy)) {
+            lab.style.left = `${sx + 8}px`;
+            lab.style.top = `${sy - 6}px`;
+          }
+        }
+      } catch {}
     };
 
     const onDown = (ev: PointerEvent) => {
       if (ev.button != null && ev.button !== 0) return;
       if ((ev.target as HTMLElement)?.closest?.("[data-menu],[data-move-bar],[data-note-edit],[data-brush-toolbar],[data-rect-toolbar]")) return;
       const hit = hitBrushAt(ev.clientX, ev.clientY);
-      if (!hit) return;
+      if (!hit) {
+        // click elsewhere → hide brush toolbar
+        try {
+          setSelectedBrushId(null);
+          setBrushStyleOpen(false);
+          setBrushColorOpen(false);
+          setMoveNoteOpen(false);
+        } catch {}
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
       selectedRectIdRef.current = null;
@@ -13508,6 +13559,13 @@ priced.sort((a, b) => a.price - b.price);
         }
       } catch {}
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      // after move → hide toolbar
+      try {
+        setSelectedBrushId(null);
+        setBrushStyleOpen(false);
+        setBrushColorOpen(false);
+        setMoveNoteOpen(false);
+      } catch {}
     };
 
     host.addEventListener("pointerdown", onDown, true);
@@ -26530,13 +26588,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <button key={c} type="button"
                             className={`w-6 h-6 rounded-md border ${String(col).toLowerCase()===c.toLowerCase()?"border-orange-400 ring-1 ring-orange-400/40":"border-white/10"}`}
                             style={{ background: c }}
-                            onClick={() => { if (!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, c); }}
+                            onClick={() => { if (!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, c); setBrushColorOpen(false); setSelectedBrushId(null); }}
                           />
                         ))}
                       </div>
                       <label className="flex items-center gap-1.5 text-[10px] text-gray-300 cursor-pointer">
                         <span className="relative w-6 h-6 rounded-md overflow-hidden border border-white/20 shrink-0">
-                          <input type="color" value={col} onChange={(e)=>{ if(!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, e.target.value); }} className="absolute -top-1 -left-1 w-9 h-9 cursor-pointer border-0 p-0"/>
+                          <input type="color" value={col} onChange={(e)=>{ if(!selectedBrushId) return; pushUndo(); void updateLineColor(selectedBrushId, e.target.value); setBrushColorOpen(false); setSelectedBrushId(null); }} className="absolute -top-1 -left-1 w-9 h-9 cursor-pointer border-0 p-0"/>
                         </span>
                         Custom
                       </label>
@@ -26570,8 +26628,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); void saveNote(); setMoveNoteOpen(false);} if(e.key==="Escape"){ setMoveNoteOpen(false); setEditingNoteId(null);} }}
                         placeholder="Note…" className="w-full bg-gray-800 border border-gray-600 rounded px-1.5 py-1 text-[11px] text-white outline-none focus:border-orange-400" autoFocus />
                       <div className="flex gap-1">
-                        <button type="button" className="flex-1 text-[11px] py-1 rounded font-semibold bg-orange-500 text-black" onClick={()=>{ void saveNote(); setMoveNoteOpen(false); }}>Save</button>
-                        <button type="button" className="px-1.5 text-[11px] py-1 rounded bg-gray-800 text-gray-300" onClick={()=>{ setMoveNoteOpen(false); setEditingNoteId(null); }}>✕</button>
+                        <button type="button" className="flex-1 text-[11px] py-1 rounded font-semibold bg-orange-500 text-black" onClick={()=>{ void saveNote(); setMoveNoteOpen(false); setSelectedBrushId(null); setBrushStyleOpen(false); setBrushColorOpen(false); try { renderAllLinesAndAlarmsRef.current?.(); } catch {} }}>Save</button>
+                        <button type="button" className="px-1.5 text-[11px] py-1 rounded bg-gray-800 text-gray-300" onClick={()=>{ setMoveNoteOpen(false); setEditingNoteId(null); setSelectedBrushId(null); }}>✕</button>
                       </div>
                     </div>
                   )}
@@ -26597,6 +26655,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               try{ const lr=(linesRef.current||[]).find((x)=>String(x.id)===String(id)); if(lr) lr.width=w; }catch{}
                               try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").update({width:w}).eq("id",id);}catch{}
                               try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
+                              setBrushStyleOpen(false); setSelectedBrushId(null);
                             }}
                           >{w}</button>
                         ))}
@@ -26616,7 +26675,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                               try{ const lr=(linesRef.current||[]).find((x)=>String(x.id)===String(id)); if(lr){ lr.dash=st.id; (lr as any).style=st.id; } }catch{}
                               try{ if(!String(id).startsWith("local-")) await supabase.from("chart_lines").update({dash:st.id}).eq("id",id);}catch{}
                               try{ renderAllLinesAndAlarmsRef.current?.(); }catch{}
-                              setBrushStyleOpen(false);
+                              setBrushStyleOpen(false); setSelectedBrushId(null);
                             }}
                           >{st.icon}</button>
                         ))}
