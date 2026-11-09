@@ -10043,16 +10043,15 @@ priced.sort((a, b) => a.price - b.price);
               if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
             }
           }
-          // Curve stored as 3 controls → expand for series + SVG free shape
+          // Curve: SVG-only drawing (3 control points). Never inject densified times into LWC
+          // time scale — that stretches/gaps candles. Keep a transparent 2-point series only
+          // so the line stays registered in chartLinesRef.
           if (isCurve && pairs.length >= 3) {
             const ctrls3 = [
               { time: pairs[0].time, price: pairs[0].value },
               { time: pairs[1].time, price: pairs[1].value },
               { time: pairs[2].time, price: pairs[2].value },
             ];
-            const barTs = (candlesRef.current || []).map((c: any) => Number(c.time)).filter((t: number) => t > 0);
-            pairs = expandCurveControls(ctrls3[0], ctrls3[1], ctrls3[2], 64, barTs);
-            // SVG overlay draws the true free curve (allows mid past ends / loops)
             try {
               const host = vlineOverlayRef.current;
               const serSvg = seriesRef.current;
@@ -10072,19 +10071,12 @@ priced.sort((a, b) => a.price - b.price);
                   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
                   path.setAttribute("d", d);
                   path.setAttribute("fill", "none");
-                  // If mid is outside [start,end] time (loop/backtrack), SVG must paint; else LWC densified series paints
-                  const tMin = Math.min(ctrls3[0].time, ctrls3[2].time);
-                  const tMax = Math.max(ctrls3[0].time, ctrls3[2].time);
-                  const isLoop = ctrls3[1].time < tMin - 1 || ctrls3[1].time > tMax + 1;
-                  path.setAttribute("stroke", isLoop ? (color || "#2962FF") : "transparent");
+                  path.setAttribute("stroke", color || "#2962FF");
                   path.setAttribute("stroke-width", String(Math.max(1, width)));
                   path.setAttribute("stroke-linecap", "round");
                   path.setAttribute("stroke-linejoin", "round");
-                  if (isLoop) {
-                    if (style === LineStyle.LargeDashed) path.setAttribute("stroke-dasharray", "6 4");
-                    else if (style === LineStyle.SparseDotted) path.setAttribute("stroke-dasharray", "2 3");
-                  }
-                  // hit-target: wide invisible stroke so user can grab anywhere on the curve
+                  if (style === LineStyle.LargeDashed) path.setAttribute("stroke-dasharray", "6 4");
+                  else if (style === LineStyle.SparseDotted) path.setAttribute("stroke-dasharray", "2 3");
                   const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
                   hit.setAttribute("d", d);
                   hit.setAttribute("fill", "none");
@@ -10095,12 +10087,10 @@ priced.sort((a, b) => a.price - b.price);
                   hit.style.pointerEvents = "stroke";
                   hit.style.cursor = "move";
                   hit.setAttribute("data-curve-hit", String(l.id));
-                  svg.appendChild(hit);
                   path.style.pointerEvents = "none";
+                  svg.appendChild(hit);
                   svg.appendChild(path);
                   wrap.style.pointerEvents = "none";
-                  // allow hit path to receive events
-                  hit.style.pointerEvents = "stroke";
                   wrap.appendChild(svg);
                   host.appendChild(wrap);
                   // Note under curve midpoint
@@ -10126,12 +10116,43 @@ priced.sort((a, b) => a.price - b.price);
                 }
               }
             } catch {}
+            // Transparent 2-point series on REAL bar times only — never densify into time scale
+            try {
+              const bars = candlesRef.current || [];
+              const snap = (tt: number) => {
+                if (!bars.length) return tt;
+                let best = Number(bars[0].time), bestD = Math.abs(best - tt);
+                for (const c of bars) {
+                  const d = Math.abs(Number(c.time) - tt);
+                  if (d < bestD) { best = Number(c.time); bestD = d; }
+                }
+                return best;
+              };
+              const t0 = snap(ctrls3[0].time);
+              const t1 = snap(ctrls3[2].time);
+              const ls: any = chart.addLineSeries({
+                color: "rgba(0,0,0,0)",
+                lineWidth: 1,
+                lineStyle: LineStyle.Solid,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                pointMarkersVisible: false as any,
+                title: "",
+                autoscaleInfoProvider: () => null as any,
+              });
+              const ta = Math.min(t0, t1);
+              const tb = Math.max(t0, t1) === ta ? ta + 1 : Math.max(t0, t1);
+              ls.setData([
+                { time: ta as any, value: ctrls3[0].price },
+                { time: tb as any, value: ctrls3[2].price },
+              ]);
+              try { ls.setMarkers([]); } catch {}
+              chartLinesRef.current.set(l.id, ls);
+            } catch {}
           } else if (isCurve && pairs.length > 3) {
-            // legacy dense: keep
-          }
-          if (pairs.length >= 2) {
-            // Curve: native densified series stays locked to candles on pan (primary draw).
-            // SVG overlay still drawn above for free-shape / hit when mid creates loops.
+            // legacy dense path ignored for time-scale safety
+          } else if (!isCurve && pairs.length >= 2) {
             const ls: any = chart.addLineSeries({
               color: color || "#2962FF",
               lineWidth: width || 2,
@@ -10142,26 +10163,10 @@ priced.sort((a, b) => a.price - b.price);
               title: "",
               autoscaleInfoProvider: () => null as any,
             });
-            // densified mono samples from expandCurveControls (already in pairs for curves)
-            const data = pairs
-              .filter((p) => p.time > 0 && Number.isFinite(p.value))
-              .map((p) => ({ time: p.time as any, value: p.value }));
-            // ensure strictly increasing times for LWC
-            const mono: { time: any; value: number }[] = [];
-            for (const p of data) {
-              if (!mono.length || Number(p.time) > Number(mono[mono.length - 1].time)) mono.push(p);
-              else if (Number(p.time) === Number(mono[mono.length - 1].time)) mono[mono.length - 1].value = p.value;
-            }
-            if (mono.length >= 2) ls.setData(mono);
-            else if (data.length >= 1) {
-              const a = data[0], b = data[data.length - 1];
-              ls.setData([
-                { time: a.time as any, value: a.value },
-                { time: (Number(a.time) === Number(b.time) ? Number(a.time) + 1 : b.time) as any, value: b.value },
-              ]);
-            }
+            ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             chartLinesRef.current.set(l.id, ls);
           }
+
           // Visible control handles when this curve/path is in move mode (3 for curve)
           try {
             const isMoving = movingId === l.id && movingType === "line";
