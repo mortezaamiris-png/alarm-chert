@@ -1310,7 +1310,7 @@ function isDiagonalLine(l: {
   end_price?: number | null;
   note?: string | null;
 }) {
-  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:"))) {
+  if (typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:") || l.note.startsWith("__fibtz:") || l.note.startsWith("__fibtbt:") || l.note.startsWith("__long:") || l.note.startsWith("__short:") || l.note.startsWith("__rect:") || l.note.startsWith("__path:") || l.note.startsWith("__brush:") || l.note.startsWith("__curve:") || l.note.startsWith("__avp:") || l.note.startsWith("__avwap:") || l.note.startsWith("__frvp:") || l.note.startsWith("__channel:") || l.note.startsWith("__dpr:") || l.note.startsWith("__arrow"))) {
     return false;
   }
   if (
@@ -8312,8 +8312,42 @@ export default function DashboardPage() {
           });
           host.querySelectorAll("[data-channel-label]").forEach((lab) => {
             const el = lab as HTMLElement;
-            const tt = Number(el.getAttribute("data-t"));
-            const pp = Number(el.getAttribute("data-p"));
+            const id = el.getAttribute("data-channel-id");
+            let tt = Number(el.getAttribute("data-t"));
+            let pp = Number(el.getAttribute("data-p"));
+            // Prefer live channel geometry while dragging
+            try {
+              const md = moveDiagRef.current as any;
+              if (md && md.isChannel && String(md.id) === String(id) && md.pointA && md.pointB) {
+                const t1 = Number(md.pointA.time), p1 = Number(md.pointA.price);
+                const t2 = Number(md.pointB.time), p2 = Number(md.pointB.price);
+                const off = Number(md.channelOffset) || 0;
+                tt = (t1 + t2) / 2;
+                const priceAt = (t: number, level: number) => {
+                  const span = (t2 - t1) || 1;
+                  const r = (t - t1) / span;
+                  return p1 + r * (p2 - p1) + off * level;
+                };
+                pp = Math.min(priceAt(tt, 0), priceAt(tt, 1));
+                el.setAttribute("data-t", String(tt));
+                el.setAttribute("data-p", String(pp));
+              } else {
+                const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+                if (ln && typeof ln.note === "string") {
+                  const cfg = parseChannelNote(ln.note);
+                  if (cfg) {
+                    tt = (cfg.t1 + cfg.t2) / 2;
+                    const span = (cfg.t2 - cfg.t1) || 1;
+                    const r = (tt - cfg.t1) / span;
+                    const p0 = cfg.p1 + r * (cfg.p2 - cfg.p1);
+                    const p1v = p0 + cfg.offset;
+                    pp = Math.min(p0, p1v);
+                    el.setAttribute("data-t", String(tt));
+                    el.setAttribute("data-p", String(pp));
+                  }
+                }
+              }
+            } catch {}
             const x = chart2.timeScale().timeToCoordinate(tt as any);
             const y = ser.priceToCoordinate(pp);
             if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) {
@@ -8346,9 +8380,18 @@ export default function DashboardPage() {
           host.querySelectorAll("[data-curve-note]").forEach((lab) => {
             const el = lab as HTMLElement;
             const id = el.getAttribute("data-curve-note");
-            const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
-            if (!ln) { el.remove(); return; }
-            const ctrls = parseCurveControls(String(ln.note || "")) || [];
+            let ctrls: { time: number; price: number }[] = [];
+            try {
+              const md = moveDiagRef.current as any;
+              if (md && md.isCurve && String(md.id) === String(id) && Array.isArray(md.curveCtrls) && md.curveCtrls.length >= 2) {
+                ctrls = md.curveCtrls;
+              }
+            } catch {}
+            if (!ctrls.length) {
+              const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+              if (!ln) { el.remove(); return; }
+              ctrls = parseCurveControls(String(ln.note || "")) || [];
+            }
             if (ctrls.length < 2) { el.remove(); return; }
             const mid = ctrls[Math.min(1, ctrls.length - 1)];
             const x = chart2.timeScale().timeToCoordinate(mid.time as any);
@@ -9785,8 +9828,14 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
         } else if (typeof l.note === "string" && (l.note.startsWith("__arrow_up__") || l.note.startsWith("__arrow_down__") || l.note.startsWith("__arrow_marker__") || l.note === "__arrow__")) {
+          // Always a single point mark — never a segment/ray
           const t = Number(l.start_time || 0);
           const arrowKind = l.note.startsWith("__arrow_up__") ? "up" : l.note.startsWith("__arrow_down__") ? "down" : "mark";
+          // heal drifted geometry
+          try {
+            if (l.end_time != null && Number(l.end_time) !== t) (l as any).end_time = t;
+            if (l.end_price != null && Number(l.end_price) !== Number(l.price)) (l as any).end_price = Number(l.price);
+          } catch {}
           if (t > 0) {
             const baseCol =
               arrowKind === "up"
@@ -10278,30 +10327,6 @@ priced.sort((a, b) => a.price - b.price);
                         } catch {}
                         // hide LWC series lines (SVG draws them); keep series for geometry/hit only
                         try { seriesList.forEach((ss: any) => ss.applyOptions?.({ color: "rgba(0,0,0,0)" })); } catch {}
-                        // Channel note text under the lower boundary (midpoint)
-                        try {
-                          if (cfg.text && String(cfg.text).trim()) {
-                            const midT = (Number(ta) + Number(tb)) / 2;
-                            const midP = Math.min(Number(p1), Number(p2), Number(p1) + Number(off), Number(p2) + Number(off));
-                            const x = chart2.timeScale().timeToCoordinate(midT as any);
-                            const y = seriesRef.current?.priceToCoordinate(midP);
-                            if (x != null && y != null) {
-                              host.querySelectorAll(`[data-channel-label][data-channel-id="${l.id}"]`).forEach((el) => el.remove());
-                              const lab = document.createElement("div");
-                              lab.setAttribute("data-channel-label", "1");
-                              lab.setAttribute("data-channel-id", String(l.id));
-                              lab.setAttribute("data-t", String(midT));
-                              lab.setAttribute("data-p", String(midP));
-                              lab.textContent = String(cfg.text).trim();
-                              const tsz = Math.max(10, Number(cfg.textSize) || 14);
-                              lab.style.cssText =
-                                `position:absolute;left:${Number(x)}px;top:${Number(y) + 10}px;transform:translateX(-50%);` +
-                                `font-size:${tsz}px;font-weight:600;color:${cfg.color || color || "#d1d5db"};` +
-                                `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
-                              host.appendChild(lab);
-                            }
-                          }
-                        } catch {}
                         // initial place
                         try {
                           const ser = seriesRef.current;
@@ -10333,6 +10358,7 @@ priced.sort((a, b) => a.price - b.price);
                       const x = chart2.timeScale().timeToCoordinate(tMid as any);
                       const yBot = seriesRef.current?.priceToCoordinate(pBot);
                       if (host && x != null && yBot != null) {
+                        host.querySelectorAll(`[data-channel-label][data-channel-id="${l.id}"]`).forEach((el) => el.remove());
                         const lab = document.createElement("div");
                         lab.setAttribute("data-channel-id", String(l.id));
                         lab.setAttribute("data-channel-label", "1");
@@ -16322,6 +16348,20 @@ priced.sort((a, b) => a.price - b.price);
                 (el as HTMLElement).style.top = `${yy}px`;
               }
             });
+            // Keep curve note glued to mid control while dragging
+            if (md.isCurve && ctrls.length >= 2) {
+              const mid = ctrls[Math.min(1, ctrls.length - 1)];
+              const xm = timeToXPixel(chart, mid.time, barCandlesLive);
+              const ym = ser.priceToCoordinate(mid.price);
+              if (xm != null && ym != null) {
+                host.querySelectorAll(`[data-curve-note="${md.id}"]`).forEach((el) => {
+                  (el as HTMLElement).style.left = `${xm}px`;
+                  (el as HTMLElement).style.top = `${Number(ym) + 12}px`;
+                  (el as HTMLElement).style.transform = "translateX(-50%)";
+                  (el as HTMLElement).style.visibility = "visible";
+                });
+              }
+            }
           }
         } catch {
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
@@ -16343,9 +16383,17 @@ priced.sort((a, b) => a.price - b.price);
         try {
           const ctrls = md.isCurve ? (md.curveCtrls || []) : (md.pathCtrls || []);
           if (!ctrls.length) return;
-          const note = md.isCurve
+          let note = md.isCurve
             ? `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|")
             : `__path:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+          // Keep user text attached to curve
+          if (md.isCurve) {
+            try {
+              const prev = (linesRef.current || []).find((x: any) => String(x.id) === String(md.id));
+              const t = parseCurveText(prev?.note);
+              if (t) note = `${note}|txt=${encodeURIComponent(t)}`;
+            } catch {}
+          }
           setLines((prev) => prev.map((x) =>
             String(x.id) === String(md.id)
               ? {
@@ -17000,7 +17048,50 @@ priced.sort((a, b) => a.price - b.price);
             } catch {}
             if (savedR) { try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {} }
             return;
-          } else if (bd.type === "ray" || bd.type === "arrow") {
+          } else if (bd.type === "arrow") {
+            // Arrow-up/down/marker: pure point — never draw a horizontal ray
+            const newP = bd.orig.p + dP;
+            const newT = bd.orig.t != null ? bd.orig.t + dT : null;
+            const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+            if (cur) {
+              cur.price = newP;
+              if (newT != null) {
+                cur.start_time = newT;
+                cur.end_time = newT;
+                cur.end_price = newP;
+              }
+            }
+            (bd as any)._liveP = newP;
+            (bd as any)._liveT = newT;
+            try {
+              const ls = chartLinesRef.current.get(bd.id);
+              if (ls && typeof (ls as any).setData === "function" && newT != null) {
+                (ls as any).setData([{ time: newT as any, value: newP }]);
+                try {
+                  const n = String(cur?.note || "");
+                  const shape = n.startsWith("__arrow_up__") ? "arrowUp" : n.startsWith("__arrow_down__") ? "arrowDown" : "circle";
+                  (ls as any).setMarkers?.([{ time: newT as any, position: "inBar", color: cur?.color || "#22c55e", shape, size: 2 }]);
+                } catch {}
+              }
+              // move note + ring overlays with the mark
+              const host = vlineOverlayRef.current;
+              if (host && newT != null) {
+                const x = chart.timeScale().timeToCoordinate(newT as any);
+                const y = ser.priceToCoordinate(newP);
+                if (x != null && y != null) {
+                  host.querySelectorAll(`[data-arrow-note="${bd.id}"]`).forEach((el) => {
+                    const up = String(cur?.note || "").startsWith("__arrow_up__");
+                    (el as HTMLElement).style.left = `${Number(x)}px`;
+                    (el as HTMLElement).style.top = `${Number(y) + (up ? -28 : 18)}px`;
+                  });
+                  host.querySelectorAll(`[data-arrow-ring="${bd.id}"]`).forEach((el) => {
+                    (el as HTMLElement).style.left = `${Number(x)}px`;
+                    (el as HTMLElement).style.top = `${Number(y)}px`;
+                  });
+                }
+              }
+            } catch {}
+          } else if (bd.type === "ray") {
             const newP = bd.orig.p + dP;
             const newT = bd.orig.t != null ? bd.orig.t + dT : null;
             const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
@@ -17034,7 +17125,6 @@ priced.sort((a, b) => a.price - b.price);
             }
             (bd as any)._liveP = newP;
             (bd as any)._liveT = newT;
-            // Update ray series in place (not just a temp H price line)
             try {
               const rayLs =
                 chartLinesRef.current.get(`alarm-ray-${bd.id}`) ||
@@ -17107,7 +17197,12 @@ priced.sort((a, b) => a.price - b.price);
             const md = moveDiagRef.current as any;
             const ctrls = md?.curveCtrls || bd.orig.ctrls;
             if (ctrls?.length >= 3) {
-              const note = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              let note = `__curve:` + ctrls.map((p: any) => `${p.time},${p.price}`).join("|");
+              try {
+                const prev = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                const t = parseCurveText(prev?.note);
+                if (t) note = `${note}|txt=${encodeURIComponent(t)}`;
+              } catch {}
               const patch: any = {
                 note,
                 price: ctrls[0].price,
@@ -17358,14 +17453,38 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch (e) { console.warn("alarm v move", e); }
             }
-          } else if (bd.type === "ray" || bd.type === "arrow") {
+          } else if (bd.type === "arrow") {
+            const newP = (bd as any)._liveP ?? bd.orig.p;
+            const newT = (bd as any)._liveT ?? bd.orig.t;
+            if (bd.kind === "line") {
+              const cur0 = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+              const noteKeep = cur0?.note || bd.orig?.note || null;
+              const patch: any = {
+                price: newP,
+                start_time: newT,
+                end_time: newT,
+                end_price: newP,
+              };
+              if (noteKeep) patch.note = noteKeep;
+              try {
+                if (cur0) {
+                  cur0.price = newP;
+                  if (newT != null) { cur0.start_time = newT; cur0.end_time = newT; cur0.end_price = newP; }
+                }
+              } catch {}
+              setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
+              if (!String(bd.id).startsWith("local-")) {
+                try { await supabase.from("chart_lines").update(patch).eq("id", bd.id); } catch {}
+              }
+            }
+          } else if (bd.type === "ray") {
             const newP = (bd as any)._liveP ?? bd.orig.p;
             const newT = (bd as any)._liveT ?? bd.orig.t;
             if (bd.kind === "line") {
               const patch: any = { price: newP };
               if (newT != null) {
                 patch.start_time = newT;
-                if (bd.type === "ray") patch.note = `__ray:${newT}`;
+                patch.note = `__ray:${newT}`;
               }
               setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
               if (!String(bd.id).startsWith("local-")) {
