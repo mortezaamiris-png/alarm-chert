@@ -3061,15 +3061,15 @@ function curveSvgPath(
     const x0 = timeToXPixel(chart, a.time, candles);
     const x1 = timeToXPixel(chart, b.time, candles);
     const x2 = timeToXPixel(chart, c.time, candles);
-    const y0 = ser.priceToCoordinate(a.price);
-    const y1 = ser.priceToCoordinate(b.price);
-    const y2 = ser.priceToCoordinate(c.price);
+    const y0 = ser?.priceToCoordinate?.(a.price);
+    const y1 = ser?.priceToCoordinate?.(b.price);
+    const y2 = ser?.priceToCoordinate?.(c.price);
     if (x0 == null || x1 == null || x2 == null || y0 == null || y1 == null || y2 == null) return null;
     // Quadratic Bezier control so curve passes through mid at t=0.5:
     // P(0.5)=mid => Ctrl = 2*mid - (start+end)/2
     const cx = 2 * Number(x1) - (Number(x0) + Number(x2)) / 2;
     const cy = 2 * Number(y1) - (Number(y0) + Number(y2)) / 2;
-    return `M ${Number(x0).toFixed(1)} ${Number(y0).toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${Number(x2).toFixed(1)} ${Number(y2).toFixed(1)}`;
+    return `M ${Number(x0).toFixed(2)} ${Number(y0).toFixed(2)} Q ${cx.toFixed(2)} ${cy.toFixed(2)} ${Number(x2).toFixed(2)} ${Number(y2).toFixed(2)}`;
   } catch {
     return null;
   }
@@ -8138,41 +8138,7 @@ export default function DashboardPage() {
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-note]").forEach((el) => el.remove());
-      if (!chart2 || !ser || hideLines) return;
-      try {
-        const symU = (symbolRef.current || "").toUpperCase();
-        const all = [
-          ...((linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU).map((l: any) => ({ kind: "line" as const, obj: l }))),
-          ...((alarmsRef.current || []).filter((a: any) => String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered).map((a: any) => ({ kind: "alarm" as const, obj: a }))),
-        ];
-        for (const { obj: o } of all) {
-          const n = typeof o.note === "string" ? o.note : "";
-          const isRay =
-            n.startsWith("__ray:") ||
-            (o.start_time != null && (o.end_time == null || o.end_price == null) && !isDiagonalLine(o as any) && !n.startsWith("__arrow") && !n.startsWith("__vline") && n !== "__vline__");
-          if (!isRay) continue;
-          const txt = userFacingNote(o.note);
-          if (!txt) continue;
-          let t0 = o.start_time != null ? Number(o.start_time) : 0;
-          if ((!t0 || Number.isNaN(t0)) && n.startsWith("__ray:")) {
-            t0 = Number(n.replace(/^__ray:/, "").split("|")[0].split("||")[0]);
-          }
-          if (!t0 || Number.isNaN(t0)) continue;
-          const x = chart2.timeScale().timeToCoordinate(t0 as any);
-          const y = ser.priceToCoordinate(Number(o.price));
-          if (x == null || y == null) continue;
-          const lab = document.createElement("div");
-          lab.setAttribute("data-ray-note", String(o.id));
-          lab.setAttribute("data-t", String(t0));
-          lab.setAttribute("data-p", String(o.price));
-          lab.textContent = txt;
-          lab.style.cssText =
-            `position:absolute;left:${Number(x) + 8}px;top:${Number(y) + 10}px;` +
-            `font-size:11px;font-weight:600;color:${o.color || "#d1d5db"};` +
-            `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
-          host.appendChild(lab);
-        }
-      } catch {}
+      // Ray notes live on the price-axis series title (same as full H-lines)
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -8655,9 +8621,15 @@ export default function DashboardPage() {
         // Never label special drawings as MOVING on the price axis (causes a phantom H-line look)
         // Diagonal / Ray / Arrow: note only under the line + list Note column — NEVER on price-axis tag
         const isDiagTitle = isDiagonalLine(l) || noteStr.startsWith("__diag:") || noteStr.includes("__diag:");
-        const isRayTitle = noteStr.startsWith("__ray:");
+        const isRayGeom = noteStr.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l) && !noteStr.startsWith("__arrow") && !noteStr.startsWith("__vline") && noteStr !== "__vline__");
         const isArrowTitle = noteStr.startsWith("__arrow");
-        const title = (isDiagTitle || isRayTitle || isArrowTitle) ? "" : ((isMoving && !softMove) ? "MOVING" : noteClean);
+        // Ray: show user note on the price-axis tag (same as full H-line). Diag/arrow: never on axis.
+        const rayAxisNote = isRayGeom ? (userFacingNote(l.note) || "") : "";
+        const title = isDiagTitle || isArrowTitle
+          ? ""
+          : isRayGeom
+          ? ((isMoving && !softMove) ? "MOVING" : rayAxisNote)
+          : ((isMoving && !softMove) ? "MOVING" : noteClean);
         const isArrowMark =
           typeof l.note === "string" &&
           (String(l.note||"").startsWith("__arrow_up__") ||
@@ -10100,12 +10072,18 @@ priced.sort((a, b) => a.price - b.price);
                   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
                   path.setAttribute("d", d);
                   path.setAttribute("fill", "none");
-                  path.setAttribute("stroke", color || "#2962FF");
+                  // If mid is outside [start,end] time (loop/backtrack), SVG must paint; else LWC densified series paints
+                  const tMin = Math.min(ctrls3[0].time, ctrls3[2].time);
+                  const tMax = Math.max(ctrls3[0].time, ctrls3[2].time);
+                  const isLoop = ctrls3[1].time < tMin - 1 || ctrls3[1].time > tMax + 1;
+                  path.setAttribute("stroke", isLoop ? (color || "#2962FF") : "transparent");
                   path.setAttribute("stroke-width", String(Math.max(1, width)));
                   path.setAttribute("stroke-linecap", "round");
                   path.setAttribute("stroke-linejoin", "round");
-                  if (style === LineStyle.LargeDashed) path.setAttribute("stroke-dasharray", "6 4");
-                  else if (style === LineStyle.SparseDotted) path.setAttribute("stroke-dasharray", "2 3");
+                  if (isLoop) {
+                    if (style === LineStyle.LargeDashed) path.setAttribute("stroke-dasharray", "6 4");
+                    else if (style === LineStyle.SparseDotted) path.setAttribute("stroke-dasharray", "2 3");
+                  }
                   // hit-target: wide invisible stroke so user can grab anywhere on the curve
                   const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
                   hit.setAttribute("d", d);
@@ -10152,9 +10130,11 @@ priced.sort((a, b) => a.price - b.price);
             // legacy dense: keep
           }
           if (pairs.length >= 2) {
+            // Curve: native densified series stays locked to candles on pan (primary draw).
+            // SVG overlay still drawn above for free-shape / hit when mid creates loops.
             const ls: any = chart.addLineSeries({
-              color: isCurve ? "rgba(0,0,0,0)" : color, // curve visible via SVG only
-              lineWidth: isCurve ? 1 : width,
+              color: color || "#2962FF",
+              lineWidth: width || 2,
               lineStyle: style,
               priceLineVisible: false,
               lastValueVisible: false,
@@ -10162,25 +10142,23 @@ priced.sort((a, b) => a.price - b.price);
               title: "",
               autoscaleInfoProvider: () => null as any,
             });
-            if (isCurve) {
-              // Only 2 real bar times so LWC never stretches candles
-              const bars = candlesRef.current || [];
-              const snap = (tt: number) => {
-                if (!bars.length) return tt;
-                let best = Number(bars[0].time), bestD = Math.abs(best - tt);
-                for (const c of bars) {
-                  const d = Math.abs(Number(c.time) - tt);
-                  if (d < bestD) { best = Number(c.time); bestD = d; }
-                }
-                return best;
-              };
-              const t0 = snap(pairs[0].time), t1 = snap(pairs[pairs.length - 1].time);
+            // densified mono samples from expandCurveControls (already in pairs for curves)
+            const data = pairs
+              .filter((p) => p.time > 0 && Number.isFinite(p.value))
+              .map((p) => ({ time: p.time as any, value: p.value }));
+            // ensure strictly increasing times for LWC
+            const mono: { time: any; value: number }[] = [];
+            for (const p of data) {
+              if (!mono.length || Number(p.time) > Number(mono[mono.length - 1].time)) mono.push(p);
+              else if (Number(p.time) === Number(mono[mono.length - 1].time)) mono[mono.length - 1].value = p.value;
+            }
+            if (mono.length >= 2) ls.setData(mono);
+            else if (data.length >= 1) {
+              const a = data[0], b = data[data.length - 1];
               ls.setData([
-                { time: Math.min(t0, t1) as any, value: pairs[0].value },
-                { time: Math.max(t0, t1) === Math.min(t0, t1) ? ((Math.min(t0, t1) + 1) as any) : (Math.max(t0, t1) as any), value: pairs[pairs.length - 1].value },
+                { time: a.time as any, value: a.value },
+                { time: (Number(a.time) === Number(b.time) ? Number(a.time) + 1 : b.time) as any, value: b.value },
               ]);
-            } else {
-              ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
             }
             chartLinesRef.current.set(l.id, ls);
           }
@@ -10825,31 +10803,7 @@ priced.sort((a, b) => a.price - b.price);
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
               note: rayTxt,
             } as any);
-            // DOM note label under ray origin
-            try {
-              if (rayTxt) {
-                const host = vlineOverlayRef.current;
-                const chartR = chartRef.current;
-                const serR = seriesRef.current;
-                if (host && chartR && serR) {
-                  host.querySelectorAll(`[data-ray-note="${l.id}"]`).forEach((el) => el.remove());
-                  const x = chartR.timeScale().timeToCoordinate(t0 as any);
-                  const y = serR.priceToCoordinate(Number(l.price));
-                  if (x != null && y != null) {
-                    const lab = document.createElement("div");
-                    lab.setAttribute("data-ray-note", String(l.id));
-                    lab.setAttribute("data-t", String(t0));
-                    lab.setAttribute("data-p", String(l.price));
-                    lab.textContent = rayTxt;
-                    lab.style.cssText =
-                      `position:absolute;left:${Number(x) + 8}px;top:${Number(y) + 10}px;` +
-                      `font-size:11px;font-weight:600;color:${color || "#d1d5db"};` +
-                      `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
-                    host.appendChild(lab);
-                  }
-                }
-              }
-            } catch {}
+            // Note is shown on the price-axis tag via series title (same as full H-line)
           }
         } else if (!specialNote) {
           // Plain horizontal only — never for curve/channel/fib/etc.
@@ -11553,8 +11507,9 @@ priced.sort((a, b) => a.price - b.price);
       const hostEl = chartContainerRef.current;
       if (hostEl) {
         hostEl.addEventListener("wheel", scheduleOverlaySync, { passive: true });
-        // pointermove was too heavy with fib bands — throttle via rAF only on actual drag
+        // Continuous overlay sync during pan/drag so curve SVG stays locked to candles
         let __pmRaf = 0;
+        let __pmLoop = 0;
         const onPm = () => {
           if (__pmRaf) return;
           __pmRaf = requestAnimationFrame(() => {
@@ -11562,8 +11517,25 @@ priced.sort((a, b) => a.price - b.price);
             scheduleOverlaySync();
           });
         };
+        const startPmLoop = () => {
+          if (__pmLoop) return;
+          const tick = () => {
+            scheduleOverlaySync();
+            __pmLoop = requestAnimationFrame(tick);
+          };
+          __pmLoop = requestAnimationFrame(tick);
+        };
+        const stopPmLoop = () => {
+          if (__pmLoop) cancelAnimationFrame(__pmLoop);
+          __pmLoop = 0;
+          scheduleOverlaySync();
+        };
         hostEl.addEventListener("pointermove", onPm, { passive: true });
         hostEl.addEventListener("touchmove", onPm, { passive: true });
+        hostEl.addEventListener("pointerdown", startPmLoop, { passive: true });
+        hostEl.addEventListener("pointerup", stopPmLoop, { passive: true });
+        hostEl.addEventListener("pointercancel", stopPmLoop, { passive: true });
+        hostEl.addEventListener("touchend", stopPmLoop, { passive: true });
       }
     } catch {}
 
