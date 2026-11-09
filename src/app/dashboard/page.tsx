@@ -8116,6 +8116,7 @@ export default function DashboardPage() {
       if (!host) return;
       host.querySelectorAll("[data-ray-id]").forEach((el) => el.remove());
       host.querySelectorAll("[data-ray-label]").forEach((el) => el.remove());
+      host.querySelectorAll("[data-ray-note]").forEach((el) => el.remove());
     };
 
     /** Live-sync DOM overlays while user pans/zooms (no React, no flicker) */
@@ -8312,17 +8313,41 @@ export default function DashboardPage() {
               if (poly && pts.length >= 2) poly.setAttribute("points", pts.join(" "));
             } catch {}
           });
-          // Curve SVG free-shape sync on pan/zoom
+          // Curve SVG free-shape sync on pan/zoom — always prefer live note geometry
           host.querySelectorAll("[data-curve-svg]").forEach((wrap) => {
             try {
-              const raw = (wrap as HTMLElement).getAttribute("data-curve-pts");
-              if (!raw) return;
-              const ctrls = JSON.parse(raw) as { time: number; price: number }[];
+              const id = (wrap as HTMLElement).getAttribute("data-curve-svg")
+                || (wrap as HTMLElement).getAttribute("data-curve-id");
+              let ctrls: { time: number; price: number }[] | null = null;
+              // Prefer moveDiag live controls while dragging this curve
+              try {
+                const md = moveDiagRef.current as any;
+                if (md && md.isCurve && String(md.id) === String(id) && Array.isArray(md.curveCtrls) && md.curveCtrls.length >= 3) {
+                  ctrls = md.curveCtrls;
+                }
+              } catch {}
+              if (!ctrls) {
+                const ln = id ? (linesRef.current || []).find((x: any) => String(x.id) === String(id)) : null;
+                if (ln && typeof ln.note === "string" && ln.note.startsWith("__curve:")) {
+                  ctrls = parseCurveControls(ln.note);
+                }
+              }
+              if (!ctrls || ctrls.length < 3) {
+                const raw = (wrap as HTMLElement).getAttribute("data-curve-pts");
+                if (raw) {
+                  try { ctrls = JSON.parse(raw); } catch { ctrls = null; }
+                }
+              }
               if (!ctrls || ctrls.length < 3) return;
+              // keep attribute in sync with source of truth
+              try { (wrap as HTMLElement).setAttribute("data-curve-pts", JSON.stringify(ctrls.slice(0, 3))); } catch {}
               const barCandles = (candlesRef.current || []).map((c: any) => ({ time: Number(c.time) }));
               const d = curveSvgPath(chart2, ser, ctrls[0], ctrls[1], ctrls[2], barCandles);
               const path = wrap.querySelector("path");
               if (path && d) path.setAttribute("d", d);
+              // also update hit path
+              const hit = wrap.querySelector("[data-curve-hit]") as SVGPathElement | null;
+              if (hit && d) hit.setAttribute("d", d);
             } catch {}
           });
           host.querySelectorAll("[data-channel-label]").forEach((lab) => {
@@ -8396,18 +8421,23 @@ export default function DashboardPage() {
             const el = lab as HTMLElement;
             const id = el.getAttribute("data-curve-note");
             let ctrls: { time: number; price: number }[] = [];
+            let txtKeep = el.textContent || "";
             try {
               const md = moveDiagRef.current as any;
-              if (md && md.isCurve && String(md.id) === String(id) && Array.isArray(md.curveCtrls) && md.curveCtrls.length >= 2) {
-                ctrls = md.curveCtrls;
+              if (md && md.isCurve && String(md.id) === String(id)) {
+                if (Array.isArray(md.curveCtrls) && md.curveCtrls.length >= 2) ctrls = md.curveCtrls;
+                if (md.curveText) txtKeep = md.curveText;
               }
             } catch {}
             if (!ctrls.length) {
               const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
               if (!ln) { el.remove(); return; }
               ctrls = parseCurveControls(String(ln.note || "")) || [];
+              const t2 = parseCurveText(ln.note);
+              if (t2) txtKeep = t2;
             }
-            if (ctrls.length < 2) { el.remove(); return; }
+            if (ctrls.length < 2) { el.style.visibility = "hidden"; return; }
+            if (txtKeep) el.textContent = txtKeep;
             const mid = ctrls[Math.min(1, ctrls.length - 1)];
             const x = chart2.timeScale().timeToCoordinate(mid.time as any);
             const y = ser.priceToCoordinate(mid.price);
@@ -8416,6 +8446,24 @@ export default function DashboardPage() {
             el.style.left = `${Number(x)}px`;
             el.style.top = `${Number(y) + 12}px`;
             el.style.transform = "translateX(-50%)";
+          });
+          // Ray notes stay glued to origin
+          host.querySelectorAll("[data-ray-note]").forEach((lab) => {
+            const el = lab as HTMLElement;
+            const id = el.getAttribute("data-ray-note");
+            const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
+            if (!ln) { el.remove(); return; }
+            const t = Number(ln.start_time || el.getAttribute("data-t") || 0);
+            const p = Number(ln.price || el.getAttribute("data-p") || 0);
+            const x = chart2.timeScale().timeToCoordinate(t as any);
+            const y = ser.priceToCoordinate(p);
+            if (x == null || y == null) { el.style.visibility = "hidden"; return; }
+            el.style.visibility = "visible";
+            el.style.left = `${Number(x) + 8}px`;
+            el.style.top = `${Number(y) + 10}px`;
+            const txt = userFacingNote(ln.note);
+            if (txt) el.textContent = txt;
+            else el.remove();
           });
           syncChannelHandlePositions(chart2, ser, host);
         } catch {}
@@ -10711,6 +10759,7 @@ priced.sort((a, b) => a.price - b.price);
             ]);
             chartLinesRef.current.set(l.id, ls);
             // Keep rayItems for hit-testing / move, but paintRays draws nothing visible (no cap)
+            const rayTxt = userFacingNote(l.note) || "";
             rayItemsRef.current.push({
               id: String(l.id),
               time: t0,
@@ -10718,8 +10767,33 @@ priced.sort((a, b) => a.price - b.price);
               color: color,
               width: Math.max(1, Number(width) || 2),
               dash: isMoving ? "dashed" : String(l.dash || l.style || "solid"),
-              note: title || "",
+              note: rayTxt,
             } as any);
+            // DOM note label under ray origin
+            try {
+              if (rayTxt) {
+                const host = vlineOverlayRef.current;
+                const chartR = chartRef.current;
+                const serR = seriesRef.current;
+                if (host && chartR && serR) {
+                  host.querySelectorAll(`[data-ray-note="${l.id}"]`).forEach((el) => el.remove());
+                  const x = chartR.timeScale().timeToCoordinate(t0 as any);
+                  const y = serR.priceToCoordinate(Number(l.price));
+                  if (x != null && y != null) {
+                    const lab = document.createElement("div");
+                    lab.setAttribute("data-ray-note", String(l.id));
+                    lab.setAttribute("data-t", String(t0));
+                    lab.setAttribute("data-p", String(l.price));
+                    lab.textContent = rayTxt;
+                    lab.style.cssText =
+                      `position:absolute;left:${Number(x) + 8}px;top:${Number(y) + 10}px;` +
+                      `font-size:11px;font-weight:600;color:${color || "#d1d5db"};` +
+                      `text-shadow:0 1px 2px rgba(0,0,0,0.85);pointer-events:none;z-index:22;white-space:nowrap;`;
+                    host.appendChild(lab);
+                  }
+                }
+              }
+            } catch {}
           }
         } else if (!specialNote) {
           // Plain horizontal only — never for curve/channel/fib/etc.
@@ -17140,7 +17214,10 @@ priced.sort((a, b) => a.price - b.price);
               cur.price = newP;
               if (newT != null) {
                 cur.start_time = newT;
-                if (typeof cur.note === "string" && cur.note.startsWith("__ray:")) cur.note = `__ray:${newT}`;
+                if (typeof cur.note === "string" && cur.note.startsWith("__ray:")) {
+                  const rest = cur.note.split("|").slice(1).join("|");
+                  cur.note = rest ? `__ray:${newT}|${rest}` : `__ray:${newT}`;
+                }
               }
             }
             if (bd.kind === "alarm") {
@@ -17525,8 +17602,15 @@ priced.sort((a, b) => a.price - b.price);
               const patch: any = { price: newP };
               if (newT != null) {
                 patch.start_time = newT;
-                patch.note = `__ray:${newT}`;
+                const cur0 = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                const prevN = typeof cur0?.note === "string" ? cur0.note : (typeof bd.orig?.note === "string" ? bd.orig.note : "");
+                const rest = prevN.startsWith("__ray:") ? prevN.split("|").slice(1).join("|") : "";
+                patch.note = rest ? `__ray:${newT}|${rest}` : `__ray:${newT}`;
               }
+              try {
+                const cur0 = (linesRef.current || []).find((x: any) => String(x.id) === String(bd.id));
+                if (cur0) { cur0.price = newP; if (newT != null) { cur0.start_time = newT; if (patch.note) cur0.note = patch.note; } }
+              } catch {}
               setLines((prev) => prev.map((x) => String(x.id) === String(bd.id) ? { ...x, ...patch } : x));
               if (!String(bd.id).startsWith("local-")) {
                 await supabase.from("chart_lines").update(patch).eq("id", bd.id);
@@ -17537,7 +17621,9 @@ priced.sort((a, b) => a.price - b.price);
                 patch.start_time = newT;
                 const curA0 = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
                 const cfg = parseAlarmCfg(curA0?.note);
-                patch.note = encodeAlarmCfg(`__ray:${newT}`, cfg.once, cfg.deleteAfter);
+                const userTxt = userFacingNote(curA0?.note);
+                const base = userTxt ? `__ray:${newT}|${userTxt}` : `__ray:${newT}`;
+                patch.note = encodeAlarmCfg(base, cfg.once, cfg.deleteAfter);
               }
               try {
                 const curA = (alarmsRef.current || []).find((x: any) => String(x.id) === String(bd.id));
@@ -23343,7 +23429,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       if (typ === "line") {
         const cur = (linesRef.current || []).find((x) => String(x.id) === String(id));
         let noteOut: string | null = text || null;
-        if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
+        // Ray without encoded note: still persist as __ray:t|text
+        if (cur && (!(cur.note) || (typeof cur.note === "string" && !String(cur.note).startsWith("__")))
+            && cur.start_time != null && (cur.end_time == null || cur.end_price == null)
+            && !isDiagonalLine(cur as any)) {
+          const head = `__ray:${Number(cur.start_time)}`;
+          noteOut = text ? `${head}|${text}` : head;
+        } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__channel:")) {
           const p = parseChannelNote(cur.note);
           if (p) noteOut = buildChannelNote({ ...p, text: text || "" });
         } else if (cur && typeof cur.note === "string" && cur.note.startsWith("__curve:")) {
@@ -23851,10 +23943,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
       const cur = linesRef.current?.find?.((l: any) => l.id === editingNoteId)
         || lines.find((l) => l.id === editingNoteId);
       let noteToSave = noteDraft;
-      if (cur?.note) {
-        const s = String(cur.note);
-        // Preserve ray / diag / callout encoding; only update user-facing text
-        if (s.startsWith("__ray:")) {
+      if (cur) {
+        const s = typeof cur.note === "string" ? String(cur.note) : "";
+        // Ray may have no encoded note yet — build from start_time
+        if ((!s || !s.startsWith("__"))
+            && cur.start_time != null && (cur.end_time == null || cur.end_price == null)
+            && !isDiagonalLine(cur as any)) {
+          const head = `__ray:${Number(cur.start_time)}`;
+          noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
+        } else if (s.startsWith("__ray:")) {
           const head = s.split("|")[0]; // __ray:unix
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         } else if (s.startsWith("__diag:")) {
