@@ -2839,11 +2839,13 @@ function upsertDiagNoteLabel(
     try { existing?.remove(); } catch {}
     return;
   }
-  const midT = (Number(t0) + Number(t1)) / 2;
-  const midP = (Number(v0) + Number(v1)) / 2;
+  // Fib notes: place next to first point (A). Other tools: midpoint of segment.
+  const isFib = typeof note === "string" && (note.startsWith("__fib:") || note.startsWith("__fibext:"));
+  const placeT = isFib ? Number(t0) : (Number(t0) + Number(t1)) / 2;
+  const placeP = isFib ? Number(v0) : (Number(v0) + Number(v1)) / 2;
   let mx: any = null, my: any = null;
-  try { mx = chart.timeScale().timeToCoordinate(midT as any); } catch {}
-  try { my = series.priceToCoordinate(midP); } catch {}
+  try { mx = chart.timeScale().timeToCoordinate(placeT as any); } catch {}
+  try { my = series.priceToCoordinate(placeP); } catch {}
   if (mx == null || my == null) {
     if (existing) existing.style.visibility = "hidden";
     return;
@@ -2859,8 +2861,8 @@ function upsertDiagNoteLabel(
     host.appendChild(el);
   }
   el.style.visibility = "visible";
-  el.style.left = `${Number(mx)}px`;
-  el.style.top = `${Number(my) + 12}px`;
+  el.style.left = `${Number(mx) + (isFib ? 28 : 0)}px`;
+  el.style.top = `${Number(my) + (isFib ? -18 : 12)}px`;
   if (el.textContent !== txt) el.textContent = txt;
 }
 
@@ -25564,6 +25566,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           if (p) {
             noteToSave = buildAvwapNote({ ...p, text: noteDraft.trim() });
           }
+        } else if (s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__fibtz:") || s.startsWith("__fibtbt:")) {
+          // Keep fib geometry; attach user text as |txt=
+          const base = s.replace(/\|txt=[^|]*/g, "");
+          noteToSave = noteDraft.trim() ? `${base}|txt=${encodeURIComponent(noteDraft.trim())}` : base;
         } else if (s === "__vline__" || s.startsWith("__vline__:")) {
           // Keep time encoding; attach user text after |
           let head = s.split("|")[0].split("||")[0];
@@ -25582,19 +25588,37 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           noteToSave = noteDraft.trim() ? `${head}|${noteDraft.trim()}` : head;
         }
       }
-      await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId);
+      if (!String(editingNoteId).startsWith("local-")) {
+        try { await supabase.from("chart_lines").update({ note: noteToSave }).eq("id", editingNoteId); } catch {}
+      }
       try {
         const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(editingNoteId));
         if (lr) lr.note = noteToSave;
       } catch {}
       setLines((prev) => prev.map((l) => (l.id === editingNoteId ? { ...l, note: noteToSave } : l)));
+      // Fib note label near first point
       try {
-        const lr = (linesRef.current || []).find((x: any) => String(x.id) === String(editingNoteId));
-        if (lr) lr.note = noteToSave;
+        if (String(noteToSave || "").startsWith("__fib:") || String(noteToSave || "").startsWith("__fibext:")) {
+          const fib = parseFibNote(noteToSave);
+          const txt = userFacingNote(noteToSave);
+          if (fib && txt && chartRef.current && seriesRef.current && vlineOverlayRef.current) {
+            upsertDiagNoteLabel(
+              vlineOverlayRef.current,
+              chartRef.current,
+              seriesRef.current,
+              String(editingNoteId),
+              Number(fib.t1),
+              Number(fib.t2),
+              Number(fib.p1),
+              Number(fib.p2),
+              noteToSave
+            );
+          }
+        }
       } catch {}
       try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
     } else {
-      await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId);
+      try { await supabase.from("alarms").update({ note: noteDraft }).eq("id", editingNoteId); } catch {}
       setAlarms((prev) => prev.map((a) => (a.id === editingNoteId ? { ...a, note: noteDraft } : a)));
     }
     setEditingNoteId(null);
@@ -28808,12 +28832,55 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       </button>
                     );
                   })()}
-                  {/* Style: width + dash */}
+                  {/* Settings: for fib open full Fib settings modal; otherwise width/dash */}
                   <div className="relative" data-menu>
                     <button
                       type="button"
                       title="Settings"
-                      onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); setMoveAlarmOpen(false); }}
+                      onClick={() => {
+                        setMoveNoteOpen(false);
+                        setMoveAlarmOpen(false);
+                        try {
+                          const id = movingIdRef.current;
+                          const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                          const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                          if (n.startsWith("__fib:") || n.startsWith("__fibext:")) {
+                            const fib = parseFibNote(n);
+                            if (fib) {
+                              const onSet = new Set(fib.levels.map((v) => Number(v)));
+                              setFibLevels(
+                                DEFAULT_FIB_LEVELS.map((d) => {
+                                  const li = fib.levels.findIndex((v) => Math.abs(v - d.v) < 1e-6);
+                                  return {
+                                    ...d,
+                                    on: onSet.has(d.v),
+                                    color: (li >= 0 && fib.colors[li]) ? fib.colors[li] : d.color,
+                                  };
+                                })
+                              );
+                              setFibReverse(!!fib.reverse);
+                              setFibExtend(fib.extend || "none");
+                              setFibLineWidth(fib.lineWidth || 1);
+                              setFibLineStyle(fib.lineStyle || "solid");
+                              setFibTrend(!!fib.trend);
+                              setFibTrendColor(fib.trendColor || "#f97316");
+                              setFibBackground(!!fib.background);
+                              setFibBgColor(fib.bgColor || "#2962FF");
+                              setFibBgOpacity(fib.bgOpacity ?? 20);
+                              setFibLabelH((fib as any).labelH || "right");
+                              setFibLabelV((fib as any).labelV || "middle");
+                              setFibShowPrices(fib.showPrices !== false);
+                              setFibShowLevels(fib.showLevels !== false);
+                              setFibSettingsTab("style");
+                              setSelectedFibId(String(id));
+                              setFibSettingsOpen(true);
+                              setMoveStyleOpen(false);
+                              return;
+                            }
+                          }
+                        } catch {}
+                        setMoveStyleOpen((v) => !v);
+                      }}
                       className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -34056,15 +34123,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         className="text-xs truncate max-w-full px-1 text-center text-gray-400 hover:text-white"
                         title="Note"
                       >
-                        {l.note &&
-                        l.note !== "__vline__" &&
-                        !String(l.note).startsWith("__diag:") &&
-                        !String(l.note).startsWith("__ray:") &&
-                        !String(l.note).startsWith("__fib:") &&
-                        !String(l.note).startsWith("__fibext:") &&
-                        userFacingNote(l.note)
-                          ? userFacingNote(l.note)
-                          : "Note"}
+                        {userFacingNote(l.note) || "Note"}
                       </button>
                     )}
                   </div>
@@ -34400,6 +34459,48 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <circle cx="12" cy="12" r="3" />
                           <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        title="Alarm on Fib levels"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // Select fib then open move alarm panel for levels
+                          try {
+                            const fib = parseFibNote(l.note);
+                            if (!fib) return;
+                            setMovingId(String(l.id));
+                            setMovingType("line");
+                            movingIdRef.current = String(l.id);
+                            movingTypeRef.current = "line";
+                            setMode("move");
+                            modeRef.current = "move";
+                            moveDiagRef.current = {
+                              id: String(l.id),
+                              phase: "pick",
+                              pointA: { time: Number(fib.t1), price: Number(fib.p1) },
+                              pointB: { time: Number(fib.t2), price: Number(fib.p2) },
+                              color: l.color || "#2962FF",
+                              width: 1,
+                              dash: "solid",
+                              isFib: true,
+                            } as any;
+                            setFibAlarmLevels([...(fib.levels || [])]);
+                            setFibAlarmTab("levels");
+                            setMoveAlarmCond("cross");
+                            setMoveAlarmOnce(true);
+                            setMoveAlarmDelete(false);
+                            setMoveAlarmOpen(true);
+                            setMoveStyleOpen(false);
+                            setMoveNoteOpen(false);
+                          } catch {}
+                        }}
+                        className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 hover:text-orange-300 flex items-center justify-center"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                         </svg>
                       </button>
                     ) : typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:")) ? (
