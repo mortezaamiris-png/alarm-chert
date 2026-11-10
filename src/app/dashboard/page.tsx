@@ -19667,8 +19667,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             mNow === "alarm" || mNow === "alarm-ray" || mNow === "alarm-diag" ||
             mNow === "curve" || mNow === "channel" || mNow === "path" ||
             mNow === "fib" || mNow === "fib-ext" || mNow === "fib-tz" || mNow === "fib-tbt" ||
-            mNow === "rect" || mNow === "long" || mNow === "short" || mNow === "callout" ||
-            mNow === "arrow" || mNow === "brush";
+            mNow === "rect" || mNow === "long-pos" || mNow === "short-pos" || mNow === "callout" ||
+            mNow === "arrow" || mNow === "brush" || mNow === "frvp" || mNow === "avp" || mNow === "avwap";
           if (drawing) {
             clickLockRef.current = false;
           } else if (!(mNow === "move" && md0 && md0.phase === "pick")) {
