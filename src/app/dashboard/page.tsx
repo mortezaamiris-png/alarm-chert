@@ -9594,11 +9594,22 @@ priced.sort((a, b) => a.price - b.price);
                       const isSel = String((window as any).__selectedPosId || "") === String(l.id);
                       const isHov = String((window as any).__hoveredPosId || "") === String(l.id);
                       const showLabels = isSel || isHov;
-                      // Width-based label placement (TV-like):
-                      // narrow box → stack stop/target near entry (gray) line;
-                      // wide box → labels sit on their own price levels
+                      // Width-based ONLY for middle (entry/stats) label:
+                      // narrow → place above/below gray line toward the LARGER zone
+                      // wide → centered on the gray entry line
                       const boxW = Math.abs(Number(xR) - Number(xL));
                       const isNarrow = boxW < 140;
+                      const stopZoneH = Math.abs(Number(yS) - Number(yE));
+                      const tgtZoneH = Math.abs(Number(yT) - Number(yE));
+                      // larger zone decides which side of gray line the middle label goes
+                      const largerIsStop = stopZoneH >= tgtZoneH;
+                      let entryPlace: "above" | "below" | "center" = "center";
+                      if (isNarrow) {
+                        if (largerIsStop) entryPlace = stopIsTop ? "above" : "below";
+                        else entryPlace = targetIsTop ? "above" : "below";
+                      }
+                      // Stop/Target always on their own price levels, with a bit more gap from the box
+                      const GAP = 10;
                       const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
                         if (!showLabels) return;
                         const d = document.createElement("div");
@@ -9607,8 +9618,8 @@ priced.sort((a, b) => a.price - b.price);
                         d.dataset.posLineId = String(l.id);
                         d.dataset.posPlace = place;
                         let ty = "translate(-50%, -50%)";
-                        if (place === "above") ty = "translate(-50%, calc(-100% - 4px))";
-                        if (place === "below") ty = "translate(-50%, 4px)";
+                        if (place === "above") ty = `translate(-50%, calc(-100% - ${GAP}px))`;
+                        if (place === "below") ty = `translate(-50%, ${GAP}px)`;
                         d.style.cssText = [
                           `position:absolute;left:${midX}px;top:${baseY}px;transform:${ty};`,
                           `background:${bg};color:#fff;font-size:11px;font-weight:600;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
@@ -9619,47 +9630,29 @@ priced.sort((a, b) => a.price - b.price);
                         d.innerHTML = html;
                         host.appendChild(d);
                       };
-                      // Stop / Target placement
-                      if (isNarrow) {
-                        // both near gray entry line: larger zone side farther from entry still above/below
-                        mkLabel(
-                          "stop",
-                          `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
-                          Number(yE),
-                          stopLineCol,
-                          stopIsTop ? "above" : "below"
-                        );
-                        mkLabel(
-                          "target",
-                          `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
-                          Number(yE),
-                          tgtLineCol,
-                          targetIsTop ? "above" : "below"
-                        );
-                      } else {
-                        mkLabel(
-                          "stop",
-                          `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
-                          Number(yS),
-                          stopLineCol,
-                          stopIsTop ? "above" : "below"
-                        );
-                        mkLabel(
-                          "target",
-                          `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
-                          Number(yT),
-                          tgtLineCol,
-                          targetIsTop ? "above" : "below"
-                        );
-                      }
-                      // Entry/stats badge always on gray line
+                      // Stop / Target — always at their price levels (not stacked on entry)
+                      mkLabel(
+                        "stop",
+                        `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
+                        Number(yS),
+                        stopLineCol,
+                        stopIsTop ? "above" : "below"
+                      );
+                      mkLabel(
+                        "target",
+                        `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
+                        Number(yT),
+                        tgtLineCol,
+                        targetIsTop ? "above" : "below"
+                      );
+                      // Entry/stats badge — width-dependent placement
                       const midBg = isLong ? tgtLineCol : stopLineCol;
                       mkLabel(
                         "entry",
                         `Open PnL: —, Qty: ${qty.toFixed(3)}<br/>Risk/reward ratio: ${rr.toFixed(2)}`,
                         Number(yE),
                         midBg,
-                        "center"
+                        entryPlace
                       );
                       // Invisible body hit-area to drag entire position + hover
                       const yTop = Math.min(Number(yT), Number(yS), Number(yE));
@@ -12911,7 +12904,7 @@ priced.sort((a, b) => a.price - b.price);
       const pr = series.coordinateToPrice(y);
       return pr != null && Number.isFinite(pr) ? Number(pr) : null;
     };
-    const applyNote = (id: string, kind: string, tL: number, tR: number, pEntry: number, pStop: number, pTarget: number, prevNote?: string) => {
+    const applyNote = (id: string, kind: string, tL: number, tR: number, pEntry: number, pStop: number, pTarget: number, prevNote?: string, commitReact = false) => {
       // Keep style/settings suffixes (sc=, tc=, ec=, risk=, acct=, etc.)
       const extra = (prevNote || "")
         .split("|")
@@ -12920,13 +12913,26 @@ priced.sort((a, b) => a.price - b.price);
         .join("|");
       const base = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
       const newNote = extra ? `${base}|${extra}` : base;
-      setLines((prev) =>
-        prev.map((x) =>
-          x.id === id
-            ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
-            : x
-        )
-      );
+      // Always keep linesRef in sync for overlay/series readers
+      try {
+        if (Array.isArray(linesRef.current)) {
+          linesRef.current = linesRef.current.map((x) =>
+            x.id === id
+              ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
+              : x
+          );
+        }
+      } catch {}
+      // Only push to React state when requested (end of drag) to avoid lag
+      if (commitReact) {
+        setLines((prev) =>
+          prev.map((x) =>
+            x.id === id
+              ? { ...x, note: newNote, price: pEntry, end_price: pTarget, start_time: tL, end_time: tR }
+              : x
+          )
+        );
+      }
       return newNote;
     };
 
@@ -12954,13 +12960,16 @@ priced.sort((a, b) => a.price - b.price);
       if (!parsed) return;
       ev.preventDefault();
       ev.stopPropagation();
-      // 1) Select + show labels/handles immediately (TV-style)
+      // 1) Select + show labels/handles (only rebuild if not already selected — keeps drag snappy)
       posDragMovedRef.current = false;
-      posDraggingRef.current = false; // allow full DOM rebuild once
+      const alreadySel = String((window as any).__selectedPosId || "") === String(id);
       (window as any).__selectedPosId = String(id);
-      try { setSelectedPosId(String(id)); } catch {}
-      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-      // 2) Now lock DOM during the drag so setLines won't destroy handles mid-move
+      if (!alreadySel) {
+        posDraggingRef.current = false;
+        try { setSelectedPosId(String(id)); } catch {}
+        try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+      }
+      // 2) Lock DOM during the drag so setLines won't destroy handles mid-move
       posDraggingRef.current = true;
       posHandleDragRef.current = {
         id,
@@ -12988,7 +12997,8 @@ priced.sort((a, b) => a.price - b.price);
     const onMove = (ev: PointerEvent) => {
       const drag = posHandleDragRef.current;
       if (!drag) return;
-      if (Math.abs(ev.clientX - drag.startX) > 3 || Math.abs(ev.clientY - drag.startY) > 3) posDragMovedRef.current = true;
+      // lower threshold so drag feels immediate
+      if (Math.abs(ev.clientX - drag.startX) > 1 || Math.abs(ev.clientY - drag.startY) > 1) posDragMovedRef.current = true;
       const barSec = Math.max(1, intervalToSeconds(String(intervalRef.current)));
       let { tL, tR, pEntry, pStop, pTarget } = drag;
       const kind = drag.note.startsWith("__long:") ? "long" : "short";
@@ -13090,9 +13100,15 @@ priced.sort((a, b) => a.price - b.price);
         }
       }
 
-      const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget, drag.note);
+      const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget, drag.note, false);
       drag.note = newNote;
-      try { (window as any).__syncPosOverlays?.(); } catch {}
+      // throttle overlay + series commit to one frame for smoothness
+      if (!(drag as any)._raf) {
+        (drag as any)._raf = requestAnimationFrame(() => {
+          (drag as any)._raf = 0;
+          try { (window as any).__syncPosOverlays?.(); } catch {}
+        });
+      }
       // keep snapshot roles relative for body uses start*; for handles live values
       if (drag.role !== "body") {
         drag.tL = tL; drag.tR = tR; drag.pEntry = pEntry; drag.pStop = pStop; drag.pTarget = pTarget;
@@ -13104,6 +13120,18 @@ priced.sort((a, b) => a.price - b.price);
       if (!drag) return;
       posHandleDragRef.current = null;
       posDraggingRef.current = false;
+      // Commit React state once at end of drag
+      try {
+        const parsed = parsePos(String(drag.note));
+        if (parsed) {
+          applyNote(drag.id, drag.note.startsWith("__long:") ? "long" : "short",
+            parsed.tL, parsed.tR, parsed.pEntry, parsed.pStop, parsed.pTarget, drag.note, true);
+        } else {
+          setLines((prev) => prev.map((x) => x.id === drag.id ? { ...x, note: drag.note } : x));
+        }
+      } catch {
+        setLines((prev) => prev.map((x) => x.id === drag.id ? { ...x, note: drag.note } : x));
+      }
       // Keep selected after move (TV style) and rebuild labels/handles cleanly
       (window as any).__selectedPosId = String(drag.id);
       try { setSelectedPosId(String(drag.id)); } catch {}
@@ -15296,24 +15324,34 @@ priced.sort((a, b) => a.price - b.price);
                 const kind = child.dataset.posLabel;
                 const boxW = Math.abs(Number(xR) - Number(xL));
                 const isNarrow = boxW < 140;
+                // Stop/Target always on own levels; entry always on gray line Y
                 let yy = yE;
-                if (!isNarrow) {
-                  if (kind === "stop") yy = yS;
-                  else if (kind === "target") yy = yT;
-                }
-                // narrow: stop/target also sit on entry line (above/below)
+                if (kind === "stop") yy = yS;
+                else if (kind === "target") yy = yT;
                 child.style.left = `${midX}px`;
                 child.style.top = `${yy}px`;
                 const stopIsTop = Number(yS) < Number(yE);
                 const targetIsTop = Number(yT) < Number(yE);
+                const stopZoneH = Math.abs(Number(yS) - Number(yE));
+                const tgtZoneH = Math.abs(Number(yT) - Number(yE));
+                const largerIsStop = stopZoneH >= tgtZoneH;
+                const GAP = 10;
                 let place = child.dataset.posPlace || "center";
                 if (kind === "stop") place = stopIsTop ? "above" : "below";
                 else if (kind === "target") place = targetIsTop ? "above" : "below";
-                else place = "center";
+                else {
+                  // entry/stats: narrow → toward larger zone; wide → center on gray line
+                  if (isNarrow) {
+                    if (largerIsStop) place = stopIsTop ? "above" : "below";
+                    else place = targetIsTop ? "above" : "below";
+                  } else {
+                    place = "center";
+                  }
+                }
                 child.dataset.posPlace = place;
                 let ty = "translate(-50%, -50%)";
-                if (place === "above") ty = "translate(-50%, calc(-100% - 4px))";
-                if (place === "below") ty = "translate(-50%, 4px)";
+                if (place === "above") ty = `translate(-50%, calc(-100% - ${GAP}px))`;
+                if (place === "below") ty = `translate(-50%, ${GAP}px)`;
                 child.style.transform = ty;
                 try {
                   const riskDist = Math.abs(pEntry - pStop) || 1e-12;
@@ -24207,7 +24245,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     selectedBrushIdRef.current = selectedBrushId;
   }, [selectedBrushId]);
 
-  // Keyboard Delete / Backspace for selected line, alarm, brush, or rectangle
+  // Keyboard Delete / Backspace for selected line, alarm, brush, rectangle, or position
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Delete" && e.key !== "Backspace") return;
@@ -24226,15 +24264,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         sid = String(selectedRectIdRef.current);
         kind = "line";
       }
+      // Long/Short position selected
+      const posId = (window as any).__selectedPosId ? String((window as any).__selectedPosId) : null;
+      if (!sid && posId) {
+        sid = posId;
+        kind = "line";
+      }
       if (!sid) return;
 
-      // Allow delete when in move mode, or when a brush/rect is selected, or line/alarm type
+      // Allow delete when in move mode, or when a brush/rect/pos is selected, or line/alarm type
       const ok =
         modeRef.current === "move" ||
         kind === "alarm" ||
         kind === "line" ||
         !!selectedBrushIdRef.current ||
-        !!selectedRectIdRef.current;
+        !!selectedRectIdRef.current ||
+        !!posId;
       if (!ok) return;
 
       e.preventDefault();
@@ -24255,6 +24300,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         try { setSelectedBrushId(null); } catch {}
         try { setBrushStyleOpen(false); setBrushColorOpen(false); } catch {}
         try { setRectStyleOpen(false); setRectColorOpen(false); } catch {}
+        try {
+          (window as any).__selectedPosId = null;
+          setSelectedPosId(null);
+          setPosSettingsOpen(false);
+        } catch {}
       } catch {}
       void (async () => {
         if (kind === "alarm") await deleteAlarm(sid!);
