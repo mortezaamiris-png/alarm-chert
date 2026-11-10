@@ -5197,15 +5197,18 @@ export default function DashboardPage() {
     visMinMo: 1, visMaxMo: 12,
   }));
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
+  const [hoveredPosId, setHoveredPosId] = useState<string | null>(null);
   const [posBarPos, setPosBarPos] = useState<{ x: number; y: number } | null>(null);
   const [posSettingsOpen, setPosSettingsOpen] = useState(false);
   const [posSettingsTab, setPosSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
   const posBarDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   useEffect(() => {
     (window as any).__selectedPosId = selectedPosId;
+    (window as any).__hoveredPosId = hoveredPosId;
     (window as any).__setSelectedPosId = (id: string | null) => setSelectedPosId(id);
+    (window as any).__setHoveredPosId = (id: string | null) => setHoveredPosId(id);
     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-  }, [selectedPosId]);
+  }, [selectedPosId, hoveredPosId]);
 
   // Click chart: if on position shape → select (show labels+handles); else deselect
   useEffect(() => {
@@ -9589,9 +9592,15 @@ priced.sort((a, b) => a.price - b.price);
                       const stopIsTop = Number(yS) < Number(yE);
                       const targetIsTop = Number(yT) < Number(yE);
                       const isSel = String((window as any).__selectedPosId || "") === String(l.id);
+                      const isHov = String((window as any).__hoveredPosId || "") === String(l.id);
+                      const showLabels = isSel || isHov;
+                      // Width-based label placement (TV-like):
+                      // narrow box → stack stop/target near entry (gray) line;
+                      // wide box → labels sit on their own price levels
+                      const boxW = Math.abs(Number(xR) - Number(xL));
+                      const isNarrow = boxW < 140;
                       const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
-                        // Labels only when position is selected (TV: always visible while selected)
-                        if (!isSel) return;
+                        if (!showLabels) return;
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
                         d.dataset.posLabel = kind;
@@ -9610,22 +9619,40 @@ priced.sort((a, b) => a.price - b.price);
                         d.innerHTML = html;
                         host.appendChild(d);
                       };
-                      // TV label text format
-                      mkLabel(
-                        "stop",
-                        `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
-                        Number(yS),
-                        stopLineCol,
-                        stopIsTop ? "above" : "below"
-                      );
-                      mkLabel(
-                        "target",
-                        `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
-                        Number(yT),
-                        tgtLineCol,
-                        targetIsTop ? "above" : "below"
-                      );
-                      // Entry/stats badge: green for long, red for short (TV)
+                      // Stop / Target placement
+                      if (isNarrow) {
+                        // both near gray entry line: larger zone side farther from entry still above/below
+                        mkLabel(
+                          "stop",
+                          `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
+                          Number(yE),
+                          stopLineCol,
+                          stopIsTop ? "above" : "below"
+                        );
+                        mkLabel(
+                          "target",
+                          `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
+                          Number(yE),
+                          tgtLineCol,
+                          targetIsTop ? "above" : "below"
+                        );
+                      } else {
+                        mkLabel(
+                          "stop",
+                          `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
+                          Number(yS),
+                          stopLineCol,
+                          stopIsTop ? "above" : "below"
+                        );
+                        mkLabel(
+                          "target",
+                          `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
+                          Number(yT),
+                          tgtLineCol,
+                          targetIsTop ? "above" : "below"
+                        );
+                      }
+                      // Entry/stats badge always on gray line
                       const midBg = isLong ? tgtLineCol : stopLineCol;
                       mkLabel(
                         "entry",
@@ -9634,7 +9661,7 @@ priced.sort((a, b) => a.price - b.price);
                         midBg,
                         "center"
                       );
-                      // Invisible body hit-area to drag entire position
+                      // Invisible body hit-area to drag entire position + hover
                       const yTop = Math.min(Number(yT), Number(yS), Number(yE));
                       const yBot = Math.max(Number(yT), Number(yS), Number(yE));
                       const body = document.createElement("div");
@@ -9642,6 +9669,20 @@ priced.sort((a, b) => a.price - b.price);
                       body.dataset.posBody = "1";
                       body.dataset.posLineId = String(l.id);
                       body.style.cssText = `position:absolute;left:${Number(xL) - 6}px;top:${yTop - 6}px;width:${Math.max(20, Number(xR) - Number(xL) + 12)}px;height:${Math.max(20, yBot - yTop + 12)}px;cursor:pointer;z-index:27;pointer-events:auto;touch-action:none;background:rgba(0,0,0,0.001);`;
+                      body.addEventListener("pointerenter", () => {
+                        try {
+                          (window as any).__hoveredPosId = String(l.id);
+                          (window as any).__setHoveredPosId?.(String(l.id));
+                        } catch {}
+                      });
+                      body.addEventListener("pointerleave", () => {
+                        try {
+                          if (String((window as any).__hoveredPosId) === String(l.id)) {
+                            (window as any).__hoveredPosId = null;
+                            (window as any).__setHoveredPosId?.(null);
+                          }
+                        } catch {}
+                      });
                       body.addEventListener("pointerup", (ev) => {
                         try {
                           ev.preventDefault();
@@ -9652,7 +9693,7 @@ priced.sort((a, b) => a.price - b.price);
                         } catch {}
                       });
                       host.appendChild(body);
-                      // 4 handles — only when selected (hidden with labels on empty click)
+                      // 4 handles — only when selected
                       if (isSel) {
                         const handles: { role: string; x: number; y: number; cursor: string }[] = [
                           { role: "target", x: Number(xL), y: Number(yT), cursor: "ns-resize" },
@@ -15253,12 +15294,16 @@ priced.sort((a, b) => a.price - b.price);
               } else if (child.dataset.posLabel) {
                 const midX = (xL + xR) / 2;
                 const kind = child.dataset.posLabel;
+                const boxW = Math.abs(Number(xR) - Number(xL));
+                const isNarrow = boxW < 140;
                 let yy = yE;
-                if (kind === "stop") yy = yS;
-                else if (kind === "target") yy = yT;
+                if (!isNarrow) {
+                  if (kind === "stop") yy = yS;
+                  else if (kind === "target") yy = yT;
+                }
+                // narrow: stop/target also sit on entry line (above/below)
                 child.style.left = `${midX}px`;
                 child.style.top = `${yy}px`;
-                // TV-style: flip above/below when stop/target crosses entry while resizing
                 const stopIsTop = Number(yS) < Number(yE);
                 const targetIsTop = Number(yT) < Number(yE);
                 let place = child.dataset.posPlace || "center";
@@ -15270,7 +15315,6 @@ priced.sort((a, b) => a.price - b.price);
                 if (place === "above") ty = "translate(-50%, calc(-100% - 4px))";
                 if (place === "below") ty = "translate(-50%, 4px)";
                 child.style.transform = ty;
-                // Live text update (TV: numbers follow the drag)
                 try {
                   const riskDist = Math.abs(pEntry - pStop) || 1e-12;
                   const rewardDist = Math.abs(pTarget - pEntry) || 0;
@@ -21085,7 +21129,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           }
           clickLockRef.current = true;
           setSaving(true);
-          const note = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+          const note = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}|acct=1000|risk=25|risku=%|lot=1|lev=1|curr=Default|tc=#089981|sc=#F23645|ec=#787B86|plabels=1`;
+          const localId = `local-pos-${Date.now()}`;
           const base: any = {
             symbol: symbolRef.current.toUpperCase(),
             price: pEntry,
@@ -21098,42 +21143,46 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             note,
           };
           posDraftRef.current = null;
-          try {
-            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
-            if (error) {
-              const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
-              (fb as any).user_id = base.user_id;
-              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-            }
-            if (!error && data) {
-              pushUndo();
-              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed — drag blue handles`);
-              try { setSelectedPosId(String((data as any).id)); } catch {}
-            } else {
-              const local: ChartLine = {
-                id: `local-pos-${Date.now()}`,
-                symbol: symbolRef.current.toUpperCase(),
-                price: pEntry,
-                color: base.color,
-                note,
-                start_time: tL,
-                end_time: tR,
-                end_price: pTarget,
-              };
-              pushUndo();
-              setLines((prev) => [local, ...prev]);
-              setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed (local)`);
-              try { setSelectedPosId(String(local.id)); } catch {}
-            }
-          } catch {
-            setStatusMsg("Position save failed");
-          }
+          // Show immediately (don't wait for network) — TV style
+          pushUndo();
+          const local: ChartLine = {
+            id: localId,
+            symbol: symbolRef.current.toUpperCase(),
+            price: pEntry,
+            color: base.color,
+            note,
+            start_time: tL,
+            end_time: tR,
+            end_price: pTarget,
+          };
+          setLines((prev) => [local, ...prev]);
+          (window as any).__selectedPosId = localId;
+          try { setSelectedPosId(localId); } catch {}
+          setStatusMsg(`${kind === "long" ? "Long" : "Short"} position placed — drag blue handles`);
           modeRef.current = "none";
           setMode("none");
           setSaving(false);
           setTimeout(() => { clickLockRef.current = false; }, 300);
+          // Persist in background
+          void (async () => {
+            try {
+              (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+              if (error) {
+                const fb = { symbol: base.symbol, price: base.price, color: base.color, start_time: base.start_time, note };
+                (fb as any).user_id = base.user_id;
+                ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+              }
+              if (!error && data) {
+                const realId = String((data as any).id);
+                setLines((prev) => prev.map((x) => String(x.id) === localId ? { ...x, ...(data as ChartLine), ...base, id: realId } : x));
+                if (String((window as any).__selectedPosId) === localId) {
+                  (window as any).__selectedPosId = realId;
+                  try { setSelectedPosId(realId); } catch {}
+                }
+              }
+            } catch {}
+          })();
           return;
         }
 
@@ -29233,7 +29282,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             );
           })()}
 
-          {/* Position settings modal (TV-style Inputs / Style / Visibility) */}
+          {/* Position settings modal — TradingView layout */}
           {posSettingsOpen && selectedPosId && (() => {
             const pl = lines.find((x) => String(x.id) === String(selectedPosId));
             if (!pl || !pl.note) return null;
@@ -29241,14 +29290,26 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             const parts = String(pl.note).split("|");
             const nums = parts[0].replace(/^__(?:long|short):/, "").split(",").map(Number);
             const pEntry = nums[1] || 0, pStop = nums[3] || 0, pTarget = nums[5] || 0;
+            const tickStop = Math.round(Math.abs(pEntry - pStop) * 100000) / 100000;
+            const tickTgt = Math.round(Math.abs(pTarget - pEntry) * 100000) / 100000;
             const get = (k: string, def: string) => (parts.find((p) => p.startsWith(k + "=")) || `${k}=${def}`).slice(k.length + 1);
             const tc = get("tc", "#089981");
             const sc = get("sc", "#F23645");
             const ec = get("ec", "#787B86");
             const acct = get("acct", "1000");
             const risk = get("risk", "25");
+            const risku = get("risku", "%");
             const lot = get("lot", "1");
             const lev = get("lev", "1");
+            const curr = get("curr", "Default");
+            const qtyp = get("qtyp", "Default");
+            const plabels = get("plabels", "1") !== "0";
+            const compact = get("compact", "0") === "1";
+            const alwaysStats = get("always", "0") === "1";
+            const textCol = get("txtc", "#ffffff");
+            const textSz = get("txts", "12");
+            const statsStr = get("stats", "tp_off,tp_pct,tp_tick,tp_amt,open_pl,qty,rr,sl_off,sl_pct,sl_tick,sl_amt");
+            const statsSet = new Set(statsStr.split(",").filter(Boolean));
             const patch = (key: string, val: string) => {
               const note = String(pl.note);
               const ps = note.split("|").filter((p) => !p.startsWith(key + "="));
@@ -29268,97 +29329,231 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 : x));
               try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
             };
+            const inp = "w-[110px] bg-[#131722] border border-white/10 rounded px-2 py-1.5 text-right text-xs text-gray-100";
+            const sel = "bg-[#131722] border border-white/10 rounded px-2 py-1.5 text-xs text-gray-100";
+            const row = "flex items-center justify-between gap-2";
+            const currencies = ["Default","USD","EUR","AUD","GBP","NZD","CAD","CHF","HKD","JPY","NOK","RUB","SEK","SGD","TRY","ZAR","BTC","ETH","MYR","KRW","USDT","INR"];
+            const STAT_OPTS: { id: string; label: string }[] = [
+              { id: "tp_off", label: "TP price offset" },
+              { id: "tp_pct", label: "TP percent offset" },
+              { id: "tp_tick", label: "TP tick offset" },
+              { id: "tp_amt", label: "TP amount" },
+              { id: "tp_pl", label: "TP PL" },
+              { id: "open_pl", label: "Open/closed PL" },
+              { id: "qty", label: "Qty" },
+              { id: "rr", label: "Risk/reward ratio" },
+              { id: "sl_off", label: "SL price offset" },
+              { id: "sl_pct", label: "SL percent offset" },
+              { id: "sl_tick", label: "SL tick offset" },
+              { id: "sl_amt", label: "SL amount" },
+              { id: "sl_pl", label: "SL PL" },
+            ];
+            const toggleStat = (id: string) => {
+              const next = new Set(statsSet);
+              if (next.has(id)) next.delete(id); else next.add(id);
+              patch("stats", Array.from(next).join(","));
+            };
             return (
               <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
                 onClick={() => setPosSettingsOpen(false)}>
-                <div className="w-[min(340px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                <div className="w-[min(360px,94vw)] max-h-[88vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
                   onClick={(e) => e.stopPropagation()} data-pos-toolbar="1">
                   <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
-                    <div className="font-semibold text-white">{isLong ? "Long position" : "Short position"}</div>
+                    <div className="font-semibold text-white flex items-center gap-1.5">
+                      {isLong ? "Long position" : "Short position"}
+                      <span className="text-gray-500 text-xs">✎</span>
+                    </div>
                     <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
                       onClick={() => setPosSettingsOpen(false)}>×</button>
                   </div>
-                  <div className="flex gap-4 px-4 pt-2 border-b border-white/10 text-xs">
+                  <div className="flex gap-5 px-4 pt-2 border-b border-white/10 text-xs">
                     {(["inputs", "style", "visibility"] as const).map((tab) => (
                       <button key={tab} type="button"
-                        className={`pb-2 capitalize ${posSettingsTab === tab ? "text-white border-b-2 border-blue-500" : "text-gray-400 hover:text-gray-200"}`}
-                        onClick={() => setPosSettingsTab(tab)}>{tab === "inputs" ? "Inputs" : tab === "style" ? "Style" : "Visibility"}</button>
+                        className={`pb-2 ${posSettingsTab === tab ? "text-white border-b-2 border-blue-500" : "text-gray-400 hover:text-gray-200"}`}
+                        onClick={() => setPosSettingsTab(tab)}>
+                        {tab === "inputs" ? "Inputs" : tab === "style" ? "Style" : "Visibility"}
+                      </button>
                     ))}
                   </div>
-                  <div className="px-4 py-3 space-y-3">
+                  <div className="px-4 py-3 space-y-2.5">
                     {posSettingsTab === "inputs" && (
                       <>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Account size</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={acct}
-                            onChange={(e) => patch("acct", e.target.value)} />
+                          <div className="flex gap-1.5">
+                            <input type="number" className={inp} value={acct} onChange={(e) => patch("acct", e.target.value)} />
+                            <select className={sel} value={curr} onChange={(e) => patch("curr", e.target.value)}>
+                              {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Lot size</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={lot}
-                            onChange={(e) => patch("lot", e.target.value)} />
+                          <input type="number" className={inp} value={lot} onChange={(e) => patch("lot", e.target.value)} />
                         </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-400 text-xs">Risk %</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={risk}
-                            onChange={(e) => patch("risk", e.target.value)} />
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Risk</span>
+                          <div className="flex gap-1.5">
+                            <input type="number" className={inp} value={risk} onChange={(e) => patch("risk", e.target.value)} />
+                            <select className={sel} value={risku} onChange={(e) => patch("risku", e.target.value)}>
+                              <option value="%">%</option>
+                              <option value="USDT">USDT</option>
+                            </select>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Entry price</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pEntry}
+                          <input type="number" className={inp} defaultValue={pEntry}
                             onBlur={(e) => patchCoords(Number(e.target.value) || pEntry, pStop, pTarget)} />
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Leverage</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={lev}
-                            onChange={(e) => patch("lev", e.target.value)} />
+                          <input type="number" className={inp} value={lev} onChange={(e) => patch("lev", e.target.value)} />
                         </div>
-                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-1">Profit level</div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-2">Profit level</div>
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Ticks</span>
+                          <input type="number" className={inp} defaultValue={tickTgt}
+                            onBlur={(e) => {
+                              const d = Math.abs(Number(e.target.value) || tickTgt);
+                              const nt = isLong ? pEntry + d : pEntry - d;
+                              patchCoords(pEntry, pStop, nt);
+                            }} />
+                        </div>
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Price</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pTarget}
+                          <input type="number" className={inp} defaultValue={pTarget}
                             onBlur={(e) => patchCoords(pEntry, pStop, Number(e.target.value) || pTarget)} />
                         </div>
-                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-1">Stop level</div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-2">Stop level</div>
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Ticks</span>
+                          <input type="number" className={inp} defaultValue={tickStop}
+                            onBlur={(e) => {
+                              const d = Math.abs(Number(e.target.value) || tickStop);
+                              const ns = isLong ? pEntry - d : pEntry + d;
+                              patchCoords(pEntry, ns, pTarget);
+                            }} />
+                        </div>
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Price</span>
-                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pStop}
+                          <input type="number" className={inp} defaultValue={pStop}
                             onBlur={(e) => patchCoords(pEntry, Number(e.target.value) || pStop, pTarget)} />
+                        </div>
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">QTY precision</span>
+                          <select className={sel + " w-[110px]"} value={qtyp} onChange={(e) => patch("qtyp", e.target.value)}>
+                            <option value="Default">Default</option>
+                            <option value="0">0</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
+                            <option value="6">6</option>
+                            <option value="8">8</option>
+                          </select>
                         </div>
                       </>
                     )}
                     {posSettingsTab === "style" && (
                       <>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-400 text-xs">Lines (entry)</span>
-                          <input type="color" value={ec} onChange={(e) => patch("ec", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Lines</span>
+                          <div className="flex items-center gap-2">
+                            <input type="color" value={ec} onChange={(e) => patch("ec", e.target.value)} className="w-7 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                            <span className="text-gray-500 text-xs">—</span>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Stop color</span>
-                          <input type="color" value={sc} onChange={(e) => patch("sc", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                          <input type="color" value={sc} onChange={(e) => patch("sc", e.target.value)} className="w-7 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className={row}>
                           <span className="text-gray-400 text-xs">Target color</span>
-                          <input type="color" value={tc} onChange={(e) => patch("tc", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                          <input type="color" value={tc} onChange={(e) => patch("tc", e.target.value)} className="w-7 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                        </div>
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Text</span>
+                          <div className="flex items-center gap-2">
+                            <input type="color" value={textCol} onChange={(e) => patch("txtc", e.target.value)} className="w-7 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                            <select className={sel} value={textSz} onChange={(e) => patch("txts", e.target.value)}>
+                              {["10","11","12","13","14","16","18"].map((s) => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <label className="flex items-center gap-2 text-xs text-gray-300 pt-1">
+                          <input type="checkbox" checked={plabels} onChange={(e) => patch("plabels", e.target.checked ? "1" : "0")} className="rounded border-white/20" />
+                          Price labels
+                        </label>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-2">Info</div>
+                        <div className={row}>
+                          <span className="text-gray-400 text-xs">Stats</span>
+                          <details className="relative">
+                            <summary className={sel + " cursor-pointer list-none max-w-[180px] truncate"}>
+                              {STAT_OPTS.filter((o) => statsSet.has(o.id)).slice(0, 2).map((o) => o.label).join(", ") || "None"}…
+                            </summary>
+                            <div className="absolute right-0 z-10 mt-1 w-52 max-h-56 overflow-y-auto rounded-lg border border-white/15 bg-[#1e222d] p-2 shadow-xl space-y-1">
+                              {STAT_OPTS.map((o) => (
+                                <label key={o.id} className="flex items-center gap-2 text-xs text-gray-300 hover:bg-white/5 rounded px-1 py-0.5 cursor-pointer">
+                                  <input type="checkbox" checked={statsSet.has(o.id)} onChange={() => toggleStat(o.id)} />
+                                  {o.label}
+                                </label>
+                              ))}
+                            </div>
+                          </details>
                         </div>
                         <label className="flex items-center gap-2 text-xs text-gray-300">
-                          <input type="checkbox" defaultChecked className="rounded border-white/20" /> Price labels
+                          <input type="checkbox" checked={compact} onChange={(e) => patch("compact", e.target.checked ? "1" : "0")} className="rounded border-white/20" />
+                          Compact stats mode
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input type="checkbox" checked={alwaysStats} onChange={(e) => patch("always", e.target.checked ? "1" : "0")} className="rounded border-white/20" />
+                          Always show stats
                         </label>
                       </>
                     )}
                     {posSettingsTab === "visibility" && (
-                      <div className="space-y-2 text-xs text-gray-300">
-                        {["Ticks", "Seconds", "Minutes", "Hours", "Days", "Weeks", "Months", "Ranges"].map((lab) => (
-                          <label key={lab} className="flex items-center gap-2">
-                            <input type="checkbox" defaultChecked className="rounded border-white/20" /> {lab}
-                          </label>
-                        ))}
+                      <div className="space-y-2.5 text-xs text-gray-300">
+                        {[
+                          { k: "visTicks", lab: "Ticks", hasRange: false },
+                          { k: "visSec", lab: "Seconds", min: 1, max: 59 },
+                          { k: "visMin", lab: "Minutes", min: 1, max: 59 },
+                          { k: "visHrs", lab: "Hours", min: 1, max: 24 },
+                          { k: "visDays", lab: "Days", min: 1, max: 366 },
+                          { k: "visWeeks", lab: "Weeks", min: 1, max: 52 },
+                          { k: "visMonths", lab: "Months", min: 1, max: 12 },
+                          { k: "visRanges", lab: "Ranges", hasRange: false },
+                        ].map((rowv) => {
+                          const on = get(rowv.k, "1") !== "0";
+                          const vmin = get(rowv.k + "Min", String(rowv.min ?? 1));
+                          const vmax = get(rowv.k + "Max", String(rowv.max ?? 1));
+                          return (
+                            <div key={rowv.k} className="flex items-center gap-2">
+                              <input type="checkbox" checked={on} onChange={(e) => patch(rowv.k, e.target.checked ? "1" : "0")} className="rounded border-white/20" />
+                              <span className="w-16">{rowv.lab}</span>
+                              {rowv.min != null && (
+                                <>
+                                  <input type="number" className="w-12 bg-[#131722] border border-white/10 rounded px-1 py-0.5 text-xs text-right" value={vmin}
+                                    onChange={(e) => patch(rowv.k + "Min", e.target.value)} />
+                                  <input type="range" min={rowv.min} max={rowv.max} value={vmax} className="flex-1 accent-blue-500"
+                                    onChange={(e) => patch(rowv.k + "Max", e.target.value)} />
+                                  <input type="number" className="w-12 bg-[#131722] border border-white/10 rounded px-1 py-0.5 text-xs text-right" value={vmax}
+                                    onChange={(e) => patch(rowv.k + "Max", e.target.value)} />
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-                  <div className="flex justify-end gap-2 px-4 py-3 border-t border-white/10">
-                    <button type="button" className="px-3 py-1.5 rounded text-xs text-gray-300 hover:bg-white/10" onClick={() => setPosSettingsOpen(false)}>Cancel</button>
-                    <button type="button" className="px-3 py-1.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-500" onClick={() => setPosSettingsOpen(false)}>Ok</button>
+                  <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-white/10">
+                    <button type="button" className="px-2 py-1.5 rounded text-xs text-gray-400 hover:bg-white/10 border border-white/10">Template ▾</button>
+                    <div className="flex gap-2">
+                      <button type="button" className="px-3 py-1.5 rounded text-xs text-gray-300 hover:bg-white/10" onClick={() => setPosSettingsOpen(false)}>Cancel</button>
+                      <button type="button" className="px-3 py-1.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-500" onClick={() => setPosSettingsOpen(false)}>Ok</button>
+                    </div>
                   </div>
                 </div>
               </div>
