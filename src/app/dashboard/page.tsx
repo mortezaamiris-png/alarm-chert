@@ -4544,6 +4544,7 @@ export default function DashboardPage() {
   const calloutItemsRef = useRef<{ id: string; time: number; price: number; text: string; color: string; bw?: number; bh?: number }[]>([])
   const [selectedCalloutId, setSelectedCalloutId] = useState<string | null>(null);
   const [calloutBarPos, setCalloutBarPos] = useState<{ x: number; y: number }>({ x: 120, y: 80 });
+  const calloutBarUserMovedRef = useRef(false);
   const [calloutColorOpen, setCalloutColorOpen] = useState(false);
   const [calloutNoteOpen, setCalloutNoteOpen] = useState(false);
   useEffect(() => {
@@ -8568,11 +8569,12 @@ export default function DashboardPage() {
         const stemH = 36;
         const wrap = document.createElement("div");
         wrap.dataset.calloutId = c.id;
-        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:25;pointer-events:auto;`;
-        // Visible stem line
+        // Larger hit area so there's no "invisible line" floating elsewhere
+        wrap.style.cssText = `position:absolute;left:${x}px;top:${y}px;z-index:28;pointer-events:auto;touch-action:none;`;
+        // Visible stem
         const stem = document.createElement("div");
-        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:${stemH}px;background:${c.color};transform:translate(-50%,-100%);pointer-events:none;opacity:0.95;`;
-        // Bubble box
+        stem.style.cssText = `position:absolute;left:0;top:0;width:2px;height:${stemH}px;background:${c.color || "#0d9488"};transform:translate(-50%,-100%);pointer-events:none;`;
+        // Bubble
         const bubble = document.createElement("div");
         bubble.contentEditable = "true";
         bubble.spellcheck = false;
@@ -8581,21 +8583,21 @@ export default function DashboardPage() {
         bubble.style.cssText = [
           `position:absolute;left:0;top:0;transform:translate(-50%,calc(-100% - ${stemH}px));`,
           `width:${bw}px;min-height:${bh}px;padding:6px 10px;border-radius:8px;`,
-          `background:${c.color};color:#fff;font-size:12px;line-height:1.3;`,
-          `border:1px solid ${isSel ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.3)"};`,
-          `outline:none;cursor:text;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`,
+          `background:${c.color || "#0d9488"};color:#fff;font-size:12px;line-height:1.3;`,
+          `border:1px solid ${isSel ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.3)"};`,
+          `outline:none;cursor:grab;white-space:pre-wrap;word-break:break-word;text-align:center;user-select:text;`,
           isSel ? "box-shadow:0 0 0 2px rgba(249,115,22,0.45);" : "",
         ].join("");
-        // Anchor dot (move)
+        // Anchor dot
         const dot = document.createElement("div");
         dot.title = "Drag to move";
-        dot.style.cssText = `position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;border:2px solid ${c.color};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;z-index:2;`;
-        // SE resize handle when selected
+        dot.style.cssText = `position:absolute;left:0;top:0;width:14px;height:14px;border-radius:50%;border:2px solid ${c.color || "#0d9488"};background:#0b1220;transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;z-index:2;`;
+        // SE resize when selected
         if (isSel) {
           const rz = document.createElement("div");
           rz.title = "Resize";
           rz.dataset.calloutResize = "1";
-          rz.style.cssText = `position:absolute;left:0;top:0;width:10px;height:10px;border-radius:2px;background:#fff;border:1px solid ${c.color};transform:translate(calc(${bw / 2}px - 10px), calc(-100% - ${stemH}px + ${bh}px - 6px));cursor:nwse-resize;pointer-events:auto;z-index:3;`;
+          rz.style.cssText = `position:absolute;left:0;top:0;width:10px;height:10px;border-radius:2px;background:#fff;border:1px solid ${c.color || "#0d9488"};transform:translate(calc(${bw / 2}px - 10px), calc(-100% - ${stemH}px + ${bh}px - 6px));cursor:nwse-resize;pointer-events:auto;z-index:3;`;
           let resizing = false;
           let rStartX = 0, rStartY = 0, rStartW = bw, rStartH = bh;
           rz.addEventListener("pointerdown", (e: PointerEvent) => {
@@ -8620,55 +8622,52 @@ export default function DashboardPage() {
             const nh = Math.round(c.bh || bh);
             const pure = (c.text || "").replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
             const note = `__callout:${pure}|bw=${nw}|bh=${nh}`;
-            setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
+            c.text = pure;
+            setLines((prev) => prev.map((l) => (String(l.id) === String(c.id) ? { ...l, note } : l)));
             try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
           });
           wrap.appendChild(rz);
         }
-        // Select on click
-        const selectMe = () => {
+        const selectMe = (placeToolbar: boolean) => {
           (window as any).__selectedCalloutId = String(c.id);
           try { setSelectedCalloutId(String(c.id)); } catch {}
-          try {
-            setCalloutBarPos({ x: Math.max(8, Number(x) - 40), y: Math.max(8, Number(y) - stemH - bh - 48) });
-          } catch {}
+          // Only auto-place toolbar the first time / if user hasn't dragged it
+          if (placeToolbar && !calloutBarUserMovedRef.current) {
+            try {
+              setCalloutBarPos({ x: Math.max(8, Number(x) - 40), y: Math.max(8, Number(y) - stemH - bh - 48) });
+            } catch {}
+          }
         };
-        bubble.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          selectMe();
-        });
-        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
-        bubble.addEventListener("click", (e) => { e.stopPropagation(); selectMe(); });
-        bubble.addEventListener("blur", async () => {
-          const val = (bubble.textContent || "").trim();
-          c.text = val;
-          const pure = val.replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
-          const note = `__callout:${pure}|bw=${Math.round(c.bw || bw)}|bh=${Math.round(c.bh || bh)}`;
-          setLines((prev) => prev.map((l) => (l.id === c.id ? { ...l, note } : l)));
-          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
-        });
-        // Drag via anchor dot
+        // Drag whole callout (bubble or dot) — never turns into a chart line
         let dragging = false;
         let lastX = 0, lastY = 0;
-        const onDown = (e: PointerEvent) => {
-          e.preventDefault(); e.stopPropagation();
-          selectMe();
-          dragging = true; lastX = e.clientX; lastY = e.clientY;
-          try { dot.setPointerCapture(e.pointerId); } catch {}
-          dot.style.cursor = "grabbing";
+        let dragMoved = false;
+        const beginDrag = (e: PointerEvent, captureEl: HTMLElement) => {
+          e.preventDefault();
+          e.stopPropagation();
+          selectMe(true);
+          dragging = true;
+          dragMoved = false;
+          lastX = e.clientX;
+          lastY = e.clientY;
+          try { captureEl.setPointerCapture(e.pointerId); } catch {}
         };
-        const onMove = (e: PointerEvent) => {
+        const moveDrag = (e: PointerEvent) => {
           if (!dragging) return;
-          e.preventDefault(); e.stopPropagation();
+          e.preventDefault();
+          e.stopPropagation();
           const dx = e.clientX - lastX, dy = e.clientY - lastY;
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) dragMoved = true;
           lastX = e.clientX; lastY = e.clientY;
           wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
           wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
         };
-        const onUp = async () => {
+        const endDrag = async () => {
           if (!dragging) return;
           dragging = false;
+          bubble.style.cursor = "grab";
           dot.style.cursor = "grab";
+          if (!dragMoved) return;
           try {
             const left = parseFloat(wrap.style.left) || 0;
             const top = parseFloat(wrap.style.top) || 0;
@@ -8678,24 +8677,63 @@ export default function DashboardPage() {
               const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
               c.time = Number(tu);
               c.price = Number(p);
+              // Keep as callout: never strip the note / never create a price line
+              const pure = (c.text || "").replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
+              const note = `__callout:${pure}|bw=${Math.round(c.bw || bw)}|bh=${Math.round(c.bh || bh)}`;
               setLines((prev) =>
                 prev.map((l) =>
-                  l.id === c.id ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p) } : l
+                  String(l.id) === String(c.id)
+                    ? { ...l, start_time: Number(tu), end_time: Number(tu), price: Number(p), end_price: Number(p), note }
+                    : l
                 )
               );
               try {
                 await supabase
                   .from("chart_lines")
-                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p) })
+                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p), end_price: Number(p), note })
                   .eq("id", c.id);
               } catch {}
             }
           } catch {}
         };
-        dot.addEventListener("pointerdown", onDown as any);
-        wrap.addEventListener("pointermove", onMove as any);
-        wrap.addEventListener("pointerup", onUp as any);
-        wrap.addEventListener("pointercancel", onUp as any);
+        // Bubble: drag to move, double-click / focus to type
+        bubble.addEventListener("pointerdown", (e: PointerEvent) => {
+          // If user is selecting text, don't start drag
+          if ((e.target as HTMLElement)?.isContentEditable && e.detail > 1) {
+            e.stopPropagation();
+            selectMe(true);
+            bubble.style.cursor = "text";
+            return;
+          }
+          beginDrag(e, bubble);
+          bubble.style.cursor = "grabbing";
+        });
+        bubble.addEventListener("pointermove", moveDrag as any);
+        bubble.addEventListener("pointerup", endDrag as any);
+        bubble.addEventListener("pointercancel", endDrag as any);
+        bubble.addEventListener("mousedown", (e) => e.stopPropagation());
+        bubble.addEventListener("click", (e) => { e.stopPropagation(); selectMe(true); });
+        bubble.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          bubble.style.cursor = "text";
+          try { bubble.focus(); } catch {}
+        });
+        bubble.addEventListener("blur", async () => {
+          const val = (bubble.textContent || "").trim();
+          c.text = val;
+          const pure = val.replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
+          const note = `__callout:${pure}|bw=${Math.round(c.bw || bw)}|bh=${Math.round(c.bh || bh)}`;
+          setLines((prev) => prev.map((l) => (String(l.id) === String(c.id) ? { ...l, note } : l)));
+          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
+        });
+        // Dot also drags
+        dot.addEventListener("pointerdown", (e: PointerEvent) => {
+          beginDrag(e, dot);
+          dot.style.cursor = "grabbing";
+        });
+        dot.addEventListener("pointermove", moveDrag as any);
+        dot.addEventListener("pointerup", endDrag as any);
+        dot.addEventListener("pointercancel", endDrag as any);
         wrap.appendChild(stem);
         wrap.appendChild(bubble);
         wrap.appendChild(dot);
@@ -21052,34 +21090,59 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           setSaving(true);
           try {
             const uid = (await supabase.auth.getSession()).data.session?.user?.id;
+            const col = drawColorRef.current || "#0d9488";
+            // end_price = price so it never looks like a half-ray / invisible line
             let payload: any = {
               symbol: symbolRef.current.toUpperCase(),
               price: fp,
+              end_price: fp,
               start_time: t,
               end_time: t,
-              color: drawColorRef.current || "#0d9488",
+              color: col,
               width: 2,
-              note: "__callout:",
+              note: "__callout:|bw=72|bh=32",
             };
             if (uid) payload.user_id = uid;
             let { data, error } = await supabase.from("chart_lines").insert([payload]).select().single();
             if (error) {
-              payload = { symbol: payload.symbol, price: fp, color: payload.color, note: "__callout:", start_time: t, end_time: t };
+              payload = { symbol: payload.symbol, price: fp, color: col, note: "__callout:|bw=72|bh=32", start_time: t, end_time: t };
               if (uid) payload.user_id = uid;
               ({ data, error } = await supabase.from("chart_lines").insert([payload]).select().single());
             }
             if (!error && data) {
+              const id = String((data as any).id);
               pushUndo();
               setLines((prev) => [{
                 ...(data as ChartLine),
                 start_time: (data as any).start_time ?? t,
                 end_time: (data as any).end_time ?? t,
-                note: "__callout:",
+                end_price: fp,
+                note: "__callout:|bw=72|bh=32",
                 price: fp,
+                color: col,
               }, ...prev]);
-              setStatusMsg("Callout placed — type text, drag the circle to move");
+              (window as any).__selectedCalloutId = id;
+              try { setSelectedCalloutId(id); } catch {}
+              calloutBarUserMovedRef.current = false;
+              setStatusMsg("Callout placed — drag bubble or dot to move, double-click to type");
             } else {
-              setStatusMsg("Callout save failed");
+              // local fallback — still never a chart line series
+              const localId = `local-callout-${Date.now()}`;
+              pushUndo();
+              setLines((prev) => [{
+                id: localId,
+                symbol: symbolRef.current.toUpperCase(),
+                price: fp,
+                end_price: fp,
+                start_time: t,
+                end_time: t,
+                color: col,
+                note: "__callout:|bw=72|bh=32",
+              } as ChartLine, ...prev]);
+              (window as any).__selectedCalloutId = localId;
+              try { setSelectedCalloutId(localId); } catch {}
+              calloutBarUserMovedRef.current = false;
+              setStatusMsg("Callout placed (local)");
             }
           } finally {
             setMode("none");
@@ -26426,7 +26489,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Callout: tap on chart, then type");
                     }}
                   >
-                    <span className="w-4 text-center">💬</span>
+                    <span className="w-4 text-center inline-flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5h-1L6 22l1.2-3.2A8.5 8.5 0 1 1 21 11.5z" />
+                      </svg>
+                    </span>
                     Callout
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("callout") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("callout", e)}>{favTools.includes("callout") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
@@ -27407,7 +27474,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "brush" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                       ) : id === "path" ? (
-                        <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="9" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="14" r="2" fill="currentColor" stroke="none"/><path d="M5 18 L10 9 L16 14 L20 6"/></svg>
+                      ) : id === "callout" ? (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5h-1L6 22l1.2-3.2A8.5 8.5 0 1 1 21 11.5z"/></svg>
+                      ) : id === "long-pos" ? (
+                        <svg width="16" height="14" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="3.5" x2="26" y2="3.5"/><circle cx="4" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="11" x2="16" y2="11"/><text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui">L</text><circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="18.5" x2="26" y2="18.5"/></svg>
+                      ) : id === "short-pos" ? (
+                        <svg width="16" height="14" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="3.5" x2="26" y2="3.5"/><circle cx="4" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="11" x2="16" y2="11"/><text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui">S</text><circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="18.5" x2="26" y2="18.5"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -27603,6 +27676,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   const startX = e.clientX, startY = e.clientY;
                   const orig = { ...calloutBarPos };
                   const onMove = (ev: PointerEvent) => {
+                    calloutBarUserMovedRef.current = true;
                     setCalloutBarPos({
                       x: Math.max(4, orig.x + (ev.clientX - startX)),
                       y: Math.max(4, orig.y + (ev.clientY - startY)),
