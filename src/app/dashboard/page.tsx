@@ -4936,6 +4936,7 @@ export default function DashboardPage() {
   const [rectStyleOpen, setRectStyleOpen] = useState(false);
   const [rectColorOpen, setRectColorOpen] = useState(false);
   const [selectedBrushId, setSelectedBrushId] = useState<string | null>(null);
+  const selectedBrushIdRef = useRef<string | null>(null);
   const [brushStyleOpen, setBrushStyleOpen] = useState(false);
   const [brushColorOpen, setBrushColorOpen] = useState(false);
   const [brushBarPos, setBrushBarPos] = useState({ x: 12, y: 340 });
@@ -8059,7 +8060,7 @@ export default function DashboardPage() {
       vlineOverlayRef.current?.querySelectorAll("[data-brush-preview]").forEach((el) => el.remove());
       // Always nuke curve/path handles + drafts + SVG + notes so deleted curves vanish
       vlineOverlayRef.current?.querySelectorAll(
-        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-curve-svg],[data-curve-hit],[data-curve-note],[data-path-note],[data-arrow-note]"
+        "[data-curve-handle],[data-path-handle],[data-curve-draft],[data-path-draft],[data-path-preview],[data-path-svg],[data-path-hit],[data-curve-svg],[data-curve-hit],[data-curve-note],[data-path-note],[data-arrow-note]"
       ).forEach((el) => el.remove());
     } catch {}
     try {
@@ -10061,18 +10062,14 @@ priced.sort((a, b) => a.price - b.price);
         } else if (typeof l.note === "string" && (l.note.startsWith("__path:") || l.note.startsWith("__curve:"))) {
           const isCurve = l.note.startsWith("__curve:");
           try { vlineOverlayRef.current?.querySelectorAll(`[data-path-note="${l.id}"]`).forEach((el) => el.remove()); } catch {}
+          try { vlineOverlayRef.current?.querySelectorAll(`[data-path-svg="${l.id}"]`).forEach((el) => el.remove()); } catch {}
           const raw = l.note.replace(/^__(?:path|curve):/, "");
           let pairs = raw.split("|").filter((s) => s && s.includes(",") && !s.includes("=")).map((s) => {
             const [tt, pp] = s.split(",");
             return { time: Number(tt), value: Number(pp) };
           }).filter((p) => p.time > 0 && !Number.isNaN(p.value));
-          // Path: keep time order. Curve: keep placement order (start, mid, end) — never sort.
-          if (!isCurve) {
-            pairs.sort((a, b) => a.time - b.time);
-            for (let i = 1; i < pairs.length; i++) {
-              if (pairs[i].time <= pairs[i - 1].time) pairs[i].time = pairs[i - 1].time + 1;
-            }
-          }
+          // Path & Curve: keep placement order — never sort by time (allows free left/right drawing)
+          // (Previously path was sorted for LWC series which forced only-forward movement)
           // Curve: SVG-only drawing (3 control points). Never inject densified times into LWC
           // time scale — that stretches/gaps candles. Keep a transparent 2-point series only
           // so the line stays registered in chartLinesRef.
@@ -10183,18 +10180,56 @@ priced.sort((a, b) => a.price - b.price);
           } else if (isCurve && pairs.length > 3) {
             // legacy dense path ignored for time-scale safety
           } else if (!isCurve && pairs.length >= 2) {
-            const ls: any = chart.addLineSeries({
-              color: color || "#2962FF",
-              lineWidth: width || 2,
-              lineStyle: style,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-              title: "",
-              autoscaleInfoProvider: () => null as any,
-            });
-            ls.setData(pairs.map((p) => ({ time: p.time as any, value: p.value })));
-            chartLinesRef.current.set(l.id, ls);
+            // Path: pure SVG polyline (preserves free order, works left/right/up/down)
+            try {
+              const host = vlineOverlayRef.current;
+              const serSvg = seriesRef.current;
+              if (host && serSvg && chart) {
+                const coords: string[] = [];
+                for (const p of pairs) {
+                  const x = chart.timeScale().timeToCoordinate(p.time as any);
+                  const y = serSvg.priceToCoordinate(p.value);
+                  if (x == null || y == null) continue;
+                  coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+                }
+                if (coords.length >= 2) {
+                  const wrap = document.createElement("div");
+                  wrap.setAttribute("data-path-svg", String(l.id));
+                  wrap.setAttribute("data-path-pts", pairs.map((p) => `${p.time},${p.value}`).join("|"));
+                  wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:18;overflow:visible;";
+                  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                  svg.setAttribute("width", "100%");
+                  svg.setAttribute("height", "100%");
+                  svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                  const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                  poly.setAttribute("points", coords.join(" "));
+                  poly.setAttribute("fill", "none");
+                  poly.setAttribute("stroke", color || "#2962FF");
+                  poly.setAttribute("stroke-width", String(Math.max(1, width || 2)));
+                  poly.setAttribute("stroke-linecap", "round");
+                  poly.setAttribute("stroke-linejoin", "round");
+                  if (style === LineStyle.LargeDashed) poly.setAttribute("stroke-dasharray", "6 4");
+                  else if (style === LineStyle.SparseDotted) poly.setAttribute("stroke-dasharray", "2 3");
+                  poly.style.pointerEvents = "none";
+                  // Hit area for body select/move
+                  const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                  hit.setAttribute("points", coords.join(" "));
+                  hit.setAttribute("fill", "none");
+                  hit.setAttribute("stroke", "transparent");
+                  hit.setAttribute("stroke-width", "14");
+                  hit.setAttribute("stroke-linecap", "round");
+                  hit.setAttribute("stroke-linejoin", "round");
+                  hit.style.pointerEvents = "stroke";
+                  hit.style.cursor = "move";
+                  hit.setAttribute("data-path-hit", String(l.id));
+                  svg.appendChild(hit);
+                  svg.appendChild(poly);
+                  wrap.appendChild(svg);
+                  host.appendChild(wrap);
+                  chartLinesRef.current.set(l.id, { __pathDom: true } as any);
+                }
+              }
+            } catch {}
           }
 
           // Visible control handles when this curve/path is in move mode (3 for curve)
@@ -11319,6 +11354,27 @@ priced.sort((a, b) => a.price - b.price);
             host.querySelectorAll("[data-brush-id]").forEach((node) => {
               const el = node as HTMLElement;
               const raw = el.dataset.brushPts || "";
+              if (!raw) return;
+              const pts = raw.split("|").map((s) => {
+                const [tt, pp] = s.split(",");
+                return { time: Number(tt), price: Number(pp) };
+              }).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.price));
+              const coords: string[] = [];
+              for (const p of pts) {
+                const x = chart2.timeScale().timeToCoordinate(p.time as any);
+                const y = ser2.priceToCoordinate(p.price);
+                if (x == null || y == null) continue;
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+              }
+              el.querySelectorAll("polyline").forEach((poly) => {
+                poly.setAttribute("points", coords.join(" "));
+              });
+            });
+
+            // Path SVG: keep points glued to price/time while panning/zooming
+            host.querySelectorAll("[data-path-svg]").forEach((node) => {
+              const el = node as HTMLElement;
+              const raw = el.getAttribute("data-path-pts") || "";
               if (!raw) return;
               const pts = raw.split("|").map((s) => {
                 const [tt, pp] = s.split(",");
@@ -14907,7 +14963,9 @@ priced.sort((a, b) => a.price - b.price);
                       setStatusMsg("Path save failed");
                     } finally {
                       pathPointsRef.current = [];
-                      try { vlineOverlayRef.current?.querySelectorAll("[data-path-draft]").forEach((el) => el.remove()); } catch {}
+                      try {
+                        vlineOverlayRef.current?.querySelectorAll("[data-path-draft],[data-path-preview]").forEach((el) => el.remove());
+                      } catch {}
                       clearPreview();
                       setSaving(false);
                       setTimeout(() => { clickLockRef.current = false; }, 200);
@@ -15743,30 +15801,50 @@ priced.sort((a, b) => a.price - b.price);
             } catch {}
           }
 
-          // Path live preview
+          // Path live preview — SVG polyline (free order, any direction)
           if (modeNow === "path") {
             const pts = pathPointsRef.current || [];
             if (pts.length >= 1) {
               try {
-                if (!previewDiagSeriesRef.current) {
-                  previewDiagSeriesRef.current = chart.addLineSeries({
-                    color: drawColorRef.current || "#2962FF",
-                    lineWidth: Math.max(2, drawWidthRef.current || 2) as 1 | 2 | 3 | 4,
-                    lineStyle: LineStyle.Solid,
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    crosshairMarkerVisible: false,
-                    autoscaleInfoProvider: () => null as any,
-                  });
+                const host = vlineOverlayRef.current;
+                const ser = seriesRef.current;
+                if (host && ser) {
+                  host.querySelectorAll("[data-path-preview]").forEach((el) => el.remove());
+                  const all = [...pts, { time: tCursor as number, price: Number(price) }];
+                  const coords: string[] = [];
+                  for (const p of all) {
+                    const xx = chart.timeScale().timeToCoordinate(p.time as any);
+                    const yy = ser.priceToCoordinate(p.price);
+                    if (xx == null || yy == null) continue;
+                    coords.push(`${Number(xx).toFixed(2)},${Number(yy).toFixed(2)}`);
+                  }
+                  if (coords.length >= 1) {
+                    const wrap = document.createElement("div");
+                    wrap.setAttribute("data-path-preview", "1");
+                    wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:44;overflow:visible;";
+                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    svg.setAttribute("width", "100%");
+                    svg.setAttribute("height", "100%");
+                    svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                    if (coords.length >= 2) {
+                      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                      poly.setAttribute("points", coords.join(" "));
+                      poly.setAttribute("fill", "none");
+                      poly.setAttribute("stroke", drawColorRef.current || "#2962FF");
+                      poly.setAttribute("stroke-width", String(Math.max(2, drawWidthRef.current || 2)));
+                      poly.setAttribute("stroke-linecap", "round");
+                      poly.setAttribute("stroke-linejoin", "round");
+                      svg.appendChild(poly);
+                    }
+                    wrap.appendChild(svg);
+                    host.appendChild(wrap);
+                  }
                 }
-                const all = [...pts, { time: tCursor, price }];
-                const sorted = all.map((p) => ({ time: p.time, value: p.price }));
-                for (let i = 1; i < sorted.length; i++) {
-                  if (sorted[i].time <= sorted[i - 1].time) sorted[i].time = sorted[i - 1].time + 1;
+                // Drop any leftover LWC preview series
+                if (previewDiagSeriesRef.current) {
+                  try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
+                  previewDiagSeriesRef.current = null;
                 }
-                previewDiagSeriesRef.current.setData(
-                  sorted.map((p) => ({ time: p.time as any, value: p.value }))
-                );
               } catch {}
             }
           }
@@ -16632,6 +16710,63 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
 
+        // ── Click path hit area (SVG) → select + start body move ──
+        const pathHitId = t.getAttribute("data-path-hit") || t.closest?.("[data-path-hit]")?.getAttribute("data-path-hit");
+        if (pathHitId && !(modeRef.current === "path" || modeRef.current === "brush" || modeRef.current === "curve")) {
+          e.preventDefault();
+          e.stopPropagation();
+          const line = (linesRef.current || []).find((x) => String(x.id) === String(pathHitId));
+          if (line && typeof line.note === "string" && line.note.startsWith("__path:")) {
+            const ctrls = line.note.replace(/^__path:/, "").split("|").map((s) => {
+              const [tt, pp] = s.split(",");
+              return { time: Number(tt), price: Number(pp) };
+            }).filter((p) => p.time > 0 && !Number.isNaN(p.price));
+            if (ctrls.length >= 2) {
+              const cont = chartContainerRef.current;
+              const chart = chartRef.current;
+              const ser = seriesRef.current;
+              let t0 = ctrls[0].time, price0 = ctrls[0].price;
+              if (cont && chart && ser) {
+                const r = cont.getBoundingClientRect();
+                const px = e.clientX - r.left;
+                const py = e.clientY - r.top;
+                try {
+                  const logical = chart.timeScale().coordinateToLogical(px);
+                  const candles = candlesRef.current || [];
+                  if (logical != null && candles.length) {
+                    const i = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
+                    t0 = Number(candles[i].time);
+                  }
+                  const p = ser.coordinateToPrice(py);
+                  if (p != null) price0 = Number(p);
+                } catch {}
+              }
+              moveDiagRef.current = {
+                id: pathHitId,
+                kind: "line",
+                isCurve: false,
+                isPath: true,
+                curveCtrls: null,
+                pathCtrls: ctrls.map((p) => ({ time: p.time, price: p.price })),
+                curveHandle: null,
+                pathHandle: null,
+                isCurveBody: false,
+                phase: "drag-body",
+                bodyStart: { time: t0, price: price0 },
+                bodyOrig: ctrls.map((p) => ({ time: p.time, price: p.price })),
+              } as any;
+              setMode("move");
+              setMovingId(pathHitId);
+              setMovingType("line");
+              lockChartInteraction(true);
+              try { (t as any).setPointerCapture?.(e.pointerId); } catch {}
+              setStatusMsg("Path: moving body");
+              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+              return;
+            }
+          }
+        }
+
         // ── Click any path on chart → select + start body move (no list Move needed) ──
         if (!(modeRef.current === "path" || modeRef.current === "brush" || modeRef.current === "curve" || modeRef.current === "diag" || modeRef.current === "rect")) {
           if (!(t.closest?.("[data-menu]") || t.closest?.("[data-move-bar]") || t.closest?.("[data-note-edit]") || t.getAttribute("data-path-handle") || t.getAttribute("data-curve-handle"))) {
@@ -16973,17 +17108,65 @@ priced.sort((a, b) => a.price - b.price);
                 }
               } catch {}
             } else {
+              // Path: update SVG polyline in place (no LWC series / no time sorting)
               data = ctrls.map((p) => ({ time: p.time, value: p.price }));
-              for (let i = 1; i < data.length; i++) {
-                if (data[i].time <= data[i - 1].time) data[i].time = data[i - 1].time + 1;
-              }
+              try {
+                const hostP = vlineOverlayRef.current;
+                const serP = seriesRef.current;
+                if (hostP && serP && chart) {
+                  const coords: string[] = [];
+                  for (const p of ctrls) {
+                    const x = chart.timeScale().timeToCoordinate(p.time as any);
+                    const y = serP.priceToCoordinate(p.price);
+                    if (x == null || y == null) continue;
+                    coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
+                  }
+                  let wrap = hostP.querySelector(`[data-path-svg="${md.id}"]`) as HTMLElement | null;
+                  if (!wrap && coords.length >= 2) {
+                    wrap = document.createElement("div");
+                    wrap.setAttribute("data-path-svg", String(md.id));
+                    wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:18;overflow:visible;";
+                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    svg.setAttribute("width", "100%");
+                    svg.setAttribute("height", "100%");
+                    svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                    poly.setAttribute("fill", "none");
+                    poly.setAttribute("stroke", (cur && cur.color) || "#2962FF");
+                    poly.setAttribute("stroke-width", String(Math.max(1, (cur && cur.width) || 2)));
+                    poly.setAttribute("stroke-linecap", "round");
+                    poly.setAttribute("stroke-linejoin", "round");
+                    const hit = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                    hit.setAttribute("fill", "none");
+                    hit.setAttribute("stroke", "transparent");
+                    hit.setAttribute("stroke-width", "14");
+                    hit.setAttribute("stroke-linecap", "round");
+                    hit.setAttribute("stroke-linejoin", "round");
+                    hit.style.pointerEvents = "stroke";
+                    hit.style.cursor = "move";
+                    hit.setAttribute("data-path-hit", String(md.id));
+                    svg.appendChild(hit);
+                    svg.appendChild(poly);
+                    wrap.appendChild(svg);
+                    hostP.appendChild(wrap);
+                  }
+                  if (wrap) {
+                    wrap.setAttribute("data-path-pts", ctrls.map((p) => `${p.time},${p.price}`).join("|"));
+                    wrap.querySelectorAll("polyline").forEach((poly) => {
+                      poly.setAttribute("points", coords.join(" "));
+                    });
+                  }
+                }
+              } catch {}
             }
-            // Preserve visible range so candles never jump/spread while dragging
-            let savedR: any = null;
-            try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
-            ls.setData(data.map((p) => ({ time: p.time as any, value: p.value })));
-            if (savedR) {
-              try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+            // Curve still uses a tiny 2-pt LWC series; path is SVG-only (no setData)
+            if (md.isCurve && ls && data.length) {
+              let savedR: any = null;
+              try { savedR = chart.timeScale().getVisibleLogicalRange(); } catch {}
+              ls.setData(data.map((p) => ({ time: p.time as any, value: p.value })));
+              if (savedR) {
+                try { chart.timeScale().setVisibleLogicalRange(savedR); } catch {}
+              }
             }
           }
           if (host && chart && ser) {
@@ -21812,29 +21995,44 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             }
           } catch {}
           try {
-            if (!previewDiagSeriesRef.current) {
-              previewDiagSeriesRef.current = chart.addLineSeries({
-                color: drawColorRef.current,
-                lineWidth: Math.max(2, drawWidthRef.current) as 1 | 2 | 3 | 4,
-                lineStyle: LineStyle.Solid,
-                priceLineVisible: false,
-                lastValueVisible: false,
-                crosshairMarkerVisible: false,
-                autoscaleInfoProvider: () => null as any,
-              });
-            }
-            // Keep path order (do not sort — path is sequential)
-            if (pts.length >= 2) {
-              const dataPts = pts.map((p, i) => ({
-                time: (i === 0 ? p.time : Math.max(p.time, pts[i - 1].time + i)) as any,
-                value: p.price,
-              }));
-              // For LWC time must be unique & ordered — use sequential synthetic times for preview only when needed
-              const sorted = pts.map((p) => ({ time: p.time, value: p.price }));
-              for (let i = 1; i < sorted.length; i++) {
-                if (sorted[i].time <= sorted[i - 1].time) sorted[i].time = sorted[i - 1].time + 1;
+            // Path preview as SVG polyline (free order — can go left/right/up/down)
+            const host = vlineOverlayRef.current;
+            const ser = seriesRef.current;
+            if (host && ser && chart && pts.length >= 1) {
+              host.querySelectorAll("[data-path-preview]").forEach((el) => el.remove());
+              const coords: string[] = [];
+              for (const p of pts) {
+                const x = chart.timeScale().timeToCoordinate(p.time as any);
+                const y = ser.priceToCoordinate(p.price);
+                if (x == null || y == null) continue;
+                coords.push(`${Number(x).toFixed(2)},${Number(y).toFixed(2)}`);
               }
-              previewDiagSeriesRef.current.setData(sorted.map((p) => ({ time: p.time as any, value: p.value })));
+              if (coords.length >= 1) {
+                const wrap = document.createElement("div");
+                wrap.setAttribute("data-path-preview", "1");
+                wrap.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:44;overflow:visible;";
+                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                svg.setAttribute("width", "100%");
+                svg.setAttribute("height", "100%");
+                svg.style.cssText = "position:absolute;inset:0;overflow:visible;";
+                if (coords.length >= 2) {
+                  const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                  poly.setAttribute("points", coords.join(" "));
+                  poly.setAttribute("fill", "none");
+                  poly.setAttribute("stroke", drawColorRef.current || "#2962FF");
+                  poly.setAttribute("stroke-width", String(Math.max(2, drawWidthRef.current || 2)));
+                  poly.setAttribute("stroke-linecap", "round");
+                  poly.setAttribute("stroke-linejoin", "round");
+                  svg.appendChild(poly);
+                }
+                wrap.appendChild(svg);
+                host.appendChild(wrap);
+              }
+            }
+            // Clear any leftover LWC preview series from older builds
+            if (previewDiagSeriesRef.current) {
+              try { chart.removeSeries(previewDiagSeriesRef.current); } catch {}
+              previewDiagSeriesRef.current = null;
             }
           } catch {}
           if (pts.length >= 2 && isDbl) {
@@ -23895,21 +24093,44 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
     }, 60000);
   };
 
-  // Keyboard Delete / Backspace for selected line or alarm
+  // Keep brush selection ref in sync for keyboard Delete
+  useEffect(() => {
+    selectedBrushIdRef.current = selectedBrushId;
+  }, [selectedBrushId]);
+
+  // Keyboard Delete / Backspace for selected line, alarm, brush, or rectangle
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Delete" && e.key !== "Backspace") return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
-      const id = movingIdRef.current;
-      const typ = movingTypeRef.current;
-      if (!id) return;
-      if (!(modeRef.current === "move" || typ === "line" || typ === "alarm")) return;
+
+      let sid: string | null = movingIdRef.current ? String(movingIdRef.current) : null;
+      let kind: "alarm" | "line" = movingTypeRef.current === "alarm" ? "alarm" : "line";
+
+      if (!sid && selectedBrushIdRef.current) {
+        sid = String(selectedBrushIdRef.current);
+        kind = "line";
+      }
+      if (!sid && selectedRectIdRef.current) {
+        sid = String(selectedRectIdRef.current);
+        kind = "line";
+      }
+      if (!sid) return;
+
+      // Allow delete when in move mode, or when a brush/rect is selected, or line/alarm type
+      const ok =
+        modeRef.current === "move" ||
+        kind === "alarm" ||
+        kind === "line" ||
+        !!selectedBrushIdRef.current ||
+        !!selectedRectIdRef.current;
+      if (!ok) return;
+
       e.preventDefault();
       e.stopPropagation();
-      const sid = String(id);
-      const kind = typ === "alarm" ? "alarm" : "line";
+
       // clear selection UI first
       try {
         moveDiagRef.current = null;
@@ -23919,10 +24140,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
         setMoveStyleOpen(false);
         setMoveNoteOpen(false);
         setMoveAlarmOpen(false);
+        selectedRectIdRef.current = null;
+        try { setSelectedRectId(null); } catch {}
+        selectedBrushIdRef.current = null;
+        try { setSelectedBrushId(null); } catch {}
+        try { setBrushStyleOpen(false); setBrushColorOpen(false); } catch {}
+        try { setRectStyleOpen(false); setRectColorOpen(false); } catch {}
       } catch {}
       void (async () => {
-        if (kind === "alarm") await deleteAlarm(sid);
-        else await deleteLine(sid);
+        if (kind === "alarm") await deleteAlarm(sid!);
+        else await deleteLine(sid!);
         setStatusMsg("Deleted");
       })();
     };
@@ -25892,7 +26119,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setDiagStart(null);
                       setMovingId(null);
                       pathPointsRef.current = [];
-                      try { vlineOverlayRef.current?.querySelectorAll("[data-path-draft]").forEach((el) => el.remove()); } catch {}
+                      try {
+                        vlineOverlayRef.current?.querySelectorAll("[data-path-draft],[data-path-preview]").forEach((el) => el.remove());
+                      } catch {}
                       const next = mode === "path" ? "none" : "path";
                       setMode(next as any);
                       modeRef.current = next as any;
