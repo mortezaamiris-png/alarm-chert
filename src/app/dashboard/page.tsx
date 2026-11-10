@@ -11129,9 +11129,15 @@ priced.sort((a, b) => a.price - b.price);
           if (!Number.isNaN(t0) && t0 > 0) {
             const bars = candlesRef.current || [];
             const barSec = intervalToSeconds(String(intervalRef.current));
+            // Snap origin onto an existing candle time so higher TFs don't open a gap
+            if (bars.length) {
+              try { t0 = snapTimeToBars(t0, bars as any); } catch {}
+            }
+            if (barSec > 0) t0 = Math.floor(Number(t0) / barSec) * barSec;
             const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-            // End far in the future so it always extends right of origin on every TF
-            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
+            // End far in the future on the same grid
+            const baseLast = barSec > 0 ? Math.floor(Math.max(lastT, t0) / barSec) * barSec : Math.max(lastT, t0);
+            const rayEnd = baseLast + Math.max(FUTURE_BARS, 200) * Math.max(1, barSec);
             const ls: any = chart.addLineSeries({
               color,
               lineWidth: width,
@@ -11142,7 +11148,7 @@ priced.sort((a, b) => a.price - b.price);
               title: title || "",
               autoscaleInfoProvider: () => null as any,
             });
-            // Only points at/after origin — LWC will not draw left of t0
+            // Only bar-aligned points — prevents phantom gap candles
             ls.setData([
               { time: t0 as any, value: Number(l.price) },
               { time: rayEnd as any, value: Number(l.price) },
@@ -11326,8 +11332,13 @@ priced.sort((a, b) => a.price - b.price);
           if (!Number.isNaN(t0) && t0 > 0) {
             const bars = candlesRef.current || [];
             const barSec = intervalToSeconds(String(intervalRef.current));
+            if (bars.length) {
+              try { t0 = snapTimeToBars(t0, bars as any); } catch {}
+            }
+            if (barSec > 0) t0 = Math.floor(Number(t0) / barSec) * barSec;
             const lastT = bars.length ? Number(bars[bars.length - 1].time) : t0;
-            const rayEnd = Math.max(lastT, t0) + Math.max(FUTURE_BARS, 200) * barSec;
+            const baseLast = barSec > 0 ? Math.floor(Math.max(lastT, t0) / barSec) * barSec : Math.max(lastT, t0);
+            const rayEnd = baseLast + Math.max(FUTURE_BARS, 200) * Math.max(1, barSec);
             const ls: any = chart.addLineSeries({
               color,
               lineWidth: width,
@@ -22631,8 +22642,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           };
           if (m === "ray") {
             // Always resolve time from click; encode origin in note so TF changes never lose half-line identity
-            const t = resolveTime(param);
+            let t = resolveTime(param);
             if (t != null && !Number.isNaN(t)) {
+              // Snap to candle open so higher TFs don't show a gap at the origin
+              try {
+                const bars = candlesRef.current || [];
+                if (bars.length) t = snapTimeToBars(Number(t), bars as any);
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                if (barSec > 0) t = Math.floor(Number(t) / barSec) * barSec;
+              } catch {}
               base.start_time = t;
               base.note = `__ray:${t}`;
             }
@@ -27273,7 +27291,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 }`}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+                  <line x1="4" y1="12" x2="20" y2="12"/>
                 </svg>
               </button>
             )}
@@ -27516,9 +27534,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "callout" ? (
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5h-1L6 22l1.2-3.2A8.5 8.5 0 1 1 21 11.5z"/></svg>
                       ) : id === "long-pos" ? (
-                        <svg width="16" height="14" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="3.5" x2="26" y2="3.5"/><circle cx="4" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="11" x2="16" y2="11"/><text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui">L</text><circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="18.5" x2="26" y2="18.5"/></svg>
+                        <span className="text-[13px] font-bold leading-none">L</span>
                       ) : id === "short-pos" ? (
-                        <svg width="16" height="14" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="3.5" x2="26" y2="3.5"/><circle cx="4" cy="11" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="11" x2="16" y2="11"/><text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui">S</text><circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="18.5" x2="26" y2="18.5"/></svg>
+                        <span className="text-[13px] font-bold leading-none">S</span>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -27633,7 +27651,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     className={`w-7 h-7 rounded-md border flex items-center justify-center ${brushStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
                     onClick={() => { setBrushStyleOpen((v)=>!v); setBrushColorOpen(false); setMoveNoteOpen(false); }}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>
                   </button>
                   {brushStyleOpen && (
                     <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e)=>e.stopPropagation()}>
@@ -27967,7 +27985,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
                     onClick={() => setRectStyleOpen((v) => !v)}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>
                   </button>
                   {rectStyleOpen && (
                     <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e) => e.stopPropagation()}>
@@ -28400,7 +28418,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+                    <line x1="4" y1="12" x2="20" y2="12"/>
                   </svg>
                 </button>
                 {openMenu === "__draw_style__" && (
@@ -28540,7 +28558,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); setMoveAlarmOpen(false); }}
                       className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>
                     </button>
                     {moveStyleOpen && (
                       <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
@@ -32490,7 +32508,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         }}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="opacity-80">
-                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+                          <line x1="4" y1="12" x2="20" y2="12"/>
                         </svg>
                         Add section
                       </button>
@@ -33348,7 +33366,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         }`}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+                          <line x1="4" y1="12" x2="20" y2="12"/>
                         </svg>
                       </button>
                       {openMenu === `a-style-${a.id}` && (
@@ -34064,7 +34082,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         }`}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+                          <line x1="4" y1="12" x2="20" y2="12"/>
                         </svg>
                       </button>
                       {openMenu === `l-style-${l.id}` && (
