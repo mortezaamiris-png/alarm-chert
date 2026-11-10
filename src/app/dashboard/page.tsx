@@ -7410,28 +7410,31 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
-      // Larger hollow circle — easier first-click grab, no blink
+      // TradingView-style hollow blue circle — fixed size, no blink, default cursor
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
       el.style.transform = "translate(-50%, -50%)";
-      el.style.borderColor = isActive ? "#f97316" : "#2962FF";
-      el.style.borderWidth = "3px";
+      el.style.borderColor = "#2962FF";
+      el.style.borderWidth = "2.5px";
       el.style.borderStyle = "solid";
-      el.style.background = "#0b0e11";
-      el.style.width = "22px";
-      el.style.height = "22px";
+      el.style.background = "rgba(11,14,17,0.92)";
+      el.style.width = "18px";
+      el.style.height = "18px";
+      el.style.minWidth = "18px";
+      el.style.minHeight = "18px";
       el.style.borderRadius = "50%";
-      el.style.boxShadow = isActive ? "0 0 0 4px rgba(249,115,22,0.4)" : "0 0 0 3px rgba(41,98,255,0.3)";
+      el.style.boxShadow = isActive ? "0 0 0 3px rgba(41,98,255,0.4)" : "0 0 0 1px rgba(41,98,255,0.25)";
       el.style.opacity = "1";
       el.style.visibility = "visible";
       el.style.transition = "none";
       el.style.animation = "none";
       el.style.pointerEvents = "auto";
       el.style.zIndex = "95";
-      // Keep normal pointer (no hand) — easier precise selection
       el.style.cursor = "default";
       el.style.touchAction = "none";
+      el.style.padding = "0";
+      el.style.boxSizing = "border-box";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -11505,8 +11508,12 @@ priced.sort((a, b) => a.price - b.price);
           if (elC0) elC0.style.display = "none";
           return;
         }
-        // No active move → never leave ghost circles on chart
-        if (!md || (md.phase !== "pick" && md.phase !== "drag-a" && md.phase !== "drag-b" && md.phase !== "drag-c")) {
+        // Show handles for pick / endpoint drag / fib body drag (TV keeps anchors visible while moving)
+        const showHandles = !!md && (
+          md.phase === "pick" || md.phase === "drag-a" || md.phase === "drag-b" || md.phase === "drag-c" ||
+          (md.phase === "drag-body" && !!(md as any).isFib)
+        );
+        if (!showHandles) {
           if (elA0) elA0.style.display = "none";
           if (elB0) elB0.style.display = "none";
           if (elC0) elC0.style.display = "none";
@@ -11537,22 +11544,32 @@ priced.sort((a, b) => a.price - b.price);
         const place = (el: HTMLDivElement, pt: { time: number; price: number }, active: boolean) => {
           const x = timeToX(pt.time);
           const y = ser2.priceToCoordinate(pt.price);
-          // Keep last position if temporarily unresolvable — avoids jump/blink
+          // Keep last pixel position if temporarily unresolvable — no hide → no blink
           if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
           el.style.display = "block";
           el.style.visibility = "visible";
           el.style.opacity = "1";
           el.style.transition = "none";
+          el.style.animation = "none";
+          el.style.transform = "translate(-50%, -50%)";
           el.style.left = `${Number(x)}px`;
           el.style.top = `${Number(y)}px`;
-          el.style.borderColor = active ? "#f97316" : "#2962FF";
-          el.style.borderWidth = "2px";
+          // TradingView-style blue hollow circle — fixed size, never toggles
+          el.style.borderColor = active ? "#2962FF" : "#2962FF";
+          el.style.borderWidth = "2.5px";
           el.style.borderStyle = "solid";
-          el.style.background = "#0b0e11";
-          // Fixed size TV-style hollow circle — never toggle size
-          el.style.width = "12px";
-          el.style.height = "12px";
-          el.style.boxShadow = active ? "0 0 0 2px rgba(249,115,22,0.35)" : "0 0 0 1px rgba(41,98,255,0.35)";
+          el.style.background = "rgba(11,14,17,0.92)";
+          el.style.width = "18px";
+          el.style.height = "18px";
+          el.style.minWidth = "18px";
+          el.style.minHeight = "18px";
+          el.style.borderRadius = "50%";
+          el.style.boxShadow = active ? "0 0 0 3px rgba(41,98,255,0.35)" : "0 0 0 1px rgba(41,98,255,0.2)";
+          el.style.cursor = "default";
+          el.style.pointerEvents = "auto";
+          el.style.zIndex = "95";
+          el.style.padding = "0";
+          el.style.boxSizing = "border-box";
         };
         place(elA, md.pointA, md.phase === "drag-a");
         place(elB, md.pointB, md.phase === "drag-b");
@@ -28974,7 +28991,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       );
                     })()}
                     {moveAlarmOpen && (
-                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[200px] max-h-[320px] overflow-y-auto">
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg shadow-2xl w-[220px] overflow-hidden">
                         {(() => {
                           try {
                             const id = movingIdRef.current || movingId;
@@ -28984,16 +29001,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             const fib = parseFibNote((ln as any).note);
                             if (!fib) return null;
                             return (
-                              <div className="mb-2 pb-2 border-b border-gray-700">
-                                <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Fib levels</div>
-                                <div className="flex flex-col gap-0.5 max-h-[140px] overflow-y-auto">
+                              <div className="border-b border-gray-700">
+                                <div className="px-2.5 pt-2 pb-1 text-[9px] text-gray-500 uppercase tracking-wide">Fib levels</div>
+                                <div className="px-1.5 max-h-[150px] overflow-y-auto">
                                   {(fib.levels || []).map((lv) => {
                                     const checked = fibAlarmLevels.some((x) => Math.abs(x - lv) < 1e-9);
                                     const pr = fib.kind === "fib-ext" && fib.p3 != null
                                       ? fib.p3 + (fib.p2 - fib.p1) * lv
                                       : fibPrice(fib.p1, fib.p2, lv, fib.reverse);
                                     return (
-                                      <label key={String(lv)} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-white/5 cursor-pointer text-[11px] text-gray-200">
+                                      <label key={String(lv)} className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-white/5 cursor-pointer text-[11px] text-gray-200">
                                         <input
                                           type="checkbox"
                                           checked={checked}
@@ -29010,7 +29027,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                     );
                                   })}
                                 </div>
-                                <div className="flex gap-1 mt-1.5">
+                                <div className="flex gap-1 px-2.5 py-1.5">
                                   <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
                                     onClick={() => setFibAlarmLevels([...(fib.levels || [])])}>All</button>
                                   <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
@@ -29020,6 +29037,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             );
                           } catch { return null; }
                         })()}
+                        <div className="p-2.5">
                         <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
                         <div className="flex flex-col gap-0.5 mb-2">
                           {([
@@ -29258,6 +29276,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         >
                           {movingType === "alarm" ? "Apply" : "Set alarm"}
                         </button>
+                        </div>
                       </div>
                     )}
                   </div>
