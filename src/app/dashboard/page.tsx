@@ -4857,6 +4857,8 @@ export default function DashboardPage() {
     });
   };
   const [hideAlarms, setHideAlarms] = useState(false);
+  const hideAlarmsRef = useRef(false);
+  useEffect(() => { hideAlarmsRef.current = hideAlarms; }, [hideAlarms]);
   const [trashMenuOpen, setTrashMenuOpen] = useState(false);
   /** Favorite drawing tools (starred) — shown as floating icons on chart */
   const [favTools, setFavTools] = useState<string[]>(() => {
@@ -5230,6 +5232,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const hitPosAt = (clientX: number, clientY: number): string | null => {
       try {
+        if (hideLinesRef.current) return null;
         const chart = chartRef.current;
         const ser = seriesRef.current;
         const host = chartContainerRef.current;
@@ -13795,6 +13798,7 @@ priced.sort((a, b) => a.price - b.price);
     };
     const hitBrushAt = (clientX: number, clientY: number): { id: string; pts: { time: number; price: number }[] } | null => {
       if (modeRef.current === "brush") return null;
+      if (hideLinesRef.current) return null;
       const chart = chartRef.current;
       const ser = seriesRef.current;
       const rect = chartContainerRef.current?.getBoundingClientRect();
@@ -17640,14 +17644,19 @@ priced.sort((a, b) => a.price - b.price);
         const chart = chartRef.current;
         const ser = seriesRef.current;
         if (!chart || !ser) return null;
+        const hideL = !!hideLinesRef.current;
+        const hideA = !!hideAlarmsRef.current;
+        if (hideL && hideA) return null;
         const HIT = 7; // tight on the line stroke
         const symU = (symbolRef.current || "").toUpperCase();
         let best: any = null;
         const consider = (id: string, kind: "line" | "alarm", type: any, score: number, obj: any) => {
           if (score > HIT) return;
+          if (kind === "line" && hideL) return;
+          if (kind === "alarm" && hideA) return;
           if (!best || score < best.score) best = { id, kind, type, score, obj };
         };
-        const list = (linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU);
+        const list = hideL ? [] : (linesRef.current || []).filter((l: any) => String(l.symbol || "").toUpperCase() === symU);
         for (const l of list) {
           const n0 = typeof l.note === "string" ? l.note : "";
           try {
@@ -17745,8 +17754,8 @@ priced.sort((a, b) => a.price - b.price);
             }
           } catch {}
         }
-        // Alarms
-        const alarms = (alarmsRef.current || []).filter((a: any) =>
+        // Alarms (skip when hide alarms is on)
+        const alarms = hideA ? [] : (alarmsRef.current || []).filter((a: any) =>
           String(a.symbol || "").toUpperCase() === symU && a.is_active !== false && !a.triggered
         );
         for (const a of alarms) {
@@ -19629,6 +19638,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
 
         // ── Click on existing drawing to move it (TradingView-like) ──
         if (m === "none" && param.point) {
+          // When lines are hidden, do not select/move invisible drawings
+          if (hideLinesRef.current) {
+            // fall through — no drawing interaction
+          } else {
           const px = param.point.x;
           const py = param.point.y;
           const HIT = 8; // tight: on the line stroke, not a wide invisible margin
@@ -20144,6 +20157,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             }
             return;
           }
+          } // end else !hideLines
         }
 
         if (m === "move" && movingIdRef.current) {
@@ -27259,7 +27273,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 }`}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 6h16M4 12h10M4 18h14" />
+                  <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
                 </svg>
               </button>
             )}
@@ -27619,7 +27633,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     className={`w-7 h-7 rounded-md border flex items-center justify-center ${brushStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
                     onClick={() => { setBrushStyleOpen((v)=>!v); setBrushColorOpen(false); setMoveNoteOpen(false); }}
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
                   </button>
                   {brushStyleOpen && (
                     <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e)=>e.stopPropagation()}>
@@ -27953,7 +27967,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     className={`w-7 h-7 rounded-md border flex items-center justify-center ${rectStyleOpen ? "border-orange-400 text-orange-300 bg-orange-500/10" : "border-white/20 text-gray-200 hover:bg-white/10"}`}
                     onClick={() => setRectStyleOpen((v) => !v)}
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16"/><path d="M4 12h16" strokeDasharray="3 2"/><path d="M4 17h16" strokeDasharray="1 2.5"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
                   </button>
                   {rectStyleOpen && (
                     <div data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-[7.5rem]" onClick={(e) => e.stopPropagation()}>
@@ -28385,10 +28399,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                   onClick={() => setOpenMenu((m) => (m === "__draw_style__" ? null : "__draw_style__"))}
                   className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                 >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                    <path d="M4 7h16" />
-                    <path d="M4 12h10" strokeDasharray="4 3" />
-                    <path d="M4 17h7" strokeDasharray="2 2" />
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
                   </svg>
                 </button>
                 {openMenu === "__draw_style__" && (
@@ -28528,11 +28540,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       onClick={() => { setMoveStyleOpen((v) => !v); setMoveNoteOpen(false); setMoveAlarmOpen(false); }}
                       className="w-7 h-7 rounded-md border border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200 flex items-center justify-center transition-colors"
                     >
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                        <path d="M4 7h16" />
-                        <path d="M4 12h10" strokeDasharray="4 3" />
-                        <path d="M4 17h7" strokeDasharray="1.5 2.5" />
-                      </svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
                     </button>
                     {moveStyleOpen && (
                       <div className="absolute bottom-full mb-1.5 left-0 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2 shadow-2xl flex flex-col gap-1.5 min-w-[110px]">
@@ -32482,7 +32490,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         }}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="opacity-80">
-                          <path d="M4 7h16M4 12h10M4 17h16" />
+                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
                         </svg>
                         Add section
                       </button>
@@ -33339,8 +33347,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
                         }`}
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="4" y1="12" x2="20" y2="12" strokeDasharray={a.dash === "dashed" ? "4 3" : "0"} strokeWidth={a.width || 2} />
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
                         </svg>
                       </button>
                       {openMenu === `a-style-${a.id}` && (
@@ -34055,8 +34063,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             : "bg-gray-900/95 border-gray-600 text-gray-200 hover:bg-white/10"
                         }`}
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="4" y1="12" x2="20" y2="12" strokeDasharray={(l.dash || l.style) === "dashed" ? "4 3" : "0"} strokeWidth={l.width || 2} />
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
                         </svg>
                       </button>
                       {openMenu === `l-style-${l.id}` && (
