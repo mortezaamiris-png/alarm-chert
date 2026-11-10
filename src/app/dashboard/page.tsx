@@ -4934,6 +4934,8 @@ export default function DashboardPage() {
   const [moveAlarmCond, setMoveAlarmCond] = useState<"cross" | "above" | "below">("cross");
   const [moveAlarmOnce, setMoveAlarmOnce] = useState(true);
   const [moveAlarmDelete, setMoveAlarmDelete] = useState(false);
+  /** When alarming a Fib: which level values are checked */
+  const [fibAlarmLevels, setFibAlarmLevels] = useState<number[]>([]);
   const [moveBarPos, setMoveBarPos] = useState<{ x: number; y: number } | null>(null);
   const [moveNoteOpen, setMoveNoteOpen] = useState(false);
   const [moveNoteDraft, setMoveNoteDraft] = useState("");
@@ -7408,23 +7410,27 @@ export default function DashboardPage() {
       const y = series.priceToCoordinate(pt.price);
       // Keep last pixel position if temporarily unresolvable — avoids jump/flicker
       if (x == null || y == null || Number.isNaN(Number(x)) || Number.isNaN(Number(y))) return;
-      // Stable hollow circle — fixed size, no blink
+      // Larger hollow circle — easier first-click grab, no blink
       el.style.display = "block";
       el.style.left = `${Number(x)}px`;
       el.style.top = `${Number(y)}px`;
+      el.style.transform = "translate(-50%, -50%)";
       el.style.borderColor = isActive ? "#f97316" : "#2962FF";
-      el.style.borderWidth = "2.5px";
+      el.style.borderWidth = "3px";
       el.style.borderStyle = "solid";
       el.style.background = "#0b0e11";
-      el.style.width = "16px";
-      el.style.height = "16px";
-      el.style.boxShadow = isActive ? "0 0 0 3px rgba(249,115,22,0.35)" : "0 0 0 2px rgba(41,98,255,0.25)";
+      el.style.width = "22px";
+      el.style.height = "22px";
+      el.style.borderRadius = "50%";
+      el.style.boxShadow = isActive ? "0 0 0 4px rgba(249,115,22,0.4)" : "0 0 0 3px rgba(41,98,255,0.3)";
       el.style.opacity = "1";
       el.style.visibility = "visible";
       el.style.transition = "none";
+      el.style.animation = "none";
       el.style.pointerEvents = "auto";
-      el.style.zIndex = "90";
-      el.style.cursor = "default";
+      el.style.zIndex = "95";
+      el.style.cursor = "grab";
+      el.style.touchAction = "none";
     };
     place(elA, pointA, active === "a");
     place(elB, pointB, active === "b");
@@ -7653,8 +7659,22 @@ export default function DashboardPage() {
               (md2 as any).fibSnapshot = fibBase;
               const rev = !!fibBase.reverse;
               const levels: number[] = fibBase.levels || [];
-              const pls: any[] = (held as any).lines || [];
-              // price lines are created in level order for on-levels
+              const extras: any[] = (held as any).series || [];
+              // Level horizontals are stored in series[] (not lines[]); keep them visible while dragging
+              const barSec = intervalToSeconds(String(intervalRef.current));
+              const tA = Math.min(t0, t1);
+              const tB = Math.max(t0, t1);
+              const bars = candlesRef.current || [];
+              const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
+              const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
+              const FAR_LEFT = Math.min(chartFirst, tA) - barSec * Math.min(FUTURE_BARS, 900);
+              const FAR_RIGHT = Math.max(chartLast, tB) + barSec * (FUTURE_BARS + 20);
+              const ext = fibBase.extend || "none";
+              let tFrom = tA, tTo = tB;
+              if (ext === "right") { tFrom = tA; tTo = FAR_RIGHT; }
+              else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
+              else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
+              // First N series = level horizontals (in level order); remaining = trend segments
               let pi = 0;
               for (const lv of levels) {
                 let pr: number;
@@ -7663,32 +7683,32 @@ export default function DashboardPage() {
                 } else {
                   pr = fibPrice(p0, p1, Number(lv), rev);
                 }
-                if (pi < pls.length && pls[pi] && typeof pls[pi].applyOptions === "function") {
-                  try { pls[pi].applyOptions({ price: pr }); } catch {}
+                if (pi < extras.length && extras[pi] && typeof extras[pi].setData === "function") {
+                  try {
+                    extras[pi].setData([
+                      { time: Number(tFrom) as any, value: pr },
+                      { time: Number(tTo) as any, value: pr },
+                    ].sort((a: any, b: any) => Number(a.time) - Number(b.time)));
+                    // Keep DOM label price in sync if present
+                    try {
+                      if ((extras[pi] as any).__fibLabel) {
+                        (extras[pi] as any).__fibLabel.price = pr;
+                      }
+                    } catch {}
+                  } catch {}
                 }
                 pi++;
               }
-              // trend line series if any
-              const extras: any[] = (held as any).series || [];
-              for (const ser of extras) {
+              // Remaining series = trend / A→B / B→C
+              for (let si = pi; si < extras.length; si++) {
+                const ser = extras[si];
                 if (!ser || typeof ser.setData !== "function") continue;
                 try {
-                  const barSec = intervalToSeconds(String(intervalRef.current));
-                  if (fibBase.kind === "fib-ext" && md2.pointC) {
-                    // first extra = A→B, second may be B→C
-                    // Heuristic: update all trend-like series between anchors
-                    ser.setData(denseDiagPoints(
-                      Math.min(t0, t1), Math.max(t0, t1),
-                      t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
-                      barSec
-                    ));
-                  } else {
-                    ser.setData(denseDiagPoints(
-                      Math.min(t0, t1), Math.max(t0, t1),
-                      t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
-                      barSec
-                    ));
-                  }
+                  ser.setData(denseDiagPoints(
+                    Math.min(t0, t1), Math.max(t0, t1),
+                    t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
+                    barSec
+                  ));
                 } catch {}
               }
               // mutate note coords live for persistence
@@ -17849,7 +17869,7 @@ priced.sort((a, b) => a.price - b.price);
                 const x = chart.timeScale().timeToCoordinate(pt.time as any);
                 const y = ser.priceToCoordinate(pt.price);
                 if (x == null || y == null) return false;
-                return Math.hypot(px - Number(x), py - Number(y)) <= 28;
+                return Math.hypot(px - Number(x), py - Number(y)) <= 44;
               };
               if (nearPt(md.pointA) || nearPt(md.pointB) || nearPt(md.pointC as any)) return;
             }
@@ -18096,14 +18116,27 @@ priced.sort((a, b) => a.price - b.price);
                 t3 != null && p3 != null ? { time: t3, price: p3 } : null
               );
             } catch {}
-            // In-place update fib price lines (no full renderAll → no lag)
+            // In-place update fib level horizontals + trend (keep visible while dragging)
             try {
               const fib0 = bd.orig.fib;
               const held = chartLinesRef.current.get(bd.id) || chartLinesRef.current.get(String(bd.id));
               if (fib0 && held && (held as any).__fibPriceLines) {
                 const rev = !!fib0.reverse;
                 const levels: number[] = fib0.levels || [];
-                const pls: any[] = (held as any).lines || [];
+                const extras: any[] = (held as any).series || [];
+                const barSec = intervalToSeconds(String(intervalRef.current));
+                const tA = Math.min(t1, t2);
+                const tB = Math.max(t1, t2);
+                const bars = candlesRef.current || [];
+                const chartFirst = bars.length ? Number(bars[0].time) : tA - 86400 * 30;
+                const chartLast = bars.length ? Number(bars[bars.length - 1].time) : tB + 86400 * 30;
+                const FAR_LEFT = Math.min(chartFirst, tA) - barSec * Math.min(FUTURE_BARS, 900);
+                const FAR_RIGHT = Math.max(chartLast, tB) + barSec * (FUTURE_BARS + 20);
+                const ext = fib0.extend || "none";
+                let tFrom = tA, tTo = tB;
+                if (ext === "right") { tFrom = tA; tTo = FAR_RIGHT; }
+                else if (ext === "left") { tFrom = FAR_LEFT; tTo = tB; }
+                else if (ext === "both") { tFrom = FAR_LEFT; tTo = FAR_RIGHT; }
                 let pi = 0;
                 for (const lv of levels) {
                   let pr: number;
@@ -18112,14 +18145,19 @@ priced.sort((a, b) => a.price - b.price);
                   } else {
                     pr = fibPrice(p1, p2, Number(lv), rev);
                   }
-                  if (pi < pls.length && pls[pi] && typeof pls[pi].applyOptions === "function") {
-                    try { pls[pi].applyOptions({ price: pr }); } catch {}
+                  if (pi < extras.length && extras[pi] && typeof extras[pi].setData === "function") {
+                    try {
+                      extras[pi].setData([
+                        { time: Number(tFrom) as any, value: pr },
+                        { time: Number(tTo) as any, value: pr },
+                      ].sort((a: any, b: any) => Number(a.time) - Number(b.time)));
+                      try { if ((extras[pi] as any).__fibLabel) (extras[pi] as any).__fibLabel.price = pr; } catch {}
+                    } catch {}
                   }
                   pi++;
                 }
-                const extras: any[] = (held as any).series || [];
-                const barSec = intervalToSeconds(String(intervalRef.current));
-                for (const ser of extras) {
+                for (let si = pi; si < extras.length; si++) {
+                  const ser = extras[si];
                   if (!ser || typeof ser.setData !== "function") continue;
                   try {
                     ser.setData(denseDiagPoints(
@@ -28742,9 +28780,37 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     } catch { return false; }
                   })() && (
                   <div className="relative" data-menu>
+                    {(() => {
+                      // Count existing fib-level alarms for badge
+                      let fibAlarmCount = 0;
+                      let isFibMove = false;
+                      try {
+                        const id = movingIdRef.current || movingId;
+                        const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                        const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                        isFibMove = n.startsWith("__fib:") || n.startsWith("__fibext:");
+                        if (isFibMove && ln) {
+                          const fib = parseFibNote((ln as any).note);
+                          if (fib) {
+                            const prices = (fib.levels || []).map((lv) =>
+                              fib.kind === "fib-ext" && fib.p3 != null
+                                ? fib.p3 + (fib.p2 - fib.p1) * lv
+                                : fibPrice(fib.p1, fib.p2, lv, fib.reverse)
+                            );
+                            const symU = (symbolRef.current || "").toUpperCase();
+                            for (const a of alarmsRef.current || []) {
+                              if (String(a.symbol || "").toUpperCase() !== symU) continue;
+                              if (a.is_active === false || a.triggered) continue;
+                              const ap = Number(a.price);
+                              if (prices.some((p) => Math.abs(p - ap) / Math.max(Math.abs(p), 1e-12) < 1e-4)) fibAlarmCount++;
+                            }
+                          }
+                        }
+                      } catch {}
+                      return (
                     <button
                       type="button"
-                      title="Alarm"
+                      title={isFibMove ? "Alarm on Fib levels" : "Alarm"}
                       onClick={() => {
                         const open = !moveAlarmOpen;
                         setMoveAlarmOpen(open);
@@ -28766,9 +28832,35 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             setMoveAlarmOnce(true);
                             setMoveAlarmDelete(false);
                           }
+                          // Prefill fib level checks from existing alarms / all levels
+                          try {
+                            const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                            const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                            if (n.startsWith("__fib:") || n.startsWith("__fibext:")) {
+                              const fib = parseFibNote((ln as any).note);
+                              if (fib) {
+                                const symU = (symbolRef.current || "").toUpperCase();
+                                const checked: number[] = [];
+                                for (const lv of fib.levels || []) {
+                                  const pr = fib.kind === "fib-ext" && fib.p3 != null
+                                    ? fib.p3 + (fib.p2 - fib.p1) * lv
+                                    : fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                                  const has = (alarmsRef.current || []).some((a) =>
+                                    String(a.symbol || "").toUpperCase() === symU &&
+                                    a.is_active !== false && !a.triggered &&
+                                    Math.abs(Number(a.price) - pr) / Math.max(Math.abs(pr), 1e-12) < 1e-4
+                                  );
+                                  if (has) checked.push(lv);
+                                }
+                                setFibAlarmLevels(checked.length ? checked : [...(fib.levels || [])]);
+                              }
+                            } else {
+                              setFibAlarmLevels([]);
+                            }
+                          } catch { setFibAlarmLevels([]); }
                         }
                       }}
-                      className={`w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
+                      className={`relative w-7 h-7 rounded-md border flex items-center justify-center transition-colors ${
                         moveAlarmOpen || movingType === "alarm"
                           ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
                           : "border-gray-600/80 bg-gray-800/90 text-orange-400 hover:border-orange-500 hover:bg-orange-500/10"
@@ -28778,9 +28870,61 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                       </svg>
+                      {fibAlarmCount > 0 && (
+                        <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 rounded-full bg-orange-500 text-[9px] font-bold text-black flex items-center justify-center leading-none">
+                          {fibAlarmCount}
+                        </span>
+                      )}
                     </button>
+                      );
+                    })()}
                     {moveAlarmOpen && (
-                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[180px]">
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg p-2.5 shadow-2xl min-w-[200px] max-h-[320px] overflow-y-auto">
+                        {(() => {
+                          try {
+                            const id = movingIdRef.current || movingId;
+                            const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                            const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                            if (!(n.startsWith("__fib:") || n.startsWith("__fibext:"))) return null;
+                            const fib = parseFibNote((ln as any).note);
+                            if (!fib) return null;
+                            return (
+                              <div className="mb-2 pb-2 border-b border-gray-700">
+                                <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Fib levels</div>
+                                <div className="flex flex-col gap-0.5 max-h-[140px] overflow-y-auto">
+                                  {(fib.levels || []).map((lv) => {
+                                    const checked = fibAlarmLevels.some((x) => Math.abs(x - lv) < 1e-9);
+                                    const pr = fib.kind === "fib-ext" && fib.p3 != null
+                                      ? fib.p3 + (fib.p2 - fib.p1) * lv
+                                      : fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                                    return (
+                                      <label key={String(lv)} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-white/5 cursor-pointer text-[11px] text-gray-200">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => {
+                                            setFibAlarmLevels((prev) =>
+                                              checked ? prev.filter((x) => Math.abs(x - lv) >= 1e-9) : [...prev, lv]
+                                            );
+                                          }}
+                                          className="accent-orange-500 w-3.5 h-3.5"
+                                        />
+                                        <span className="font-medium tabular-nums">{lv}</span>
+                                        <span className="text-gray-500 tabular-nums ml-auto">{formatPrice(pr)}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                                <div className="flex gap-1 mt-1.5">
+                                  <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
+                                    onClick={() => setFibAlarmLevels([...(fib.levels || [])])}>All</button>
+                                  <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
+                                    onClick={() => setFibAlarmLevels([])}>None</button>
+                                </div>
+                              </div>
+                            );
+                          } catch { return null; }
+                        })()}
                         <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
                         <div className="flex flex-col gap-0.5 mb-2">
                           {([
@@ -28882,6 +29026,76 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             // Line → convert to alarm with chosen settings
                             const l = (linesRef.current || []).find((x) => String(x.id) === String(id));
                             if (!l) return;
+                            // Fib → create one horizontal alarm per checked level
+                            try {
+                              const n0 = typeof l.note === "string" ? l.note : "";
+                              if (n0.startsWith("__fib:") || n0.startsWith("__fibext:")) {
+                                const fib = parseFibNote(n0);
+                                if (fib && fibAlarmLevels.length) {
+                                  pushUndo();
+                                  const session = (await supabase.auth.getSession()).data.session;
+                                  const uid = session?.user?.id;
+                                  const symU = String(l.symbol || symbolRef.current || "").toUpperCase();
+                                  let created = 0;
+                                  for (const lv of fibAlarmLevels) {
+                                    const pr = fib.kind === "fib-ext" && fib.p3 != null
+                                      ? fib.p3 + (fib.p2 - fib.p1) * lv
+                                      : fibPrice(fib.p1, fib.p2, lv, fib.reverse);
+                                    if (!Number.isFinite(pr)) continue;
+                                    // skip if alarm already exists at this price
+                                    const exists = (alarmsRef.current || []).some((a) =>
+                                      String(a.symbol || "").toUpperCase() === symU &&
+                                      a.is_active !== false && !a.triggered &&
+                                      Math.abs(Number(a.price) - pr) / Math.max(Math.abs(pr), 1e-12) < 1e-4
+                                    );
+                                    if (exists) continue;
+                                    const row: any = {
+                                      symbol: symU,
+                                      price: pr,
+                                      condition: moveAlarmCond,
+                                      is_active: true,
+                                      triggered: false,
+                                      color: l.color || DEFAULT_ALARM_COLOR,
+                                      width: 2,
+                                      dash: "solid",
+                                      note: encodeAlarmCfg(`Fib ${lv}`, moveAlarmOnce, moveAlarmDelete),
+                                    };
+                                    if (uid) row.user_id = uid;
+                                    try {
+                                      const { data, error } = await supabase.from("alarms").insert([row]).select().single();
+                                      if (!error && data) {
+                                        const saved: any = {
+                                          ...(data as any),
+                                          condition: moveAlarmCond,
+                                          once: moveAlarmOnce,
+                                          delete_after: moveAlarmDelete,
+                                          note: row.note,
+                                        };
+                                        setAlarms((prev) => [saved, ...prev]);
+                                        try { if (alarmsRef.current) alarmsRef.current = [saved, ...(alarmsRef.current || [])]; } catch {}
+                                        created++;
+                                      } else {
+                                        // local fallback
+                                        const local = { ...row, id: `local-alarm-${Date.now()}-${lv}` };
+                                        setAlarms((prev) => [local, ...prev]);
+                                        try { if (alarmsRef.current) alarmsRef.current = [local, ...(alarmsRef.current || [])]; } catch {}
+                                        created++;
+                                      }
+                                    } catch {
+                                      const local = { ...row, id: `local-alarm-${Date.now()}-${lv}` };
+                                      setAlarms((prev) => [local, ...prev]);
+                                      created++;
+                                    }
+                                  }
+                                  setMoveAlarmOpen(false);
+                                  setStatusMsg(created > 0
+                                    ? `Fib alarms set: ${created} level(s) · ${moveAlarmCond}`
+                                    : "No new fib alarms (already set or none checked)");
+                                  try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+                                  return;
+                                }
+                              }
+                            } catch {}
                             try {
                               pushUndo();
                               const session = (await supabase.auth.getSession()).data.session;
