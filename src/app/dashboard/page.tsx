@@ -2493,7 +2493,7 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__fibext:")) return { icon: "Fe", label: "Fib Ext", showPrice: false };
   if (n.startsWith("__fibtbt:")) return { icon: "║t", label: "Fib TBT", showPrice: false };
   if (n.startsWith("__fibtz:")) return { icon: "║", label: "Fib TZ", showPrice: false };
-  if (n.startsWith("__fib:")) return { icon: "F", label: "Fib", showPrice: false };
+  if (n.startsWith("__fib:")) return { icon: "≡", label: "Fib", showPrice: false };
   if (n.startsWith("__rect:")) return { icon: "□", label: "Rectangle", showPrice: false };
   if (n.startsWith("__brush:")) return { icon: "✎", label: "Brush", showPrice: false };
   if (n.startsWith("__path:")) return { icon: "⑂", label: "Path", showPrice: false };
@@ -2538,8 +2538,8 @@ const FAV_TOOL_META: Record<string, { label: string; icon: string }> = {
   "vline": { label: "Vertical line", icon: "|" },
   "channel": { label: "Parallel channel", icon: "⧉" },
   "curve": { label: "Curve", icon: "⌒" },
-  "fib": { label: "Fib retracement", icon: "F" },
-  "fib-ext": { label: "Fib extension", icon: "Fe" },
+  "fib": { label: "Fib retracement", icon: "fib" },
+  "fib-ext": { label: "Fib extension", icon: "fib" },
   "fib-tz": { label: "Fib time zone", icon: "║" },
   "fib-tbt": { label: "Trend fib time", icon: "║t" },
   "avwap": { label: "Anchored VWAP", icon: "V" },
@@ -7429,7 +7429,8 @@ export default function DashboardPage() {
       el.style.animation = "none";
       el.style.pointerEvents = "auto";
       el.style.zIndex = "95";
-      el.style.cursor = "grab";
+      // Keep normal pointer (no hand) — easier precise selection
+      el.style.cursor = "default";
       el.style.touchAction = "none";
     };
     place(elA, pointA, active === "a");
@@ -7711,6 +7712,47 @@ export default function DashboardPage() {
                   ));
                 } catch {}
               }
+              // Live-update background bands so they don't lag behind anchors
+              try {
+                const hostB = vlineOverlayRef.current;
+                const chartB = chartRef.current;
+                const serB = seriesRef.current;
+                if (hostB && chartB && serB && fibBase.background !== false) {
+                  const prices: number[] = [];
+                  for (const lv of levels) {
+                    let pr: number;
+                    if (fibBase.kind === "fib-ext" && md2.pointC) {
+                      pr = Number(md2.pointC.price) + (p1 - p0) * Number(lv);
+                    } else {
+                      pr = fibPrice(p0, p1, Number(lv), rev);
+                    }
+                    if (Number.isFinite(pr)) prices.push(pr);
+                  }
+                  prices.sort((a, b) => a - b);
+                  const bands = Array.from(hostB.querySelectorAll(`[data-fib-band][data-fib-id="${id}"], [data-fib-band][data-fib-id="${String(id)}"]`)) as HTMLElement[];
+                  // Also match without strict id if missing
+                  const allBands = bands.length ? bands : (Array.from(hostB.querySelectorAll("[data-fib-band]")) as HTMLElement[]);
+                  for (let i = 0; i < Math.min(allBands.length, Math.max(0, prices.length - 1)); i++) {
+                    const lo = prices[i];
+                    const hi = prices[i + 1];
+                    const el = allBands[i];
+                    const yTop = serB.priceToCoordinate(hi);
+                    const yBot = serB.priceToCoordinate(lo);
+                    const xL = chartB.timeScale().timeToCoordinate(tFrom as any);
+                    const xR = chartB.timeScale().timeToCoordinate(tTo as any);
+                    if (yTop == null || yBot == null || xL == null || xR == null) continue;
+                    el.dataset.fibLo = String(lo);
+                    el.dataset.fibHi = String(hi);
+                    el.dataset.fibT0 = String(tFrom);
+                    el.dataset.fibT1 = String(tTo);
+                    el.style.left = `${Math.min(Number(xL), Number(xR))}px`;
+                    el.style.top = `${Math.min(Number(yTop), Number(yBot))}px`;
+                    el.style.width = `${Math.max(2, Math.abs(Number(xR) - Number(xL)))}px`;
+                    el.style.height = `${Math.max(1, Math.abs(Number(yBot) - Number(yTop)))}px`;
+                    el.style.display = "block";
+                  }
+                }
+              } catch {}
               // mutate note coords live for persistence
               try {
                 const cur = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
@@ -18167,6 +18209,46 @@ priced.sort((a, b) => a.price - b.price);
                     ));
                   } catch {}
                 }
+                // Live-update background bands with body drag
+                try {
+                  const hostB = vlineOverlayRef.current;
+                  const chartB = chartRef.current;
+                  const serB = seriesRef.current;
+                  if (hostB && chartB && serB && fib0.background !== false) {
+                    const prices: number[] = [];
+                    for (const lv of levels) {
+                      let pr: number;
+                      if (fib0.kind === "fib-ext" && t3 != null && p3 != null) {
+                        pr = Number(p3) + (p2 - p1) * Number(lv);
+                      } else {
+                        pr = fibPrice(p1, p2, Number(lv), rev);
+                      }
+                      if (Number.isFinite(pr)) prices.push(pr);
+                    }
+                    prices.sort((a, b) => a - b);
+                    const bands = Array.from(hostB.querySelectorAll(`[data-fib-band][data-fib-id="${bd.id}"]`)) as HTMLElement[];
+                    const allBands = bands.length ? bands : (Array.from(hostB.querySelectorAll("[data-fib-band]")) as HTMLElement[]);
+                    for (let i = 0; i < Math.min(allBands.length, Math.max(0, prices.length - 1)); i++) {
+                      const lo = prices[i];
+                      const hi = prices[i + 1];
+                      const el = allBands[i];
+                      const yTop = serB.priceToCoordinate(hi);
+                      const yBot = serB.priceToCoordinate(lo);
+                      const xL = chartB.timeScale().timeToCoordinate(tFrom as any);
+                      const xR = chartB.timeScale().timeToCoordinate(tTo as any);
+                      if (yTop == null || yBot == null || xL == null || xR == null) continue;
+                      el.dataset.fibLo = String(lo);
+                      el.dataset.fibHi = String(hi);
+                      el.dataset.fibT0 = String(tFrom);
+                      el.dataset.fibT1 = String(tTo);
+                      el.style.left = `${Math.min(Number(xL), Number(xR))}px`;
+                      el.style.top = `${Math.min(Number(yTop), Number(yBot))}px`;
+                      el.style.width = `${Math.max(2, Math.abs(Number(xR) - Number(xL)))}px`;
+                      el.style.height = `${Math.max(1, Math.abs(Number(yBot) - Number(yTop)))}px`;
+                      el.style.display = "block";
+                    }
+                  }
+                } catch {}
                 // keep note coords for save on pointerup
                 try {
                   const note = buildFibNote(
@@ -26360,9 +26442,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Fib Retracement: tap point A, then B");
                     }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
-                      <path d="M5 19h14" /><path d="M5 15h11" /><path d="M5 11h8" /><path d="M5 7h5" />
-                      <path d="M6 19L16 7" strokeDasharray="2 2" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" className="shrink-0">
+                      <line x1="4" y1="5" x2="20" y2="5" />
+                      <line x1="4" y1="10" x2="20" y2="10" />
+                      <circle cx="17" cy="10" r="2" fill="currentColor" stroke="none" />
+                      <line x1="4" y1="15" x2="20" y2="15" />
+                      <line x1="4" y1="20" x2="20" y2="20" />
+                      <circle cx="7" cy="20" r="2" fill="currentColor" stroke="none" />
                     </svg>
                     Fib retracement
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib", e)}>{favTools.includes("fib") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -27575,6 +27661,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <span className="text-[13px] font-bold leading-none">L</span>
                       ) : id === "short-pos" ? (
                         <span className="text-[13px] font-bold leading-none">S</span>
+                      ) : id === "fib" || id === "fib-ext" ? (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                          <line x1="4" y1="5" x2="20" y2="5" />
+                          <line x1="4" y1="10" x2="20" y2="10" />
+                          <circle cx="17" cy="10" r="2" fill="currentColor" stroke="none" />
+                          <line x1="4" y1="15" x2="20" y2="15" />
+                          <line x1="4" y1="20" x2="20" y2="20" />
+                          <circle cx="7" cy="20" r="2" fill="currentColor" stroke="none" />
+                        </svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -33738,7 +33833,9 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         ) : meta.label === "Brush" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.label === "Path" ? (
-                          <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="5" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="9" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="14" r="2" fill="currentColor" stroke="none"/><path d="M5 18 L10 9 L16 14 L20 6"/></svg>
+                        ) : meta.label === "Fib" || meta.label === "Fib Ext" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="4" y1="5" x2="20" y2="5"/><line x1="4" y1="10" x2="20" y2="10"/><circle cx="17" cy="10" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="4" y1="20" x2="20" y2="20"/><circle cx="7" cy="20" r="2" fill="currentColor" stroke="none"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
