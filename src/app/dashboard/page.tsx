@@ -34401,6 +34401,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         </svg>
                       </button>
                     ) : typeof l.note === "string" && (l.note.startsWith("__fib:") || l.note.startsWith("__fibext:")) ? (
+                      <>
                       <button
                         type="button"
                         title="Fib settings"
@@ -34503,6 +34504,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                         </svg>
                       </button>
+                      </>
                     ) : typeof l.note === "string" && (l.note.startsWith("__long:") || l.note.startsWith("__short:")) ? (
                       <>
                         {/* Target (green) + Stop (red) colors only — no Alarm, no line style */}
