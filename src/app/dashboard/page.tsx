@@ -15406,6 +15406,36 @@ priced.sort((a, b) => a.price - b.price);
           } catch {}
         };
         (window as any).__syncPosOverlays = syncPosOverlaysNow;
+        // Keep position labels/handles glued on BOTH horizontal AND vertical pan/zoom
+        const schedulePosSync = () => {
+          if ((window as any).__posSyncRaf) return;
+          (window as any).__posSyncRaf = requestAnimationFrame(() => {
+            (window as any).__posSyncRaf = 0;
+            try { syncPosOverlaysNow(); } catch {}
+          });
+        };
+        try {
+          const psRight: any = chart.priceScale("right");
+          if (psRight && typeof psRight.subscribeVisiblePriceRangeChange === "function") {
+            psRight.subscribeVisiblePriceRangeChange(() => schedulePosSync());
+          }
+        } catch {}
+        try {
+          const serPs: any = seriesRef.current?.priceScale?.();
+          if (serPs && typeof serPs.subscribeVisiblePriceRangeChange === "function") {
+            serPs.subscribeVisiblePriceRangeChange(() => schedulePosSync());
+          }
+        } catch {}
+        // Fallback for vertical drag/scroll: wheel + pointer on chart container
+        try {
+          const hostEl = chartContainerRef.current;
+          if (hostEl && !(hostEl as any).__posSyncBound) {
+            (hostEl as any).__posSyncBound = true;
+            hostEl.addEventListener("wheel", schedulePosSync, { passive: true });
+            hostEl.addEventListener("pointermove", schedulePosSync, { passive: true });
+            hostEl.addEventListener("pointerup", schedulePosSync, { passive: true });
+          }
+        } catch {}
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
           try { syncPosOverlaysNow(); } catch {}
           // Reposition fibtbt / fibtz overlays by full re-render when present (keeps time-locked)
@@ -27183,15 +27213,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 {favTools.map((id, index) => {
                   const meta = FAV_TOOL_META[id] || { label: id, icon: "★" };
                   const active = mode === id;
+                  // Hover: orange for most tools; Long=green, Short=red (TV-like)
+                  let hoverCls = "hover:border-orange-500 hover:text-orange-400 hover:bg-orange-500/15";
+                  if (id === "long-pos") hoverCls = "hover:border-emerald-500 hover:text-emerald-400 hover:bg-emerald-500/20";
+                  if (id === "short-pos") hoverCls = "hover:border-red-500 hover:text-red-400 hover:bg-red-500/20";
+                  let activeCls = "bg-orange-500 border-orange-400 text-black";
+                  if (id === "long-pos") activeCls = "bg-emerald-600 border-emerald-400 text-white";
+                  if (id === "short-pos") activeCls = "bg-red-600 border-red-400 text-white";
                   return (
                     <button
                       key={id}
                       type="button"
                       title={meta.label}
-                      className={`w-8 h-8 rounded-lg border flex items-center justify-center text-sm font-semibold touch-manipulation shrink-0 ${
+                      className={`w-8 h-8 rounded-lg border flex items-center justify-center text-sm font-semibold touch-manipulation shrink-0 transition-colors ${
                         active
-                          ? "bg-orange-500 border-orange-400 text-black"
-                          : "bg-gray-900 border-gray-600 text-gray-200 hover:border-amber-500/50 hover:text-amber-200"
+                          ? activeCls
+                          : `bg-gray-900 border-gray-600 text-gray-200 ${hoverCls}`
                       }`}
                       onPointerDown={(e) => {
                         e.stopPropagation();
