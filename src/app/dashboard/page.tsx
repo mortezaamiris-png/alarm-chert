@@ -4936,6 +4936,7 @@ export default function DashboardPage() {
   const [moveAlarmDelete, setMoveAlarmDelete] = useState(false);
   /** When alarming a Fib: which level values are checked */
   const [fibAlarmLevels, setFibAlarmLevels] = useState<number[]>([]);
+  const [fibAlarmTab, setFibAlarmTab] = useState<"condition" | "levels">("condition");
   const [moveBarPos, setMoveBarPos] = useState<{ x: number; y: number } | null>(null);
   const [moveNoteOpen, setMoveNoteOpen] = useState(false);
   const [moveNoteDraft, setMoveNoteDraft] = useState("");
@@ -11509,16 +11510,20 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
         // Show handles for pick / endpoint drag / fib body drag (TV keeps anchors visible while moving)
-        const showHandles = !!md && (
+        // Also keep placement preview handles stable when drawing fib tools
+        const drawingFib = modeRef.current === "fib" || modeRef.current === "fib-ext" || modeRef.current === "fib-tz" || modeRef.current === "fib-tbt";
+        const showHandles = drawingFib || (!!md && (
           md.phase === "pick" || md.phase === "drag-a" || md.phase === "drag-b" || md.phase === "drag-c" ||
           (md.phase === "drag-body" && !!(md as any).isFib)
-        );
+        ));
         if (!showHandles) {
           if (elA0) elA0.style.display = "none";
           if (elB0) elB0.style.display = "none";
           if (elC0) elC0.style.display = "none";
           return;
         }
+        // During placement, leave coordinates alone — crosshair handler owns them (no blink)
+        if (drawingFib && !md) return;
         const chart2 = chartRef.current;
         const ser2 = seriesRef.current;
         const elA = handleAElRef.current;
@@ -19324,24 +19329,30 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       } catch {}
                     }
                   } else {
-                    // Before first click: hollow point follows mouse (no display thrash → no blink)
+                    // Before first click: hollow point follows mouse — stable styles, no blink
                     const elA = handleAElRef.current;
                     if (elA) {
-                      if (elA.style.display !== "block") elA.style.display = "block";
-                      elA.style.left = `${param.point.x}px`;
-                      elA.style.top = `${param.point.y}px`;
-                      elA.style.borderColor = "#f97316";
-                      elA.style.width = "16px";
-                      elA.style.height = "16px";
+                      elA.style.display = "block";
+                      elA.style.visibility = "visible";
                       elA.style.opacity = "1";
                       elA.style.transition = "none";
+                      elA.style.animation = "none";
+                      elA.style.transform = "translate(-50%, -50%)";
+                      elA.style.left = `${param.point.x}px`;
+                      elA.style.top = `${param.point.y}px`;
+                      elA.style.borderColor = "#2962FF";
+                      elA.style.borderWidth = "2.5px";
+                      elA.style.borderStyle = "solid";
+                      elA.style.background = "rgba(11,14,17,0.92)";
+                      elA.style.width = "18px";
+                      elA.style.height = "18px";
+                      elA.style.borderRadius = "50%";
+                      elA.style.boxShadow = "0 0 0 1px rgba(41,98,255,0.25)";
+                      elA.style.pointerEvents = "none";
+                      elA.style.zIndex = "95";
                     }
-                    if (handleBElRef.current && handleBElRef.current.style.display !== "none") {
-                      handleBElRef.current.style.display = "none";
-                    }
-                    if (handleCElRef.current && handleCElRef.current.style.display !== "none") {
-                      handleCElRef.current.style.display = "none";
-                    }
+                    if (handleBElRef.current) handleBElRef.current.style.display = "none";
+                    if (handleCElRef.current) handleCElRef.current.style.display = "none";
                   }
                 }
               } catch {}
@@ -22256,7 +22267,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             setDiagStart({ time: t, price: fp });
             fibPreviewCacheRef.current = null; // reload levels
             clickLockRef.current = false;
-            // hollow point so user sees where first anchor is
+            // hollow point so user sees where first anchor is — TV style, no blink
             try {
               const elA = handleAElRef.current;
               if (elA) {
@@ -22264,13 +22275,22 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                 const y = series.priceToCoordinate(fp);
                 if (x != null && y != null) {
                   elA.style.display = "block";
+                  elA.style.visibility = "visible";
+                  elA.style.opacity = "1";
+                  elA.style.transition = "none";
+                  elA.style.animation = "none";
+                  elA.style.transform = "translate(-50%, -50%)";
                   elA.style.left = `${x}px`;
                   elA.style.top = `${y}px`;
-                  elA.style.borderColor = "#f97316";
-                  elA.style.width = "12px";
-                  elA.style.height = "12px";
-                  elA.style.transition = "none";
-                  elA.style.opacity = "1";
+                  elA.style.borderColor = "#2962FF";
+                  elA.style.borderWidth = "2.5px";
+                  elA.style.borderStyle = "solid";
+                  elA.style.background = "rgba(11,14,17,0.92)";
+                  elA.style.width = "18px";
+                  elA.style.height = "18px";
+                  elA.style.borderRadius = "50%";
+                  elA.style.boxShadow = "0 0 0 1px rgba(41,98,255,0.25)";
+                  elA.style.zIndex = "95";
                 }
               }
               if (handleBElRef.current) handleBElRef.current.style.display = "none";
@@ -22327,45 +22347,24 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             dash: "solid",
             note,
           };
-          try {
-            (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
-            let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
-            if (error) {
-              const fb = {
-                symbol: base.symbol,
-                price: base.price,
-                color: base.color,
-                start_time: base.start_time,
-                note,
-              };
-              (fb as any).user_id = base.user_id;
-              ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
-            }
-            if (!error && data) {
-              pushUndo();
-              setLines((prev) => [{ ...(data as ChartLine), ...base, id: (data as any).id }, ...prev]);
-              setStatusMsg("Fib retracement saved");
-            } else {
-              const local: ChartLine = {
-                id: `local-fib-${Date.now()}`,
-                symbol: symbolRef.current.toUpperCase(),
-                price: start.price,
-                end_price: fp,
-                start_time: start.time,
-                end_time: t,
-                color: base.color,
-                width: base.width,
-                note,
-              };
-              setLines((prev) => [local, ...prev]);
-              setStatusMsg("Fib local only");
-            }
-          } catch {
-            setStatusMsg("Fib save failed");
-          }
+          // Optimistic: show fib immediately, persist in background
+          const localId = `local-fib-${Date.now()}`;
+          const local: ChartLine = {
+            id: localId,
+            symbol: symbolRef.current.toUpperCase(),
+            price: start.price,
+            end_price: fp,
+            start_time: start.time,
+            end_time: t,
+            color: base.color,
+            width: base.width,
+            note,
+          };
+          pushUndo();
+          setLines((prev) => [local, ...prev]);
+          setStatusMsg("Fib retracement");
           diagStartRef.current = null;
           setDiagStart(null);
-          // clear fib preview price lines + hollow handles
           if (previewFibSeriesRef.current.length && seriesRef.current) {
             for (const pl of previewFibSeriesRef.current) {
               try { seriesRef.current.removePriceLine(pl); } catch {}
@@ -22381,6 +22380,27 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           setMode("none");
           modeRef.current = "none";
           setSaving(false);
+          // Background persist (does not block UI)
+          (async () => {
+            try {
+              (base as any).user_id = (await supabase.auth.getSession()).data.session?.user?.id;
+              let { data, error } = await supabase.from("chart_lines").insert([base]).select().single();
+              if (error) {
+                const fb = {
+                  symbol: base.symbol,
+                  price: base.price,
+                  color: base.color,
+                  start_time: base.start_time,
+                  note,
+                };
+                (fb as any).user_id = base.user_id;
+                ({ data, error } = await supabase.from("chart_lines").insert([fb]).select().single());
+              }
+              if (!error && data) {
+                setLines((prev) => prev.map((x) => String(x.id) === localId ? { ...x, ...(data as ChartLine), id: (data as any).id } : x));
+              }
+            } catch {}
+          })();
           // CRITICAL: unlock pan/zoom after fib (prevents "chart grabbed" freeze)
           try {
             chart.applyOptions({
@@ -26486,11 +26506,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Fib Extension: tap A, then B, then C");
                     }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0">
-                      <path d="M4 18h16" /><path d="M4 14h12" /><path d="M4 10h9" /><path d="M4 6h6" />
-                      <path d="M5 18L12 10L19 6" />
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                      <circle cx="4" cy="18" r="2" fill="currentColor" stroke="none" />
+                      <circle cx="10" cy="10" r="2" fill="currentColor" stroke="none" />
+                      <circle cx="16" cy="14" r="2" fill="currentColor" stroke="none" />
+                      <path d="M4 18 L10 10 L16 14" />
+                      <line x1="18" y1="7" x2="22" y2="7" />
+                      <line x1="18" y1="12" x2="22" y2="12" />
+                      <line x1="18" y1="17" x2="22" y2="17" />
                     </svg>
-                    Trend-based fib extension
+                    Fib extension
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("fib-ext") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("fib-ext", e)}>{favTools.includes("fib-ext") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
                   </button>
                   <button
@@ -27678,7 +27703,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         <span className="text-[13px] font-bold leading-none">L</span>
                       ) : id === "short-pos" ? (
                         <span className="text-[13px] font-bold leading-none">S</span>
-                      ) : id === "fib" || id === "fib-ext" ? (
+                      ) : id === "fib" ? (
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
                           <line x1="4" y1="5" x2="20" y2="5" />
                           <line x1="4" y1="10" x2="20" y2="10" />
@@ -27686,6 +27711,16 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <line x1="4" y1="15" x2="20" y2="15" />
                           <line x1="4" y1="20" x2="20" y2="20" />
                           <circle cx="7" cy="20" r="2" fill="currentColor" stroke="none" />
+                        </svg>
+                      ) : id === "fib-ext" ? (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="4" cy="18" r="2" fill="currentColor" stroke="none" />
+                          <circle cx="10" cy="10" r="2" fill="currentColor" stroke="none" />
+                          <circle cx="16" cy="14" r="2" fill="currentColor" stroke="none" />
+                          <path d="M4 18 L10 10 L16 14" />
+                          <line x1="18" y1="7" x2="22" y2="7" />
+                          <line x1="18" y1="12" x2="22" y2="12" />
+                          <line x1="18" y1="17" x2="22" y2="17" />
                         </svg>
                       ) : meta.icon}</span>
                     </button>
@@ -28991,8 +29026,30 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       );
                     })()}
                     {moveAlarmOpen && (
-                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg shadow-2xl w-[220px] overflow-hidden">
+                      <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 bg-gray-950 border border-gray-600 rounded-lg shadow-2xl w-[230px] overflow-hidden" data-menu>
                         {(() => {
+                          let isFib = false;
+                          try {
+                            const id = movingIdRef.current || movingId;
+                            const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                            const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                            isFib = n.startsWith("__fib:") || n.startsWith("__fibext:");
+                          } catch {}
+                          if (!isFib) return null;
+                          return (
+                            <div className="flex border-b border-gray-700">
+                              <button type="button" onClick={() => setFibAlarmTab("condition")}
+                                className={`flex-1 text-[10px] uppercase tracking-wide py-1.5 ${fibAlarmTab === "condition" ? "text-orange-300 border-b-2 border-orange-400" : "text-gray-500 hover:text-gray-300"}`}>
+                                Condition
+                              </button>
+                              <button type="button" onClick={() => setFibAlarmTab("levels")}
+                                className={`flex-1 text-[10px] uppercase tracking-wide py-1.5 ${fibAlarmTab === "levels" ? "text-orange-300 border-b-2 border-orange-400" : "text-gray-500 hover:text-gray-300"}`}>
+                                Fib levels
+                              </button>
+                            </div>
+                          );
+                        })()}
+                        {fibAlarmTab === "levels" && (() => {
                           try {
                             const id = movingIdRef.current || movingId;
                             const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
@@ -29001,9 +29058,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             const fib = parseFibNote((ln as any).note);
                             if (!fib) return null;
                             return (
-                              <div className="border-b border-gray-700">
-                                <div className="px-2.5 pt-2 pb-1 text-[9px] text-gray-500 uppercase tracking-wide">Fib levels</div>
-                                <div className="px-1.5 max-h-[150px] overflow-y-auto">
+                              <div className="p-2">
+                                <div className="max-h-[160px] overflow-y-auto">
                                   {(fib.levels || []).map((lv) => {
                                     const checked = fibAlarmLevels.some((x) => Math.abs(x - lv) < 1e-9);
                                     const pr = fib.kind === "fib-ext" && fib.p3 != null
@@ -29027,7 +29083,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                     );
                                   })}
                                 </div>
-                                <div className="flex gap-1 px-2.5 py-1.5">
+                                <div className="flex gap-1 mt-1.5">
                                   <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
                                     onClick={() => setFibAlarmLevels([...(fib.levels || [])])}>All</button>
                                   <button type="button" className="flex-1 text-[10px] py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
@@ -29037,6 +29093,14 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                             );
                           } catch { return null; }
                         })()}
+                        {(fibAlarmTab === "condition" || (() => {
+                          try {
+                            const id = movingIdRef.current || movingId;
+                            const ln = id ? (linesRef.current || []).find((x) => String(x.id) === String(id)) : null;
+                            const n = ln && typeof (ln as any).note === "string" ? String((ln as any).note) : "";
+                            return !(n.startsWith("__fib:") || n.startsWith("__fibext:"));
+                          } catch { return true; }
+                        })()) && (
                         <div className="p-2.5">
                         <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-1.5">Condition</div>
                         <div className="flex flex-col gap-0.5 mb-2">
@@ -29277,6 +29341,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           {movingType === "alarm" ? "Apply" : "Set alarm"}
                         </button>
                         </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -33853,8 +33918,10 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.label === "Path" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="5" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="9" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="14" r="2" fill="currentColor" stroke="none"/><path d="M5 18 L10 9 L16 14 L20 6"/></svg>
-                        ) : meta.label === "Fib" || meta.label === "Fib Ext" ? (
+                        ) : meta.label === "Fib" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><line x1="4" y1="5" x2="20" y2="5"/><line x1="4" y1="10" x2="20" y2="10"/><circle cx="17" cy="10" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="4" y1="20" x2="20" y2="20"/><circle cx="7" cy="20" r="2" fill="currentColor" stroke="none"/></svg>
+                        ) : meta.label === "Fib Ext" ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="14" r="2" fill="currentColor" stroke="none"/><path d="M4 18 L10 10 L16 14"/><line x1="18" y1="7" x2="22" y2="7"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="18" y1="17" x2="22" y2="17"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
