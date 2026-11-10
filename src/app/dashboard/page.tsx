@@ -11523,7 +11523,7 @@ priced.sort((a, b) => a.price - b.price);
           return;
         }
         // During placement, leave coordinates alone — crosshair handler owns them (no blink)
-        if (drawingFib && !md) return;
+        if (!md) return;
         const chart2 = chartRef.current;
         const ser2 = seriesRef.current;
         const elA = handleAElRef.current;
