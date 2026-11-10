@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties } from "react";
 import {
   createChart,
   IChartApi,
@@ -5197,6 +5197,10 @@ export default function DashboardPage() {
     visMinMo: 1, visMaxMo: 12,
   }));
   const [selectedPosId, setSelectedPosId] = useState<string | null>(null);
+  const [posBarPos, setPosBarPos] = useState<{ x: number; y: number } | null>(null);
+  const [posSettingsOpen, setPosSettingsOpen] = useState(false);
+  const [posSettingsTab, setPosSettingsTab] = useState<"inputs" | "style" | "visibility">("inputs");
+  const posBarDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   useEffect(() => {
     (window as any).__selectedPosId = selectedPosId;
     (window as any).__setSelectedPosId = (id: string | null) => setSelectedPosId(id);
@@ -9493,34 +9497,44 @@ priced.sort((a, b) => a.price - b.price);
                     extraSeries.push(band);
                   } catch {}
                 };
-                let stopFill = "rgba(239,68,68,0.32)";
-                let tgtFill = "rgba(16,185,129,0.32)";
+                // TV-style fills (darker teal / maroon by default)
+                let stopFill = "rgba(178, 34, 52, 0.45)";
+                let tgtFill = "rgba(8, 110, 100, 0.45)";
+                let entryLineCol = "#787B86";
+                let stopLineCol = "#F23645";
+                let tgtLineCol = "#089981";
                 try {
                   const sc = (l.note || "").split("|").find((p: string) => p.startsWith("sc="));
                   const tc = (l.note || "").split("|").find((p: string) => p.startsWith("tc="));
+                  const ec = (l.note || "").split("|").find((p: string) => p.startsWith("ec="));
                   if (sc) {
                     const hex = sc.slice(3);
-                    stopFill = hex + "52"; // approx alpha
                     if (hex.startsWith("#") && hex.length === 7) {
                       const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-                      stopFill = `rgba(${r},${g},${b},0.32)`;
+                      stopFill = `rgba(${r},${g},${b},0.45)`;
+                      stopLineCol = hex;
                     }
                   }
                   if (tc) {
                     const hex = tc.slice(3);
                     if (hex.startsWith("#") && hex.length === 7) {
                       const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-                      tgtFill = `rgba(${r},${g},${b},0.32)`;
+                      tgtFill = `rgba(${r},${g},${b},0.45)`;
+                      tgtLineCol = hex;
                     }
+                  }
+                  if (ec) {
+                    const hex = ec.slice(3);
+                    if (hex.startsWith("#") && hex.length === 7) entryLineCol = hex;
                   }
                 } catch {}
                 mkBand(stopLo, stopHi, stopFill);
                 mkBand(tgtLo, tgtHi, tgtFill);
-                // horizontal edges
+                // horizontal edges — entry line is gray (TV style), not white
                 for (const [pr, col, w] of [
-                  [pEntry, "#e5e7eb", 2],
-                  [pStop, "#ef4444", 1],
-                  [pTarget, "#10b981", 1],
+                  [pEntry, entryLineCol, 1],
+                  [pStop, stopLineCol, 1],
+                  [pTarget, tgtLineCol, 1],
                 ] as [number, string, number][]) {
                   try {
                     const ls: any = chart.addLineSeries({
@@ -9576,7 +9590,7 @@ priced.sort((a, b) => a.price - b.price);
                       const targetIsTop = Number(yT) < Number(yE);
                       const isSel = String((window as any).__selectedPosId || "") === String(l.id);
                       const mkLabel = (kind: string, html: string, baseY: number, bg: string, place: "above" | "below" | "center") => {
-                        // Labels only when position is selected
+                        // Labels only when position is selected (TV: always visible while selected)
                         if (!isSel) return;
                         const d = document.createElement("div");
                         d.dataset.posId = String(l.id);
@@ -9584,33 +9598,35 @@ priced.sort((a, b) => a.price - b.price);
                         d.dataset.posLineId = String(l.id);
                         d.dataset.posPlace = place;
                         let ty = "translate(-50%, -50%)";
-                        if (place === "above") ty = "translate(-50%, calc(-100% - 6px))";
-                        if (place === "below") ty = "translate(-50%, 6px)";
+                        if (place === "above") ty = "translate(-50%, calc(-100% - 4px))";
+                        if (place === "below") ty = "translate(-50%, 4px)";
                         d.style.cssText = [
                           `position:absolute;left:${midX}px;top:${baseY}px;transform:${ty};`,
-                          `background:${bg};color:#fff;font-size:11px;font-weight:500;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
-                          `padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:22;pointer-events:none;`,
-                          `line-height:1.45;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.4);`,
-                          kind === "entry" ? "border:1.5px solid #ffffff;" : "border:none;",
+                          `background:${bg};color:#fff;font-size:11px;font-weight:600;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;`,
+                          `padding:3px 8px;border-radius:3px;white-space:nowrap;z-index:22;pointer-events:none;`,
+                          `line-height:1.35;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.35);`,
+                          "border:none;",
                         ].join("");
                         d.innerHTML = html;
                         host.appendChild(d);
                       };
+                      // TV label text format
                       mkLabel(
                         "stop",
-                        `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(Math.abs(pEntry - pStop))}, Amount: ${stopAmt.toFixed(0)}`,
+                        `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`,
                         Number(yS),
-                        "#ef4444",
+                        stopLineCol,
                         stopIsTop ? "above" : "below"
                       );
                       mkLabel(
                         "target",
-                        `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(Math.abs(pTarget - pEntry))}, Amount: ${targetAmt.toFixed(2)}`,
+                        `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`,
                         Number(yT),
-                        "#10b981",
+                        tgtLineCol,
                         targetIsTop ? "above" : "below"
                       );
-                      const midBg = isLong ? "#10b981" : "#ef4444";
+                      // Entry/stats badge: green for long, red for short (TV)
+                      const midBg = isLong ? tgtLineCol : stopLineCol;
                       mkLabel(
                         "entry",
                         `Open PnL: —, Qty: ${qty.toFixed(3)}<br/>Risk/reward ratio: ${rr.toFixed(2)}`,
@@ -12854,8 +12870,15 @@ priced.sort((a, b) => a.price - b.price);
       const pr = series.coordinateToPrice(y);
       return pr != null && Number.isFinite(pr) ? Number(pr) : null;
     };
-    const applyNote = (id: string, kind: string, tL: number, tR: number, pEntry: number, pStop: number, pTarget: number) => {
-      const newNote = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+    const applyNote = (id: string, kind: string, tL: number, tR: number, pEntry: number, pStop: number, pTarget: number, prevNote?: string) => {
+      // Keep style/settings suffixes (sc=, tc=, ec=, risk=, acct=, etc.)
+      const extra = (prevNote || "")
+        .split("|")
+        .slice(1)
+        .filter((p) => p && !p.match(/^\d/))
+        .join("|");
+      const base = `__${kind}:${tL},${pEntry},${tR},${pStop},${tR},${pTarget}`;
+      const newNote = extra ? `${base}|${extra}` : base;
       setLines((prev) =>
         prev.map((x) =>
           x.id === id
@@ -13026,7 +13049,7 @@ priced.sort((a, b) => a.price - b.price);
         }
       }
 
-      const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget);
+      const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget, drag.note);
       drag.note = newNote;
       try { (window as any).__syncPosOverlays?.(); } catch {}
       // keep snapshot roles relative for body uses start*; for handles live values
@@ -15235,6 +15258,43 @@ priced.sort((a, b) => a.price - b.price);
                 else if (kind === "target") yy = yT;
                 child.style.left = `${midX}px`;
                 child.style.top = `${yy}px`;
+                // TV-style: flip above/below when stop/target crosses entry while resizing
+                const stopIsTop = Number(yS) < Number(yE);
+                const targetIsTop = Number(yT) < Number(yE);
+                let place = child.dataset.posPlace || "center";
+                if (kind === "stop") place = stopIsTop ? "above" : "below";
+                else if (kind === "target") place = targetIsTop ? "above" : "below";
+                else place = "center";
+                child.dataset.posPlace = place;
+                let ty = "translate(-50%, -50%)";
+                if (place === "above") ty = "translate(-50%, calc(-100% - 4px))";
+                if (place === "below") ty = "translate(-50%, 4px)";
+                child.style.transform = ty;
+                // Live text update (TV: numbers follow the drag)
+                try {
+                  const riskDist = Math.abs(pEntry - pStop) || 1e-12;
+                  const rewardDist = Math.abs(pTarget - pEntry) || 0;
+                  const riskAmt = 750;
+                  const qty = riskAmt / riskDist;
+                  const stopAmt = riskAmt;
+                  const targetAmt = qty * rewardDist;
+                  const rr = rewardDist / riskDist;
+                  const stopPct = (riskDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
+                  const tgtPct = (rewardDist / Math.max(Math.abs(pEntry), 1e-12)) * 100;
+                  const fmtN = (n: number) => {
+                    const a = Math.abs(n);
+                    if (a >= 100) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+                    if (a >= 1) return n.toFixed(5);
+                    return n.toFixed(5);
+                  };
+                  if (kind === "stop") {
+                    child.innerHTML = `Stop: ${fmtN(Math.abs(pEntry - pStop))} (${stopPct.toFixed(3)}%) ${fmtN(riskDist)}, Amount: ${stopAmt.toFixed(0)}`;
+                  } else if (kind === "target") {
+                    child.innerHTML = `Target: ${fmtN(Math.abs(pTarget - pEntry))} (${tgtPct.toFixed(3)}%) ${fmtN(rewardDist)}, Amount: ${targetAmt.toFixed(2)}`;
+                  } else if (kind === "entry") {
+                    child.innerHTML = `Open PnL: —, Qty: ${qty.toFixed(3)}<br/>Risk/reward ratio: ${rr.toFixed(2)}`;
+                  }
+                } catch {}
               }
             }
           } catch {}
@@ -29061,47 +29121,102 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           {/* Timezone selector under price scale (bottom-right) — same popover effect as Time menu */}
           {/* Fib settings modal */}
           
-          {/* Position tool floating bar (colors + delete) */}
+          {/* Position tool floating bar — draggable, colors, settings, delete */}
           {selectedPosId && (() => {
             const pl = lines.find((x) => String(x.id) === String(selectedPosId));
             if (!pl || !pl.note || !(String(pl.note).startsWith("__long:") || String(pl.note).startsWith("__short:"))) return null;
             const isLong = String(pl.note).startsWith("__long:");
+            const noteParts = String(pl.note).split("|");
+            const tcHex = (noteParts.find((p) => p.startsWith("tc=")) || "tc=#089981").slice(3);
+            const scHex = (noteParts.find((p) => p.startsWith("sc=")) || "sc=#F23645").slice(3);
+            const barStyle: CSSProperties = posBarPos
+              ? { left: posBarPos.x, top: posBarPos.y, transform: "none" }
+              : { left: "50%", bottom: 12, transform: "translateX(-50%)" };
             return (
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-gray-900/95 border border-gray-600 rounded-xl px-3 py-2 shadow-2xl pointer-events-auto">
-                <span className="text-[10px] text-gray-400 uppercase tracking-wide mr-1">{isLong ? "Long" : "Short"}</span>
-                <label className="flex items-center gap-1 cursor-pointer" title="Target / profit color">
-                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: "#10b981" }} />
-                  <input type="color" defaultValue="#10b981" className="w-0 h-0 opacity-0 absolute"
+              <div
+                data-pos-toolbar="1"
+                className="absolute z-40 flex items-center gap-1.5 bg-[#1e222d]/95 border border-white/15 rounded-lg px-2 py-1.5 shadow-2xl pointer-events-auto select-none"
+                style={barStyle}
+                onPointerDown={(e) => {
+                  // drag from empty area / label only
+                  const t = e.target as HTMLElement;
+                  if (t.closest("button,input,label,a")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const el = e.currentTarget as HTMLElement;
+                  const rect = el.getBoundingClientRect();
+                  const parent = el.offsetParent as HTMLElement | null;
+                  const pr = parent?.getBoundingClientRect();
+                  const ox = posBarPos ? posBarPos.x : rect.left - (pr?.left || 0);
+                  const oy = posBarPos ? posBarPos.y : rect.top - (pr?.top || 0);
+                  posBarDragRef.current = { startX: e.clientX, startY: e.clientY, origX: ox, origY: oy };
+                  try { el.setPointerCapture(e.pointerId); } catch {}
+                  const onMove = (ev: PointerEvent) => {
+                    const d = posBarDragRef.current;
+                    if (!d) return;
+                    setPosBarPos({
+                      x: d.origX + (ev.clientX - d.startX),
+                      y: d.origY + (ev.clientY - d.startY),
+                    });
+                  };
+                  const onUp = () => {
+                    posBarDragRef.current = null;
+                    window.removeEventListener("pointermove", onMove);
+                    window.removeEventListener("pointerup", onUp);
+                  };
+                  window.addEventListener("pointermove", onMove);
+                  window.addEventListener("pointerup", onUp);
+                }}
+              >
+                <span className="text-[10px] text-gray-400 uppercase tracking-wide px-1 cursor-grab active:cursor-grabbing" title="Drag toolbar">
+                  {isLong ? "Long" : "Short"}
+                </span>
+                <label className="flex items-center cursor-pointer" title="Target / profit color">
+                  <span className="w-3.5 h-3.5 rounded-sm border border-white/30" style={{ background: tcHex }} />
+                  <input type="color" value={tcHex} className="w-0 h-0 opacity-0 absolute"
                     onChange={(e) => {
-                      // store target color in note |tc=#...
                       const note = String(pl.note);
                       const parts = note.split("|").filter((p) => !p.startsWith("tc="));
                       const newNote = [...parts, `tc=${e.target.value}`].join("|");
                       setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId) ? { ...x, note: newNote } : x));
+                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                     }}
                   />
                 </label>
-                <label className="flex items-center gap-1 cursor-pointer" title="Stop / loss color">
-                  <span className="w-4 h-4 rounded-sm border border-white/30" style={{ background: "#ef4444" }} />
-                  <input type="color" defaultValue="#ef4444" className="w-0 h-0 opacity-0 absolute"
+                <label className="flex items-center cursor-pointer" title="Stop / loss color">
+                  <span className="w-3.5 h-3.5 rounded-sm border border-white/30" style={{ background: scHex }} />
+                  <input type="color" value={scHex} className="w-0 h-0 opacity-0 absolute"
                     onChange={(e) => {
                       const note = String(pl.note);
                       const parts = note.split("|").filter((p) => !p.startsWith("sc="));
                       const newNote = [...parts, `sc=${e.target.value}`].join("|");
                       setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId) ? { ...x, note: newNote } : x));
+                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                     }}
                   />
                 </label>
-                <div className="w-px h-5 bg-gray-600 mx-0.5" />
+                <div className="w-px h-4 bg-gray-600 mx-0.5" />
+                <button
+                  type="button"
+                  title="Settings"
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10"
+                  onClick={(e) => { e.stopPropagation(); setPosSettingsTab("inputs"); setPosSettingsOpen(true); }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </button>
                 <button
                   type="button"
                   title="Delete position"
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-500/15 border border-transparent hover:border-red-500/30"
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-500/15"
                   onClick={async () => {
                     const id = selectedPosId;
                     if (!id) return;
                     setLines((prev) => prev.filter((x) => String(x.id) !== String(id)));
                     setSelectedPosId(null);
+                    setPosSettingsOpen(false);
                     try {
                       if (!String(id).startsWith("local-")) {
                         await supabase.from("chart_lines").delete().eq("id", id);
@@ -29110,11 +29225,142 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
                   }}
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                   </svg>
                 </button>
+              </div>
+            );
+          })()}
 
+          {/* Position settings modal (TV-style Inputs / Style / Visibility) */}
+          {posSettingsOpen && selectedPosId && (() => {
+            const pl = lines.find((x) => String(x.id) === String(selectedPosId));
+            if (!pl || !pl.note) return null;
+            const isLong = String(pl.note).startsWith("__long:");
+            const parts = String(pl.note).split("|");
+            const nums = parts[0].replace(/^__(?:long|short):/, "").split(",").map(Number);
+            const pEntry = nums[1] || 0, pStop = nums[3] || 0, pTarget = nums[5] || 0;
+            const get = (k: string, def: string) => (parts.find((p) => p.startsWith(k + "=")) || `${k}=${def}`).slice(k.length + 1);
+            const tc = get("tc", "#089981");
+            const sc = get("sc", "#F23645");
+            const ec = get("ec", "#787B86");
+            const acct = get("acct", "1000");
+            const risk = get("risk", "25");
+            const lot = get("lot", "1");
+            const lev = get("lev", "1");
+            const patch = (key: string, val: string) => {
+              const note = String(pl.note);
+              const ps = note.split("|").filter((p) => !p.startsWith(key + "="));
+              const newNote = [...ps, `${key}=${val}`].join("|");
+              setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId) ? { ...x, note: newNote } : x));
+              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            };
+            const patchCoords = (entry: number, stop: number, target: number) => {
+              const tL = Math.min(nums[0], nums[2]);
+              const tR = Math.max(nums[0], nums[2]);
+              const kind = isLong ? "long" : "short";
+              const extra = parts.slice(1).filter((p) => p && !p.match(/^\d/)).join("|");
+              const base = `__${kind}:${tL},${entry},${tR},${stop},${tR},${target}`;
+              const newNote = extra ? `${base}|${extra}` : base;
+              setLines((prev) => prev.map((x) => String(x.id) === String(selectedPosId)
+                ? { ...x, note: newNote, price: entry, end_price: target, start_time: tL, end_time: tR }
+                : x));
+              try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
+            };
+            return (
+              <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+                onClick={() => setPosSettingsOpen(false)}>
+                <div className="w-[min(340px,94vw)] max-h-[85vh] overflow-y-auto rounded-xl border border-white/15 bg-[#1e222d] shadow-2xl text-sm text-gray-200"
+                  onClick={(e) => e.stopPropagation()} data-pos-toolbar="1">
+                  <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
+                    <div className="font-semibold text-white">{isLong ? "Long position" : "Short position"}</div>
+                    <button type="button" className="text-gray-400 hover:text-white text-lg leading-none"
+                      onClick={() => setPosSettingsOpen(false)}>×</button>
+                  </div>
+                  <div className="flex gap-4 px-4 pt-2 border-b border-white/10 text-xs">
+                    {(["inputs", "style", "visibility"] as const).map((tab) => (
+                      <button key={tab} type="button"
+                        className={`pb-2 capitalize ${posSettingsTab === tab ? "text-white border-b-2 border-blue-500" : "text-gray-400 hover:text-gray-200"}`}
+                        onClick={() => setPosSettingsTab(tab)}>{tab === "inputs" ? "Inputs" : tab === "style" ? "Style" : "Visibility"}</button>
+                    ))}
+                  </div>
+                  <div className="px-4 py-3 space-y-3">
+                    {posSettingsTab === "inputs" && (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Account size</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={acct}
+                            onChange={(e) => patch("acct", e.target.value)} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Lot size</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={lot}
+                            onChange={(e) => patch("lot", e.target.value)} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Risk %</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={risk}
+                            onChange={(e) => patch("risk", e.target.value)} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Entry price</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pEntry}
+                            onBlur={(e) => patchCoords(Number(e.target.value) || pEntry, pStop, pTarget)} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Leverage</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" value={lev}
+                            onChange={(e) => patch("lev", e.target.value)} />
+                        </div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-1">Profit level</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Price</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pTarget}
+                            onBlur={(e) => patchCoords(pEntry, pStop, Number(e.target.value) || pTarget)} />
+                        </div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide pt-1">Stop level</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Price</span>
+                          <input type="number" className="w-28 bg-[#131722] border border-white/10 rounded px-2 py-1 text-right text-xs" defaultValue={pStop}
+                            onBlur={(e) => patchCoords(pEntry, Number(e.target.value) || pStop, pTarget)} />
+                        </div>
+                      </>
+                    )}
+                    {posSettingsTab === "style" && (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Lines (entry)</span>
+                          <input type="color" value={ec} onChange={(e) => patch("ec", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Stop color</span>
+                          <input type="color" value={sc} onChange={(e) => patch("sc", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-gray-400 text-xs">Target color</span>
+                          <input type="color" value={tc} onChange={(e) => patch("tc", e.target.value)} className="w-8 h-6 rounded border border-white/10 bg-transparent cursor-pointer" />
+                        </div>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input type="checkbox" defaultChecked className="rounded border-white/20" /> Price labels
+                        </label>
+                      </>
+                    )}
+                    {posSettingsTab === "visibility" && (
+                      <div className="space-y-2 text-xs text-gray-300">
+                        {["Ticks", "Seconds", "Minutes", "Hours", "Days", "Weeks", "Months", "Ranges"].map((lab) => (
+                          <label key={lab} className="flex items-center gap-2">
+                            <input type="checkbox" defaultChecked className="rounded border-white/20" /> {lab}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex justify-end gap-2 px-4 py-3 border-t border-white/10">
+                    <button type="button" className="px-3 py-1.5 rounded text-xs text-gray-300 hover:bg-white/10" onClick={() => setPosSettingsOpen(false)}>Cancel</button>
+                    <button type="button" className="px-3 py-1.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-500" onClick={() => setPosSettingsOpen(false)}>Ok</button>
+                  </div>
+                </div>
               </div>
             );
           })()}
@@ -33023,6 +33269,21 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                                 />
                               </label>
+                              <button
+                                type="button"
+                                title="Position settings"
+                                onClick={() => {
+                                  setSelectedPosId(String(l.id));
+                                  setPosSettingsTab("inputs");
+                                  setPosSettingsOpen(true);
+                                }}
+                                className="w-7 h-7 rounded-md border border-gray-600 bg-gray-900/95 text-gray-200 hover:bg-white/10 flex items-center justify-center shrink-0"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <circle cx="12" cy="12" r="3" />
+                                  <path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
+                                </svg>
+                              </button>
                             </>
                           );
                         })()}
