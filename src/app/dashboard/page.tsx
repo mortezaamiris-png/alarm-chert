@@ -2510,8 +2510,9 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
   if (n.startsWith("__arrow_down__")) return { icon: "↓", label: "Arrow down", showPrice: false };
   if (n.startsWith("__arrow_marker__")) return { icon: "●", label: "Arrow mark", showPrice: false };
   if (n === "__arrow__" || n.startsWith("__arrow")) return { icon: "↗", label: "Arrow", showPrice: false };
+  if (n.startsWith("__callout")) return { icon: "T", label: "Callout", showPrice: false };
   if (n === "__vline__" || n.startsWith("__vline__:")) return { icon: "|", label: "Vertical", showPrice: false };
-  // Geometry-based vertical (start_time === end_time) — exclude arrows already handled
+  // Geometry-based vertical (start_time === end_time) — exclude arrows / callouts already handled
   if (
     l.start_time != null &&
     l.end_time != null &&
@@ -2519,11 +2520,11 @@ function lineListMeta(l: { note?: string | null; price?: number; end_price?: num
     !isDiagonalLine(l as any) &&
     !n.startsWith("__diag:") &&
     !n.startsWith("__ray:") &&
-    !n.startsWith("__arrow")
+    !n.startsWith("__arrow") &&
+    !n.startsWith("__callout")
   ) {
     return { icon: "|", label: "Vertical", showPrice: false };
   }
-  if (n.startsWith("__callout")) return { icon: "T", label: "Callout", showPrice: false };
   if (isDiagonalLine(l as any) || n.startsWith("__diag:")) return { icon: "/", label: "Diag", showPrice: true };
   if (n.startsWith("__ray:") || (l.start_time != null && (l.end_time == null || l.end_price == null) && !isDiagonalLine(l as any)))
     return { icon: "→", label: "Ray", showPrice: true };
@@ -2620,6 +2621,12 @@ function userFacingNote(note?: string | null): string {
   if (s.startsWith("__curve:")) {
     const t = parseCurveText(s);
     return t || "";
+  }
+  if (s.startsWith("__callout:")) {
+    // __callout:text|bw=72|bh=32 → show only text
+    const raw = s.replace(/^__callout:/, "");
+    const text = raw.split("|")[0] || "";
+    return text.trim();
   }
   if (s.startsWith("__long:")) return "Long position";
   if (s.startsWith("__short:")) return "Short position";
@@ -8638,21 +8645,11 @@ export default function DashboardPage() {
             } catch {}
           }
         };
-        // Drag whole callout (bubble or dot) — never turns into a chart line
+        // Drag whole callout (bubble or dot) via document listeners — reliable over chart
         let dragging = false;
         let lastX = 0, lastY = 0;
         let dragMoved = false;
-        const beginDrag = (e: PointerEvent, captureEl: HTMLElement) => {
-          e.preventDefault();
-          e.stopPropagation();
-          selectMe(true);
-          dragging = true;
-          dragMoved = false;
-          lastX = e.clientX;
-          lastY = e.clientY;
-          try { captureEl.setPointerCapture(e.pointerId); } catch {}
-        };
-        const moveDrag = (e: PointerEvent) => {
+        const onDocMove = (e: PointerEvent) => {
           if (!dragging) return;
           e.preventDefault();
           e.stopPropagation();
@@ -8662,11 +8659,14 @@ export default function DashboardPage() {
           wrap.style.left = `${(parseFloat(wrap.style.left) || 0) + dx}px`;
           wrap.style.top = `${(parseFloat(wrap.style.top) || 0) + dy}px`;
         };
-        const endDrag = async () => {
+        const onDocUp = async () => {
           if (!dragging) return;
           dragging = false;
           bubble.style.cursor = "grab";
           dot.style.cursor = "grab";
+          document.removeEventListener("pointermove", onDocMove, true);
+          document.removeEventListener("pointerup", onDocUp, true);
+          document.removeEventListener("pointercancel", onDocUp, true);
           if (!dragMoved) return;
           try {
             const left = parseFloat(wrap.style.left) || 0;
@@ -8677,9 +8677,11 @@ export default function DashboardPage() {
               const tu = typeof t === "number" ? t : Number((t as any).timestamp ?? t);
               c.time = Number(tu);
               c.price = Number(p);
-              // Keep as callout: never strip the note / never create a price line
               const pure = (c.text || "").replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
               const note = `__callout:${pure}|bw=${Math.round(c.bw || bw)}|bh=${Math.round(c.bh || bh)}`;
+              // Update refs immediately so re-paint keeps position
+              const item = calloutItemsRef.current.find((v) => String(v.id) === String(c.id));
+              if (item) { item.time = Number(tu); item.price = Number(p); }
               setLines((prev) =>
                 prev.map((l) =>
                   String(l.id) === String(c.id)
@@ -8688,29 +8690,40 @@ export default function DashboardPage() {
                 )
               );
               try {
-                await supabase
-                  .from("chart_lines")
-                  .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p), end_price: Number(p), note })
-                  .eq("id", c.id);
+                if (!String(c.id).startsWith("local-")) {
+                  await supabase
+                    .from("chart_lines")
+                    .update({ start_time: Number(tu), end_time: Number(tu), price: Number(p), end_price: Number(p), note })
+                    .eq("id", c.id);
+                }
               } catch {}
             }
           } catch {}
         };
-        // Bubble: drag to move, double-click / focus to type
+        const beginDrag = (e: PointerEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          selectMe(true);
+          dragging = true;
+          dragMoved = false;
+          lastX = e.clientX;
+          lastY = e.clientY;
+          document.addEventListener("pointermove", onDocMove, true);
+          document.addEventListener("pointerup", onDocUp, true);
+          document.addEventListener("pointercancel", onDocUp, true);
+        };
+        // Bubble: drag to move, double-click to type
         bubble.addEventListener("pointerdown", (e: PointerEvent) => {
-          // If user is selecting text, don't start drag
-          if ((e.target as HTMLElement)?.isContentEditable && e.detail > 1) {
+          if (e.detail > 1) {
             e.stopPropagation();
             selectMe(true);
             bubble.style.cursor = "text";
+            try { bubble.focus(); } catch {}
             return;
           }
-          beginDrag(e, bubble);
+          beginDrag(e);
           bubble.style.cursor = "grabbing";
         });
-        bubble.addEventListener("pointermove", moveDrag as any);
-        bubble.addEventListener("pointerup", endDrag as any);
-        bubble.addEventListener("pointercancel", endDrag as any);
         bubble.addEventListener("mousedown", (e) => e.stopPropagation());
         bubble.addEventListener("click", (e) => { e.stopPropagation(); selectMe(true); });
         bubble.addEventListener("dblclick", (e) => {
@@ -8724,16 +8737,24 @@ export default function DashboardPage() {
           const pure = val.replace(/\|bw=\d+/g, "").replace(/\|bh=\d+/g, "");
           const note = `__callout:${pure}|bw=${Math.round(c.bw || bw)}|bh=${Math.round(c.bh || bh)}`;
           setLines((prev) => prev.map((l) => (String(l.id) === String(c.id) ? { ...l, note } : l)));
-          try { await supabase.from("chart_lines").update({ note }).eq("id", c.id); } catch {}
+          try {
+            if (!String(c.id).startsWith("local-")) {
+              await supabase.from("chart_lines").update({ note }).eq("id", c.id);
+            }
+          } catch {}
         });
         // Dot also drags
         dot.addEventListener("pointerdown", (e: PointerEvent) => {
-          beginDrag(e, dot);
+          beginDrag(e);
           dot.style.cursor = "grabbing";
         });
-        dot.addEventListener("pointermove", moveDrag as any);
-        dot.addEventListener("pointerup", endDrag as any);
-        dot.addEventListener("pointercancel", endDrag as any);
+        // Stem area also draggable via invisible wider hit zone
+        const stemHit = document.createElement("div");
+        stemHit.style.cssText = `position:absolute;left:0;top:0;width:16px;height:${stemH}px;transform:translate(-50%,-100%);cursor:grab;pointer-events:auto;z-index:1;`;
+        stemHit.addEventListener("pointerdown", (e: PointerEvent) => {
+          beginDrag(e);
+        });
+        wrap.appendChild(stemHit);
         wrap.appendChild(stem);
         wrap.appendChild(bubble);
         wrap.appendChild(dot);
@@ -8768,7 +8789,10 @@ export default function DashboardPage() {
             const idx = s.indexOf("|");
             return idx >= 0 ? s.slice(idx + 1).trim() : "";
           }
-          if (s.startsWith("__callout:")) return s.replace(/^__callout:/, "").trim();
+          if (s.startsWith("__callout:")) {
+            // never put callout meta on price-axis title
+            return "";
+          }
           if (s.startsWith("__arrow") || s.startsWith("__path:") || s.startsWith("__curve:") || s.startsWith("__rect:") || s.startsWith("__avp:") || s.startsWith("__avwap:") || s.startsWith("__frvp:") || s.startsWith("__channel:") || s.startsWith("__dpr:") || s.startsWith("__fib:") || s.startsWith("__fibext:") || s.startsWith("__long:") || s.startsWith("__short:")) return "";
           if (s.startsWith("__")) return "";
           return s;
@@ -27575,7 +27599,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setBrushColorOpen(false);
                     }}
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                   </button>
                   {moveNoteOpen && editingNoteId === selectedBrushId && (
                     <div data-note-edit data-menu className="absolute left-0 bottom-full mb-1 z-50 bg-gray-900 border border-gray-600 rounded-lg p-1.5 shadow-xl w-40 flex flex-col gap-1" onClick={(e)=>e.stopPropagation()}>
@@ -27661,7 +27685,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
             const ln = (linesRef.current || lines).find((x) => String(x.id) === String(selectedCalloutId));
             if (!ln || typeof ln.note !== "string" || !ln.note.startsWith("__callout:")) return null;
             const col = ln.color || "#0d9488";
-            const width = Number(ln.width || 2);
             return (
               <div
                 data-move-bar
@@ -27729,27 +27752,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     </div>
                   )}
                 </div>
-                {/* Line width style */}
-                <div className="relative" data-menu>
-                  <button
-                    type="button"
-                    title="Line / stem width"
-                    className="w-7 h-7 rounded-md border border-white/25 hover:border-orange-400/60 flex items-center justify-center text-gray-200"
-                    onClick={() => {
-                      if (!selectedCalloutId) return;
-                      const next = width >= 4 ? 1 : width + 1;
-                      pushUndo();
-                      setLines((prev) => prev.map((x) => String(x.id) === String(selectedCalloutId) ? { ...x, width: next } : x));
-                      try { void supabase.from("chart_lines").update({ width: next }).eq("id", selectedCalloutId); } catch {}
-                      try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={Math.min(3, Math.max(1, width))} strokeLinecap="round">
-                      <line x1="4" y1="12" x2="20" y2="12" />
-                    </svg>
-                  </button>
-                </div>
-                {/* Note / text focus */}
+                {/* Edit text (pen) */}
                 <div className="relative" data-menu>
                   <button
                     type="button"
@@ -27758,7 +27761,6 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     onClick={() => {
                       setCalloutNoteOpen((v) => !v);
                       setCalloutColorOpen(false);
-                      // focus the bubble
                       try {
                         const el = vlineOverlayRef.current?.querySelector(`[data-callout-id="${selectedCalloutId}"] [contenteditable]`) as HTMLElement | null;
                         el?.focus();
@@ -28019,7 +28021,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setRectColorOpen(false);
                     }}
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                   </button>
                   {moveNoteOpen && editingNoteId === selectedRectId && (
                     <div
@@ -28666,11 +28668,8 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         moveNoteOpen ? "border-orange-500/60 bg-orange-500/15 text-orange-200" : "border-gray-600/80 bg-gray-800/90 text-gray-300 hover:border-orange-500/50 hover:text-orange-200"
                       }`}
                     >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                        <line x1="8" y1="13" x2="16" y2="13" />
-                        <line x1="8" y1="17" x2="12" y2="17" />
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
                       </svg>
                     </button>
                     {moveNoteOpen && (
