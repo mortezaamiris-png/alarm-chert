@@ -17017,6 +17017,20 @@ priced.sort((a, b) => a.price - b.price);
                 });
               }
             }
+            // Path note follows first point live while dragging
+            if (md.isPath && ctrls.length >= 1) {
+              const p0 = ctrls[0];
+              const x0 = chart.timeScale().timeToCoordinate(p0.time as any);
+              const y0 = ser.priceToCoordinate(p0.price);
+              if (x0 != null && y0 != null) {
+                host.querySelectorAll(`[data-path-note="${md.id}"]`).forEach((el) => {
+                  (el as HTMLElement).style.left = `${Number(x0) + 8}px`;
+                  (el as HTMLElement).style.top = `${Number(y0) - 6}px`;
+                  (el as HTMLElement).style.transform = "translateY(-100%)";
+                  (el as HTMLElement).style.visibility = "visible";
+                });
+              }
+            }
           }
         } catch {
           try { renderAllLinesAndAlarmsRef.current?.(); } catch {}
@@ -24593,6 +24607,11 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
           noteToSave = noteDraft.trim()
             ? `__brush:${ptsPart}|txt=${encodeURIComponent(noteDraft.trim())}`
             : `__brush:${ptsPart}`;
+        } else if (s.startsWith("__path:")) {
+          const ptsPart = s.replace(/^__path:/, "").split("|").filter((p) => p.includes(",") && !p.startsWith("txt=") && !p.includes("=")).join("|");
+          noteToSave = noteDraft.trim()
+            ? `__path:${ptsPart}|txt=${encodeURIComponent(noteDraft.trim())}`
+            : `__path:${ptsPart}`;
         } else if (s.startsWith("__rect:")) {
           const rp = parseRectNote(s);
           if (rp) {
@@ -25881,7 +25900,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     }}
                   >
                     <span className="w-4 text-center inline-flex items-center justify-center">
-                      <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
+                      <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
                     </span>
                     Path
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("path") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("path", e)}>{favTools.includes("path") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26798,7 +26817,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       ) : id === "brush" ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                       ) : id === "path" ? (
-                        <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
+                        <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
                       ) : meta.icon}</span>
                     </button>
                   );
@@ -32350,7 +32369,7 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                         ) : meta.label === "Brush" ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
                         ) : meta.label === "Path" ? (
-                          <svg width="16" height="16" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21 L11 12 L15.5 16.5 L20 8"/><circle cx="5" cy="21" r="2.4"/><circle cx="11" cy="12" r="2.4"/><circle cx="15.5" cy="16.5" r="2.4"/><path d="M19.2 9.2 L24 5.5"/><path d="M21.2 5.2 L24 5.5 L22.2 8.2"/></svg>
+                          <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
                         ) : meta.icon}</span>
                         {meta.showPrice ? (
                           isDiagonalLine(l) ? (
