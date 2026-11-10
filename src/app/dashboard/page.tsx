@@ -13102,13 +13102,37 @@ priced.sort((a, b) => a.price - b.price);
 
       const newNote = applyNote(drag.id, kind, tL, tR, pEntry, pStop, pTarget, drag.note, false);
       drag.note = newNote;
-      // throttle overlay + series commit to one frame for smoothness
-      if (!(drag as any)._raf) {
-        (drag as any)._raf = requestAnimationFrame(() => {
-          (drag as any)._raf = 0;
-          try { (window as any).__syncPosOverlays?.(); } catch {}
-        });
-      }
+      // Live-update baseline/line series so the colored box moves with the handles
+      try {
+        const entry = (chartLinesRef.current as any)?.get?.(drag.id);
+        const seriesArr: any[] = entry?.series || [];
+        if (seriesArr.length >= 5) {
+          const stopLo = Math.min(pEntry, pStop);
+          const stopHi = Math.max(pEntry, pStop);
+          const tgtLo = Math.min(pEntry, pTarget);
+          const tgtHi = Math.max(pEntry, pTarget);
+          // [0]=stop band, [1]=target band, [2]=entry line, [3]=stop line, [4]=target line
+          try {
+            seriesArr[0].applyOptions?.({ baseValue: { type: "price", price: stopLo } });
+            seriesArr[0].setData([{ time: tL as any, value: stopHi }, { time: tR as any, value: stopHi }]);
+          } catch {}
+          try {
+            seriesArr[1].applyOptions?.({ baseValue: { type: "price", price: tgtLo } });
+            seriesArr[1].setData([{ time: tL as any, value: tgtHi }, { time: tR as any, value: tgtHi }]);
+          } catch {}
+          try {
+            seriesArr[2].setData([{ time: tL as any, value: pEntry }, { time: tR as any, value: pEntry }]);
+          } catch {}
+          try {
+            seriesArr[3].setData([{ time: tL as any, value: pStop }, { time: tR as any, value: pStop }]);
+          } catch {}
+          try {
+            seriesArr[4].setData([{ time: tL as any, value: pTarget }, { time: tR as any, value: pTarget }]);
+          } catch {}
+        }
+      } catch {}
+      // Always sync DOM overlays immediately (no lag on labels/handles)
+      try { (window as any).__syncPosOverlays?.(); } catch {}
       // keep snapshot roles relative for body uses start*; for handles live values
       if (drag.role !== "body") {
         drag.tL = tL; drag.tR = tR; drag.pEntry = pEntry; drag.pStop = pStop; drag.pTarget = pTarget;
@@ -26288,7 +26312,13 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                     }}
                   >
                     <span className="w-4 text-center inline-flex items-center justify-center">
-                      <svg width="18" height="18" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20 L10 11 L14.5 15.5 L19.5 7"/><circle cx="4" cy="20" r="2.5"/><circle cx="10" cy="11" r="2.5"/><circle cx="14.5" cy="15.5" r="2.5"/><path d="M18.8 8.2 L23.5 4.8"/><path d="M20.6 4.6 L23.5 4.8 L21.4 7.4"/></svg>
+                      {/* TradingView-style Path icon */}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="5" cy="18" r="2.2" fill="currentColor" stroke="none" />
+                        <circle cx="10" cy="9" r="2.2" fill="currentColor" stroke="none" />
+                        <circle cx="16" cy="14" r="2.2" fill="currentColor" stroke="none" />
+                        <path d="M5 18 L10 9 L16 14 L20 6" />
+                      </svg>
                     </span>
                     Path
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("path") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("path", e)}>{favTools.includes("path") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26307,13 +26337,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Long position: click chart to place");
                     }}
                   >
-                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
-                      <circle cx="4" cy="4" r="2.2" />
-                      <line x1="6.5" y1="4" x2="26" y2="4" />
-                      <circle cx="4" cy="18" r="2.2" />
-                      <line x1="6.5" y1="18" x2="26" y2="18" />
-                      <line x1="6.5" y1="11" x2="18" y2="11" />
-                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">L</text>
+                    {/* TradingView-style Long position icon */}
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="3.5" x2="26" y2="3.5" />
+                      <circle cx="4" cy="11" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="11" x2="16" y2="11" />
+                      <text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui,sans-serif">L</text>
+                      <circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="18.5" x2="26" y2="18.5" />
                     </svg>
                     Long position
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("long-pos") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("long-pos", e)}>{favTools.includes("long-pos") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
@@ -26330,13 +26362,15 @@ container.addEventListener("pointermove", onPointerMove, { signal: pointerAbortR
                       setStatusMsg("Short position: click chart to place");
                     }}
                   >
-                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="shrink-0 opacity-90">
-                      <circle cx="4" cy="4" r="2.2" />
-                      <line x1="6.5" y1="4" x2="26" y2="4" />
-                      <circle cx="4" cy="18" r="2.2" />
-                      <line x1="6.5" y1="18" x2="26" y2="18" />
-                      <line x1="6.5" y1="11" x2="18" y2="11" />
-                      <text x="12" y="14.5" fill="currentColor" stroke="none" fontSize="9" fontWeight="600" fontFamily="system-ui">S</text>
+                    {/* TradingView-style Short position icon */}
+                    <svg width="22" height="18" viewBox="0 0 28 22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="shrink-0 opacity-90">
+                      <circle cx="4" cy="3.5" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="3.5" x2="26" y2="3.5" />
+                      <circle cx="4" cy="11" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="11" x2="16" y2="11" />
+                      <text x="17.5" y="13.5" fill="currentColor" stroke="none" fontSize="8.5" fontWeight="700" fontFamily="system-ui,sans-serif">S</text>
+                      <circle cx="4" cy="18.5" r="2" fill="currentColor" stroke="none" />
+                      <line x1="7" y1="18.5" x2="26" y2="18.5" />
                     </svg>
                     Short position
                     <span role="button" title="Favorite" className={`ml-auto shrink-0 p-0.5 rounded cursor-pointer ${favTools.includes("short-pos") ? "text-amber-400" : "text-gray-600 hover:text-gray-400"}`} onClick={(e) => toggleFavTool("short-pos", e)}>{favTools.includes("short-pos") ? (<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>) : (<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>)}</span>
