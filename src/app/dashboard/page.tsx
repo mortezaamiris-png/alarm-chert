@@ -2854,8 +2854,8 @@ function upsertDiagNoteLabel(
   if (!existing) {
     el.dataset.diagNote = String(id);
     el.style.cssText = [
-      "position:absolute;transform:translate(-50%,0);pointer-events:none;z-index:24;",
-      "color:#e5e7eb;font-size:11px;font-weight:500;white-space:nowrap;",
+      "position:absolute;transform:translate(-50%,0);pointer-events:none;z-index:96;",
+      "color:#e5e7eb;font-size:11px;font-weight:600;white-space:nowrap;",
       "text-shadow:0 1px 2px rgba(0,0,0,0.85);",
     ].join("");
     host.appendChild(el);
@@ -7458,17 +7458,22 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Show fib A/B anchors while a fib is selected / settings open
+  // Show fib A/B/(C) anchors while a fib is selected / settings open
   useEffect(() => {
     if (!selectedFibId) return;
     const line = (linesRef.current || []).find((x: any) => String(x.id) === String(selectedFibId));
     const fib = line ? parseFibNote(line.note) : null;
     if (!fib) return;
     try {
+      const c =
+        fib.kind === "fib-ext" && fib.t3 != null && fib.p3 != null
+          ? { time: Number(fib.t3), price: Number(fib.p3) }
+          : null;
       positionHandles(
         { time: fib.t1, price: fib.p1 },
         { time: fib.t2, price: fib.p2 },
-        null
+        null,
+        c
       );
     } catch {}
   }, [selectedFibId, fibSettingsOpen, positionHandles]);
@@ -7717,17 +7722,29 @@ export default function DashboardPage() {
                 }
                 pi++;
               }
-              // Remaining series = trend / A→B / B→C
-              for (let si = pi; si < extras.length; si++) {
-                const ser = extras[si];
-                if (!ser || typeof ser.setData !== "function") continue;
+              // Remaining series = trend / A→B / B→C (fib-ext needs both segments live)
+              const trendSeries = extras.slice(pi);
+              if (fibBase.kind === "fib-ext" && md2.pointC && trendSeries.length >= 1) {
                 try {
-                  ser.setData(denseDiagPoints(
-                    Math.min(t0, t1), Math.max(t0, t1),
-                    t0 <= t1 ? p0 : p1, t0 <= t1 ? p1 : p0,
-                    barSec
-                  ));
+                  // A→B
+                  if (trendSeries[0] && typeof trendSeries[0].setData === "function") {
+                    trendSeries[0].setData(denseDiagPoints(t0, t1, p0, p1, barSec));
+                  }
+                  // B→C (third line) — keep visible while dragging any handle
+                  if (trendSeries[1] && typeof trendSeries[1].setData === "function") {
+                    const tC = Number(md2.pointC.time);
+                    const pC = Number(md2.pointC.price);
+                    trendSeries[1].setData(denseDiagPoints(t1, tC, p1, pC, barSec));
+                  }
                 } catch {}
+              } else {
+                for (let si = 0; si < trendSeries.length; si++) {
+                  const ser = trendSeries[si];
+                  if (!ser || typeof ser.setData !== "function") continue;
+                  try {
+                    ser.setData(denseDiagPoints(t0, t1, p0, p1, barSec));
+                  } catch {}
+                }
               }
               // Live-update background bands so they don't lag behind anchors
               try {
@@ -8324,8 +8341,16 @@ export default function DashboardPage() {
           try {
             const id = child.dataset.diagNote;
             let st: number | null = null, et: number | null = null, sp: number | null = null, ep: number | null = null;
+            let placeAtA = false;
             const ln = (linesRef.current || []).find((x: any) => String(x.id) === String(id));
-            if (ln && isDiagonalLine(ln)) {
+            if (ln && typeof ln.note === "string" && (ln.note.startsWith("__fib:") || ln.note.startsWith("__fibext:"))) {
+              const fib = parseFibNote(ln.note);
+              if (fib) {
+                st = Number(fib.t1); et = Number(fib.t2);
+                sp = Number(fib.p1); ep = Number(fib.p2);
+                placeAtA = true;
+              }
+            } else if (ln && isDiagonalLine(ln)) {
               st = Number(ln.start_time); et = Number(ln.end_time);
               sp = Number(ln.price); ep = Number(ln.end_price);
             } else {
@@ -8336,15 +8361,16 @@ export default function DashboardPage() {
               }
             }
             if (st == null || et == null || sp == null || ep == null) { child.style.visibility = "hidden"; continue; }
-            const midT = (st + et) / 2;
-            const midP = (sp + ep) / 2;
-            const mx = chart2.timeScale().timeToCoordinate(midT as any);
-            const my = ser.priceToCoordinate(midP);
+            const placeT = placeAtA ? st : (st + et) / 2;
+            const placeP = placeAtA ? sp : (sp + ep) / 2;
+            const mx = chart2.timeScale().timeToCoordinate(placeT as any);
+            const my = ser.priceToCoordinate(placeP);
             if (mx == null || my == null) { child.style.visibility = "hidden"; }
             else {
               child.style.visibility = "visible";
-              child.style.left = `${Number(mx)}px`;
-              child.style.top = `${Number(my) + 12}px`;
+              child.style.left = `${Number(mx) + (placeAtA ? 28 : 0)}px`;
+              child.style.top = `${Number(my) + (placeAtA ? -18 : 12)}px`;
+              child.style.zIndex = "96";
             }
           } catch { child.style.visibility = "hidden"; }
         } else if ((child.dataset.rayId || child.dataset.rayLabel) && ser) {
